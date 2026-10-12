@@ -11,7 +11,14 @@ repository = "https://github.com/gsuquet/loom"
 publish = false
 
 [workspace.dependencies]
+assert_cmd = "2.2"
 clap = { version = "4.5", features = ["derive"] }
+jsonschema = { version = "0.58", default-features = false }
+loom-api = { path = "crates/loom-api" }
+miette = "7.6"
+schemars = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
