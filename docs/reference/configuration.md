@@ -41,7 +41,7 @@ Error: invalid configuration <path>:<line>:<column>: <message>
 `line` and `column` start at 1; `column` counts characters. For an unknown key, `message` names it:
 
 ```text
-Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected one of `daemon`, `telemetry`, `update`
+Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected one of `contexts`, `daemon`, `default_context`, `forges`, `repos`, `telemetry`, `update`
 ```
 
 `loom` reads `config.toml` at each command for `[telemetry]`. A file it cannot read or parse does not stop a command for that reason: `loom` exports no traces, prints this warning on stderr (hidden by `-q`) and runs the command. Commands that need the file for something else, such as `loom service install`, still fail on it.
@@ -54,6 +54,11 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
+| `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
+| `[contexts.<name>] match.paths`, `match.hosts`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[forges."<host>"] kind` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[daemon] service` | boolean | `true` | `false`: `loom service install` refuses with exit code 1 and a message naming this key and the file. `loom service uninstall` and `loom service status` still work. Does not stop or remove an installed service. |
 | `[telemetry] enabled` | boolean | `false` | Export traces. See [`[telemetry]`](#telemetry). |
 | `[telemetry] otlp_endpoint` | string | none | OTLP/HTTP traces endpoint. See [`[telemetry]`](#telemetry). |
@@ -76,6 +81,65 @@ A `check_interval` below the minimum:
 ```text
 Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m` is shorter than the minimum 10m
 ```
+
+### Contexts and repositories
+
+`default_context`, `[contexts]`, `[repos]` and `[forges]` are read and validated with the rest of `config.toml`: an invalid value stops `loomd` and is reported by `loom` like any other error in the file. No command uses them yet.
+
+```toml
+default_context = "personal"
+
+[contexts.personal]
+match.paths = ["~/perso"]
+match.hosts = ["github.com/gsuquet"]
+
+[contexts.company-a]
+match.paths = ["~/work/company-a"]
+match.hosts = ["gitlab.com/company-a", "gitlab.company-a.example"]
+update = "fetch"
+
+[repos]
+roots = ["~/perso", "~/work"]
+max_depth = 4
+exclude = ["archive"]
+fetch_interval = "1h"
+fetch_concurrency = 4
+
+[repos."~/perso/client-fork"]
+context = "company-a"
+update = "off"
+
+[forges."gitlab.company-a.example"]
+kind = "gitlab"
+```
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `default_context` | string | none | Names a context defined by a `[contexts.<name>]` table. |
+| `[contexts.<name>]` | table | none | `<name>`: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-` (the rule of `-c`). `unassigned` is reserved. A table without keys is valid. |
+| `[contexts.<name>] match.paths` | array of strings: paths | none | At least one entry when given. Each entry is absolute, `~` or starts with `~/`; `..` is not allowed. |
+| `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A trailing `/` is ignored. |
+| `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. |
+| `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
+| `[repos] max_depth` | integer | `4` | 0 to 4294967295. |
+| `[repos] exclude` | array of strings: glob patterns | `[]` | Each pattern is not empty and is a valid glob (`*`, `?`, `**`, `[…]`, `{a,b}`). |
+| `[repos] fetch_interval` | string: duration | `"1h"` | Duration syntax of `[update] check_interval`. At least `"1m"`. |
+| `[repos] fetch_concurrency` | integer | `4` | 1 to 4294967295. |
+| `[repos."<path>"]` | table | none | `<path>`: same path rules as `match.paths`. Two keys naming the same path (`"~/a"` and `"~/a/"`) are rejected. |
+| `[repos."<path>"] context` | string | none | Names a defined context. |
+| `[repos."<path>"] update` | string: `"ff"`, `"fetch"`, `"off"` | none | Update policy of this repository. |
+| `[forges."<host>"]` | table | none | `<host>`: a lowercase host name (ASCII letters, digits, `-`, `.`), without port or path. |
+| `[forges."<host>"] kind` | string: `"github"`, `"gitlab"` | required | Forge of the host. |
+
+Paths are compared as written, after removing `.` components and repeated or trailing `/`; `~` is kept unexpanded for this check.
+
+The same `match.paths` entry in two contexts is rejected, and so is the same `match.hosts` entry (path segments compared without ASCII case). The error is at the second entry and names the location of the first:
+
+```text
+Error: invalid configuration /home/me/.loom/config.toml:5:16: match.paths `~/work/` of context `company-b` is also `~/work` of context `company-a` (line 2, column 16): an entry can belong to one context only
+```
+
+Errors in an array element (`roots`, `exclude`, `match.paths`, `match.hosts`) are located at the start of the array.
 
 ### Update checks
 

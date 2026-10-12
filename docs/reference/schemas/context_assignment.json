@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContextAssignment",
+  "description": "The context of a repository and the rule that chose it, first match wins:\noverride, host, path, default context, otherwise unassigned.",
+  "oneOf": [
+    {
+      "description": "`[repos.\"<path>\"] context` names the context of this repository.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Assigned context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "rule": {
+          "type": "string",
+          "const": "override"
+        }
+      },
+      "required": [
+        "rule",
+        "context"
+      ]
+    },
+    {
+      "description": "An entry of `match.hosts` matches the host and path of the primary remote.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Assigned context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "pattern": {
+          "description": "The matching entry, `host` or `host/path-prefix`, as normalized.",
+          "type": "string"
+        },
+        "rule": {
+          "type": "string",
+          "const": "host"
+        }
+      },
+      "required": [
+        "rule",
+        "context",
+        "pattern"
+      ]
+    },
+    {
+      "description": "An entry of `match.paths` is the longest prefix of the repository path.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Assigned context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "prefix": {
+          "description": "The matching entry, as written in the configuration (before `~` expansion).",
+          "type": "string"
+        },
+        "rule": {
+          "type": "string",
+          "const": "path"
+        }
+      },
+      "required": [
+        "rule",
+        "context",
+        "prefix"
+      ]
+    },
+    {
+      "description": "No rule matches; `default_context` is set.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Assigned context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "rule": {
+          "type": "string",
+          "const": "default"
+        }
+      },
+      "required": [
+        "rule",
+        "context"
+      ]
+    },
+    {
+      "description": "No rule matches and no `default_context` is set.",
+      "type": "object",
+      "properties": {
+        "rule": {
+          "type": "string",
+          "const": "unassigned"
+        }
+      },
+      "required": [
+        "rule"
+      ]
+    }
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    }
+  }
+}

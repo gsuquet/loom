@@ -8,7 +8,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-# `[update]` policy and channel enums, shared with the API.
+# Glob syntax of `[repos] exclude`, checked when the configuration is read.
+globset.workspace = true
+# `[update]` policy and channel enums, context names and forge kinds, shared with the API.
 loom-api.workspace = true
 serde.workspace = true
 thiserror.workspace = true

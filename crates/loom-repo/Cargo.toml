@@ -1,0 +1,18 @@
+[package]
+name = "loom-repo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `RepoIdentity`, `ContextAssignment` and the other boundary types it computes.
+loom-api.workspace = true
+# `[contexts]`, `[repos]` and `[forges]` rules it applies.
+loom-config.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

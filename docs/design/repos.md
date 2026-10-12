@@ -16,7 +16,7 @@ Loom knows every git repository on the machine, which context it belongs to, and
 ## Identity
 
 - **Path**: absolute, as found (symbolic links kept). The path is the key; one checkout = one repo.
-- **Name**: directory name. **Slug**: `<context>/<name>`; when two repos share a slug, the second gets a numeric suffix shown by `loom repo ls`.
+- **Name**: directory name. **Slug**: `<context>/<name>`, an identifier scripts and agents may store (`loom repo show <slug>`), so it is stable. A repo keeps its slug, persisted in the index, while its context and name are unchanged; a new repo never renumbers another. A new repo, or one whose context or name changed, gets `<context>/<name>` when free, otherwise the lowest free `<context>/<name>-N` (N ≥ 2). A removed repo frees its slug. `loom repo ls` shows the suffix.
 - **Remotes**: every `[remote "x"] url` of the repo's config (followed through `gitdir:` and `commondir` for worktrees). The **primary remote** is `origin`, otherwise the first one.
 - **Forge**: GitHub or GitLab, from the primary remote's host, SSH host aliases resolved with `ssh -G <alias>` (cached per alias), plus `[forges]` overrides for self-hosted hosts.
 
@@ -44,6 +44,8 @@ A repo's context, first match wins:
 3. `match.paths`: the longest matching path prefix.
 4. `default_context`, when set.
 5. `unassigned`: listed and reported by `loom repo ls`, never guessed from a directory name.
+
+Prefixes match whole segments: `gitlab.com/company-a` matches `gitlab.com/company-a/x/y`, not `gitlab.com/company-ab`; `~/work` matches `~/work/x`, not `~/workshop`. The longest `match.hosts` prefix wins as well (path segments compared without ASCII case). The same entry in two contexts is a configuration error, since neither would be longer. Context names follow the rule of `-c`; `unassigned` is reserved.
 
 The same rules are the only source of truth for every tool: scripts ask `loom repo show --json` instead of reimplementing them.
 

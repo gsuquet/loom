@@ -12,6 +12,8 @@ schemars.workspace = true
 serde.workspace = true
 # `ApiError.details` carries endpoint-specific JSON.
 serde_json.workspace = true
+# `ContextNameError`, as in the other library crates.
+thiserror.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true

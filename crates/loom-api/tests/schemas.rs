@@ -9,10 +9,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use loom_api::{
-    ApiError, ApiVersion, Channel, DaemonRestart, ErrorCode, InstallReport, PendingUpgrade,
-    Profile, RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp,
-    UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpgradeDecision,
-    UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
+    ApiError, ApiVersion, Channel, ContextAssignment, ContextName, DaemonRestart, ErrorCode,
+    ForgeKind, InstallReport, PendingUpgrade, Profile, Remote, RemoteUrl, RepoIdentity,
+    RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp, UpdateChannel,
+    UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -23,7 +24,9 @@ fn schemas() -> Vec<(&'static str, Schema)> {
     vec![
         ("api_error", schema_for!(ApiError)),
         ("api_version", schema_for!(ApiVersion)),
+        ("context_assignment", schema_for!(ContextAssignment)),
         ("error_code", schema_for!(ErrorCode)),
+        ("repo_identity", schema_for!(RepoIdentity)),
         ("rollback_report", schema_for!(RollbackReport)),
         ("service_platform", schema_for!(ServicePlatform)),
         ("service_status", schema_for!(ServiceStatus)),
@@ -311,6 +314,101 @@ fn upgrade_reports() -> Vec<UpgradeReport> {
             ..base
         },
     ]
+}
+
+/// Every kind of context assignment, to `context`.
+fn context_assignments(context: &ContextName) -> Vec<ContextAssignment> {
+    vec![
+        ContextAssignment::Override {
+            context: context.clone(),
+        },
+        ContextAssignment::Host {
+            context: context.clone(),
+            pattern: "gitlab.com/company-a".to_owned(),
+        },
+        ContextAssignment::Path {
+            context: context.clone(),
+            prefix: "~/perso".to_owned(),
+        },
+        ContextAssignment::Default {
+            context: context.clone(),
+        },
+        ContextAssignment::Unassigned,
+    ]
+}
+
+fn repo_identity(context: ContextAssignment) -> RepoIdentity {
+    let remote = |name: &str, url: &str, location: Option<RemoteUrl>| Remote {
+        name: name.to_owned(),
+        url: url.to_owned(),
+        location,
+    };
+    RepoIdentity {
+        path: "/home/me/perso/loom".into(),
+        name: "loom".to_owned(),
+        slug: format!("{}/loom", context.context_name()),
+        context,
+        remotes: vec![
+            remote(
+                "origin",
+                "https://github.com/gsuquet/loom.git",
+                Some(RemoteUrl {
+                    host: "github.com".to_owned(),
+                    port: None,
+                    path: "gsuquet/loom".to_owned(),
+                }),
+            ),
+            remote(
+                "mirror",
+                "ssh://mirror.example:2222/loom",
+                Some(RemoteUrl {
+                    host: "mirror.example".to_owned(),
+                    port: Some(2222),
+                    path: "loom".to_owned(),
+                }),
+            ),
+            remote("backup", "/srv/backup/loom", None),
+        ],
+        primary_remote: Some("origin".to_owned()),
+        forge: Some(ForgeKind::Github),
+    }
+}
+
+#[test]
+fn repo_samples_validate_against_their_schema() {
+    let mut errors = Vec::new();
+    for assignment in context_assignments(&"company-a".parse().unwrap()) {
+        errors.extend(violations(&assignment).unwrap());
+        errors.extend(violations(&repo_identity(assignment)).unwrap());
+    }
+    errors.extend(
+        violations(&RepoIdentity {
+            remotes: vec![],
+            primary_remote: None,
+            forge: None,
+            ..repo_identity(ContextAssignment::Unassigned)
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&RepoIdentity {
+            forge: Some(ForgeKind::Gitlab),
+            ..repo_identity(ContextAssignment::Unassigned)
+        })
+        .unwrap(),
+    );
+    assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+#[test]
+fn schema_rejects_an_invalid_context_name() {
+    let schema = serde_json::to_value(schema_for!(ContextAssignment)).unwrap();
+    let valid = json!({ "rule": "default", "context": "personal" });
+    assert!(jsonschema::is_valid(&schema, &valid));
+    for name in ["Personal", "2fa", "a-", "", "a_b"] {
+        let instance = json!({ "rule": "default", "context": name });
+        assert!(!jsonschema::is_valid(&schema, &instance), "{name}");
+    }
 }
 
 #[test]
