@@ -9,10 +9,18 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 loom-api.workspace = true
+loom-config.workspace = true
 miette.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
@@ -20,6 +28,7 @@ jsonschema.workspace = true
 loomd.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

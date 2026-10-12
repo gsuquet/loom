@@ -42,6 +42,24 @@ loom version [OPTIONS]
 
 Global options apply.
 
+### `loom status`
+
+Show the state of loomd, starting it when it is not running
+
+```text
+loom status [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the daemon state as JSON (`StatusResponse` schema) |
+| `--no-start` |  |  | Fail instead of starting loomd when it is not running |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
 ### `loom help`
 
 Print this message or the help of the given subcommand(s)

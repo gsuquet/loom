@@ -43,7 +43,7 @@ No shipped command asks for confirmation yet.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success, including `--help` and `--version`. |
-| `1` | Error. The message is printed on stderr. |
+| `1` | Error. The message is printed on stderr: `Error: <message>`, then one `  caused by: <cause>` line per underlying cause. |
 | `2` | Usage error: unknown option, missing command, invalid value, conflicting options. |
 | `130` | Interrupted by `SIGINT` (Ctrl-C). |
 
@@ -54,7 +54,8 @@ No shipped command asks for confirmation yet.
 | Variable | Effect |
 | --- | --- |
 | `NO_COLOR` | Non-empty: no color with `--color auto`. |
-| `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given. See [configuration](../configuration.md). |
+| `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given, and of `loom`. See [configuration](../configuration.md). |
+| `PATH` | Searched for `loomd` by `loom status` when no `loomd` is next to the `loom` executable. |
 
 ## `loom version` output
 
@@ -81,6 +82,69 @@ JSON output (`loom version --json`), `VersionInfo` schema:
 | `profile` | `debug` \| `release` | Cargo profile family of the build. |
 
 `loomd --version` prints the same build information prefixed with `loomd`; `loomd -V` prints only `loomd <version>`. Both binaries built together report identical build information.
+
+## `loom status` output
+
+`loom status` queries `GET /v1/status` on the socket of the loom home (`LOOM_HOME`, otherwise `~/.loom`; `loom` has no `--loom-home` flag). Each request times out after 5 s.
+
+### Starting loomd
+
+When nothing accepts connections on the socket (no socket file, or no process listening on it), `loom status` starts `loomd`, unless `--no-start` is given:
+
+1. It runs the first `loomd` that exists: next to the `loom` executable, then in each `PATH` entry in order.
+2. `loomd` runs in its own process group, with `LOOM_HOME` set to the loom home, stdin and stdout closed, and stderr appended to `<loom home>/log/loomd.log` (see [configuration](../configuration.md)). `loom` does not wait for it to exit.
+3. `loom` queries the socket every 50 ms for up to 5 s, then prints the status.
+
+`loom status` logs `loomd is not running, starting it` at info level on stderr (hidden by `-q`).
+
+### Human output
+
+The daemon version on the first line, then one field per line.
+
+```text
+loomd 0.1.0-dev.42 running
+pid:         4242
+started_at:  2026-10-12T08:00:00Z
+uptime_secs: 90
+api_version: v1
+commit:      0123456789abcdef0123456789abcdef01234567
+channel:     dev
+loom_home:   /home/me/.loom
+socket_path: /home/me/.loom/run/loomd.sock
+config_path: /home/me/.loom/config.toml
+```
+
+### JSON output
+
+`loom status --json` prints the `StatusResponse` returned by loomd, unchanged, as pretty JSON followed by a newline. Fields: [API reference](../api.md#statusresponse); schema: [`status_response.json`](../schemas/status_response.json).
+
+### Version mismatch
+
+When the `version` or `commit` of the daemon differs from the `loom` binary's, `loom status` prints a warning on stderr (hidden by `-q`) and exits with `0`:
+
+```text
+ WARN loom 0.1.0-dev.43 (commit 89abcdef0123) and the running loomd 0.1.0-dev.42 (commit 0123456789ab) are different builds: restart loomd (PID 4242) to run the same build
+```
+
+### Exit codes
+
+| Code | Case | Message on stderr |
+| --- | --- | --- |
+| `0` | The daemon answered, including after a version mismatch warning. | |
+| `1` | `--no-start` and the daemon is not running. | ``Error: loomd is not running: cannot connect to <socket>: <cause>; run `loom status` without --no-start to start it`` |
+| `1` | No `loomd` next to `loom` or in `PATH`. | `Error: cannot start loomd: no loomd next to <loom executable> or in PATH; install loomd next to loom` |
+| `1` | The started `loomd` exited, or did not answer within 5 s. | `Error: cannot start loomd: <reason>; last lines of <loom home>/log/loomd.log:` followed by up to 5 lines that this start wrote to the log. |
+| `1` | The daemon answered with an error. | `Error: loomd returned an error (HTTP <status>, <code>): <message>` |
+| `1` | The daemon answered something that is not the API: invalid body, error status without an `ApiError` body, no answer within 5 s. | `Error: unexpected answer from loomd: <detail>; check that the process listening on <socket> is a loomd of the same version as loom` |
+| `1` | The socket path is too long. | See [socket path length](../configuration.md#socket-path-length). |
+| `2` | Usage error. | |
+
+`loomd` exits with code `1` both on a failure and when another `loomd` holds the lock. When the started `loomd` exits with `1`, `loom status` probes `run/loomd.lock` without blocking (and releases it at once):
+
+- Nobody holds it (or the file is missing): no other `loomd` is starting, and `loom status` fails at once with the end of the log.
+- Another process holds it: another `loomd` won the race. `loom status` keeps querying the socket until the 5 s end, and succeeds with that daemon's status if it answers.
+
+A started `loomd` that is still running but did not answer within 5 s is left running.
 
 ## Build-time variables
 

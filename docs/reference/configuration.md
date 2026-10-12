@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Loom home directory, configuration file and runtime files of `loomd`, as shipped.
+> Loom home directory, configuration file, runtime files and log of `loomd`, as shipped.
 
 ## Loom home directory
 
@@ -13,6 +13,8 @@
 | 3 | `~/.loom` | The user's home directory is known (`HOME`). |
 
 When no source gives a directory, `loomd` exits with code 1.
+
+`loom` resolves the loom home the same way, without step 1: it has no `--loom-home` flag.
 
 A relative path is made absolute against the current directory. Symbolic links and `..` are kept as given, not resolved.
 
@@ -71,4 +73,15 @@ With the lock held, any existing file at `run/loomd.sock` was left by a daemon t
 
 ### Socket path length
 
-A unix socket path is limited to 107 bytes on Linux and 103 bytes on macOS. When `<loom home>/run/loomd.sock` is longer, `loomd` exits with code 1 and a message naming the path; use a shorter loom home.
+A unix socket path is limited to 107 bytes on Linux and 103 bytes on macOS. When `<loom home>/run/loomd.sock` is longer, `loomd` exits with code 1 and a message naming the path; use a shorter loom home. `loom status` checks the same limit before connecting, and fails the same way.
+
+## `log/`
+
+Log of a `loomd` started by `loom status`, in `<loom home>/log/`.
+
+| Path | Mode | Content |
+| --- | --- | --- |
+| `log/` | `0700` | Created by `loom status` before it starts `loomd`; an existing directory is set to `0700`. |
+| `log/loomd.log` | `0600` | stderr of every `loomd` that `loom status` started, appended across starts, never rotated or truncated. |
+
+A `loomd` started another way (by hand, by a service manager) logs to its own stderr, not to this file.

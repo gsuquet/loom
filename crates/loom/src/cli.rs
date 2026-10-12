@@ -58,6 +58,15 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show the state of loomd, starting it when it is not running.
+    Status {
+        /// Print the daemon state as JSON (`StatusResponse` schema).
+        #[arg(long)]
+        json: bool,
+        /// Fail instead of starting loomd when it is not running.
+        #[arg(long)]
+        no_start: bool,
+    },
 }
 
 /// Name of a context, as given to `-c`/`--context`.
@@ -185,6 +194,26 @@ mod tests {
             assert_eq!(cli.global.color, ColorChoice::Auto);
             assert!(matches!(cli.command, Command::Version { json: false }));
         }
+    }
+
+    #[test]
+    fn status_flags() {
+        let cli = Cli::try_parse_from(["loom", "status"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Status {
+                json: false,
+                no_start: false
+            }
+        ));
+        let cli = Cli::try_parse_from(["loom", "status", "--json", "--no-start"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Status {
+                json: true,
+                no_start: true
+            }
+        ));
     }
 
     #[test]

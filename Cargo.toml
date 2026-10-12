@@ -14,6 +14,9 @@ publish = false
 assert_cmd = "2.2"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 clap = { version = "4.5", features = ["derive"] }
+http-body-util = "0.1"
+hyper = { version = "1.12", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 jsonschema = { version = "0.58", default-features = false }
 loom-api = { path = "crates/loom-api" }
 loom-config = { path = "crates/loom-config" }
