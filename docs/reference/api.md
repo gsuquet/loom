@@ -83,7 +83,7 @@ State of a running loomd.
 | Field | Type | Content |
 | --- | --- | --- |
 | `api_version` | `ApiVersion` | API version the daemon serves. |
-| `daemon` | `VersionInfo` | Build information of the daemon binary (same fields as `loom version --json`, see [CLI reference](cli.md)). |
+| `daemon` | `VersionInfo` | Build information of the daemon binary (same fields as `loom version --json`, see [`loom version` output](cli/conventions.md#loom-version-output)). |
 | `pid` | integer (u32) | Process ID of the daemon. |
 | `started_at` | `Timestamp` | Instant the daemon started. |
 | `uptime_secs` | integer (u64) | Whole seconds elapsed since `started_at`. |

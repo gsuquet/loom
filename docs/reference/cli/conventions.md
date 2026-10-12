@@ -139,7 +139,10 @@ When the `version` or `commit` of the daemon differs from the `loom` binary's, `
 | `1` | The socket path is too long. | See [socket path length](../configuration.md#socket-path-length). |
 | `2` | Usage error. | |
 
-`loomd` exits with code `1` both on a failure and when another `loomd` holds the lock. When the started `loomd` exits with `1` and the socket answers within the 5 s anyway, another `loomd` won the race and `loom status` succeeds with its status.
+`loomd` exits with code `1` both on a failure and when another `loomd` holds the lock. When the started `loomd` exits with `1`, `loom status` probes `run/loomd.lock` without blocking (and releases it at once):
+
+- Nobody holds it (or the file is missing): no other `loomd` is starting, and `loom status` fails at once with the end of the log.
+- Another process holds it: another `loomd` won the race. `loom status` keeps querying the socket until the 5 s end, and succeeds with that daemon's status if it answers.
 
 A started `loomd` that is still running but did not answer within 5 s is left running.
 

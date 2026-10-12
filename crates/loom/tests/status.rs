@@ -240,8 +240,12 @@ fn start_failure_names_the_log_and_shows_its_end() {
     let config = home.path().join("config.toml");
     fs::write(&config, "# loom\n\nunknown_key = 1\n").unwrap();
 
+    let started = Instant::now();
     let output = loom(home.path(), &["status"]);
+    let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(1));
+    // Nobody holds the lock: no wait for the 5 s start window.
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
     let text = stderr(&output);
     assert!(text.contains("cannot start loomd"), "{text}");
     assert!(

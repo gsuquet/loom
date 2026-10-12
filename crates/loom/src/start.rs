@@ -1,7 +1,7 @@
 //! Starting `loomd` in the background when it is not running.
 
 use std::env;
-use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
+use std::fs::{self, DirBuilder, File, OpenOptions, Permissions, TryLockError};
 use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
@@ -63,8 +63,11 @@ pub async fn start(layout: &Layout, client: &Client) -> Result<StatusResponse> {
                 .into_diagnostic()
                 .wrap_err("cannot check whether loomd is running")?;
         }
-        // Exit code 1 may mean that another `loomd` won the lock: it may still answer.
-        if let Some(status) = exited.filter(|status| status.code() != Some(LOOMD_FAILURE)) {
+        // Exit code 1 may mean that another `loomd` won the lock: it may still answer. When
+        // nobody holds the lock, no other `loomd` is starting: the failure is final.
+        if let Some(status) =
+            exited.filter(|status| status.code() != Some(LOOMD_FAILURE) || !lock_held(&layout.lock))
+        {
             return Err(start_failed(layout, log_start, &exited_reason(status)));
         }
         match client.status().await {
@@ -86,6 +89,34 @@ pub async fn start(layout: &Layout, client: &Client) -> Result<StatusResponse> {
             return Err(start_failed(layout, log_start, &reason));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Whether a process holds the single-instance lock at `path`. The probe lock is released
+/// as soon as it is taken. A missing file means nobody holds it; any other error to open or
+/// lock it counts as held, so `loom` keeps waiting for the socket instead of failing early.
+fn lock_held(path: &Path) -> bool {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(error) => {
+            debug!(lock = %path.display(), %error, "cannot open the lock, assuming it is held");
+            return true;
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            // Released now, not when `file` is dropped, so a starting `loomd` never sees it.
+            if let Err(error) = file.unlock() {
+                debug!(lock = %path.display(), %error, "cannot release the probe lock");
+            }
+            false
+        }
+        Err(TryLockError::WouldBlock) => true,
+        Err(TryLockError::Error(error)) => {
+            debug!(lock = %path.display(), %error, "cannot probe the lock, assuming it is held");
+            true
+        }
     }
 }
 
