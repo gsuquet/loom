@@ -5,7 +5,7 @@
 | Version | Content | Done when |
 | --- | --- | --- |
 | v0.1 | Install, auto-upgrade, `dev` channel + `loom upgrade --from <path>`, rollback, loomd as launchd/systemd service, otel diagnostics, `loom version` / `loom status` | Clean install on macOS and Linux; a release is picked up in N h without action; a local build installs and rolls back; traces visible locally |
-| v0.2 | Repo index (scan roots + register on use), freshness, clean/dirty, fetch + ff-only on clean trees, repo cards, `loom search` | Dotfiles inventory scripts deleted; search < 100 ms; one week of auto-update with zero lost local changes |
+| v0.2 | Repo index (scan roots + register on use), contexts of repos, freshness, clean/dirty, fetch + ff-only on clean trees, repo cards, `loom search` | Dotfiles inventory scripts deleted; search < 100 ms; one week of auto-update with zero lost local changes |
 | v0.3 | Tasks core: store, contexts, cron, archive, priority, multi-machine sync, TUI Today + Inbox + triage + task detail with in-place editing, `loom go` shell integration | I start my day with `loom` instead of anything else |
 | v0.4 | Forge MRs: MRs to review (fetch `refs/*/head`, diff per SHA, MR mirror, TUI review view with drafts and batch publish), repo metadata, `loom pr` (draft, task-linked) | Reviews handled from loom without opening the forge inbox |
 | v0.5 | Forge issues (GitLab, GitHub): two-way sync, creation with lint, TUI drafts view | A GitLab issue created and another edited in the TUI, both pushed with no change on untouched fields |
@@ -40,6 +40,26 @@ Task 0 (docs split, `AGENTS.md`, README) and task 2 are done. Issue numbers matc
 | 15 | [#22](https://github.com/gsuquet/loom/issues/22) | CLI conventions ([ADR-0010](adr/0010-cli-conventions.md)): global flags, confirmations, broken pipe, exit codes, CLI reference generated from `clap` | Story | 3 | Agent |
 
 Parallel tracks once 2 and 6 are merged: {3, 15, 4, 5}, {7, 8, 9, 13}, {10}. 11, 12 and 14 join them.
+
+## v0.2 tasks
+
+Each task is a GitHub issue in the `v0.2` milestone, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md). Design: [Repositories](design/repos.md), [ADR-0012](adr/0012-repo-index.md).
+
+| # | Issue | Task | Kind | Depends on | Owner |
+| --- | --- | --- | --- | --- | --- |
+| 1 | – | ADR-0012 (repo index, contexts, automatic updates) and `docs/design/repos.md` | Research | – | Me + agent |
+| 2 | [#36](https://github.com/gsuquet/loom/issues/36) | `loom-repo` (pure): contexts, repo identity, `[contexts]` / `[repos]` / `[forges]` config | Story | 1 | Agent |
+| 3 | [#37](https://github.com/gsuquet/loom/issues/37) | Repo scanner: roots, depth, exclusions, worktrees, removals, no git process | Story | 2 | Agent |
+| 4 | [#38](https://github.com/gsuquet/loom/issues/38) | `loom-store`: SQLite index (`index.db`, FTS5), repo API endpoints in loomd | Story | 3 | Agent |
+| 5 | [#39](https://github.com/gsuquet/loom/issues/39) | Repo state with `gix`: head, dirty, operation, ahead/behind, default branch, last commit, last fetch | Story | 4 | Agent |
+| 6 | [#40](https://github.com/gsuquet/loom/issues/40) | `loom repo ls\|show\|scan\|register\|forget\|doctor`, repo resolution, registration on use | Story | 5 | Agent |
+| 7 | [#41](https://github.com/gsuquet/loom/issues/41) | `loom search` for repos, ranking, < 100 ms | Story | 6 | Agent |
+| 8 | [#42](https://github.com/gsuquet/loom/issues/42) | Automatic updates in loomd: fetch, ff-only on clean trees, scheduling, backoff, `loom repo sync` | Story | 5 | Agent |
+| 9 | [#43](https://github.com/gsuquet/loom/issues/43) | `loom shell-init zsh\|bash`: registration on `cd` | Story | 6 | Agent |
+| 10 | [#44](https://github.com/gsuquet/loom/issues/44) | Repo safety suite: every risky state, nothing lost, macOS + Linux | Chore | 8 | Agent |
+| 11 | – | Rename the Python CLI to `loom-py`, update the dotfiles, a week of real use, delete the inventory scripts | Chore | 6, 8 | Me |
+
+Parallel tracks once 5 is merged: {6, 7, 9} and {8, 10}.
 
 ## Open decisions
 

@@ -68,7 +68,7 @@ Inputs are stored, the score is computed:
 
 ### Context
 
-Exactly one per task. Resolution order: `-c`/`--context` -> `LOOM_CONTEXT` -> current repo remote -> `match.paths` -> `default_context`. No global "current context" file: two terminals can be in two contexts.
+Exactly one per task. Resolution order: `-c`/`--context` -> `LOOM_CONTEXT` -> current repo remote -> `match.paths` -> `default_context`. No global "current context" file: two terminals can be in two contexts. Repos are assigned to contexts by the same `match` rules ([Repositories](repos.md#contexts)).
 
 Git identity stays managed by the dotfiles.
 

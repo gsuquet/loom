@@ -20,6 +20,7 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 | Processes, interfaces, crates, git, language | [docs/design/architecture.md](docs/design/architecture.md) |
 | Tasks, events, notes, kinds, status, priority, contexts | [docs/design/domain-model.md](docs/design/domain-model.md) |
 | Store layout, ownership, IDs, multi-machine | [docs/design/storage.md](docs/design/storage.md) |
+| Repo index, contexts of repos, automatic updates | [docs/design/repos.md](docs/design/repos.md) |
 | Issue and MR sync | [docs/design/tracker-sync.md](docs/design/tracker-sync.md) |
 | Events, learnings | [docs/design/capture-and-learnings.md](docs/design/capture-and-learnings.md) |
 | Agents, gates, runtimes, factory | [docs/design/agents.md](docs/design/agents.md) |

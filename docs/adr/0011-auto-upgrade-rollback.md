@@ -1,6 +1,6 @@
 # ADR-0011: Auto-upgrade with pre-flight, watchdog and automatic rollback
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-12
 
 ## Context

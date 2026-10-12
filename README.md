@@ -70,7 +70,7 @@ Organized with the [Diátaxis](https://diataxis.fr/) framework:
 
 Design and planning, outside Diátaxis (target behavior, not shipped behavior):
 
-* **Design:** [vision](docs/design/vision.md), [architecture](docs/design/architecture.md), [domain model](docs/design/domain-model.md), [storage](docs/design/storage.md), [tracker sync](docs/design/tracker-sync.md), [capture and learnings](docs/design/capture-and-learnings.md), [agent orchestration](docs/design/agents.md), [user workflow](docs/design/user-workflow.md).
+* **Design:** [vision](docs/design/vision.md), [architecture](docs/design/architecture.md), [domain model](docs/design/domain-model.md), [storage](docs/design/storage.md), [repositories](docs/design/repos.md), [tracker sync](docs/design/tracker-sync.md), [capture and learnings](docs/design/capture-and-learnings.md), [agent orchestration](docs/design/agents.md), [user workflow](docs/design/user-workflow.md).
 * **Decisions:** [architecture decision records](docs/adr/README.md).
 * **Plan:** [roadmap](docs/roadmap.md).
 
