@@ -7,7 +7,7 @@
 | Channel | Trigger | Git tag and release name | GitHub release | `LOOM_CHANNEL` |
 | --- | --- | --- | --- | --- |
 | `stable` | Push of a tag `vX.Y.Z` | `vX.Y.Z` | Release, marked latest | `stable` |
-| `dev` | Every push to `main` | `vX.Y.Z-dev.N` | Prerelease, never latest | `dev` |
+| `dev` | Every push to `main` that changes `Cargo.toml`, `Cargo.lock`, `crates/`, `dist/`, `.mise/`, the release workflow, `LICENSE` or `README.md` | `vX.Y.Z-dev.N` | Prerelease, never latest | `dev` |
 
 - `X.Y.Z` is the workspace version (`[workspace.package] version` in `Cargo.toml`). On `main` it is the **next** release version, so semver orders every `X.Y.Z-dev.N` before `X.Y.Z`.
 - `N` is the run number of the release workflow. It increases with every run, including pull request runs, so dev numbers are increasing but not consecutive.
@@ -104,4 +104,4 @@ minisign prints `Signature and comment signature verified`; the checksum tool pr
 
 ## Pull request dry run
 
-On every pull request that changes `Cargo.toml`, `Cargo.lock`, `crates/`, `dist/`, `.mise/` or the release workflow, the workflow builds the four targets, packages the archives, writes `SHA256SUMS`, signs it with a key pair generated in the job and verifies the signature and every checksum. It uses no secrets and publishes nothing.
+On every pull request that changes `Cargo.toml`, `Cargo.lock`, a `build.rs`, `dist/`, `.mise/` or the release workflow, the workflow builds the four targets, packages the archives, writes `SHA256SUMS`, signs it with a key pair generated in the job and verifies the signature and every checksum. It uses no secrets and publishes nothing.
