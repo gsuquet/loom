@@ -5,7 +5,9 @@
 
 mod api_version;
 mod auto_update;
+mod context;
 mod error;
+mod repo;
 mod service;
 mod status;
 mod timestamp;
@@ -16,7 +18,11 @@ pub use api_version::ApiVersion;
 pub use auto_update::{
     PendingUpgrade, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
 };
+pub use context::{
+    CONTEXT_NAME_MAX_LEN, ContextAssignment, ContextName, ContextNameError, UNASSIGNED,
+};
 pub use error::{ApiError, ErrorCode};
+pub use repo::{ForgeKind, Remote, RemoteUrl, RepoIdentity, RepoUpdatePolicy};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;

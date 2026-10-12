@@ -1,21 +1,37 @@
 //! `LOOM_HOME/config.toml`: parsing and error locations.
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_api::{UpdateChannel, UpdatePolicyMode};
+use loom_api::{ContextName, UpdateChannel, UpdatePolicyMode};
 use serde::{Deserialize, Deserializer};
+pub use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
+use crate::repos::{ContextConfig, ForgeConfig, ForgeHost, ReposConfig, reserved_message};
 
 /// Content of `config.toml`. Unknown keys and tables are rejected at every level.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// `[contexts.<name>]` tables: how repositories are matched to contexts.
+    #[serde(default, deserialize_with = "crate::repos::contexts")]
+    pub contexts: BTreeMap<ContextName, ContextConfig>,
     /// `[daemon]` table.
     #[serde(default)]
     pub daemon: Daemon,
+    /// `default_context`: context of the repositories no rule matches. Names a defined context.
+    #[serde(default)]
+    pub default_context: Option<Spanned<ContextName>>,
+    /// `[forges."<host>"]` tables: forge of self-hosted hosts.
+    #[serde(default)]
+    pub forges: BTreeMap<ForgeHost, ForgeConfig>,
+    /// `[repos]` table: discovery, fetch schedule and per-repository settings.
+    #[serde(default)]
+    pub repos: ReposConfig,
     /// `[telemetry]` table: export of traces for diagnosing loom.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
@@ -174,11 +190,111 @@ impl std::error::Error for ConfigError {}
 ///
 /// [`ConfigError`] on a TOML syntax error or an unknown key, with its location.
 pub fn parse_config(text: &str, path: &Path) -> Result<Config, ConfigError> {
-    toml::from_str(text).map_err(|error| ConfigError {
+    let config: Config = toml::from_str(text).map_err(|error| ConfigError {
         path: path.to_path_buf(),
         location: error.span().map(|span| location(text, span.start)),
         message: error.message().trim_end().to_owned(),
-    })
+    })?;
+    validate(&config, text).map_err(|Invalid { span, message }| ConfigError {
+        path: path.to_path_buf(),
+        location: Some(location(text, span.start)),
+        message,
+    })?;
+    Ok(config)
+}
+
+/// A rule across keys that the configuration breaks, at `span`.
+struct Invalid {
+    span: Range<usize>,
+    message: String,
+}
+
+/// Checks across keys: contexts named by `default_context` and `[repos."<path>"] context`
+/// exist, no `match.paths` or `match.hosts` entry is in two contexts, no repository path is
+/// given twice.
+fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
+    let check_defined = |name: &Spanned<ContextName>, key: &str| {
+        if name.get_ref().is_unassigned() {
+            return Err(Invalid {
+                span: name.span(),
+                message: format!("{key}: {}", reserved_message()),
+            });
+        }
+        if !config.contexts.contains_key(name.get_ref()) {
+            return Err(Invalid {
+                span: name.span(),
+                message: format!(
+                    "{key} `{}` is not a defined context: add a [contexts.{}] table",
+                    name.get_ref(),
+                    name.get_ref()
+                ),
+            });
+        }
+        Ok(())
+    };
+    if let Some(name) = &config.default_context {
+        check_defined(name, "default_context")?;
+    }
+    let mut repo_paths = BTreeMap::new();
+    for repo in &config.repos.overrides {
+        if let Some(name) = &repo.context {
+            check_defined(name, "context")?;
+        }
+        let normalized = repo.path.get_ref().normalized();
+        if let Some(first) = repo_paths.insert(normalized, &repo.path) {
+            return Err(Invalid {
+                span: repo.path.span(),
+                message: format!(
+                    "[repos.\"{}\"] is the same repository as [repos.\"{}\"]",
+                    repo.path.get_ref(),
+                    first.get_ref()
+                ),
+            });
+        }
+    }
+
+    // The same entry in two contexts would tie: neither is longer. Host paths ignore ASCII case,
+    // as their matching does.
+    let mut paths = BTreeMap::new();
+    let mut hosts = BTreeMap::new();
+    for (name, context) in &config.contexts {
+        for path in &context.matching.paths {
+            if let Some((other, first)) = paths.insert(path.get_ref().normalized(), (name, path))
+                && other != name
+            {
+                return Err(tie(text, "match.paths", path, name, first, other));
+            }
+        }
+        for host in &context.matching.hosts {
+            let key = host.get_ref().to_string().to_ascii_lowercase();
+            if let Some((other, first)) = hosts.insert(key, (name, host))
+                && other != name
+            {
+                return Err(tie(text, "match.hosts", host, name, first, other));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `entry` of context `name` is also `first` of context `other`.
+fn tie<T: fmt::Display>(
+    text: &str,
+    key: &str,
+    entry: &Spanned<T>,
+    name: &ContextName,
+    first: &Spanned<T>,
+    other: &ContextName,
+) -> Invalid {
+    let Location { line, column } = location(text, first.span().start);
+    Invalid {
+        span: entry.span(),
+        message: format!(
+            "{key} `{}` of context `{name}` is also `{}` of context `{other}` (line {line}, column {column}): an entry can belong to one context only",
+            entry.get_ref(),
+            first.get_ref(),
+        ),
+    }
 }
 
 /// Line and column of the byte `offset` in `text`. An offset inside a character or past the
@@ -199,10 +315,14 @@ fn location(text: &str, offset: usize) -> Location {
 #[cfg(test)]
 mod tests {
     use super::{
-        CheckInterval, Config, DEFAULT_CHECK_INTERVAL, Daemon, Location, OtlpEndpoint,
+        CheckInterval, Config, DEFAULT_CHECK_INTERVAL, Daemon, Location, OtlpEndpoint, Spanned,
         TelemetryConfig, Update, location, parse_config,
     };
-    use loom_api::{UpdateChannel, UpdatePolicyMode};
+    use crate::repos::{
+        ConfigPath, ContextConfig, DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_INTERVAL,
+        DEFAULT_MAX_DEPTH, DEFAULT_ROOTS, ForgeHost, ReposConfig,
+    };
+    use loom_api::{ContextName, ForgeKind, RepoUpdatePolicy, UpdateChannel, UpdatePolicyMode};
     use std::path::Path;
     use std::time::Duration;
 
@@ -432,6 +552,328 @@ mod tests {
     fn enabled_must_be_a_boolean() {
         let error = parse_config("[telemetry]\nenabled = \"yes\"\n", Path::new(PATH)).unwrap_err();
         assert_eq!(error.location.map(|at| at.line), Some(2));
+    }
+
+    /// Parses `text`, expecting an error at `line`:`column` whose message contains `needle`.
+    fn assert_rejected(text: &str, line: usize, column: usize, needle: &str) {
+        let error = parse_config(text, Path::new(PATH)).unwrap_err();
+        assert_eq!(
+            error.location,
+            Some(Location { line, column }),
+            "{text}\n{error}"
+        );
+        assert!(error.message.contains(needle), "{text}\n{error}");
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("invalid configuration {PATH}:{line}:{column}: ")),
+            "{error}"
+        );
+    }
+
+    const REPOS_EXAMPLE: &str = r#"default_context = "personal"
+
+[contexts.personal]
+match.paths = ["~/perso"]
+match.hosts = ["github.com/gsuquet"]
+
+[contexts.company-a]
+match.paths = ["~/work/company-a", "/srv/company-a"]
+match.hosts = ["gitlab.com/company-a", "gitlab.company-a.example"]
+update = "fetch"
+
+[repos]
+roots = ["~/perso", "~/work", "/srv"]
+max_depth = 3
+exclude = ["archive", "*-old"]
+fetch_interval = "30m"
+fetch_concurrency = 2
+
+[repos."~/work/shared"]
+context = "company-a"
+update = "off"
+
+[repos."/srv/mirror"]
+update = "ff"
+
+[forges."gitlab.company-a.example"]
+kind = "gitlab"
+"#;
+
+    #[test]
+    fn repo_index_keys_parse() {
+        let config = parse_config(REPOS_EXAMPLE, Path::new(PATH)).unwrap();
+        let name = |name: &str| name.parse::<ContextName>().unwrap();
+        assert_eq!(
+            config.default_context.as_ref().map(Spanned::get_ref),
+            Some(&name("personal"))
+        );
+        assert_eq!(
+            config.contexts.keys().cloned().collect::<Vec<_>>(),
+            [name("company-a"), name("personal")]
+        );
+        let company = &config.contexts[&name("company-a")];
+        assert_eq!(company.update, Some(RepoUpdatePolicy::Fetch));
+        let paths: Vec<&str> = company
+            .matching
+            .paths
+            .iter()
+            .map(|path| path.get_ref().as_str())
+            .collect();
+        assert_eq!(paths, ["~/work/company-a", "/srv/company-a"]);
+        let hosts: Vec<String> = company
+            .matching
+            .hosts
+            .iter()
+            .map(|host| host.get_ref().to_string())
+            .collect();
+        assert_eq!(hosts, ["gitlab.com/company-a", "gitlab.company-a.example"]);
+        assert_eq!(config.contexts[&name("personal")].update, None);
+
+        let repos = &config.repos;
+        let roots: Vec<&str> = repos.roots.iter().map(ConfigPath::as_str).collect();
+        assert_eq!(roots, ["~/perso", "~/work", "/srv"]);
+        assert_eq!(repos.max_depth, 3);
+        let exclude: Vec<&str> = repos
+            .exclude
+            .iter()
+            .map(|pattern| pattern.glob().glob())
+            .collect();
+        assert_eq!(exclude, ["archive", "*-old"]);
+        assert_eq!(repos.fetch_interval.get(), Duration::from_mins(30));
+        assert_eq!(repos.fetch_concurrency, 2);
+        assert_eq!(repos.overrides.len(), 2);
+        let shared = &repos.overrides[1];
+        assert_eq!(shared.path.get_ref().as_str(), "~/work/shared");
+        assert_eq!(location(REPOS_EXAMPLE, shared.path.span().start).line, 19);
+        assert_eq!(
+            shared.context.as_ref().map(Spanned::get_ref),
+            Some(&name("company-a"))
+        );
+        assert_eq!(shared.update, Some(RepoUpdatePolicy::Off));
+        let mirror = &repos.overrides[0];
+        assert_eq!(mirror.path.get_ref().as_str(), "/srv/mirror");
+        assert_eq!(mirror.context, None);
+        assert_eq!(mirror.update, Some(RepoUpdatePolicy::Ff));
+
+        let forge_host = ForgeHost::try_from("gitlab.company-a.example".to_owned()).unwrap();
+        assert_eq!(config.forges[&forge_host].kind, ForgeKind::Gitlab);
+    }
+
+    #[test]
+    fn repo_index_defaults() {
+        let config = parse_config("", Path::new(PATH)).unwrap();
+        assert_eq!(config.default_context, None);
+        assert!(config.contexts.is_empty());
+        assert!(config.forges.is_empty());
+        let repos = parse_config("[repos]\n", Path::new(PATH)).unwrap().repos;
+        assert_eq!(repos, ReposConfig::default());
+        let roots: Vec<&str> = repos.roots.iter().map(ConfigPath::as_str).collect();
+        assert_eq!(roots, DEFAULT_ROOTS);
+        assert_eq!(repos.max_depth, DEFAULT_MAX_DEPTH);
+        assert_eq!(repos.exclude.len(), 0);
+        assert_eq!(repos.fetch_interval.get(), DEFAULT_FETCH_INTERVAL);
+        assert_eq!(repos.fetch_concurrency, DEFAULT_FETCH_CONCURRENCY);
+        assert_eq!(repos.overrides.len(), 0);
+        // A context without `match` is valid: overrides and `default_context` can name it.
+        let config = parse_config("[contexts.personal]\n", Path::new(PATH)).unwrap();
+        assert!(
+            config
+                .contexts
+                .values()
+                .all(|context| *context == ContextConfig::default())
+        );
+        let config = parse_config("[repos]\nroots = []\n", Path::new(PATH)).unwrap();
+        assert_eq!(config.repos.roots.len(), 0);
+    }
+
+    #[test]
+    fn invalid_context_values_are_rejected_with_a_location() {
+        // (text, line, column, message excerpt)
+        let cases: &[(&str, usize, usize, &str)] = &[
+            // Context names, defined or referenced.
+            ("[contexts.Personal]\n", 1, 11, "`Personal`"),
+            ("[contexts.\"a_b\"]\n", 1, 11, "`a_b`"),
+            ("[contexts.unassigned]\n", 1, 11, "reserved"),
+            ("default_context = \"Perso\"\n", 1, 19, "`Perso`"),
+            (
+                "default_context = \"personal\"\n",
+                1,
+                19,
+                "default_context `personal` is not a defined context",
+            ),
+            (
+                "default_context = \"unassigned\"\n[contexts.personal]\n",
+                1,
+                19,
+                "reserved",
+            ),
+            (
+                "[contexts.personal]\n[repos.\"~/x\"]\ncontext = \"work\"\n",
+                3,
+                11,
+                "context `work` is not a defined context",
+            ),
+            // `match` lists.
+            (
+                "[contexts.a]\nmatch.paths = []\n",
+                2,
+                15,
+                "match.paths is empty",
+            ),
+            (
+                "[contexts.a]\nmatch.hosts = []\n",
+                2,
+                15,
+                "match.hosts is empty",
+            ),
+            (
+                "[contexts.a]\nmatch.paths = [\"work\"]\n",
+                2,
+                15,
+                "match.paths: invalid path `work`",
+            ),
+            (
+                "[contexts.a]\nmatch.paths = \"~/work\"\n",
+                2,
+                15,
+                "sequence",
+            ),
+            (
+                "[contexts.a]\nmatch.hosts = [\"https://github.com/me\"]\n",
+                2,
+                15,
+                "invalid match.hosts entry",
+            ),
+            (
+                "[contexts.a]\nmatch.globs = [\"x\"]\n",
+                2,
+                7,
+                "unknown field `globs`",
+            ),
+            ("[contexts.a]\nstore = 1\n", 2, 1, "unknown field `store`"),
+            ("[contexts.a]\nupdate = \"pull\"\n", 2, 10, "pull"),
+        ];
+        for (text, line, column, needle) in cases {
+            assert_rejected(text, *line, *column, needle);
+        }
+    }
+
+    #[test]
+    fn invalid_repos_and_forges_values_are_rejected_with_a_location() {
+        // (text, line, column, message excerpt)
+        let cases: &[(&str, usize, usize, &str)] = &[
+            (
+                "[repos]\nroots = [\"src\"]\n",
+                2,
+                9,
+                "roots: invalid path `src`",
+            ),
+            ("[repos]\nmax_depth = -1\n", 2, 13, "max_depth `-1`"),
+            ("[repos]\nmax_depth = \"4\"\n", 2, 13, "expected i64"),
+            (
+                "[repos]\nexclude = [\"[a\"]\n",
+                2,
+                11,
+                "invalid exclude pattern",
+            ),
+            (
+                "[repos]\nexclude = [\"\"]\n",
+                2,
+                11,
+                "invalid exclude pattern",
+            ),
+            (
+                "[repos]\nfetch_interval = \"1 h\"\n",
+                2,
+                18,
+                "invalid duration",
+            ),
+            (
+                "[repos]\nfetch_interval = \"59s\"\n",
+                2,
+                18,
+                "shorter than the minimum 1m",
+            ),
+            (
+                "[repos]\nfetch_concurrency = 0\n",
+                2,
+                21,
+                "fetch_concurrency `0`",
+            ),
+            ("[repos]\nroot = []\n", 2, 1, "unknown field `root`"),
+            (
+                "[repos.\"src\"]\nupdate = \"ff\"\n",
+                1,
+                8,
+                "unknown field `src`",
+            ),
+            ("[repos.\"~/a/../b\"]\nupdate = \"ff\"\n", 1, 8, "`..`"),
+            (
+                "[repos.\"~/a\"]\nfetch = true\n",
+                2,
+                1,
+                "unknown field `fetch`",
+            ),
+            ("[repos.\"~/a\"]\nupdate = \"rebase\"\n", 2, 10, "rebase"),
+            (
+                "[repos.\"~/a\"]\nupdate = \"ff\"\n[repos.\"~/a/\"]\nupdate = \"off\"\n",
+                3,
+                8,
+                "same repository",
+            ),
+            // `[forges]`.
+            (
+                "[forges.\"GitLab.example\"]\nkind = \"gitlab\"\n",
+                1,
+                9,
+                "[forges] host",
+            ),
+            (
+                "[forges.\"gitlab.example\"]\nkind = \"gitea\"\n",
+                2,
+                8,
+                "gitea",
+            ),
+            (
+                "[forges.\"gitlab.example\"]\n",
+                1,
+                1,
+                "missing field `kind`",
+            ),
+        ];
+        for (text, line, column, needle) in cases {
+            assert_rejected(text, *line, *column, needle);
+        }
+    }
+
+    #[test]
+    fn an_entry_in_two_contexts_is_rejected_with_both_locations() {
+        let text = "[contexts.a]\nmatch.paths = [\"~/work\"]\n\n[contexts.b]\nmatch.paths = [\"/srv\", \"~//work/\"]\n";
+        assert_rejected(
+            text,
+            5,
+            24,
+            "match.paths `~//work/` of context `b` is also `~/work` of context `a` (line 2, column 16)",
+        );
+        let text = "[contexts.a]\nmatch.hosts = [\"gitlab.com/x\"]\n[contexts.b]\nmatch.hosts = [\"gitlab.com/x/\"]\n";
+        assert_rejected(
+            text,
+            4,
+            16,
+            "match.hosts `gitlab.com/x` of context `b` is also `gitlab.com/x` of context `a` (line 2, column 16)",
+        );
+        // Host paths ignore case, as their matching does.
+        let text = "[contexts.a]\nmatch.hosts = [\"github.com/Me\"]\n[contexts.b]\nmatch.hosts = [\"github.com/me\"]\n";
+        assert_rejected(text, 4, 16, "also `github.com/Me` of context `a`");
+    }
+
+    #[test]
+    fn nested_or_repeated_entries_are_not_ties() {
+        // Different lengths: the longest prefix wins, no tie. A repeat inside one context is
+        // harmless.
+        let text = "[contexts.a]\nmatch.paths = [\"~/work\", \"~/work/\"]\nmatch.hosts = [\"gitlab.com\"]\n[contexts.b]\nmatch.paths = [\"~/work/b\"]\nmatch.hosts = [\"gitlab.com/b\"]\n";
+        assert!(parse_config(text, Path::new(PATH)).is_ok());
     }
 
     #[test]

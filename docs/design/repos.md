@@ -45,6 +45,8 @@ A repo's context, first match wins:
 4. `default_context`, when set.
 5. `unassigned`: listed and reported by `loom repo ls`, never guessed from a directory name.
 
+Prefixes match whole segments: `gitlab.com/company-a` matches `gitlab.com/company-a/x/y`, not `gitlab.com/company-ab`; `~/work` matches `~/work/x`, not `~/workshop`. The longest `match.hosts` prefix wins as well (path segments compared without ASCII case). The same entry in two contexts is a configuration error, since neither would be longer. Context names follow the rule of `-c`; `unassigned` is reserved.
+
 The same rules are the only source of truth for every tool: scripts ask `loom repo show --json` instead of reimplementing them.
 
 ## State (repo card)

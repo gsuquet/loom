@@ -43,7 +43,9 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | --- | --- |
 | `ApiError` | [`schemas/api_error.json`](schemas/api_error.json) |
 | `ApiVersion` | [`schemas/api_version.json`](schemas/api_version.json) |
+| `ContextAssignment` | [`schemas/context_assignment.json`](schemas/context_assignment.json) (not returned by any endpoint or command yet) |
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
+| `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (not returned by any endpoint or command yet) |
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
 | `UpdateState` | [`schemas/update_state.json`](schemas/update_state.json) (file `state/update.json`, see [configuration](configuration.md#state)) |
 | `VersionInfo` | [`schemas/version_info.json`](schemas/version_info.json) |

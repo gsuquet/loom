@@ -590,6 +590,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "globset"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -914,16 +926,27 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "loom-config"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "loom-api",
  "serde",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "loom-repo"
+version = "0.1.0"
+dependencies = [
+ "loom-api",
+ "loom-config",
+ "thiserror",
 ]
 
 [[package]]

@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RepoIdentity",
+  "description": "Who a repository is: path, names, context, remotes and forge.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "description": "Context and the rule that assigned it.",
+      "$ref": "#/$defs/ContextAssignment"
+    },
+    "forge": {
+      "description": "Forge of the primary remote's host, when known.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ForgeKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "description": "Directory name.",
+      "type": "string"
+    },
+    "path": {
+      "description": "Absolute path, as found (symbolic links kept). The key of a repository.",
+      "type": "string"
+    },
+    "primary_remote": {
+      "description": "Name of the primary remote: `origin`, otherwise the first one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "remotes": {
+      "description": "Every remote, in configuration order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Remote"
+      }
+    },
+    "slug": {
+      "description": "`<context>/<name>`, with a numeric suffix (`-2`, `-3`…) when another repository has the\nsame one. `unassigned/<name>` for an unassigned repository.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "name",
+    "slug",
+    "context",
+    "remotes"
+  ],
+  "$defs": {
+    "ContextAssignment": {
+      "description": "The context of a repository and the rule that chose it, first match wins:\noverride, host, path, default context, otherwise unassigned.",
+      "oneOf": [
+        {
+          "description": "`[repos.\"<path>\"] context` names the context of this repository.",
+          "type": "object",
+          "properties": {
+            "context": {
+              "description": "Assigned context.",
+              "$ref": "#/$defs/ContextName"
+            },
+            "rule": {
+              "type": "string",
+              "const": "override"
+            }
+          },
+          "required": [
+            "rule",
+            "context"
+          ]
+        },
+        {
+          "description": "An entry of `match.hosts` matches the host and path of the primary remote.",
+          "type": "object",
+          "properties": {
+            "context": {
+              "description": "Assigned context.",
+              "$ref": "#/$defs/ContextName"
+            },
+            "pattern": {
+              "description": "The matching entry, `host` or `host/path-prefix`, as normalized.",
+              "type": "string"
+            },
+            "rule": {
+              "type": "string",
+              "const": "host"
+            }
+          },
+          "required": [
+            "rule",
+            "context",
+            "pattern"
+          ]
+        },
+        {
+          "description": "An entry of `match.paths` is the longest prefix of the repository path.",
+          "type": "object",
+          "properties": {
+            "context": {
+              "description": "Assigned context.",
+              "$ref": "#/$defs/ContextName"
+            },
+            "prefix": {
+              "description": "The matching entry, as written in the configuration (before `~` expansion).",
+              "type": "string"
+            },
+            "rule": {
+              "type": "string",
+              "const": "path"
+            }
+          },
+          "required": [
+            "rule",
+            "context",
+            "prefix"
+          ]
+        },
+        {
+          "description": "No rule matches; `default_context` is set.",
+          "type": "object",
+          "properties": {
+            "context": {
+              "description": "Assigned context.",
+              "$ref": "#/$defs/ContextName"
+            },
+            "rule": {
+              "type": "string",
+              "const": "default"
+            }
+          },
+          "required": [
+            "rule",
+            "context"
+          ]
+        },
+        {
+          "description": "No rule matches and no `default_context` is set.",
+          "type": "object",
+          "properties": {
+            "rule": {
+              "type": "string",
+              "const": "unassigned"
+            }
+          },
+          "required": [
+            "rule"
+          ]
+        }
+      ]
+    },
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "ForgeKind": {
+      "description": "Forge hosting a remote (`[forges.\"<host>\"] kind`).",
+      "oneOf": [
+        {
+          "description": "GitHub or GitHub Enterprise.",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "GitLab, hosted or self-managed.",
+          "type": "string",
+          "const": "gitlab"
+        }
+      ]
+    },
+    "Remote": {
+      "description": "A `[remote \"<name>\"]` of a repository.",
+      "type": "object",
+      "properties": {
+        "location": {
+          "description": "Normalized location; absent for a local path or a URL loom cannot read.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteUrl"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "Remote name, such as `origin`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "URL as configured, without any password.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ]
+    },
+    "RemoteUrl": {
+      "description": "Network location of a remote, normalized: host lowercased (SSH aliases resolved), user,\ndefault port and `.git` suffix removed, path case kept.",
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "Host name, lowercase, such as `github.com`.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path without leading or trailing `/` and without `.git`, such as `gsuquet/loom`.",
+          "type": "string"
+        },
+        "port": {
+          "description": "Port, when not the default of the transport.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "host",
+        "path"
+      ]
+    }
+  }
+}
