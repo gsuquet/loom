@@ -40,6 +40,7 @@ Crates are added when a version needs them, never ahead of time.
 | `loom` | bin | v0.1 | CLI (clap), later the TUI |
 | `loomd` | bin | v0.1 | Daemon: API server, scheduler, updater |
 | `loom-api` | lib | v0.1 | Types shared by the API, the CLI `--json` output and the MCP tools. No I/O. |
+| `loom-config` | lib | v0.1 | Loom home resolution, files under it, `config.toml` parsing. No I/O. Shared by `loom` and `loomd` |
 | `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback. Shared by `loom` and `loomd` |
 | `loom-repo` | lib | v0.2 | Repo identity, scanning, state, update policy |
 | `loom-core` | lib | v0.3 | Domain: tasks, events, notes, priority, contexts. No I/O. |

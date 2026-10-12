@@ -623,6 +623,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "loom-update"
 version = "0.1.0"
 dependencies = [
@@ -638,14 +647,13 @@ dependencies = [
  "clap",
  "jsonschema",
  "loom-api",
+ "loom-config",
  "miette",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
 ]

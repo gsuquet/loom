@@ -8,7 +8,7 @@ A personal work engine: a prioritized list of everything I have to do across con
 
 ## Status
 
-Rewrite from scratch, pre-v0.1. `crates/` holds only the v0.1 skeleton (`loom`, `loomd`, `loom-api`, `loom-update`), with no feature code yet. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
+Rewrite from scratch, pre-v0.1. `crates/` holds the v0.1 crates (`loom`, `loomd`, `loom-api`, `loom-config`, `loom-update`), listed in `docs/design/architecture.md`. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
 
 ## Read only what your task needs
 

@@ -3,8 +3,5 @@
 
 pub mod api;
 pub mod cli;
-pub mod config;
 pub mod exit;
-pub mod home;
-pub mod layout;
 pub mod logging;
