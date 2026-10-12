@@ -6,7 +6,7 @@
 | [adr/](adr/README.md) | Architecture decision records | Settled decisions |
 | [roadmap.md](roadmap.md) | Versions, acceptance criteria, current tasks | Plan |
 | [reference/](reference/) | CLI, configuration, file formats, schemas, release assets, style guide | Shipped behavior |
-| `how-to-guides/` | One goal per guide | Shipped behavior |
+| [how-to-guides/](how-to-guides/) | One goal per guide | Shipped behavior |
 | `explanation/` | How and why shipped mechanisms work | Shipped behavior |
 | `tutorials/` | Learning by doing (from v0.3) | Shipped behavior |
 

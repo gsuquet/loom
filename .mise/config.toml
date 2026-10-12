@@ -58,6 +58,10 @@ run = "actionlint"
 description = "Lint shell scripts"
 run = "shellcheck dist/*.sh"
 
+[tasks.test-install]
+description = "Test dist/install.sh against fake releases on a local fake API"
+run = "sh dist/test-install.sh"
+
 [tasks.check]
 description = "Quality gate: every check above"
-depends = ["fmt-check", "clippy", "test", "typos", "deny", "gitleaks", "actionlint", "shellcheck"]
+depends = ["fmt-check", "clippy", "test", "typos", "deny", "gitleaks", "actionlint", "shellcheck", "test-install"]

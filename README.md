@@ -43,7 +43,9 @@ Software engineers and consultants who juggle several contexts (clients, employe
 
 ## Instructions for using Loom
 
-Loom is not released yet. To work on it:
+Loom is not released yet. From v0.1.0, `loom` and `loomd` install on macOS and Linux with the install script: see [Install loom](docs/how-to-guides/install.md).
+
+To work on Loom:
 
 ```bash
 git clone https://github.com/gsuquet/loom.git
@@ -52,7 +54,7 @@ mise install
 mise run check
 ```
 
-Installation, configuration and usage instructions will be added with v0.1 (install and auto-upgrade).
+Configuration and usage instructions will be added as features ship.
 
 ## Contributing guidelines
 
@@ -62,8 +64,9 @@ Read the [Contributing Guide](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CO
 
 Organized with the [Diátaxis](https://diataxis.fr/) framework:
 
-* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [style guide](docs/reference/style-guide.md), [releases](docs/reference/releases.md) (channels, assets, signature). Configuration and file formats are added as features ship.
-* **How-to guides, explanation, tutorials:** written as features ship.
+* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [style guide](docs/reference/style-guide.md). File formats are added as features ship.
+* **How-to guides:** [install loom](docs/how-to-guides/install.md).
+* **Explanation, tutorials:** written as features ship.
 
 Design and planning, outside Diátaxis (target behavior, not shipped behavior):
 

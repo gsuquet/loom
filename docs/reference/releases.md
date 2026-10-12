@@ -49,7 +49,7 @@ Every release, stable or dev, has these assets:
 | `loom-<version>-<target>.tar.gz` | One per target. gzip-compressed tar archive. |
 | `SHA256SUMS` | SHA-256 checksums of the other assets. |
 | `SHA256SUMS.minisig` | minisign signature of `SHA256SUMS`. |
-| `install.sh` | Installer, attached when present in the repository at `dist/install.sh`. |
+| `install.sh` | Installer (`dist/install.sh`), see [install script](install-script.md). |
 
 `<version>` is the version without `v` (`0.1.0`, `0.1.0-dev.42`).
 
@@ -66,7 +66,7 @@ Files at the archive root, no directory:
 
 ### `SHA256SUMS`
 
-One line per asset (every archive, and `install.sh` when attached), sorted by file name (byte order), in the format of `sha256sum` and `shasum -a 256`:
+One line per asset (every archive and `install.sh`), sorted by file name (byte order), in the format of `sha256sum` and `shasum -a 256`:
 
 ```text
 <64 lowercase hex digits><two spaces><file name>

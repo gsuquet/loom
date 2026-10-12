@@ -8,7 +8,7 @@
 #       and README.md at the archive root. <bin-dir> holds the built binaries.
 #   dist/package.sh checksums <dir>
 #       Writes <dir>/SHA256SUMS over every *.tar.gz in <dir> and <dir>/install.sh
-#       when present, one "<hex>  <file>" line per file, sorted by file name.
+#       (when present: the release workflow always copies it), one "<hex>  <file>" line per file, sorted by file name.
 #   dist/package.sh verify <dir>
 #       Checks every file listed in <dir>/SHA256SUMS.
 set -euo pipefail

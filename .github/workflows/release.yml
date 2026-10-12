@@ -174,9 +174,7 @@ jobs:
           for target in $TARGETS; do
             test -f "assets/loom-$VERSION-$target.tar.gz" || { echo "::error::missing archive for $target"; exit 1; }
           done
-          if [ -f dist/install.sh ]; then
-            cp dist/install.sh assets/install.sh
-          fi
+          cp dist/install.sh assets/install.sh
           dist/package.sh checksums assets
           cat assets/SHA256SUMS
       - name: Sign and verify with a throwaway key
@@ -220,9 +218,7 @@ jobs:
           for target in $TARGETS; do
             test -f "assets/loom-$VERSION-$target.tar.gz" || { echo "::error::missing archive for $target"; exit 1; }
           done
-          if [ -f dist/install.sh ]; then
-            cp dist/install.sh assets/install.sh
-          fi
+          cp dist/install.sh assets/install.sh
           dist/package.sh checksums assets
           cat assets/SHA256SUMS
       - name: Sign SHA256SUMS
