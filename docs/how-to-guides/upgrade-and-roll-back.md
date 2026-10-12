@@ -75,3 +75,35 @@ loom rollback
 It restores the highest version kept in `~/.loom/versions/` other than the running one, and keeps the version it replaces, so a second `loom rollback` returns to it. Add `--dry-run` to see which version would be restored.
 
 `loom rollback` fails with `nothing to roll back to` when no other version is kept: the first upgrade on a machine has nothing to go back to.
+
+## Let loomd upgrade itself
+
+`loomd` checks for releases every 6 hours. A release build installs new releases of its channel by itself; a local build only reports them. To choose, set `[update]` in `~/.loom/config.toml` ([keys](../reference/configuration.md#keys)):
+
+```toml
+[update]
+policy = "notify"   # "auto": install; "notify": report only; "off": never check
+channel = "stable"
+```
+
+`loomd` reads the file when it starts. Restart it to apply the change:
+
+- Linux service: `systemctl --user restart loomd.service`
+- macOS service: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`
+- without the service: stop it (`kill <pid>`, the PID is in `loom status`), then run `loom status`, which starts it again.
+
+Then:
+
+```bash
+loom status
+```
+
+The `updates`, `available` and `last_result` lines show what loomd found and did. How it works, and how it rolls back a release that fails: [explanation](../explanation/auto-upgrade.md).
+
+## Retry a version that failed
+
+A version that failed the auto-upgrade health check is listed on the `failed` line of `loom status` and never installed automatically again. To try it once more:
+
+```bash
+loom upgrade --version 0.2.0
+```

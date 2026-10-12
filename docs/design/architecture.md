@@ -41,7 +41,7 @@ Crates are added when a version needs them, never ahead of time.
 | `loomd` | bin | v0.1 | Daemon: API server, scheduler, updater |
 | `loom-api` | lib | v0.1 | Types shared by the API, the CLI `--json` output and the MCP tools. No I/O. |
 | `loom-config` | lib | v0.1 | Loom home resolution, files under it, `config.toml` parsing. No I/O. Shared by `loom` and `loomd` |
-| `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback. Shared by `loom` and `loomd` |
+| `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback, auto-upgrade decisions (pure), update state, pre-flight and health check (ADR-0011). Shared by `loom` and `loomd` |
 | `loom-telemetry` | lib | v0.1 | `tracing` subscriber of both binaries: logs on stderr, OTLP/HTTP trace export when enabled (decisions pure), W3C trace context propagation. Shared by `loom` and `loomd` |
 | `loom-repo` | lib | v0.2 | Repo identity, context matching, scanning, state (`gix`), update decisions (pure) |
 | `loom-core` | lib | v0.3 | Domain: tasks, events, notes, priority, contexts. No I/O. |

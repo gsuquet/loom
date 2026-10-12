@@ -12,14 +12,21 @@
 //! 4. [`install`] it: save the installed version, replace the binaries, prune, restart loomd.
 //!
 //! Nothing installed changes before step 4.
+//!
+//! The auto-upgrade of loomd (ADR-0011) adds [`auto`] (pure decisions), [`state`]
+//! (`state/update.json`), [`preflight`] and [`health`].
 
 pub mod archive;
-mod daemon;
+pub mod auto;
+pub mod daemon;
 mod decision;
 pub mod github;
+pub mod health;
 pub mod install;
+pub mod preflight;
 pub mod release;
 pub mod stage;
+pub mod state;
 pub mod tls;
 pub mod verify;
 pub mod versions;
@@ -196,10 +203,47 @@ pub fn discover(client: &Client, lookup: &Lookup) -> Result<Discovery, UpdateErr
 /// checked against its `SHA256SUMS` line, then extracted; its binaries must report
 /// `version`. `progress` receives one line per step.
 ///
+/// Traced as the span `update.download` (attribute `update.version`), with one child span
+/// `update.verify` per verification (`update.verify.what`: `signature`, `checksum`, `version`);
+/// a failure sets the error status of the span where it happens.
+///
 /// # Errors
 ///
 /// [`UpdateError`]; nothing installed has changed.
 pub fn download(
+    client: &Client,
+    release: &Release,
+    version: &Version,
+    target: &str,
+    public_key: &str,
+    staging_root: &std::path::Path,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Staged, UpdateError> {
+    let span = tracing::info_span!(
+        "update.download",
+        update.version = %version,
+        update.target = target,
+        otel.status_code = tracing::field::Empty,
+        otel.status_description = tracing::field::Empty,
+    );
+    let result = span.in_scope(|| {
+        download_verified(
+            client,
+            release,
+            version,
+            target,
+            public_key,
+            staging_root,
+            progress,
+        )
+    });
+    if let Err(error) = &result {
+        record_error(&span, error);
+    }
+    result
+}
+
+fn download_verified(
     client: &Client,
     release: &Release,
     version: &Version,
@@ -216,9 +260,13 @@ pub fn download(
     progress(&format!("downloading SHA256SUMS of {}", release.tag_name));
     let sums = client.asset(sums_id, "SHA256SUMS")?;
     let sig = client.asset(sig_id, "SHA256SUMS.minisig")?;
-    let sig = String::from_utf8(sig)
-        .map_err(|_| VerifyError::SignatureFormat("SHA256SUMS.minisig is not UTF-8".to_owned()))?;
-    verify::verify_signature(public_key, &sums, &sig)?;
+    verified("signature", || {
+        let sig = String::from_utf8(sig).map_err(|_| {
+            VerifyError::SignatureFormat("SHA256SUMS.minisig is not UTF-8".to_owned())
+        })?;
+        verify::verify_signature(public_key, &sums, &sig)?;
+        Ok(())
+    })?;
     progress("verified the signature of SHA256SUMS");
     let sums = String::from_utf8_lossy(&sums).into_owned();
     // Fail before a long download when the archive is not listed.
@@ -226,12 +274,39 @@ pub fn download(
 
     progress(&format!("downloading {archive_name}"));
     let data = client.asset(archive_id, &archive_name)?;
-    verify::verify_checksum(&sums, &archive_name, &data)?;
+    verified("checksum", || {
+        verify::verify_checksum(&sums, &archive_name, &data)?;
+        Ok(())
+    })?;
     progress(&format!("verified the checksum of {archive_name}"));
 
     let staged = stage::from_archive(&data[..], staging_root)?;
-    check_version(&staged, version)?;
+    verified("version", || check_version(&staged, version))?;
     Ok(staged)
+}
+
+/// Runs the verification `check` in a span `update.verify`.
+fn verified(
+    what: &'static str,
+    check: impl FnOnce() -> Result<(), UpdateError>,
+) -> Result<(), UpdateError> {
+    let span = tracing::info_span!(
+        "update.verify",
+        update.verify.what = what,
+        otel.status_code = tracing::field::Empty,
+        otel.status_description = tracing::field::Empty,
+    );
+    let result = span.in_scope(check);
+    if let Err(error) = &result {
+        record_error(&span, error);
+    }
+    result
+}
+
+/// Sets the error status of `span`.
+pub fn record_error(span: &tracing::Span, error: &dyn std::fmt::Display) {
+    span.record("otel.status_code", "ERROR");
+    span.record("otel.status_description", error.to_string());
 }
 
 fn check_version(staged: &Staged, expected: &Version) -> Result<(), UpdateError> {
@@ -302,32 +377,63 @@ pub fn install(
     paths: &Paths,
     current: &Version,
 ) -> Result<Installed, UpdateError> {
+    let swapped = swap(staged, paths, current)?;
+    Ok(Installed {
+        saved_to: swapped.saved_to,
+        pruned: swapped.pruned,
+        daemon: daemon::restart(&paths.lock),
+        warnings: swapped.warnings,
+    })
+}
+
+/// Result of [`swap`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Swapped {
+    /// Where the replaced version was saved.
+    pub saved_to: PathBuf,
+    /// Saved versions deleted.
+    pub pruned: Vec<Version>,
+    /// Problems after the binaries were replaced (pruning); the swap itself succeeded.
+    pub warnings: Vec<String>,
+}
+
+/// [`install`] without the restart of loomd: save, replace, prune. The auto-upgrade of loomd
+/// starts its watchdog before it stops itself.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn swap(staged: &Staged, paths: &Paths, current: &Version) -> Result<Swapped, UpdateError> {
     let saved_to = install::save_installed(&paths.install_dir, &paths.versions_dir, current)?;
     install::replace_binaries(&paths.install_dir, &staged.dir)?;
-
-    let mut warnings = Vec::new();
-    let pruned = match versions::list(&paths.versions_dir) {
-        Ok(saved) => {
-            let doomed = versions::to_prune(&saved, &staged.version, current, versions::KEEP);
-            let (pruned, errors) = install::prune(&paths.versions_dir, &doomed);
-            warnings.extend(errors.iter().map(ToString::to_string));
-            pruned
-        }
-        Err(error) => {
-            warnings.push(format!(
-                "cannot read {}: {error}",
-                paths.versions_dir.display()
-            ));
-            Vec::new()
-        }
-    };
-    let daemon = daemon::restart(&paths.lock);
-    Ok(Installed {
+    let (pruned, warnings) = retain(&paths.versions_dir, &staged.version, Some(current));
+    Ok(Swapped {
         saved_to,
         pruned,
-        daemon,
         warnings,
     })
+}
+
+/// Applies [`versions::to_prune`] to `versions_dir` after `installed` was installed and
+/// `just_saved` saved. Returns the versions deleted and the problems met; a failure here never
+/// undoes the swap.
+#[must_use]
+pub fn retain(
+    versions_dir: &std::path::Path,
+    installed: &Version,
+    just_saved: Option<&Version>,
+) -> (Vec<Version>, Vec<String>) {
+    match versions::list(versions_dir) {
+        Ok(saved) => {
+            let doomed = versions::to_prune(&saved, installed, just_saved, versions::KEEP);
+            let (pruned, errors) = install::prune(versions_dir, &doomed);
+            (pruned, errors.iter().map(ToString::to_string).collect())
+        }
+        Err(error) => (
+            Vec::new(),
+            vec![format!("cannot read {}: {error}", versions_dir.display())],
+        ),
+    }
 }
 
 #[cfg(test)]

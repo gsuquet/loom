@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Loom home directory, configuration file, runtime files and log of `loomd`, as shipped.
+> Loom home directory, configuration file, runtime files, state and log of `loomd`, as shipped.
 
 ## Loom home directory
 
@@ -41,7 +41,7 @@ Error: invalid configuration <path>:<line>:<column>: <message>
 `line` and `column` start at 1; `column` counts characters. For an unknown key, `message` names it:
 
 ```text
-Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected `daemon` or `telemetry`
+Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected one of `daemon`, `telemetry`, `update`
 ```
 
 `loom` reads `config.toml` at each command for `[telemetry]`. A file it cannot read or parse does not stop a command for that reason: `loom` exports no traces, prints this warning on stderr (hidden by `-q`) and runs the command. Commands that need the file for something else, such as `loom service install`, still fail on it.
@@ -57,11 +57,37 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | `[daemon] service` | boolean | `true` | `false`: `loom service install` refuses with exit code 1 and a message naming this key and the file. `loom service uninstall` and `loom service status` still work. Does not stop or remove an installed service. |
 | `[telemetry] enabled` | boolean | `false` | Export traces. See [`[telemetry]`](#telemetry). |
 | `[telemetry] otlp_endpoint` | string | none | OTLP/HTTP traces endpoint. See [`[telemetry]`](#telemetry). |
+| `[update] policy` | string: `"auto"`, `"notify"`, `"off"` | `"auto"` for a `stable` or `dev` build, `"notify"` for a `local` build | What `loomd` does when a newer release exists. `auto`: installs it (see [auto-upgrade](../explanation/auto-upgrade.md)). `notify`: records it in `state/update.json`, shown by `loom status`. `off`: never checks, no network access. |
+| `[update] channel` | string: `"stable"`, `"dev"` | The build channel (`loom version`); none for a `local` build | Releases `loomd` checks. `stable`: the latest stable release. `dev`: dev prereleases and stable releases, the highest wins (as `loom upgrade --channel dev`). A `local` build without `channel` never checks. |
+| `[update] check_interval` | string: duration | `"6h"` | Time between two checks, before a random ±10 %. One or more `<integer><unit>` parts, units `d`, `h`, `m`, `s`, no spaces: `"6h"`, `"1h30m"`, `"90m"`. At least `"10m"`: a shorter value is rejected like an unknown key. |
 
 ```toml
 [daemon]
 service = false
+
+[update]
+policy = "notify"
+channel = "stable"
+check_interval = "12h"
 ```
+
+A `check_interval` below the minimum:
+
+```text
+Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m` is shorter than the minimum 10m
+```
+
+### Update checks
+
+| `policy` | Effective `channel` | Network |
+| --- | --- | --- |
+| `off` | any | None. |
+| `auto`, `notify` | none (`local` build without `channel`) | None. |
+| `auto`, `notify` | `stable` or `dev` | One check per interval, through the GitHub REST API (`LOOM_RELEASES_URL` replaces `https://api.github.com`). |
+
+Schedule: the first check runs `min(5 min, check_interval)` ± 10 % after `loomd` starts, never at once; each next one `check_interval` ± 10 % after the last check (`last_check` of `state/update.json`), but never before that first delay. A failed check is retried at the next interval.
+
+`loomd` authenticates with `LOOM_GITHUB_TOKEN` or `GITHUB_TOKEN` when set in its environment; it never runs `gh`.
 
 ## User service
 
@@ -76,7 +102,7 @@ The service runs the `loomd` found by `loom service install`: the `loomd` next t
 
 Property list content (macOS): `ProgramArguments` = [`loomd` path], `EnvironmentVariables` = `LOOM_HOME`, `RunAtLoad` true, `KeepAlive` true, `ProcessType` `Background`, `StandardOutPath` and `StandardErrorPath` = `<loom home>/log/loomd.log`. Values are XML-escaped.
 
-Unit content (Linux):
+Unit content (Linux). `KillMode=process` makes systemd stop only `loomd` when it exits, not the watchdog it starts after an auto-upgrade; rerun `loom service install` to update a unit written without it.
 
 ```ini
 [Unit]
@@ -86,6 +112,7 @@ Description=Loom daemon
 ExecStart="/usr/local/bin/loomd"
 Environment="LOOM_HOME=/home/me/.loom"
 Restart=always
+KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -137,6 +164,13 @@ Spans:
 | `loom` | One root span per command, named after the command path: `loom version`, `loom status`, `loom service install`. | internal | `loom.context` when `-c` is given. Error status and message when the command fails. |
 | `loom` | `GET <path>`: each request to `loomd`, child of the command span. | client | `http.request.method`, `url.path`, `http.response.status_code`. Error status when the request fails. |
 | `loomd` | `<METHOD> <route>` (`GET /v1/status`), or `<METHOD>` alone when no route matches: each API request. | server | `http.request.method`, `url.path`, `http.route`, `http.response.status_code`. Error status on a 5xx. |
+| `loomd` | `update.check`: root span of each update check. | internal | `update.channel`, `update.current`, `update.version` (version found), `update.outcome`: `up_to_date`, `available`, `skipped_failed`, `upgrade_in_progress`, `swapped`, `preflight_failed`, `failed`. Error status on `preflight_failed` and `failed`. |
+| `loom`, `loomd` | `update.decide`: the update decision, child of `update.check` (or of the `loom upgrade` command span). | internal | `current`, `channel`, `mode`, `pinned`, `releases`, `failed_versions`. |
+| `loom`, `loomd` | `update.download`: download, verification and unpacking of a release, child of `update.check` (or of the `loom upgrade` command span). | internal | `update.version`, `update.target`. Error status when it fails. |
+| `loom`, `loomd` | `update.verify`: one per verification, child of `update.download`. | internal | `update.verify.what`: `signature`, `checksum`, `version`. Error status when it fails. |
+| `loomd` | `update.preflight`: the pre-flight check, child of `update.check`. | internal | `update.version`, `update.outcome`: `passed`, `failed`. |
+| `loomd` | `update.swap`: replacement of the binaries and start of the watchdog, child of `update.check`. | internal | `update.from`, `update.to`, `update.outcome`: `swapped`, `failed`. |
+| `loom` | `update.watchdog`: the watchdog, child of the `loom __upgrade-watchdog` command span. | internal | `update.from`, `update.to`, `update.outcome`: `upgraded`, `rolled_back`, `rollback_failed`. Error status unless `upgraded`. |
 
 `loom` sends the [W3C trace context](https://www.w3.org/TR/trace-context/) (`traceparent`, `tracestate` headers) with each request; the request span of `loomd` is a child of the client span, in the same trace. Spans at `info` level are exported; `-v` and `-vv` add `debug` and `trace` spans. `-q` does not reduce what is exported.
 
@@ -179,6 +213,8 @@ Log of a `loomd` started by `loom status`, in `<loom home>/log/`.
 
 A `loomd` started another way (by hand, by a service manager) logs to its own stderr, not to this file.
 
+The auto-upgrade watchdog appends its stderr to `log/loomd.log` too, and the `loomd` it starts writes there like one started by `loom status`.
+
 ## `versions/`
 
 Previous versions of `loom` and `loomd`, kept by `loom upgrade` and `loom rollback`.
@@ -190,9 +226,48 @@ Previous versions of `loom` and `loomd`, kept by `loom upgrade` and `loom rollba
 | `versions/<version>/loomd` | as installed | Copy of the `loomd` replaced; absent when none was installed. |
 
 - Before replacing the binaries, the running version is copied into `versions/<version>/` (an existing save of that version is replaced).
-- After replacing them, two previous versions are kept: the one just saved, plus the highest others by semver precedence, two in all. The directory of the newly installed version, when present, is not a previous version: it is neither counted nor deleted. Other directories are deleted.
+- After replacing them, two previous versions are kept: the one just saved, plus the highest others by semver precedence, two in all. The directory of the newly installed version, when present (after `loom rollback`, or an upgrade back to a version saved earlier), duplicates the running binaries and is deleted; except when it was just saved, because a build of the same version (`--from`) replaced it. Other directories are deleted.
 - `loom rollback` restores the highest version other than the running one among the directories holding both binaries.
+
+The auto-upgrade of `loomd` saves and prunes `versions/` the same way. The watchdog restores `versions/<previous version>/` without saving the failed version, then deletes `versions/<previous version>/` (it duplicates the running binaries again) and keeps the two highest other versions.
 
 ## `staging/`
 
-Downloads being verified and unpacked by `loom upgrade`, in `staging/upgrade-<random>/` (mode `0700`). Each directory is removed when the command ends, successful or not; a command killed by a signal can leave one behind, which is safe to delete.
+Downloads being verified and unpacked by `loom upgrade` and the auto-upgrade of `loomd`, in `staging/upgrade-<random>/` (mode `0700`). Each directory is removed when the command or the upgrade ends, successful or not; a process killed by a signal can leave one behind, which is safe to delete.
+
+The pre-flight check of the auto-upgrade runs the downloaded `loomd` with a throwaway loom home in `/tmp/loom-preflight-<random>/` (the system temporary directory when `/tmp` is missing), removed when the check ends.
+
+## `state/`
+
+State kept across restarts of `loomd`, in `<loom home>/state/`.
+
+| Path | Mode | Content |
+| --- | --- | --- |
+| `state/` | `0700` | Created at the first write; an existing directory is set to `0700` at each write. |
+| `state/update.json` | `0600` | Auto-upgrade state, JSON, schema [`update_state.json`](schemas/update_state.json). |
+| `state/update.lock` | `0600` | Empty. Locked (`flock`) while `update.json` is read, changed and written. |
+
+`update.json` is written to a temporary file in `state/`, synced, then renamed over the previous one. A missing file is an empty state. An invalid file is logged and replaced by an empty state at the next write.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `last_check` | `Timestamp` or absent | Instant of the last check, successful or not. |
+| `available` | version or absent | Newer version found by the last check under `notify`. |
+| `pending` | object or absent | Upgrade in progress: `from`, `to` (versions), `started_at` (`Timestamp`). Set when `loomd` starts downloading, cleared by every outcome. Older than one hour: stale, cleared at the next check and recorded as `interrupted`. |
+| `failed_versions` | list of versions | Versions that failed the pre-flight check or the watchdog. Never applied automatically again. |
+| `last_result` | object or absent | Outcome of the last check or upgrade, tagged by `kind`, with `at` (`Timestamp`). |
+
+`last_result` kinds:
+
+| `kind` | Other fields | Meaning |
+| --- | --- | --- |
+| `up_to_date` | | No newer version. |
+| `available` | `version` | Newer version recorded (`notify`). |
+| `skipped_failed` | `version` | Every newer version is in `failed_versions`. |
+| `upgraded` | `from`, `to` | The new `loomd` answered the watchdog. |
+| `preflight_failed` | `version`, `message` | The downloaded `loomd` failed the pre-flight check; nothing installed. |
+| `rolled_back` | `from`, `to`, `message` | The new `loomd` did not answer the watchdog; `from` restored, `to` added to `failed_versions`. |
+| `interrupted` | `from`, `to` | A stale `pending` was cleared. |
+| `failed` | `message` | The check or the upgrade failed before replacing anything (network, verification, install directory not writable, I/O). Retried at the next interval. |
+
+Delete `state/update.json` to forget the failed versions.

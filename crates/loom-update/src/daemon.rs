@@ -53,6 +53,35 @@ pub fn restart(lock: &Path) -> DaemonRestart {
     }
 }
 
+/// Whether a process holds the single-instance lock at `lock`. The probe lock is released at
+/// once. A missing file means nobody holds it; any other error counts as held.
+#[must_use]
+pub fn lock_held(lock: &Path) -> bool {
+    let file = match File::open(lock) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(TryLockError::WouldBlock | TryLockError::Error(_)) => true,
+    }
+}
+
+/// PID written in `lock` by the loomd holding it; `None` when nobody holds it or it has none.
+#[must_use]
+pub fn holder_pid(lock: &Path) -> Option<u32> {
+    if !lock_held(lock) {
+        return None;
+    }
+    std::fs::read_to_string(lock)
+        .ok()
+        .and_then(|text| parse_lock_pid(&text))
+}
+
 fn failed(pid: Option<u32>, message: &str) -> DaemonRestart {
     DaemonRestart::Failed {
         pid,

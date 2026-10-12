@@ -6,7 +6,7 @@ use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use loom::loomd_path::loomd_candidates;
@@ -31,28 +31,12 @@ const LOOMD_FAILURE: i32 = 1;
 /// on the socket of `client`.
 pub async fn start(layout: &Layout, client: &Client) -> Result<StatusResponse> {
     let loomd = find_loomd()?;
-    let mut log = open_log(layout)?;
-    // Only what this start writes is shown on failure.
-    let log_start = log
-        .seek(SeekFrom::End(0))
-        .into_diagnostic()
-        .wrap_err_with(|| format!("cannot read {}", layout.daemon_log.display()))?;
     info!(
         loomd = %loomd.display(),
         log = %layout.daemon_log.display(),
         "loomd is not running, starting it"
     );
-    let mut child = Command::new(&loomd)
-        .env(LOOM_HOME_ENV, &layout.home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(log)
-        // Own process group: a Ctrl-C in the terminal of `loom` does not reach `loomd`.
-        .process_group(0)
-        .spawn()
-        .into_diagnostic()
-        .wrap_err_with(|| format!("cannot start {}", loomd.display()))?;
-    debug!(pid = child.id(), "loomd spawned");
+    let (mut child, log_start) = spawn_detached(&loomd, layout)?;
 
     let deadline = Instant::now() + START_TIMEOUT;
     let mut exited: Option<ExitStatus> = None;
@@ -90,6 +74,30 @@ pub async fn start(layout: &Layout, client: &Client) -> Result<StatusResponse> {
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Starts `loomd` in its own process group, with `LOOM_HOME` set, stdin and stdout closed and
+/// stderr appended to `log/loomd.log`, without waiting for it. Returns the child and the
+/// length of the log before it started.
+pub fn spawn_detached(loomd: &Path, layout: &Layout) -> Result<(Child, u64)> {
+    let mut log = open_log(layout)?;
+    // Only what this start writes is shown on failure.
+    let log_start = log
+        .seek(SeekFrom::End(0))
+        .into_diagnostic()
+        .wrap_err_with(|| format!("cannot read {}", layout.daemon_log.display()))?;
+    let child = Command::new(loomd)
+        .env(LOOM_HOME_ENV, &layout.home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log)
+        // Own process group: a Ctrl-C in the terminal of `loom` does not reach `loomd`.
+        .process_group(0)
+        .spawn()
+        .into_diagnostic()
+        .wrap_err_with(|| format!("cannot start {}", loomd.display()))?;
+    debug!(pid = child.id(), "loomd spawned");
+    Ok((child, log_start))
 }
 
 /// Whether a process holds the single-instance lock at `path`. The probe lock is released

@@ -19,7 +19,7 @@
 | --- | --- | --- | --- |
 | `GET` | `/v1/status` | `200` | [`StatusResponse`](#statusresponse) |
 
-`uptime_secs` is computed when the request is handled.
+`uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state.
 
 ### Errors
 
@@ -45,6 +45,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `ApiVersion` | [`schemas/api_version.json`](schemas/api_version.json) |
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
+| `UpdateState` | [`schemas/update_state.json`](schemas/update_state.json) (file `state/update.json`, see [configuration](configuration.md#state)) |
 | `VersionInfo` | [`schemas/version_info.json`](schemas/version_info.json) |
 
 ### API versioning
@@ -64,7 +65,7 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 | Request | Rejected (`#[serde(deny_unknown_fields)]`). No request type exists yet. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown enum values (`api_version`, `code`, `channel`, `profile`) are rejected.
+Unknown enum values (`api_version`, `code`, `channel`, `profile`, `policy`, `kind`) are rejected.
 
 ### Scalar encodings
 
@@ -90,8 +91,9 @@ State of a running loomd.
 | `loom_home` | path | Absolute path of the loom home directory the daemon uses. |
 | `socket_path` | path | Absolute path of the unix socket the daemon listens on. |
 | `config_path` | path | Absolute path of the configuration file the daemon loaded. |
+| `update` | [`UpdateStatus`](#updatestatus) or `null` | Auto-upgrade policy and state. Always sent by this version; optional when reading, so that a client reads a daemon older than this field. |
 
-Every field is required.
+Every field is required, except `update`.
 
 ```json
 {
@@ -109,9 +111,32 @@ Every field is required.
   "uptime_secs": 90,
   "loom_home": "/home/me/.local/share/loom",
   "socket_path": "/run/user/1000/loom/loomd.sock",
-  "config_path": "/home/me/.config/loom/config.toml"
+  "config_path": "/home/me/.config/loom/config.toml",
+  "update": {
+    "policy": "auto",
+    "channel": "dev",
+    "check_interval_secs": 21600,
+    "last_check": "2026-10-12T08:05:00Z",
+    "available": null,
+    "pending": null,
+    "failed_versions": [],
+    "last_result": { "kind": "up_to_date", "at": "2026-10-12T08:05:00Z" }
+  }
 }
 ```
+
+### `UpdateStatus`
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `policy` | `auto` \| `notify` \| `off` | Effective `[update] policy` (configured, or the default of the build channel). |
+| `channel` | `stable` \| `dev` \| `null` | Effective `[update] channel`; `null` for a local build without one: nothing is checked. |
+| `check_interval_secs` | integer (u64) | Effective interval between checks, before jitter. |
+| `last_check` | `Timestamp` \| `null` | `last_check` of the state. |
+| `available` | string \| `null` | `available` of the state, `null` when it is not newer than the daemon's version. |
+| `pending` | object \| `null` | `pending` of the state: `from`, `to`, `started_at`. |
+| `failed_versions` | list of strings | `failed_versions` of the state. |
+| `last_result` | object \| `null` | `last_result` of the state, tagged by `kind` ([kinds](configuration.md#state)). |
 
 ### `ApiError`
 

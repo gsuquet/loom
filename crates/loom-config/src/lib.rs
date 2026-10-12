@@ -3,5 +3,6 @@
 //! No I/O: callers read the environment and the files, this crate decides.
 
 pub mod config;
+pub mod duration;
 pub mod home;
 pub mod layout;

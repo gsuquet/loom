@@ -15,25 +15,37 @@ fn same(a: &Version, b: &Version) -> bool {
     a.cmp_precedence(b) == Ordering::Equal
 }
 
-/// Saved versions to delete after `just_saved` was saved and `installed` installed.
+/// Saved versions to delete after `installed` was installed, `just_saved` saved (`None` when
+/// the swap saved nothing, as the watchdog's rollback).
 ///
-/// The installed version is not a previous version: it is never counted nor deleted. Among the
-/// others, `just_saved` is always kept, then the highest versions (semver precedence) up to
-/// `keep` in all. Pure.
+/// A save of the installed version duplicates the running binaries: it is deleted (after a
+/// rollback, or an upgrade back to a version saved earlier), unless it was just saved, which
+/// happens when a build of the same version replaces another (`--from`); that save is then
+/// the previous build. Among the other versions, `just_saved` is always kept, then the
+/// highest versions (semver precedence) up to `keep` in all. Pure.
 #[must_use]
 pub fn to_prune(
     saved: &[Version],
     installed: &Version,
-    just_saved: &Version,
+    just_saved: Option<&Version>,
     keep: usize,
 ) -> Vec<Version> {
+    let is_just_saved = |version: &Version| just_saved.is_some_and(|saved| same(version, saved));
+    let mut doomed: Vec<Version> = saved
+        .iter()
+        .filter(|version| same(version, installed) && !is_just_saved(version))
+        .cloned()
+        .collect();
     let mut previous: Vec<&Version> = saved
         .iter()
-        .filter(|version| !same(version, installed) && !same(version, just_saved))
+        .filter(|version| !same(version, installed) && !is_just_saved(version))
         .collect();
     previous.sort_by(|a, b| b.cmp_precedence(a));
-    let room = keep.saturating_sub(usize::from(!same(just_saved, installed)));
-    previous.into_iter().skip(room).cloned().collect()
+    let room = keep.saturating_sub(usize::from(
+        !is_just_saved(installed) && just_saved.is_some(),
+    ));
+    doomed.extend(previous.into_iter().skip(room).cloned());
+    doomed
 }
 
 /// Version `loom rollback` restores: the highest saved version (semver precedence) that
@@ -96,13 +108,18 @@ mod tests {
             to_prune(
                 &vs(&["0.1.0", "0.2.0", "0.3.0"]),
                 &v("0.4.0"),
-                &v("0.3.0"),
+                Some(&v("0.3.0")),
                 KEEP
             ),
             vs(&["0.1.0"])
         );
         assert_eq!(
-            to_prune(&vs(&["0.2.0", "0.3.0"]), &v("0.4.0"), &v("0.3.0"), KEEP),
+            to_prune(
+                &vs(&["0.2.0", "0.3.0"]),
+                &v("0.4.0"),
+                Some(&v("0.3.0")),
+                KEEP
+            ),
             Vec::<Version>::new()
         );
     }
@@ -114,7 +131,7 @@ mod tests {
             to_prune(
                 &vs(&["0.1.0", "0.5.0", "0.6.0"]),
                 &v("0.7.0"),
-                &v("0.1.0"),
+                Some(&v("0.1.0")),
                 KEEP
             ),
             vs(&["0.5.0"])
@@ -122,23 +139,33 @@ mod tests {
     }
 
     #[test]
-    fn the_installed_version_is_not_a_previous_one() {
-        // Rollback 0.3 -> 0.2: versions/0.2.0 still exists, it is the installed version.
+    fn a_save_of_the_installed_version_is_deleted() {
+        // Rollback 0.3 -> 0.2: versions/0.2.0 duplicates the running binaries.
         assert_eq!(
             to_prune(
                 &vs(&["0.1.0", "0.2.0", "0.3.0"]),
                 &v("0.2.0"),
-                &v("0.3.0"),
+                Some(&v("0.3.0")),
                 KEEP
             ),
-            Vec::<Version>::new()
+            vs(&["0.2.0"])
+        );
+        // Watchdog rollback 0.4 -> 0.3: nothing saved, 0.3 deleted, two others kept.
+        assert_eq!(
+            to_prune(
+                &vs(&["0.1.0", "0.2.0", "0.2.5", "0.3.0"]),
+                &v("0.3.0"),
+                None,
+                KEEP
+            ),
+            vs(&["0.3.0", "0.1.0"])
         );
         // `--from` a build with the installed version: the save holds the same version.
         assert_eq!(
             to_prune(
                 &vs(&["0.1.0", "0.2.0", "0.3.0"]),
                 &v("0.3.0"),
-                &v("0.3.0"),
+                Some(&v("0.3.0")),
                 KEEP
             ),
             Vec::<Version>::new()
@@ -147,7 +174,7 @@ mod tests {
             to_prune(
                 &vs(&["0.0.9", "0.1.0", "0.2.0", "0.3.0"]),
                 &v("0.3.0"),
-                &v("0.3.0"),
+                Some(&v("0.3.0")),
                 KEEP
             ),
             vs(&["0.0.9"])
@@ -160,7 +187,7 @@ mod tests {
             to_prune(
                 &vs(&["0.2.0-dev.9", "0.2.0", "0.3.0-dev.1"]),
                 &v("0.3.0-dev.2"),
-                &v("0.3.0-dev.1"),
+                Some(&v("0.3.0-dev.1")),
                 KEEP
             ),
             vs(&["0.2.0-dev.9"])

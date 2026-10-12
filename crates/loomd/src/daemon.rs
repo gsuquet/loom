@@ -4,7 +4,7 @@ use std::env;
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions, TryLockError};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
@@ -16,21 +16,27 @@ use axum::http::{Method, StatusCode, Uri};
 use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
-use loom_api::{ApiError, ApiVersion, StatusResponse, Timestamp, VersionInfo};
+use loom_api::{ApiError, ApiVersion, StatusResponse, Timestamp, UpdateState};
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
 use loom_config::layout::{
     Layout, MAX_SOCKET_PATH_BYTES, RUN_DIR_MODE, RUN_FILE_MODE, check_socket_path,
     lock_taken_message, parse_lock_pid,
 };
+use loom_update::auto;
 use loomd::api::{STATUS_PATH, clock_error, method_not_allowed, not_found, status_at, timestamp};
-use loomd::cli::Cli;
+use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
+use loomd::hooks;
 use loomd::trace::request_span;
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
+use semver::Version;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
+
+use crate::updater::{self, Settings};
 
 /// What the daemon reads before it changes anything.
 pub struct Setup {
@@ -57,6 +63,12 @@ pub fn load(cli: &Cli) -> Result<Setup> {
     )
     .into_diagnostic()?;
     let layout = Layout::new(home);
+    if let Some(message) = hooks::fail_unless_home_prefix(
+        env::var(hooks::FAIL_UNLESS_HOME_PREFIX_ENV).ok().as_deref(),
+        &layout.home,
+    ) {
+        return Err(miette!("{message}"));
+    }
     let (config, config_missing) = load_config(&layout.config)?;
     check_socket_path(&layout.socket, MAX_SOCKET_PATH_BYTES).into_diagnostic()?;
     Ok(Setup {
@@ -72,7 +84,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     let Setup {
         started_at,
         layout,
-        config: _,
+        config,
         config_missing,
     } = setup;
     if config_missing {
@@ -86,20 +98,68 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
 
     let base = StatusResponse {
         api_version: ApiVersion::CURRENT,
-        daemon: VersionInfo::current(),
+        daemon: VERSION_INFO.clone(),
         pid: process::id(),
         started_at,
         uptime_secs: 0,
         loom_home: layout.home.clone(),
         socket_path: layout.socket.clone(),
         config_path: layout.config.clone(),
+        update: None,
     };
+    let settings = update_settings(&config);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .into_diagnostic()
         .wrap_err("cannot start the async runtime")?;
-    runtime.block_on(serve(&layout, base))
+    let (upgraded, upgrade_requested) = oneshot::channel();
+    let updater = updater::spawn(
+        layout.clone(),
+        settings.clone(),
+        updater::Sources::from_env(),
+        started_at,
+        upgraded,
+    )
+    .into_diagnostic()
+    .wrap_err("cannot start the updater thread")?;
+    let app = App {
+        base,
+        settings,
+        update_state: layout.update_state.clone(),
+        running: Version::parse(&VERSION_INFO.version).ok(),
+    };
+    let served = runtime.block_on(serve(&layout, app, upgrade_requested));
+    updater.stop();
+    served
+}
+
+/// Effective `[update]` settings, with the debug-only test hooks applied.
+fn update_settings(config: &Config) -> Settings {
+    let hook = |name: &str| {
+        hooks::duration_hook(name, env::var(name).ok().as_deref()).unwrap_or_else(|message| {
+            warn!("{message}");
+            None
+        })
+    };
+    let build = VERSION_INFO.channel;
+    Settings {
+        policy: auto::effective_policy(config.update.policy, build),
+        channel: auto::effective_channel(config.update.channel, build),
+        interval: hook(hooks::CHECK_INTERVAL_ENV)
+            .unwrap_or_else(|| config.update.check_interval.get()),
+        deadline: hook(hooks::HEALTH_DEADLINE_ENV).unwrap_or(auto::HEALTH_DEADLINE),
+    }
+}
+
+/// Shared state of the API handlers.
+struct App {
+    /// Status without uptime and update state.
+    base: StatusResponse,
+    settings: Settings,
+    /// `state/update.json`, read at each status request: the watchdog writes it too.
+    update_state: PathBuf,
+    running: Option<Version>,
 }
 
 /// Reads the configuration, and whether the file is missing: a missing file gives the
@@ -177,7 +237,11 @@ fn remove_stale_socket(path: &Path) -> Result<()> {
 }
 
 /// Binds the socket, serves the API until a signal, then removes the socket.
-async fn serve(layout: &Layout, base: StatusResponse) -> Result<Shutdown> {
+async fn serve(
+    layout: &Layout,
+    app: App,
+    upgrade_requested: oneshot::Receiver<()>,
+) -> Result<Shutdown> {
     // Handlers are installed before the socket exists, so that a client that sees the socket
     // can always stop the daemon gracefully.
     let mut terminate = signal(SignalKind::terminate())
@@ -195,7 +259,7 @@ async fn serve(layout: &Layout, base: StatusResponse) -> Result<Shutdown> {
             .into_diagnostic()
             .wrap_err_with(|| format!("cannot set the mode of {}", layout.socket.display()))?;
         info!(
-            version = %base.daemon.version,
+            version = %app.base.daemon.version,
             home = %layout.home.display(),
             socket = %layout.socket.display(),
             "loomd started"
@@ -203,16 +267,23 @@ async fn serve(layout: &Layout, base: StatusResponse) -> Result<Shutdown> {
 
         let received = Arc::new(OnceLock::new());
         let signal_received = Arc::clone(&received);
+        let upgrade = async move {
+            // A dropped sender (updater stopped without an upgrade) is not a request.
+            if upgrade_requested.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
         let shutdown = async move {
             let shutdown = tokio::select! {
                 _ = terminate.recv() => Shutdown::Terminated,
                 _ = interrupt.recv() => Shutdown::Interrupted,
+                () = upgrade => Shutdown::Upgraded,
             };
             info!(signal = ?shutdown, "stopping: finishing in-flight requests");
             // Only this future sets it, once.
             let _ = signal_received.set(shutdown);
         };
-        axum::serve(listener, router(base))
+        axum::serve(listener, router(app))
             .with_graceful_shutdown(shutdown)
             .await
             .into_diagnostic()
@@ -234,20 +305,33 @@ async fn serve(layout: &Layout, base: StatusResponse) -> Result<Shutdown> {
 }
 
 /// Routes of the API. Every error body is an [`ApiError`].
-fn router(base: StatusResponse) -> Router {
+fn router(app: App) -> Router {
     Router::new()
         .route(STATUS_PATH, get(status))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
-        .with_state(Arc::new(base))
+        .with_state(Arc::new(app))
 }
 
-async fn status(State(base): State<Arc<StatusResponse>>) -> Response {
-    timestamp(SystemTime::now()).map_or_else(
-        || error_response(StatusCode::INTERNAL_SERVER_ERROR, clock_error()),
-        |now| Json(status_at(&base, now)).into_response(),
-    )
+async fn status(State(app): State<Arc<App>>) -> Response {
+    let Some(now) = timestamp(SystemTime::now()) else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, clock_error());
+    };
+    let mut status = status_at(&app.base, now);
+    // A small file, replaced atomically: read without the state lock.
+    let state = loom_update::state::read(&app.update_state).unwrap_or_else(|error| {
+        warn!(%error, "cannot read the update state");
+        UpdateState::default()
+    });
+    status.update = Some(auto::status(
+        state,
+        app.settings.policy,
+        app.settings.channel,
+        app.settings.interval,
+        app.running.as_ref(),
+    ));
+    Json(status).into_response()
 }
 
 async fn fallback_not_found(uri: Uri) -> Response {

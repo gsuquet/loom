@@ -920,6 +920,7 @@ dependencies = [
 name = "loom-config"
 version = "0.1.0"
 dependencies = [
+ "loom-api",
  "serde",
  "thiserror",
  "toml",
@@ -980,8 +981,10 @@ dependencies = [
  "loom-api",
  "loom-config",
  "loom-telemetry",
+ "loom-update",
  "miette",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

@@ -150,6 +150,7 @@ fn other_daemon_status(home: &Path) -> StatusResponse {
         loom_home: home.to_path_buf(),
         socket_path: socket(home),
         config_path: home.join("config.toml"),
+        update: None,
     }
 }
 

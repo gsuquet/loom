@@ -1,18 +1,18 @@
 //! `loomd`: the daemon. Runs in the foreground until `SIGTERM` or `SIGINT`.
 
 mod daemon;
+mod updater;
 
 use std::env;
 use std::io::{self, IsTerminal as _};
 use std::process::ExitCode;
 
 use clap::Parser as _;
-use loom_api::VersionInfo;
 use loom_config::config::OtlpEndpoint;
 use loom_telemetry::logging::{level, use_color};
 use loom_telemetry::settings::resolve;
 use loom_telemetry::{LOOMD_SHUTDOWN_TIMEOUT, Options, TelemetryGuard};
-use loomd::cli::Cli;
+use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::FAILURE;
 
 fn main() -> ExitCode {
@@ -54,7 +54,7 @@ fn init_telemetry(cli: &Cli, setup: &daemon::Setup) -> TelemetryGuard {
         config.otlp_endpoint.as_ref().map(OtlpEndpoint::as_str),
         &env_var,
     );
-    let version = VersionInfo::current();
+    let version = VERSION_INFO.clone();
     let options = Options {
         service_name: "loomd",
         version: &version,

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiVersion, Timestamp, VersionInfo};
+use crate::{ApiVersion, Timestamp, UpdateStatus, VersionInfo};
 
 /// State of a running loomd.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -26,6 +26,9 @@ pub struct StatusResponse {
     pub socket_path: PathBuf,
     /// Absolute path of the configuration file the daemon loaded.
     pub config_path: PathBuf,
+    /// Auto-upgrade policy and state. Absent from daemons older than this field.
+    #[serde(default)]
+    pub update: Option<UpdateStatus>,
 }
 
 #[cfg(test)]
@@ -51,6 +54,7 @@ mod tests {
             loom_home: "/home/me/.local/share/loom".into(),
             socket_path: "/run/user/1000/loom/loomd.sock".into(),
             config_path: "/home/me/.config/loom/config.toml".into(),
+            update: None,
         }
     }
 
@@ -74,6 +78,7 @@ mod tests {
                 "loom_home": "/home/me/.local/share/loom",
                 "socket_path": "/run/user/1000/loom/loomd.sock",
                 "config_path": "/home/me/.config/loom/config.toml",
+                "update": null,
             })
         );
     }
@@ -91,6 +96,16 @@ mod tests {
     fn accepts_unknown_fields_for_forward_compatibility() {
         let mut value = serde_json::to_value(sample()).unwrap();
         value["added_in_a_later_release"] = json!(true);
+        assert_eq!(
+            serde_json::from_value::<StatusResponse>(value).unwrap(),
+            sample()
+        );
+    }
+
+    #[test]
+    fn accepts_a_daemon_without_update_state() {
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value.as_object_mut().unwrap().remove("update");
         assert_eq!(
             serde_json::from_value::<StatusResponse>(value).unwrap(),
             sample()
