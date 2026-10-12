@@ -27,6 +27,11 @@ run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 description = "Run the workspace tests"
 run = "cargo test --workspace --locked"
 
+[tasks.docs]
+description = "Regenerate the generated reference docs"
+run = "cargo test --workspace --locked"
+env = { LOOM_UPDATE_DOCS = "1" }
+
 [tasks.typos]
 description = "Check spelling"
 run = "typos"
