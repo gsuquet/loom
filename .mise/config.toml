@@ -28,7 +28,7 @@ description = "Run the workspace tests"
 run = "cargo test --workspace --locked"
 
 [tasks.docs]
-description = "Regenerate the generated reference docs"
+description = "Regenerate the generated reference docs (CLI reference, JSON Schemas)"
 run = "cargo test --workspace --locked"
 env = { LOOM_UPDATE_DOCS = "1" }
 
@@ -47,7 +47,3 @@ run = "gitleaks dir . --no-banner --redact"
 [tasks.check]
 description = "Quality gate: every check above"
 depends = ["fmt-check", "clippy", "test", "typos", "deny", "gitleaks"]
-
-[tasks.docs]
-description = "Regenerate the generated reference docs (JSON Schemas)"
-run = "LOOM_UPDATE_DOCS=1 cargo test --locked --workspace"
