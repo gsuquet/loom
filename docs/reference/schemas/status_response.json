@@ -34,6 +34,18 @@
       "description": "Instant the daemon started.",
       "$ref": "#/$defs/Timestamp"
     },
+    "update": {
+      "description": "Auto-upgrade policy and state. Absent from daemons older than this field.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UpdateStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "uptime_secs": {
       "description": "Whole seconds elapsed since `started_at`.",
       "type": "integer",
@@ -82,6 +94,29 @@
         }
       ]
     },
+    "PendingUpgrade": {
+      "description": "An upgrade in progress.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Version running when the upgrade started.",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "Instant the upgrade started (before the download).",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "to": {
+          "description": "Version being installed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "started_at"
+      ]
+    },
     "Profile": {
       "description": "Cargo profile family, as reported by Cargo's `PROFILE` build variable.",
       "oneOf": [
@@ -102,6 +137,329 @@
       "type": "string",
       "format": "date-time",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "UpdateChannel": {
+      "description": "Release channel loomd follows (`[update] channel`).",
+      "oneOf": [
+        {
+          "description": "Tagged releases only.",
+          "type": "string",
+          "const": "stable"
+        },
+        {
+          "description": "Tagged releases and dev prereleases.",
+          "type": "string",
+          "const": "dev"
+        }
+      ]
+    },
+    "UpdatePolicyMode": {
+      "description": "What loomd does when a newer release exists (`[update] policy`).",
+      "oneOf": [
+        {
+          "description": "Install it, with a pre-flight check and a watchdog that rolls back a failed release.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Record it as available, shown by `loom status`; install nothing.",
+          "type": "string",
+          "const": "notify"
+        },
+        {
+          "description": "Never check: no network access.",
+          "type": "string",
+          "const": "off"
+        }
+      ]
+    },
+    "UpdateResult": {
+      "description": "Outcome of a check or an upgrade.",
+      "oneOf": [
+        {
+          "description": "No newer version.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant of the check.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "kind": {
+              "type": "string",
+              "const": "up_to_date"
+            }
+          },
+          "required": [
+            "kind",
+            "at"
+          ]
+        },
+        {
+          "description": "A newer version exists; the policy is `notify`.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant of the check.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "kind": {
+              "type": "string",
+              "const": "available"
+            },
+            "version": {
+              "description": "Newer version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at",
+            "version"
+          ]
+        },
+        {
+          "description": "Every newer version is in `failed_versions`.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant of the check.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "kind": {
+              "type": "string",
+              "const": "skipped_failed"
+            },
+            "version": {
+              "description": "Highest newer version, which failed before.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at",
+            "version"
+          ]
+        },
+        {
+          "description": "The new version answered the watchdog: the upgrade is complete.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant of the verdict.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "from": {
+              "description": "Version replaced.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "upgraded"
+            },
+            "to": {
+              "description": "Version installed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at",
+            "from",
+            "to"
+          ]
+        },
+        {
+          "description": "The staged loomd failed the pre-flight check; nothing was installed.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant of the verdict.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "kind": {
+              "type": "string",
+              "const": "preflight_failed"
+            },
+            "message": {
+              "description": "Why.",
+              "type": "string"
+            },
+            "version": {
+              "description": "Version rejected.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at",
+            "version",
+            "message"
+          ]
+        },
+        {
+          "description": "The new loomd did not answer the watchdog in time: the previous version was restored.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant of the rollback.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "from": {
+              "description": "Version restored.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "rolled_back"
+            },
+            "message": {
+              "description": "Why.",
+              "type": "string"
+            },
+            "to": {
+              "description": "Version rejected.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at",
+            "from",
+            "to",
+            "message"
+          ]
+        },
+        {
+          "description": "An upgrade in progress was abandoned (watchdog killed, machine restarted): found stale.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant it was found stale.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "from": {
+              "description": "Version running when it started.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "interrupted"
+            },
+            "to": {
+              "description": "Version it was installing.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at",
+            "from",
+            "to"
+          ]
+        },
+        {
+          "description": "The check or the upgrade failed before any swap: network, verification, install\ndirectory not writable, I/O.",
+          "type": "object",
+          "properties": {
+            "at": {
+              "description": "Instant of the failure.",
+              "$ref": "#/$defs/Timestamp"
+            },
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "message": {
+              "description": "Why.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at",
+            "message"
+          ]
+        }
+      ]
+    },
+    "UpdateStatus": {
+      "description": "Update state of a running loomd: its effective configuration and `state/update.json`.",
+      "type": "object",
+      "properties": {
+        "available": {
+          "description": "Newer version available (`notify`); absent when it is not newer than the daemon.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channel": {
+          "description": "Effective channel: `[update] channel`, or the build channel. Absent for a local build\nwithout `channel`: nothing is checked.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UpdateChannel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "check_interval_secs": {
+          "description": "Interval between two checks, in whole seconds, before jitter.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "failed_versions": {
+          "description": "Versions never applied automatically again.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "last_check": {
+          "description": "Instant of the last check.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_result": {
+          "description": "Outcome of the last check or upgrade.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UpdateResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending": {
+          "description": "Upgrade in progress.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingUpgrade"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy": {
+          "description": "Effective policy: `[update] policy`, or the default of the build channel.",
+          "$ref": "#/$defs/UpdatePolicyMode"
+        }
+      },
+      "required": [
+        "policy",
+        "check_interval_secs",
+        "failed_versions"
+      ]
     },
     "VersionInfo": {
       "description": "Build information embedded in a loom binary at compile time.",

@@ -5,7 +5,8 @@
 //! that the directory of `current_exe()` is the one replaced. The fixture binaries are shell
 //! scripts answering `version --json` and `-V`.
 //!
-//! Requires the `minisign` CLI (pinned in `.mise/config.toml`; `mise run test`).
+//! Requires the `minisign` CLI (pinned in `.mise/config.toml`; `mise run test`). Fixtures:
+//! `common/mod.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,194 +14,22 @@
     reason = "`allow-unwrap-in-tests` covers `#[test]` functions only; a failing helper must fail the test"
 )]
 
-use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::ExitStatusExt as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::Mutex;
 
-use flate2::Compression;
-use flate2::write::GzEncoder;
 use loom_api::{DaemonRestart, RollbackReport, UpgradeDecision, UpgradeReport, VersionInfo};
 use loom_update::release::release_target;
 use loom_update::verify::sha256_hex;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-// --- fake GitHub API ----------------------------------------------------------------------
+mod common;
 
-type Routes = Arc<Mutex<HashMap<String, (u16, Vec<u8>)>>>;
-
-/// HTTP/1.1 server answering `GET <path>` from a route table, one connection at a time.
-struct FakeApi {
-    url: String,
-    routes: Routes,
-    requests: Arc<Mutex<Vec<String>>>,
-}
-
-impl FakeApi {
-    fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let routes: Routes = Arc::default();
-        let requests: Arc<Mutex<Vec<String>>> = Arc::default();
-        let (table, log) = (Arc::clone(&routes), Arc::clone(&requests));
-        // Detached: lives until the test process exits.
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut head = String::new();
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    head.push_str(&line);
-                }
-                let path = head.split_whitespace().nth(1).unwrap_or("").to_owned();
-                log.lock().unwrap().push(head);
-                let (status, body) = table
-                    .lock()
-                    .unwrap()
-                    .get(&path)
-                    .cloned()
-                    .unwrap_or_else(|| (404, br#"{"message":"Not Found"}"#.to_vec()));
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = stream.write_all(&body);
-            }
-        });
-        Self {
-            url,
-            routes,
-            requests,
-        }
-    }
-
-    fn route(&self, path: &str, status: u16, body: impl Into<Vec<u8>>) {
-        self.routes
-            .lock()
-            .unwrap()
-            .insert(path.to_owned(), (status, body.into()));
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
-    }
-
-    fn asset_requests(&self) -> usize {
-        self.requests()
-            .iter()
-            .filter(|head| head.contains("/releases/assets/"))
-            .count()
-    }
-}
-
-const RELEASES: &str = "/repos/gsuquet/loom/releases";
-
-// --- fixtures -----------------------------------------------------------------------------
-
-fn version_json(version: &str) -> String {
-    let info = VersionInfo {
-        version: version.to_owned(),
-        ..VersionInfo::current()
-    };
-    serde_json::to_string(&info).unwrap()
-}
-
-/// Stub `loom` and `loomd` scripts reporting `version`.
-fn stub_binaries(version: &str) -> [(&'static str, Vec<u8>); 2] {
-    let json = version_json(version);
-    [
-        (
-            "loom",
-            format!(
-                "#!/bin/sh\ncase \"$1\" in\n  version) echo '{json}' ;;\n  -V) echo 'loom {version}' ;;\nesac\n"
-            )
-            .into_bytes(),
-        ),
-        (
-            "loomd",
-            format!("#!/bin/sh\n[ \"$1\" = -V ] && echo 'loomd {version}'\nexit 0\n").into_bytes(),
-        ),
-    ]
-}
-
-fn write_stubs(dir: &Path, version: &str) {
-    fs::create_dir_all(dir).unwrap();
-    for (name, data) in stub_binaries(version) {
-        fs::write(dir.join(name), data).unwrap();
-        fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o755)).unwrap();
-    }
-}
-
-/// Release archive with the stubs of `version`, `LICENSE` and `README.md`.
-fn archive(version: &str) -> Vec<u8> {
-    let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
-    let mut files: Vec<(&str, Vec<u8>, u32)> = stub_binaries(version)
-        .into_iter()
-        .map(|(name, data)| (name, data, 0o755))
-        .collect();
-    files.push(("LICENSE", b"MIT".to_vec(), 0o644));
-    files.push(("README.md", b"# loom".to_vec(), 0o644));
-    for (name, data, mode) in files {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(data.len() as u64);
-        header.set_mode(mode);
-        builder.append_data(&mut header, name, &data[..]).unwrap();
-    }
-    builder.into_inner().unwrap().finish().unwrap()
-}
-
-/// A throwaway minisign key pair, made with the `minisign` CLI.
-struct Signer {
-    dir: TempDir,
-    public: String,
-}
-
-impl Signer {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let status = Command::new("minisign")
-            .args(["-G", "-W", "-f", "-p"])
-            .arg(dir.path().join("key.pub"))
-            .arg("-s")
-            .arg(dir.path().join("key.sec"))
-            .output()
-            .expect("the minisign CLI is required: run the tests with `mise run test`");
-        assert!(status.status.success(), "minisign -G failed: {status:?}");
-        let file = fs::read_to_string(dir.path().join("key.pub")).unwrap();
-        let public = file.lines().nth(1).unwrap().trim().to_owned();
-        Self { dir, public }
-    }
-
-    fn sign(&self, data: &[u8]) -> Vec<u8> {
-        let message = self.dir.path().join("SHA256SUMS");
-        let signature = self.dir.path().join("SHA256SUMS.minisig");
-        fs::write(&message, data).unwrap();
-        let output = Command::new("minisign")
-            .arg("-S")
-            .arg("-s")
-            .arg(self.dir.path().join("key.sec"))
-            .arg("-m")
-            .arg(&message)
-            .arg("-x")
-            .arg(&signature)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "minisign -S failed: {output:?}");
-        fs::read(signature).unwrap()
-    }
-}
+use common::{FakeApi, RELEASES, Signer, archive, stub_binaries, write_stubs};
 
 /// How to break a published release.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -792,6 +621,10 @@ fn rollback_restores_and_saves_the_replaced_version() {
     );
     let saved = env.versions_dir().join(&env.current);
     assert_eq!(fs::read(saved.join("loom")).unwrap(), before[0]);
+    // The restored 0.0.5 runs: its save would only take one of the two slots.
+    let mut expected = vec!["0.0.4".to_owned(), env.current.clone()];
+    expected.sort();
+    assert_eq!(env.saved(), expected);
 }
 
 #[test]
@@ -862,4 +695,76 @@ fn stale_pid_is_not_signalled() {
     assert!(bystander.try_wait().unwrap().is_none(), "not signalled");
     bystander.kill().unwrap();
     bystander.wait().unwrap();
+}
+
+// --- auto-upgrade state -------------------------------------------------------------------
+
+fn write_state(env: &Env, state: &serde_json::Value) {
+    let dir = env.home.path().join("state");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("update.json"), state.to_string()).unwrap();
+}
+
+#[test]
+fn upgrade_and_rollback_are_refused_while_loomd_upgrades() {
+    let env = Env::new();
+    env.publish_latest(NEW, Tamper::None);
+    write_stubs(&env.versions_dir().join("0.0.5"), "0.0.5");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let started_at = loom_api::Timestamp::from_unix_secs(now).unwrap();
+    write_state(
+        &env,
+        &json!({ "pending": { "from": env.current, "to": NEW, "started_at": started_at } }),
+    );
+    let before = env.installed();
+    for args in [&["upgrade", "--channel", "stable"][..], &["rollback"]] {
+        assert_failure(
+            &env.loom(args),
+            &format!("loomd is upgrading from {} to {NEW}", env.current),
+        );
+    }
+    assert_eq!(env.installed(), before);
+    // `--check` changes nothing: allowed.
+    assert_success(&env.loom(&["upgrade", "--channel", "stable", "--check"]));
+
+    // A pending upgrade older than one hour is stale and blocks nothing.
+    let stale = loom_api::Timestamp::from_unix_secs(now - 3_700).unwrap();
+    write_state(
+        &env,
+        &json!({ "pending": { "from": env.current, "to": NEW, "started_at": stale } }),
+    );
+    assert_success(&env.loom(&["upgrade", "--channel", "stable", "--check"]));
+    assert_success(&env.loom(&["upgrade", "--channel", "stable"]));
+}
+
+#[test]
+fn failed_versions_are_skipped_unless_pinned() {
+    let env = Env::new();
+    env.publish_latest(NEW, Tamper::None);
+    env.publish_tag(NEW);
+    write_state(&env, &json!({ "failed_versions": [NEW] }));
+    let before = env.installed();
+
+    let report =
+        upgrade_report(&env.loom(&["upgrade", "--channel", "stable", "--check", "--json"]));
+    assert_eq!(
+        report.decision,
+        UpgradeDecision::Skipped {
+            reason: loom_api::UpgradeSkipReason::Failed {
+                version: NEW.to_owned()
+            }
+        }
+    );
+    assert_failure(
+        &env.loom(&["upgrade", "--channel", "stable"]),
+        &format!("pass --version {NEW} to install it anyway"),
+    );
+    assert_eq!(env.installed(), before);
+
+    let report = upgrade_report(&env.loom(&["upgrade", "--version", NEW, "--json"]));
+    assert_eq!(report.decision, apply(NEW));
+    assert_eq!(env.installed(), stub_binaries(NEW).map(|(_, data)| data));
 }

@@ -7,15 +7,18 @@ pub enum Shutdown {
     Terminated,
     /// `SIGINT`: Ctrl-C.
     Interrupted,
+    /// The auto-upgrade replaced the binaries: a service manager or the watchdog starts the
+    /// new loomd (ADR-0011).
+    Upgraded,
 }
 
 impl Shutdown {
     /// Exit code after a graceful shutdown: 0 on `SIGTERM`, which service managers expect, and
-    /// 130 (128 + 2) on `SIGINT`.
+    /// after an upgrade, and 130 (128 + 2) on `SIGINT`.
     #[must_use]
     pub const fn exit_code(self) -> u8 {
         match self {
-            Self::Terminated => 0,
+            Self::Terminated | Self::Upgraded => 0,
             Self::Interrupted => 130,
         }
     }
@@ -32,6 +35,7 @@ mod tests {
     fn exit_codes_follow_the_conventions() {
         assert_eq!(Shutdown::Terminated.exit_code(), 0);
         assert_eq!(Shutdown::Interrupted.exit_code(), 130);
+        assert_eq!(Shutdown::Upgraded.exit_code(), 0);
         assert_eq!(FAILURE, 1);
     }
 }

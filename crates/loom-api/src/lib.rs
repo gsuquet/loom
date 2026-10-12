@@ -4,6 +4,7 @@
 //! response types accept unknown fields so that an older client can read a newer daemon.
 
 mod api_version;
+mod auto_update;
 mod error;
 mod service;
 mod status;
@@ -12,6 +13,9 @@ mod update;
 mod version;
 
 pub use api_version::ApiVersion;
+pub use auto_update::{
+    PendingUpgrade, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
+};
 pub use error::{ApiError, ErrorCode};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
@@ -20,7 +24,7 @@ pub use update::{
     DaemonRestart, InstallReport, RollbackReport, UpgradeDecision, UpgradeReport,
     UpgradeSkipReason, UpgradeSource,
 };
-pub use version::{Channel, Profile, VersionInfo};
+pub use version::{Channel, Profile, TEST_BUILD_VERSION_ENV, VersionInfo};
 
 #[cfg(test)]
 mod tests {

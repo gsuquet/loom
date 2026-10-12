@@ -2,8 +2,12 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use serde::Deserialize;
+use loom_api::{UpdateChannel, UpdatePolicyMode};
+use serde::{Deserialize, Deserializer};
+
+use crate::duration::{format_duration, parse_duration};
 
 /// Content of `config.toml`. Unknown keys and tables are rejected at every level.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -15,6 +19,9 @@ pub struct Config {
     /// `[telemetry]` table: export of traces for diagnosing loom.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// `[update]` table.
+    #[serde(default)]
+    pub update: Update,
 }
 
 /// `[daemon]` table: how `loomd` runs.
@@ -74,6 +81,57 @@ impl TryFrom<String> for OtlpEndpoint {
             return Err(invalid());
         }
         Ok(Self(url))
+    }
+}
+
+/// Shortest `[update] check_interval` accepted.
+pub const MIN_CHECK_INTERVAL: Duration = Duration::from_mins(10);
+/// Default `[update] check_interval`.
+pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_hours(6);
+
+/// `[update]` table: auto-upgrade of `loomd` (ADR-0011).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Update {
+    /// `policy`: `auto`, `notify` or `off`. `None`: the default of the build channel.
+    pub policy: Option<UpdatePolicyMode>,
+    /// `channel`: `stable` or `dev`. `None`: the build channel.
+    pub channel: Option<UpdateChannel>,
+    /// `check_interval`: time between two checks, before jitter.
+    pub check_interval: CheckInterval,
+}
+
+/// `[update] check_interval`: a duration of at least [`MIN_CHECK_INTERVAL`], written as text
+/// (`"6h"`). Default [`DEFAULT_CHECK_INTERVAL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckInterval(Duration);
+
+impl CheckInterval {
+    /// The duration.
+    #[must_use]
+    pub const fn get(self) -> Duration {
+        self.0
+    }
+}
+
+impl Default for CheckInterval {
+    fn default() -> Self {
+        Self(DEFAULT_CHECK_INTERVAL)
+    }
+}
+
+impl<'de> Deserialize<'de> for CheckInterval {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let text = String::deserialize(deserializer)?;
+        let duration = parse_duration(&text).map_err(D::Error::custom)?;
+        if duration < MIN_CHECK_INTERVAL {
+            return Err(D::Error::custom(format!(
+                "check_interval `{text}` is shorter than the minimum {}",
+                format_duration(MIN_CHECK_INTERVAL)
+            )));
+        }
+        Ok(Self(duration))
     }
 }
 
@@ -140,8 +198,13 @@ fn location(text: &str, offset: usize) -> Location {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Daemon, Location, OtlpEndpoint, TelemetryConfig, location, parse_config};
+    use super::{
+        CheckInterval, Config, DEFAULT_CHECK_INTERVAL, Daemon, Location, OtlpEndpoint,
+        TelemetryConfig, Update, location, parse_config,
+    };
+    use loom_api::{UpdateChannel, UpdatePolicyMode};
     use std::path::Path;
+    use std::time::Duration;
 
     const PATH: &str = "/home/me/.loom/config.toml";
 
@@ -208,6 +271,75 @@ mod tests {
     fn daemon_service_must_be_a_boolean() {
         let error = parse_config("[daemon]\nservice = \"no\"\n", Path::new(PATH)).unwrap_err();
         assert_eq!(error.location.map(|at| at.line), Some(2));
+    }
+
+    #[test]
+    fn update_defaults() {
+        let update = Config::default().update;
+        assert_eq!(update.policy, None);
+        assert_eq!(update.channel, None);
+        assert_eq!(update.check_interval.get(), DEFAULT_CHECK_INTERVAL);
+        assert_eq!(
+            parse_config("[update]\n", Path::new(PATH)).unwrap().update,
+            Update::default()
+        );
+    }
+
+    #[test]
+    fn update_keys_parse() {
+        let text = "[update]\npolicy = \"notify\"\nchannel = \"dev\"\ncheck_interval = \"1h30m\"\n";
+        let update = parse_config(text, Path::new(PATH)).unwrap().update;
+        assert_eq!(
+            update,
+            Update {
+                policy: Some(UpdatePolicyMode::Notify),
+                channel: Some(UpdateChannel::Dev),
+                check_interval: CheckInterval(Duration::from_mins(90)),
+            }
+        );
+        for (value, mode) in [
+            ("auto", UpdatePolicyMode::Auto),
+            ("off", UpdatePolicyMode::Off),
+        ] {
+            let text = format!("update.policy = \"{value}\"\n");
+            let config = parse_config(&text, Path::new(PATH)).unwrap();
+            assert_eq!(config.update.policy, Some(mode));
+        }
+    }
+
+    #[test]
+    fn check_interval_minimum_is_ten_minutes() {
+        let at_minimum = parse_config("[update]\ncheck_interval = \"10m\"\n", Path::new(PATH));
+        assert_eq!(
+            at_minimum.unwrap().update.check_interval.get(),
+            Duration::from_secs(600)
+        );
+        let error =
+            parse_config("[update]\ncheck_interval = \"9m59s\"\n", Path::new(PATH)).unwrap_err();
+        assert_eq!(error.location.map(|at| at.line), Some(2));
+        assert!(
+            error.message.contains("shorter than the minimum 10m"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn invalid_update_values_are_rejected_with_a_location() {
+        for (text, needle) in [
+            (
+                "[update]\ncheck_interval = \"6 hours\"\n",
+                "invalid duration",
+            ),
+            ("[update]\ncheck_interval = 6\n", "string"),
+            ("[update]\npolicy = \"sometimes\"\n", "sometimes"),
+            ("[update]\nchannel = \"local\"\n", "local"),
+            ("[update]\nfoo = 1\n", "unknown field `foo`"),
+        ] {
+            let error = parse_config(text, Path::new(PATH)).unwrap_err();
+            assert_eq!(error.location.map(|at| at.line), Some(2), "{text}");
+            assert!(error.message.contains(needle), "{text}: {}", error.message);
+        }
     }
 
     #[test]

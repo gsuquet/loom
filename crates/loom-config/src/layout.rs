@@ -12,6 +12,10 @@ pub const RUN_FILE_MODE: u32 = 0o600;
 pub const LOG_DIR_MODE: u32 = 0o700;
 /// Mode of `log/loomd.log`: owner read and write.
 pub const LOG_FILE_MODE: u32 = 0o600;
+/// Mode of `state/`: owner only.
+pub const STATE_DIR_MODE: u32 = 0o700;
+/// Mode of the files in `state/`: owner read and write.
+pub const STATE_FILE_MODE: u32 = 0o600;
 
 /// Longest unix socket path, in bytes, that can be bound: `sun_path` holds 108 bytes on Linux
 /// and 104 on macOS and the BSDs, including the terminating NUL.
@@ -43,6 +47,12 @@ pub struct Layout {
     pub versions_dir: PathBuf,
     /// `staging/`: downloads being verified and unpacked by `loom upgrade`.
     pub staging_dir: PathBuf,
+    /// `state/`: state kept across restarts.
+    pub state_dir: PathBuf,
+    /// `state/update.json`: auto-upgrade state (ADR-0011).
+    pub update_state: PathBuf,
+    /// `state/update.lock`: held while `state/update.json` is read, changed and written.
+    pub update_lock: PathBuf,
 }
 
 impl Layout {
@@ -51,7 +61,11 @@ impl Layout {
     pub fn new(home: PathBuf) -> Self {
         let run_dir = home.join("run");
         let log_dir = home.join("log");
+        let state_dir = home.join("state");
         Self {
+            update_state: state_dir.join("update.json"),
+            update_lock: state_dir.join("update.lock"),
+            state_dir,
             daemon_log: log_dir.join("loomd.log"),
             log_dir,
             config: home.join("config.toml"),
@@ -132,6 +146,15 @@ mod tests {
         assert_eq!(layout.daemon_log, Path::new("/home/me/.loom/log/loomd.log"));
         assert_eq!(layout.versions_dir, Path::new("/home/me/.loom/versions"));
         assert_eq!(layout.staging_dir, Path::new("/home/me/.loom/staging"));
+        assert_eq!(layout.state_dir, Path::new("/home/me/.loom/state"));
+        assert_eq!(
+            layout.update_state,
+            Path::new("/home/me/.loom/state/update.json")
+        );
+        assert_eq!(
+            layout.update_lock,
+            Path::new("/home/me/.loom/state/update.lock")
+        );
     }
 
     #[test]

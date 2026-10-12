@@ -4,12 +4,14 @@ use std::env;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command as Process;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use loom_api::{
-    Channel as BuildChannel, DaemonRestart, InstallReport, RollbackReport, UpgradeDecision,
-    UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
+    Channel as BuildChannel, DaemonRestart, InstallReport, RollbackReport, UpdateState,
+    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
 };
 use loom_config::layout::Layout;
+use loom_update::auto;
 use loom_update::github::{self, Client};
 use loom_update::{
     Channel, Installed, Lookup, Paths, SkipReason, Staged, UpdateDecision, UpdateError, UpdateMode,
@@ -25,6 +27,10 @@ use loom::cli::{ReleaseChannel, RollbackArgs, UpgradeArgs};
 pub fn upgrade(info: &VersionInfo, args: &UpgradeArgs, layout: &Layout) -> Result<String> {
     let current = running_version(info)?;
     let paths = paths(layout)?;
+    let state = read_state(layout);
+    if !args.check {
+        refuse_while_pending(&state, unix_now())?;
+    }
     if let Some(from) = &args.from {
         return upgrade_from(&current, from, &paths, args);
     }
@@ -36,7 +42,13 @@ pub fn upgrade(info: &VersionInfo, args: &UpgradeArgs, layout: &Layout) -> Resul
     };
     let client = client(info);
     let discovery = loom_update::discover(&client, &lookup).map_err(|e| failure(&e))?;
-    let decision = loom_update::decide(&current, channel, &discovery.versions(), &policy, &[]);
+    // `--version` may retry a failed version on purpose; a channel lookup never picks one.
+    let failed = if args.version.is_some() {
+        Vec::new()
+    } else {
+        auto::failed_versions(&state)
+    };
+    let decision = loom_update::decide(&current, channel, &discovery.versions(), &policy, &failed);
     let mut report = UpgradeReport {
         current_version: current.to_string(),
         source: UpgradeSource::Release {
@@ -115,6 +127,7 @@ fn upgrade_from(
 /// Runs `loom rollback`. Returns the text to print on stdout.
 pub fn rollback(info: &VersionInfo, args: &RollbackArgs, layout: &Layout) -> Result<String> {
     let current = running_version(info)?;
+    refuse_while_pending(&read_state(layout), unix_now())?;
     let paths = paths(layout)?;
     loom_update::install::check_writable(&paths.install_dir).map_err(|e| not_writable(&e))?;
     let staged = loom_update::rollback_source(&paths, &current).map_err(|error| match error {
@@ -166,6 +179,32 @@ fn apply(
     report.pruned = pruned.iter().map(ToString::to_string).collect();
     report.daemon = daemon;
     Ok(report)
+}
+
+/// The update state of loomd; an unreadable one is logged and treated as empty.
+fn read_state(layout: &Layout) -> UpdateState {
+    loom_update::state::read(&layout.update_state).unwrap_or_else(|error| {
+        warn!("{error}");
+        UpdateState::default()
+    })
+}
+
+/// Fails while loomd is in the middle of an upgrade (a `pending` that is not stale).
+fn refuse_while_pending(state: &UpdateState, now: u64) -> Result<()> {
+    auto::blocking_pending(state, now).map_or(Ok(()), |pending| {
+        Err(miette!(
+            "loomd is upgrading from {} to {} (started {}): retry when it is done, in a minute or two",
+            pending.from,
+            pending.to,
+            pending.started_at
+        ))
+    })
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 fn running_version(info: &VersionInfo) -> Result<Version> {
@@ -253,7 +292,9 @@ fn skip_message(reason: &SkipReason, current: &Version) -> String {
         SkipReason::PinnedBelowCurrent { pinned } => format!(
             "version {pinned} is lower than the running version {current}; use loom rollback to go back"
         ),
-        SkipReason::Failed { version } => format!("version {version} failed a health check"),
+        SkipReason::Failed { version } => format!(
+            "version {version} failed a health check of the auto-upgrade; pass --version {version} to install it anyway"
+        ),
     }
 }
 
@@ -508,6 +549,28 @@ mod tests {
             lookup(BuildChannel::Local, &args(None, Some("1.0.0"))).unwrap(),
             (Lookup::Version(_), _)
         ));
+    }
+
+    #[test]
+    fn pending_upgrade_blocks_until_stale() {
+        let started = loom_api::Timestamp::from_unix_secs(1_000).unwrap();
+        let state = UpdateState {
+            pending: Some(loom_api::PendingUpgrade {
+                from: "0.1.0".to_owned(),
+                to: "0.2.0".to_owned(),
+                started_at: started,
+            }),
+            ..UpdateState::default()
+        };
+        let error = refuse_while_pending(&state, 1_060).unwrap_err().to_string();
+        assert!(
+            error.starts_with(
+                "loomd is upgrading from 0.1.0 to 0.2.0 (started 1970-01-01T00:16:40Z)"
+            ),
+            "{error}"
+        );
+        assert!(refuse_while_pending(&state, 1_000 + 3_601).is_ok());
+        assert!(refuse_while_pending(&UpdateState::default(), 1_060).is_ok());
     }
 
     #[test]

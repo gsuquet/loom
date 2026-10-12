@@ -13,9 +13,14 @@ clap.workspace = true
 loom-api.workspace = true
 loom-config.workspace = true
 loom-telemetry.workspace = true
+# Auto-upgrade: discovery, decision, download, pre-flight, swap, update state (ADR-0011).
+loom-update.workspace = true
 miette.workspace = true
+# Running version for the update decision.
+semver.workspace = true
 serde.workspace = true
-tokio.workspace = true
+# `sync`: the updater thread asks the server to stop after an upgrade (oneshot channel).
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 
 [dev-dependencies]

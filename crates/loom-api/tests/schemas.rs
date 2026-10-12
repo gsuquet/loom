@@ -9,8 +9,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use loom_api::{
-    ApiError, ApiVersion, Channel, DaemonRestart, ErrorCode, InstallReport, Profile,
-    RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp, UpgradeDecision,
+    ApiError, ApiVersion, Channel, DaemonRestart, ErrorCode, InstallReport, PendingUpgrade,
+    Profile, RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp,
+    UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpgradeDecision,
     UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
@@ -27,6 +28,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("service_platform", schema_for!(ServicePlatform)),
         ("service_status", schema_for!(ServiceStatus)),
         ("status_response", schema_for!(StatusResponse)),
+        ("update_state", schema_for!(UpdateState)),
         ("upgrade_report", schema_for!(UpgradeReport)),
         ("version_info", schema_for!(VersionInfo)),
     ]
@@ -92,13 +94,110 @@ fn status(started_at: Timestamp) -> StatusResponse {
         loom_home: "/var/lib/loom".into(),
         socket_path: "/run/loom/loomd.sock".into(),
         config_path: "/etc/loom/config.toml".into(),
+        update: None,
     }
+}
+
+/// Every kind of update result, at `at`.
+fn update_results(at: Timestamp) -> Vec<UpdateResult> {
+    let s = |text: &str| text.to_owned();
+    vec![
+        UpdateResult::UpToDate { at },
+        UpdateResult::Available {
+            at,
+            version: s("0.2.0"),
+        },
+        UpdateResult::SkippedFailed {
+            at,
+            version: s("0.2.0"),
+        },
+        UpdateResult::Upgraded {
+            at,
+            from: s("0.1.0"),
+            to: s("0.2.0"),
+        },
+        UpdateResult::PreflightFailed {
+            at,
+            version: s("0.2.0"),
+            message: s("exited"),
+        },
+        UpdateResult::RolledBack {
+            at,
+            from: s("0.1.0"),
+            to: s("0.2.0"),
+            message: s("no answer"),
+        },
+        UpdateResult::Interrupted {
+            at,
+            from: s("0.1.0"),
+            to: s("0.2.0"),
+        },
+        UpdateResult::Failed {
+            at,
+            message: s("HTTP 500"),
+        },
+    ]
+}
+
+fn update_states(at: Timestamp) -> Vec<UpdateState> {
+    let full = UpdateState {
+        last_check: Some(at),
+        available: Some("0.2.0".to_owned()),
+        pending: Some(PendingUpgrade {
+            from: "0.1.0".to_owned(),
+            to: "0.2.0".to_owned(),
+            started_at: at,
+        }),
+        failed_versions: vec!["0.1.5".to_owned()],
+        last_result: None,
+    };
+    let mut states = vec![UpdateState::default()];
+    states.extend(update_results(at).into_iter().map(|result| UpdateState {
+        last_result: Some(result),
+        ..full.clone()
+    }));
+    states
 }
 
 #[test]
 fn samples_validate_against_their_schema() {
     let started_at = Timestamp::from_unix_secs(1_791_792_000).unwrap();
     let mut errors = violations(&status(started_at)).unwrap();
+    for state in update_states(started_at) {
+        errors.extend(violations(&state).unwrap());
+        errors.extend(
+            violations(&StatusResponse {
+                update: Some(UpdateStatus {
+                    policy: UpdatePolicyMode::Auto,
+                    channel: Some(UpdateChannel::Dev),
+                    check_interval_secs: 21_600,
+                    last_check: state.last_check,
+                    available: state.available,
+                    pending: state.pending,
+                    failed_versions: state.failed_versions,
+                    last_result: state.last_result,
+                }),
+                ..status(started_at)
+            })
+            .unwrap(),
+        );
+    }
+    errors.extend(
+        violations(&StatusResponse {
+            update: Some(UpdateStatus {
+                policy: UpdatePolicyMode::Notify,
+                channel: None,
+                check_interval_secs: 600,
+                last_check: None,
+                available: None,
+                pending: None,
+                failed_versions: vec![],
+                last_result: None,
+            }),
+            ..status(started_at)
+        })
+        .unwrap(),
+    );
     errors.extend(violations(&ApiVersion::V1).unwrap());
     errors.extend(
         violations(&ServiceStatus {

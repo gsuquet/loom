@@ -51,7 +51,7 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | `2` | Usage error: unknown option, missing command, invalid value, conflicting options. |
 | `130` | Interrupted by `SIGINT` (Ctrl-C). |
 
-`loomd` stopped by `SIGTERM` (a service manager stopping it, or `kill`) exits with `0` after a graceful shutdown; stopped by `SIGINT`, it exits with `130` after the same shutdown.
+`loomd` stopped by `SIGTERM` (a service manager stopping it, or `kill`) exits with `0` after a graceful shutdown; stopped by `SIGINT`, it exits with `130` after the same shutdown. After the auto-upgrade replaced the binaries, it stops by itself with the same graceful shutdown and exits with `0`.
 
 ## Environment variables
 
@@ -63,7 +63,11 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | `XDG_CONFIG_HOME` | Absolute path: `loom service` on Linux writes the systemd unit under `$XDG_CONFIG_HOME/systemd/user/` instead of `~/.config/systemd/user/`. |
 | `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN` | Optional GitHub token for `loom upgrade`, first non-empty one wins. Raises the API rate limit. Never printed. |
 | `LOOM_RELEASES_URL` | Replaces `https://api.github.com` in `loom upgrade` (test hook). Plain `http://` is then allowed. |
-| `LOOM_UPDATE_PUBKEY` | Test hook, debug builds only: minisign public key (base64 key line) replacing the embedded release key in `loom upgrade`. Ignored by release builds. |
+| `LOOM_UPDATE_PUBKEY` | Test hook, debug builds only: minisign public key (base64 key line) replacing the embedded release key in `loom upgrade` and the auto-upgrade of `loomd`. Ignored by release builds. |
+| `LOOM_UPDATE_CHECK_INTERVAL` | Test hook, debug builds only: duration (`"1s"`) replacing `[update] check_interval` in `loomd`, without its 10 min minimum. An invalid value is logged and ignored. Ignored by release builds. |
+| `LOOM_UPDATE_HEALTH_DEADLINE` | Test hook, debug builds only: duration replacing the 60 s deadline of the auto-upgrade watchdog. Ignored by release builds. |
+| `LOOM_TEST_BUILD_VERSION` | Test hook, debug builds only: version reported by `loom` and `loomd` (`--version`, `loom version`, `/v1/status`) instead of the build's. Ignored by release builds. |
+| `LOOM_TEST_FAIL_UNLESS_HOME_PREFIX` | Test hook, debug builds only: `loomd` exits with code `1` at start when its loom home path does not start with this text. Ignored by release builds. |
 | `OTEL_SDK_DISABLED` | `true` (any case): no traces are exported, even with `[telemetry] enabled = true`. See [`[telemetry]`](../configuration.md#telemetry). |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Traces endpoint, used as given, when `[telemetry] otlp_endpoint` is not set. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL; traces go to `<value>/v1/traces` when neither `otlp_endpoint` nor `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. |
@@ -130,7 +134,23 @@ channel:     dev
 loom_home:   /home/me/.loom
 socket_path: /home/me/.loom/run/loomd.sock
 config_path: /home/me/.loom/config.toml
+updates:     auto, channel stable, every 6h
+last_check:  2026-10-12T08:05:00Z
+available:   none
+failed:      0.1.1
+last_result: upgraded 0.1.0-dev.41 -> 0.1.0-dev.42 at 2026-10-12T08:00:30Z
 ```
+
+The update lines come from the `update` object of the status ([API reference](../api.md#updatestatus)); a daemon without it prints none of them.
+
+| Line | Content |
+| --- | --- |
+| `updates` | `off`; `<policy>, no channel: not checked` for a local build without `[update] channel`; otherwise `<policy>, channel <channel>, every <check_interval>`. |
+| `last_check` | Instant of the last check, `never` before the first. |
+| `available` | Newer version recorded under `notify`, `none` otherwise or once that version runs. |
+| `pending` | `<from> -> <to> since <instant>`, only while an upgrade is in progress. |
+| `failed` | Versions never applied automatically again, comma-separated, or `none`. |
+| `last_result` | `none`, or one of: `up to date at <t>`, `<version> available at <t>`, `<version> skipped at <t>: it failed before`, `upgraded <from> -> <to> at <t>`, `<version> failed the pre-flight check at <t>: <message>`, `rolled back <failed> -> <restored> at <t>: <message>`, `upgrade <from> -> <to> interrupted, found at <t>`, `failed at <t>: <message>`. |
 
 ### JSON output
 
@@ -267,7 +287,9 @@ A failing manager command:
 
    A local build (channel `local`) has no default channel: without `--channel`, `--version` or `--from`, `loom upgrade` fails.
 
-2. Decides by semver precedence: a newer release is installed, the same version is up to date, and a `--version` lower than the running version is refused (use `loom rollback`). `--from` always installs, whatever its version.
+   Before the lookup, except with `--check`, `loom upgrade` reads `<loom home>/state/update.json` and fails while loomd's auto-upgrade is in progress (a `pending` upgrade started less than one hour ago): `loomd is upgrading from <from> to <to> (started <instant>): retry when it is done, in a minute or two`.
+
+2. Decides by semver precedence: a newer release is installed, the same version is up to date, and a `--version` lower than the running version is refused (use `loom rollback`). `--from` always installs, whatever its version. With `--channel` or the build channel, versions in `failed_versions` of `state/update.json` are skipped, as by the auto-upgrade (decision `skipped`, reason `failed`, when every newer version failed); `--version` installs a failed version anyway, so it can be retried on purpose.
 3. Checks that the install directory is writable, before any download.
 4. Downloads `SHA256SUMS` and `SHA256SUMS.minisig`, verifies the signature with the public key embedded at build time ([releases](../releases.md#signature)), then downloads `loom-<version>-<target>.tar.gz` and checks its SHA-256 against `SHA256SUMS`. A `*-linux-gnu` build takes the `*-linux-musl` archive. Any failure stops here: nothing installed has changed.
 5. Extracts the archive into `<loom home>/staging/`. Only the regular files `loom`, `loomd`, `LICENSE` and `README.md` at the archive root are accepted; any other entry (directory, link, path) rejects the archive. Then runs `loom version --json` and `loomd -V` from the staging directory: both must report the release version.
@@ -306,7 +328,7 @@ The `removed` line appears only when saved versions were deleted. The last line 
 | --- | --- |
 | `current_version` | Version of the running `loom`. |
 | `source` | `{"kind": "release", "channel": "stable" \| "dev" \| null, "pinned": "<version>" \| null}` or `{"kind": "local", "path": "<absolute path>"}`. |
-| `decision` | `{"kind": "up_to_date"}`, `{"kind": "apply", "version": …}`, or `{"kind": "skipped", "reason": {…}}` with reason `kind` `pinned_not_released` or `pinned_below_current` (and `pinned`). `available`, `updates_off` and `failed` are defined for the daemon and not produced by `loom upgrade`. |
+| `decision` | `{"kind": "up_to_date"}`, `{"kind": "apply", "version": …}`, or `{"kind": "skipped", "reason": {…}}` with reason `kind` `pinned_not_released` or `pinned_below_current` (and `pinned`), or `failed` (and `version`). `available` and `updates_off` are defined for the daemon and not produced by `loom upgrade`. |
 | `check`, `dry_run` | Flags given. |
 | `install` | `null` with `--check` or when nothing is installed; otherwise an install report (below). |
 
@@ -327,12 +349,12 @@ Install report (also in `loom rollback`):
 | Code | Cases |
 | --- | --- |
 | `0` | Installed; up to date; `--check` whatever the decision; `--dry-run` verified. Also when loomd could not be signalled: a warning on stderr says it keeps running the replaced version. |
-| `1` | Local build without `--channel`, `--version` or `--from`; `--version` not released or lower than the running version; install directory not writable; HTTP error (`401`, `403` and `429` name `LOOM_GITHUB_TOKEN`); missing asset; invalid signature; checksum mismatch; rejected archive; binaries not reporting the expected version; I/O error. Every download or verification error ends with `nothing was installed`. |
+| `1` | Auto-upgrade of loomd in progress; every newer version failed; local build without `--channel`, `--version` or `--from`; `--version` not released or lower than the running version; install directory not writable; HTTP error (`401`, `403` and `429` name `LOOM_GITHUB_TOKEN`); missing asset; invalid signature; checksum mismatch; rejected archive; binaries not reporting the expected version; I/O error. Every download or verification error ends with `nothing was installed`. |
 | `2` | Usage error, including `--channel`, `--version` and `--from` together, or `--check` with `--from` or `--dry-run`. |
 
 ## `loom rollback`
 
-Restores the highest version in `<loom home>/versions/` other than the running one (semver precedence). Only directories holding both `loom` and `loomd` count. The saved `loom version --json` and `loomd -V` must report the directory's version. Then steps 6 to 9 of `loom upgrade` apply: the running version is saved, the binaries replaced, two previous versions kept, loomd signalled. A second rollback returns to the version rolled back from when no higher version is saved.
+Fails, like `loom upgrade`, while loomd's auto-upgrade is in progress. Restores the highest version in `<loom home>/versions/` other than the running one (semver precedence). Only directories holding both `loom` and `loomd` count. The saved `loom version --json` and `loomd -V` must report the directory's version. Then steps 6 to 9 of `loom upgrade` apply: the running version is saved, the binaries replaced, two previous versions kept, loomd signalled. A second rollback returns to the version rolled back from when no higher version is saved.
 
 Human output: as `loom upgrade`, with `rolled back` (`would roll back` with `--dry-run`).
 
@@ -341,7 +363,7 @@ JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `cu
 | Code | Cases |
 | --- | --- |
 | `0` | Restored, or would be with `--dry-run`. |
-| `1` | `nothing to roll back to: no saved version other than <version> in <dir>`; install directory not writable; saved binaries not reporting their version; I/O error. |
+| `1` | Auto-upgrade of loomd in progress; `nothing to roll back to: no saved version other than <version> in <dir>`; install directory not writable; saved binaries not reporting their version; I/O error. |
 | `2` | Usage error. |
 
 ## Build-time variables
