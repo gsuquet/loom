@@ -1,11 +1,7 @@
 //! Release discovery, update decision, download, verification, install and rollback.
 //!
-//! Empty until a version needs it. Shared by `loom` and `loomd`.
+//! Shared by `loom` and `loomd`. For now it holds the pure update decision ([`decide`]).
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn crate_builds() {
-        assert_eq!(env!("CARGO_PKG_NAME"), "loom-update");
-    }
-}
+mod decision;
+
+pub use decision::{Channel, SkipReason, UpdateDecision, UpdateMode, UpdatePolicy, decide};
