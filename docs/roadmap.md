@@ -19,24 +19,24 @@
 
 ## v0.1 tasks
 
-Task 0 (docs split, `AGENTS.md`, README) is done. Each task is a GitHub issue in the `v0.1` milestone, labelled `agent-ready`, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md).
+Task 0 (docs split, `AGENTS.md`, README) and task 2 are done. Issue numbers match task numbers. Each task is a GitHub issue in the `v0.1` milestone, labelled `agent-ready`, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md).
 
 | # | Issue | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- | --- |
-| 1 | [#13](https://github.com/gsuquet/loom/issues/13) | Spike: `cargo-dist` (build, GitHub releases, installers, updater) vs custom pipeline -> ADR | Research | – | Agent |
-| 2 | [#14](https://github.com/gsuquet/loom/issues/14) | Cargo workspace skeleton (`loom`, `loomd`, `loom-api`, `loom-update`), workspace lints, CI on macOS + Linux, mise tasks from scratch (`check` gate), `.gitignore` cleanup (commit `Cargo.lock`, drop old `.loom/` entries) | Chore | – | Agent |
-| 3 | [#15](https://github.com/gsuquet/loom/issues/15) | `loom version`: version, commit, target, channel embedded at build time | Story | 2 | Agent |
-| 4 | [#16](https://github.com/gsuquet/loom/issues/16) | Release pipeline: tag -> stable, merge to `main` -> `dev` prerelease, 4 targets (macOS/Linux × arm64/x86_64), checksums, signature | Story | 1, 3 | Agent + me (secrets, keys) |
-| 5 | [#17](https://github.com/gsuquet/loom/issues/17) | `install.sh`: platform detection, download, checksum verification, idempotent install into `~/.local/bin` | Story | 4 | Agent |
-| 6 | [#18](https://github.com/gsuquet/loom/issues/18) | `loom-api` types: status, versions, errors; serde + JSON Schema | Story | 2 | Agent, close review |
-| 7 | [#19](https://github.com/gsuquet/loom/issues/19) | `loomd` skeleton: config, single-instance lock, HTTP over unix socket, `GET /status` | Story | 6 | Agent |
-| 8 | [#20](https://github.com/gsuquet/loom/issues/20) | `loom status`: queries loomd, starts it if missing, flags CLI/daemon version mismatch | Story | 7 | Agent |
-| 9 | [#21](https://github.com/gsuquet/loom/issues/21) | `loom service install\|uninstall\|status`: launchd user agent / systemd user unit, opt-out in config | Story | 7 | Agent |
-| 10 | [#22](https://github.com/gsuquet/loom/issues/22) | Update decision logic (pure): channel, current version, releases, policy -> action | Story | 6 | Agent |
-| 11 | [#23](https://github.com/gsuquet/loom/issues/23) | `loom upgrade [--channel] [--from <path>]`, `loom rollback`: download, verify, atomic swap, keep previous binary | Story | 4, 10 | Agent |
-| 12 | [#24](https://github.com/gsuquet/loom/issues/24) | Auto-upgrade in loomd: periodic check, apply, restart through the service manager, health check, automatic rollback | Story | 9, 11 | Agent |
-| 13 | [#25](https://github.com/gsuquet/loom/issues/25) | otel: `tracing` + configurable OTLP exporter (off by default), spans for CLI commands and daemon operations, `mise` task for a local backend | Story | 7 | Agent |
-| 14 | [#26](https://github.com/gsuquet/loom/issues/26) | E2E in CI: fake release server -> install -> upgrade -> failed upgrade -> rollback, macOS and Linux | Story | 5, 12 | Agent |
+| 1 | [#1](https://github.com/gsuquet/loom/issues/1) | Spike: `cargo-dist` (build, GitHub releases, installers, updater) vs custom pipeline -> ADR | Research | – | Agent |
+| 2 | [#2](https://github.com/gsuquet/loom/issues/2) | Cargo workspace skeleton (`loom`, `loomd`, `loom-api`, `loom-update`), workspace lints, CI on macOS + Linux, mise tasks from scratch (`check` gate), `.gitignore` cleanup (commit `Cargo.lock`, drop old `.loom/` entries) | Chore | – | Agent |
+| 3 | [#3](https://github.com/gsuquet/loom/issues/3) | `loom version`: version, commit, target, channel embedded at build time | Story | 2 | Agent |
+| 4 | [#4](https://github.com/gsuquet/loom/issues/4) | Release pipeline: tag -> stable, merge to `main` -> `dev` prerelease, 4 targets (macOS/Linux × arm64/x86_64), checksums, signature | Story | 1, 3 | Agent + me (secrets, keys) |
+| 5 | [#5](https://github.com/gsuquet/loom/issues/5) | `install.sh`: platform detection, download, checksum verification, idempotent install into `~/.local/bin` | Story | 4 | Agent |
+| 6 | [#6](https://github.com/gsuquet/loom/issues/6) | `loom-api` types: status, versions, errors; serde + JSON Schema | Story | 2 | Agent, close review |
+| 7 | [#7](https://github.com/gsuquet/loom/issues/7) | `loomd` skeleton: config, single-instance lock, HTTP over unix socket, `GET /status` | Story | 6 | Agent |
+| 8 | [#8](https://github.com/gsuquet/loom/issues/8) | `loom status`: queries loomd, starts it if missing, flags CLI/daemon version mismatch | Story | 7 | Agent |
+| 9 | [#9](https://github.com/gsuquet/loom/issues/9) | `loom service install\|uninstall\|status`: launchd user agent / systemd user unit, opt-out in config | Story | 7 | Agent |
+| 10 | [#10](https://github.com/gsuquet/loom/issues/10) | Update decision logic (pure): channel, current version, releases, policy -> action | Story | 6 | Agent |
+| 11 | [#11](https://github.com/gsuquet/loom/issues/11) | `loom upgrade [--channel] [--from <path>]`, `loom rollback`: download, verify, atomic swap, keep previous binary | Story | 4, 10 | Agent |
+| 12 | [#12](https://github.com/gsuquet/loom/issues/12) | Auto-upgrade in loomd: periodic check, apply, restart through the service manager, health check, automatic rollback | Story | 9, 11 | Agent |
+| 13 | [#13](https://github.com/gsuquet/loom/issues/13) | otel: `tracing` + configurable OTLP exporter (off by default), spans for CLI commands and daemon operations, `mise` task for a local backend | Story | 7 | Agent |
+| 14 | [#14](https://github.com/gsuquet/loom/issues/14) | E2E in CI: fake release server -> install -> upgrade -> failed upgrade -> rollback, macOS and Linux | Story | 5, 12 | Agent |
 
 Parallel tracks once 2 and 6 are merged: {3, 4, 5}, {7, 8, 9, 13}, {10}. 11, 12 and 14 join them.
 

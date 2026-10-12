@@ -46,6 +46,10 @@ Temporary Items
 ### Homebrew ###
 Brewfile.lock.json
 
+#### AI Tooling ####
+### Claude Code agent worktrees
+.claude/worktrees/
+
 #### Editors ####
 ### VisualStudioCode ###
 .vscode/*
