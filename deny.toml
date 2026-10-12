@@ -1,0 +1,27 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisories: vulnerable, unmaintained and yanked crates fail the check.
+yanked = "deny"
+
+[licenses]
+# Permissive licenses compatible with the MIT-licensed project.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+confidence-threshold = 0.9
+
+[licenses.private]
+# Workspace crates are not published (`publish = false`).
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

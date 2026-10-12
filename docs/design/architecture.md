@@ -1,0 +1,60 @@
+# Architecture
+
+> Processes, interfaces, language, crate layout and how loom talks to git.
+
+## Processes
+
+| Process | Role |
+| --- | --- |
+| `loomd` | Daemon, single writer of the store. Polls sources, syncs, schedules and supervises agent runs, applies upgrades. Runs as a launchd user agent (macOS) or systemd user unit (Linux) unless disabled. |
+| `loom` | CLI and TUI. A client of `loomd`; starts it if it is not running. |
+| `loom mcp` | MCP server (stdio) for agents, a client of `loomd`. |
+
+## Interfaces
+
+- **loomd API**: HTTP + JSON with SSE streams, on a unix socket locally, TCP + auth for the future central instance. CLI, TUI, MCP server and web UI are all clients of this one API.
+- **CLI**: every command supports `--json`, with a versioned output schema. Every TUI action has a CLI equivalent.
+- **TUI** (ratatui): the cockpit. See [User workflow](user-workflow.md).
+- **Web UI**: served by loomd once the central instance exists; works locally too. A desktop app would be the same web UI in a shell, only if needed.
+- **MCP server**: the only MCP server agents see. See [Agent orchestration](agents.md).
+- **Files**: readable by anyone and any tool. Writes go through loomd. Hand edits of `task.md` are detected and indexed.
+
+## Language: Rust
+
+See [ADR-0001](../adr/0001-rust.md). In short: the domain is made of closed sets (kinds, statuses, events, proposed actions, autonomy classes, runtime capabilities) that map to Rust enums with exhaustive matching, and one set of types generates the CLI JSON output, MCP tool schemas and agent contracts (`serde` + `schemars`).
+
+Known costs:
+
+- No official Anthropic Rust SDK: the direct-API runtime uses a thin typed client (`reqwest` + `serde`).
+- Jira, GitLab and GitHub: thin typed clients for the endpoints loom uses, rather than broad community crates.
+- Datadog: official `datadog-api-client-rust`. MCP: official `rmcp`. Bedrock: AWS SDK for Rust.
+
+## Crate layout
+
+Crates are added when a version needs them, never ahead of time.
+
+| Crate | Kind | Introduced | Content |
+| --- | --- | --- | --- |
+| `loom` | bin | v0.1 | CLI (clap), later the TUI |
+| `loomd` | bin | v0.1 | Daemon: API server, scheduler, updater |
+| `loom-api` | lib | v0.1 | Types shared by the API, the CLI `--json` output and the MCP tools. No I/O. |
+| `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback. Shared by `loom` and `loomd` |
+| `loom-repo` | lib | v0.2 | Repo identity, scanning, state, update policy |
+| `loom-core` | lib | v0.3 | Domain: tasks, events, notes, priority, contexts. No I/O. |
+| `loom-store` | lib | v0.3 | `StorePort` and the local files + git adapter, SQLite index |
+
+Rules:
+
+- Domain and API crates have no I/O and no async runtime. Decision logic is written as pure functions, tested without filesystem or network.
+- Binaries own I/O, configuration and wiring.
+
+## Git access
+
+See [ADR-0008](../adr/0008-git-cli-for-writes.md).
+
+- Writes (fetch, `merge --ff-only`, worktree, checkout of MR refs) go through the `git` CLI, so they honour the user's git config, credential helpers and hooks.
+- Read-only inspection at scale (repo index, state) uses `gix`.
+
+## Observability
+
+`tracing` everywhere, OTLP export configurable and off by default. otel is for diagnosing loom itself; the work ledger is `events.jsonl` (see [Capture and learnings](capture-and-learnings.md)).

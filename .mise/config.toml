@@ -1,0 +1,44 @@
+# Loom Workspace Tooling & Task Automation (mise)
+# https://mise.jdx.dev
+
+[tools]
+rust = { version = "1.99.0", components = ["clippy", "rustfmt"] }
+cargo-deny = "0.20.2"
+typos = "1.50.2"
+gitleaks = "8.30.1"
+
+[env]
+RUST_BACKTRACE = "1"
+CARGO_TERM_COLOR = "always"
+
+[tasks.fmt]
+description = "Format the workspace"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Check formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks.clippy]
+description = "Lint the workspace, warnings are errors"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+
+[tasks.test]
+description = "Run the workspace tests"
+run = "cargo test --workspace --locked"
+
+[tasks.typos]
+description = "Check spelling"
+run = "typos"
+
+[tasks.deny]
+description = "Check advisories, licenses, bans and sources"
+run = "cargo deny --locked check"
+
+[tasks.gitleaks]
+description = "Scan the working tree for secrets"
+run = "gitleaks dir . --no-banner --redact"
+
+[tasks.check]
+description = "Quality gate: every check above"
+depends = ["fmt-check", "clippy", "test", "typos", "deny", "gitleaks"]
