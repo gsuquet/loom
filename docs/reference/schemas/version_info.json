@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VersionInfo",
+  "description": "Build information embedded in a loom binary at compile time.",
+  "type": "object",
+  "properties": {
+    "channel": {
+      "description": "Release channel the binary was built for.",
+      "$ref": "#/$defs/Channel"
+    },
+    "commit": {
+      "description": "Full git commit hash of the build, or `unknown` outside a git checkout.",
+      "type": "string"
+    },
+    "commit_date": {
+      "description": "Committer date of `commit` in strict ISO 8601, or `unknown` outside a git checkout.",
+      "type": "string"
+    },
+    "profile": {
+      "description": "Cargo profile the binary was built with.",
+      "$ref": "#/$defs/Profile"
+    },
+    "target": {
+      "description": "Target triple the binary was compiled for.",
+      "type": "string"
+    },
+    "version": {
+      "description": "Release version: `LOOM_BUILD_VERSION` at build time, otherwise the crate version.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "commit",
+    "commit_date",
+    "target",
+    "channel",
+    "profile"
+  ],
+  "$defs": {
+    "Channel": {
+      "description": "Release channel, set with `LOOM_CHANNEL` at build time.",
+      "oneOf": [
+        {
+          "description": "Tagged release.",
+          "type": "string",
+          "const": "stable"
+        },
+        {
+          "description": "Prerelease built from every merge to `main`.",
+          "type": "string",
+          "const": "dev"
+        },
+        {
+          "description": "Any other build, such as `cargo build` on a workstation. Default when `LOOM_CHANNEL` is unset.",
+          "type": "string",
+          "const": "local"
+        }
+      ]
+    },
+    "Profile": {
+      "description": "Cargo profile family, as reported by Cargo's `PROFILE` build variable.",
+      "oneOf": [
+        {
+          "description": "`dev` or `test` profile, or a custom profile inheriting from them.",
+          "type": "string",
+          "const": "debug"
+        },
+        {
+          "description": "`release` or `bench` profile, or a custom profile inheriting from them.",
+          "type": "string",
+          "const": "release"
+        }
+      ]
+    }
+  }
+}

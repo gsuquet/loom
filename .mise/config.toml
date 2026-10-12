@@ -47,3 +47,7 @@ run = "gitleaks dir . --no-banner --redact"
 [tasks.check]
 description = "Quality gate: every check above"
 depends = ["fmt-check", "clippy", "test", "typos", "deny", "gitleaks"]
+
+[tasks.docs]
+description = "Regenerate the generated reference docs (JSON Schemas)"
+run = "LOOM_UPDATE_DOCS=1 cargo test --locked --workspace"
