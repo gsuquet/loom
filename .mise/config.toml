@@ -6,6 +6,12 @@ rust = { version = "1.99.0", components = ["clippy", "rustfmt"] }
 cargo-deny = "0.20.2"
 typos = "1.50.2"
 gitleaks = "8.30.1"
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
+# Release workflow: signing (minisign) and Linux musl cross-builds (zig, cargo-zigbuild).
+minisign = "0.12"
+zig = "0.15.2"
+"aqua:rust-cross/cargo-zigbuild" = "0.23.4"
 
 [env]
 RUST_BACKTRACE = "1"
@@ -44,6 +50,14 @@ run = "cargo deny --locked check"
 description = "Scan the working tree for secrets"
 run = "gitleaks dir . --no-banner --redact"
 
+[tasks.actionlint]
+description = "Lint GitHub Actions workflows"
+run = "actionlint"
+
+[tasks.shellcheck]
+description = "Lint shell scripts"
+run = "shellcheck dist/*.sh"
+
 [tasks.check]
 description = "Quality gate: every check above"
-depends = ["fmt-check", "clippy", "test", "typos", "deny", "gitleaks"]
+depends = ["fmt-check", "clippy", "test", "typos", "deny", "gitleaks", "actionlint", "shellcheck"]
