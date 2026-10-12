@@ -1,11 +1,13 @@
 //! Command-line definition of `loom` (ADR-0010).
 
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use clap::{ArgAction, ColorChoice, Parser, Subcommand};
+use clap::{ArgAction, ArgGroup, ColorChoice, Parser, Subcommand, ValueEnum};
 use loom_api::VersionInfo;
+use semver::Version;
 
 /// Build information, computed once for `--version` and `loom version`.
 pub static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(VersionInfo::current);
@@ -73,6 +75,69 @@ pub enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
+    /// Upgrade `loom` and `loomd` to the latest release of a channel, to a given release, or to
+    /// a local build.
+    ///
+    /// Both binaries are replaced in the directory of the running `loom`; the replaced version
+    /// is kept in `<loom home>/versions/`. Releases are verified (minisign signature of
+    /// `SHA256SUMS`, then the archive checksum) before anything is replaced.
+    Upgrade(UpgradeArgs),
+    /// Restore the previous version: the highest version kept in `<loom home>/versions/` other
+    /// than the running one.
+    Rollback(RollbackArgs),
+}
+
+/// Options of `loom upgrade`.
+#[derive(Debug, clap::Args)]
+#[command(group(ArgGroup::new("source").args(["channel", "version", "from"])))]
+pub struct UpgradeArgs {
+    /// Release channel to upgrade on. Default: the channel of this build (required for a local
+    /// build, unless `--version` or `--from` is given).
+    #[arg(long, value_name = "CHANNEL", value_enum)]
+    pub channel: Option<ReleaseChannel>,
+    /// Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version
+    /// (use `loom rollback`).
+    #[arg(long, value_name = "VERSION", value_parser = parse_release_version)]
+    pub version: Option<Version>,
+    /// Install a local build: a release archive (`.tar.gz`) or a directory holding `loom` and
+    /// `loomd`. Not verified; installed even when its version is not newer.
+    #[arg(long, value_name = "PATH")]
+    pub from: Option<PathBuf>,
+    /// Print the decision only: no download, nothing changed.
+    #[arg(long, conflicts_with_all = ["from", "dry_run"])]
+    pub check: bool,
+    /// Download and verify, print what would be replaced, change nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the result as JSON (`UpgradeReport` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom rollback`.
+#[derive(Debug, clap::Args)]
+pub struct RollbackArgs {
+    /// Print what would be restored, change nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the result as JSON (`RollbackReport` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Release channel given to `loom upgrade --channel`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReleaseChannel {
+    /// Tagged releases.
+    Stable,
+    /// Prereleases built from every merge to `main`.
+    Dev,
+}
+
+/// Parses a release version: `X.Y.Z` or `X.Y.Z-dev.N`.
+fn parse_release_version(text: &str) -> Result<Version, String> {
+    loom_update::release::tag_version(&format!("v{text}"))
+        .ok_or_else(|| format!("expected X.Y.Z or X.Y.Z-dev.N, got `{text}`"))
 }
 
 /// `loom service` commands.
@@ -174,7 +239,7 @@ impl fmt::Display for ContextName {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, ContextName, ContextNameError, ServiceCommand};
+    use super::{Cli, Command, ContextName, ContextNameError, ReleaseChannel, ServiceCommand};
     use clap::error::ErrorKind;
     use clap::{ColorChoice, CommandFactory, Parser};
 
@@ -250,7 +315,10 @@ mod tests {
     fn service_commands_parse() {
         let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
             Command::Service { command } => command,
-            Command::Version { .. } | Command::Status { .. } => {
+            Command::Version { .. }
+            | Command::Status { .. }
+            | Command::Upgrade(_)
+            | Command::Rollback(_) => {
                 panic!("not a service command: {args:?}")
             }
         };
@@ -294,6 +362,64 @@ mod tests {
     fn quiet_conflicts_with_verbose() {
         let error = Cli::try_parse_from(["loom", "-q", "-v", "version"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn upgrade_sources_are_mutually_exclusive() {
+        for args in [
+            &["loom", "upgrade", "--channel", "dev", "--version", "1.0.0"][..],
+            &["loom", "upgrade", "--channel", "dev", "--from", "x.tar.gz"],
+            &["loom", "upgrade", "--version", "1.0.0", "--from", "dir"],
+            &["loom", "upgrade", "--check", "--from", "dir"],
+            &[
+                "loom",
+                "upgrade",
+                "--check",
+                "--dry-run",
+                "--channel",
+                "dev",
+            ],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn upgrade_parses_channel_version_and_flags() {
+        let cli =
+            Cli::try_parse_from(["loom", "upgrade", "--channel", "dev", "-n", "--json"]).unwrap();
+        let Command::Upgrade(args) = cli.command else {
+            panic!("not upgrade");
+        };
+        assert_eq!(args.channel, Some(ReleaseChannel::Dev));
+        assert!(args.dry_run && args.json && !args.check);
+
+        let cli = Cli::try_parse_from(["loom", "upgrade", "--version", "1.2.3-dev.4"]).unwrap();
+        let Command::Upgrade(args) = cli.command else {
+            panic!("not upgrade");
+        };
+        assert_eq!(args.version.unwrap().to_string(), "1.2.3-dev.4");
+    }
+
+    #[test]
+    fn upgrade_rejects_other_versions() {
+        for version in ["v1.2.3", "1.2", "1.2.3-rc.1", "latest"] {
+            let error = Cli::try_parse_from(["loom", "upgrade", "--version", version]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ValueValidation, "{version}");
+        }
+    }
+
+    #[test]
+    fn rollback_flags() {
+        let cli = Cli::try_parse_from(["loom", "rollback", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Rollback(super::RollbackArgs {
+                dry_run: true,
+                json: false
+            })
+        ));
     }
 
     #[test]

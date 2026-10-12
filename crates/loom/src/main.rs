@@ -3,6 +3,7 @@
 mod client;
 mod service_cmd;
 mod start;
+mod upgrade;
 
 use std::env;
 use std::fs;
@@ -69,8 +70,14 @@ fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Version { json } => print_version(&VERSION_INFO, *json),
         Command::Status { json, no_start } => status(*json, *no_start),
+        Command::Upgrade(args) => print(&upgrade::upgrade(&VERSION_INFO, args, &layout()?)?),
+        Command::Rollback(args) => print(&upgrade::rollback(&VERSION_INFO, args, &layout()?)?),
         Command::Service { command } => run_service(command),
     }
+}
+
+fn print(text: &str) -> Result<()> {
+    write_out(&mut io::stdout().lock(), text).into_diagnostic()
 }
 
 fn print_version(info: &VersionInfo, json: bool) -> Result<()> {
@@ -84,8 +91,8 @@ fn print_version(info: &VersionInfo, json: bool) -> Result<()> {
     write_out(&mut io::stdout().lock(), &text).into_diagnostic()
 }
 
-/// `loom status`: queries loomd, starting it first unless `no_start`.
-fn status(json: bool, no_start: bool) -> Result<()> {
+/// Paths under the loom home: `LOOM_HOME`, otherwise `~/.loom`.
+fn layout() -> Result<Layout> {
     let cwd = env::current_dir()
         .into_diagnostic()
         .wrap_err("cannot read the current directory")?;
@@ -97,7 +104,12 @@ fn status(json: bool, no_start: bool) -> Result<()> {
         &cwd,
     )
     .into_diagnostic()?;
-    let layout = Layout::new(home);
+    Ok(Layout::new(home))
+}
+
+/// `loom status`: queries loomd, starting it first unless `no_start`.
+fn status(json: bool, no_start: bool) -> Result<()> {
+    let layout = layout()?;
     check_socket_path(&layout.socket, MAX_SOCKET_PATH_BYTES).into_diagnostic()?;
 
     // The async runtime only drives the API client.

@@ -9,8 +9,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use loom_api::{
-    ApiError, ApiVersion, Channel, ErrorCode, Profile, ServicePlatform, ServiceStatus,
-    StatusResponse, Timestamp, VersionInfo,
+    ApiError, ApiVersion, Channel, DaemonRestart, ErrorCode, InstallReport, Profile,
+    RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp, UpgradeDecision,
+    UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -22,9 +23,11 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("api_error", schema_for!(ApiError)),
         ("api_version", schema_for!(ApiVersion)),
         ("error_code", schema_for!(ErrorCode)),
+        ("rollback_report", schema_for!(RollbackReport)),
         ("service_platform", schema_for!(ServicePlatform)),
         ("service_status", schema_for!(ServiceStatus)),
         ("status_response", schema_for!(StatusResponse)),
+        ("upgrade_report", schema_for!(UpgradeReport)),
         ("version_info", schema_for!(VersionInfo)),
     ]
 }
@@ -116,7 +119,99 @@ fn samples_validate_against_their_schema() {
         })
         .unwrap(),
     );
+    for report in upgrade_reports() {
+        errors.extend(violations(&report).unwrap());
+    }
+    errors.extend(
+        violations(&RollbackReport {
+            current_version: "0.2.0".to_owned(),
+            dry_run: true,
+            install: install(DaemonRestart::Skipped),
+        })
+        .unwrap(),
+    );
     assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+fn install(daemon: DaemonRestart) -> InstallReport {
+    InstallReport {
+        version: "0.2.0".to_owned(),
+        install_dir: "/home/me/.local/bin".into(),
+        verified: true,
+        installed: true,
+        saved_to: Some("/home/me/.loom/versions/0.1.0".into()),
+        pruned: vec!["0.0.1".to_owned()],
+        daemon,
+    }
+}
+
+fn upgrade_reports() -> Vec<UpgradeReport> {
+    let base = UpgradeReport {
+        current_version: "0.1.0".to_owned(),
+        source: UpgradeSource::Release {
+            channel: Some(Channel::Stable),
+            pinned: None,
+        },
+        decision: UpgradeDecision::UpToDate,
+        check: true,
+        dry_run: false,
+        install: None,
+    };
+    let skipped = |reason| UpgradeReport {
+        decision: UpgradeDecision::Skipped { reason },
+        ..base.clone()
+    };
+    vec![
+        skipped(UpgradeSkipReason::UpdatesOff),
+        skipped(UpgradeSkipReason::PinnedNotReleased {
+            pinned: "9.0.0".to_owned(),
+        }),
+        skipped(UpgradeSkipReason::PinnedBelowCurrent {
+            pinned: "0.0.1".to_owned(),
+        }),
+        skipped(UpgradeSkipReason::Failed {
+            version: "0.2.0".to_owned(),
+        }),
+        UpgradeReport {
+            decision: UpgradeDecision::Available {
+                version: "0.2.0".to_owned(),
+            },
+            ..base.clone()
+        },
+        UpgradeReport {
+            source: UpgradeSource::Release {
+                channel: None,
+                pinned: Some("0.2.0".to_owned()),
+            },
+            decision: UpgradeDecision::Apply {
+                version: "0.2.0".to_owned(),
+            },
+            check: false,
+            install: Some(install(DaemonRestart::Signalled { pid: 42 })),
+            ..base.clone()
+        },
+        UpgradeReport {
+            source: UpgradeSource::Local {
+                path: "/tmp/loom.tar.gz".into(),
+            },
+            decision: UpgradeDecision::Apply {
+                version: "0.2.0".to_owned(),
+            },
+            check: false,
+            install: Some(InstallReport {
+                verified: false,
+                ..install(DaemonRestart::Failed {
+                    pid: Some(42),
+                    message: "kill: permission denied".to_owned(),
+                })
+            }),
+            ..base.clone()
+        },
+        UpgradeReport {
+            install: Some(install(DaemonRestart::NotRunning)),
+            ..base
+        },
+    ]
 }
 
 #[test]

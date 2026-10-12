@@ -135,6 +135,48 @@ Print this message or the help of the given subcommand(s)
 loom service help [COMMAND]
 ```
 
+### `loom upgrade`
+
+Upgrade `loom` and `loomd` to the latest release of a channel, to a given release, or to a local build.
+
+Both binaries are replaced in the directory of the running `loom`; the replaced version is kept in `<loom home>/versions/`. Releases are verified (minisign signature of `SHA256SUMS`, then the archive checksum) before anything is replaced.
+
+```text
+loom upgrade [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--channel <CHANNEL>` | `stable`, `dev` |  | Release channel to upgrade on. Default: the channel of this build (required for a local build, unless `--version` or `--from` is given) |
+| `--version <VERSION>` |  |  | Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version (use `loom rollback`) |
+| `--from <PATH>` |  |  | Install a local build: a release archive (`.tar.gz`) or a directory holding `loom` and `loomd`. Not verified; installed even when its version is not newer |
+| `--check` |  |  | Print the decision only: no download, nothing changed |
+| `-n`, `--dry-run` |  |  | Download and verify, print what would be replaced, change nothing |
+| `--json` |  |  | Print the result as JSON (`UpgradeReport` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom rollback`
+
+Restore the previous version: the highest version kept in `<loom home>/versions/` other than the running one
+
+```text
+loom rollback [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--dry-run` |  |  | Print what would be restored, change nothing |
+| `--json` |  |  | Print the result as JSON (`RollbackReport` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
 ### `loom help`
 
 Print this message or the help of the given subcommand(s)

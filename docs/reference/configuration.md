@@ -18,7 +18,7 @@ When no source gives a directory, `loomd` exits with code 1.
 
 A relative path is made absolute against the current directory. Symbolic links and `..` are kept as given, not resolved.
 
-`loomd` creates the loom home if it does not exist (mode `0700`).
+`loomd` creates the loom home if it does not exist (mode `0700`); `loom upgrade` and `loom rollback` create it the same way when they first write to it.
 
 ## `config.toml`
 
@@ -125,3 +125,21 @@ Log of a `loomd` started by `loom status`, in `<loom home>/log/`.
 | `log/loomd.log` | `0600` | stderr of every `loomd` that `loom status` started, appended across starts, never rotated or truncated. |
 
 A `loomd` started another way (by hand, by a service manager) logs to its own stderr, not to this file.
+
+## `versions/`
+
+Previous versions of `loom` and `loomd`, kept by `loom upgrade` and `loom rollback`.
+
+| Path | Mode | Content |
+| --- | --- | --- |
+| `versions/` | `0700` | Created at the first upgrade or rollback. |
+| `versions/<version>/loom` | as installed | Copy of the `loom` replaced. |
+| `versions/<version>/loomd` | as installed | Copy of the `loomd` replaced; absent when none was installed. |
+
+- Before replacing the binaries, the running version is copied into `versions/<version>/` (an existing save of that version is replaced).
+- After replacing them, two previous versions are kept: the one just saved, plus the highest others by semver precedence, two in all. The directory of the newly installed version, when present, is not a previous version: it is neither counted nor deleted. Other directories are deleted.
+- `loom rollback` restores the highest version other than the running one among the directories holding both binaries.
+
+## `staging/`
+
+Downloads being verified and unpacked by `loom upgrade`, in `staging/upgrade-<random>/` (mode `0700`). Each directory is removed when the command ends, successful or not; a command killed by a signal can leave one behind, which is safe to delete.
