@@ -16,7 +16,7 @@ Loom knows every git repository on the machine, which context it belongs to, and
 ## Identity
 
 - **Path**: absolute, as found (symbolic links kept). The path is the key; one checkout = one repo.
-- **Name**: directory name. **Slug**: `<context>/<name>`; when two repos share a slug, the second gets a numeric suffix shown by `loom repo ls`.
+- **Name**: directory name. **Slug**: `<context>/<name>`, an identifier scripts and agents may store (`loom repo show <slug>`), so it is stable. A repo keeps its slug, persisted in the index, while its context and name are unchanged; a new repo never renumbers another. A new repo, or one whose context or name changed, gets `<context>/<name>` when free, otherwise the lowest free `<context>/<name>-N` (N ≥ 2). A removed repo frees its slug. `loom repo ls` shows the suffix.
 - **Remotes**: every `[remote "x"] url` of the repo's config (followed through `gitdir:` and `commondir` for worktrees). The **primary remote** is `origin`, otherwise the first one.
 - **Forge**: GitHub or GitLab, from the primary remote's host, SSH host aliases resolved with `ssh -G <alias>` (cached per alias), plus `[forges]` overrides for self-hosted hosts.
 

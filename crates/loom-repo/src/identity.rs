@@ -1,7 +1,7 @@
 //! Identity of a repository: names, remotes, forge and context, and unique slugs.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use loom_api::RepoIdentity;
 use loom_config::repos::{ForgeConfig, ForgeHost};
@@ -44,30 +44,66 @@ pub fn identify(
     }
 }
 
-/// Makes the slugs of `repos` unique. Pure.
+/// Sets a unique, stable slug on every repository of `repos`. Pure.
 ///
-/// Repositories are taken in path order: the first one with a slug keeps it, the next ones
-/// get `-2`, `-3`… skipping any slug already taken, so the result does not depend on the
-/// order of `repos`. Expects the `<context>/<name>` slugs of [`identify`].
-pub fn assign_unique_slugs(repos: &mut [RepoIdentity]) {
-    let mut taken: BTreeSet<String> = repos.iter().map(|repo| repo.slug.clone()).collect();
+/// `existing` maps the path of each repository known before to its slug. A repository keeps
+/// its existing slug while its context and name are unchanged, so a new repository never
+/// renumbers another one. The others (new, or whose context or name changed) get
+/// `<context>/<name>` when free, otherwise the lowest free `<context>/<name>-N` (N ≥ 2), in
+/// path order. Slugs of repositories absent from `repos` are free again.
+pub fn assign_unique_slugs(existing: &BTreeMap<PathBuf, String>, repos: &mut [RepoIdentity]) {
+    let base = |repo: &RepoIdentity| format!("{}/{}", repo.context.context_name(), repo.name);
     let mut order: Vec<usize> = (0..repos.len()).collect();
     order.sort_by(|a, b| repos[*a].path.cmp(&repos[*b].path));
-    let mut kept = BTreeSet::new();
+
+    let mut taken = BTreeSet::new();
+    let mut pending = Vec::new();
     for index in order {
-        let slug = &repos[index].slug;
-        if kept.insert(slug.clone()) {
-            continue;
+        let kept = existing
+            .get(&repos[index].path)
+            .filter(|slug| belongs_to(slug, &base(&repos[index])))
+            .filter(|slug| taken.insert((*slug).clone()));
+        match kept {
+            Some(slug) => repos[index].slug.clone_from(slug),
+            None => pending.push(index),
         }
-        // At most `taken.len()` candidates are taken: one of the first `taken.len() + 1` is free.
-        let unique = (2..=taken.len() + 2)
-            .map(|n| format!("{slug}-{n}"))
-            .find(|candidate| !taken.contains(candidate))
-            .unwrap_or_else(|| slug.clone());
-        taken.insert(unique.clone());
-        kept.insert(unique.clone());
-        repos[index].slug = unique;
     }
+    // Unsuffixed slugs first, so that a repository named `x-2` gets `<context>/x-2` even when
+    // a duplicate `x` comes before it.
+    let mut suffixed = Vec::new();
+    for index in pending {
+        let base = base(&repos[index]);
+        if taken.insert(base.clone()) {
+            repos[index].slug = base;
+        } else {
+            suffixed.push(index);
+        }
+    }
+    for index in suffixed {
+        let base = base(&repos[index]);
+        // At most `taken.len()` slugs are taken: one of the first `taken.len() + 1` is free.
+        let slug = (2..=taken.len() + 2)
+            .map(|n| format!("{base}-{n}"))
+            .find(|candidate| !taken.contains(candidate))
+            .unwrap_or(base);
+        taken.insert(slug.clone());
+        repos[index].slug = slug;
+    }
+}
+
+/// Whether `slug` is `base` or `base-N` with N ≥ 2.
+fn belongs_to(slug: &str, base: &str) -> bool {
+    if slug == base {
+        return true;
+    }
+    // Canonical decimal only: digits, no leading zero, at least 2.
+    slug.strip_prefix(base)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|n| {
+            n.bytes().all(|byte| byte.is_ascii_digit())
+                && !n.starts_with('0')
+                && n.parse::<u64>().is_ok_and(|n| n >= 2)
+        })
 }
 
 #[cfg(test)]
@@ -76,6 +112,7 @@ mod tests {
     use crate::ContextRules;
     use loom_api::{ContextAssignment, ForgeKind, Remote, RemoteUrl, RepoIdentity};
     use loom_config::config::parse_config;
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
     const CONFIG: &str = r#"
@@ -205,12 +242,16 @@ kind = "gitlab"
         assert_eq!(identity.slug, "company-a/copy");
     }
 
-    fn repo(path: &str, slug: &str) -> RepoIdentity {
+    /// A repository at `path` assigned to `context` by default, with a stale slug.
+    fn repo(path: &str, context: &str) -> RepoIdentity {
+        let name = path.rsplit('/').next().unwrap_or_default().to_owned();
         RepoIdentity {
             path: PathBuf::from(path),
-            name: slug.rsplit('/').next().unwrap_or_default().to_owned(),
-            slug: slug.to_owned(),
-            context: ContextAssignment::Unassigned,
+            slug: "stale".to_owned(),
+            name,
+            context: ContextAssignment::Default {
+                context: context.parse().unwrap(),
+            },
             remotes: vec![],
             primary_remote: None,
             forge: None,
@@ -224,16 +265,24 @@ kind = "gitlab"
             .collect()
     }
 
+    /// The path-to-slug map the index would persist after `repos`.
+    fn persisted(repos: &[RepoIdentity]) -> BTreeMap<PathBuf, String> {
+        repos
+            .iter()
+            .map(|repo| (repo.path.clone(), repo.slug.clone()))
+            .collect()
+    }
+
     #[test]
-    fn duplicate_slugs_get_a_numeric_suffix_in_path_order() {
+    fn first_assignment_suffixes_duplicates_in_path_order() {
         let mut repos = vec![
-            repo("/c/x", "p/x"),
-            repo("/a/x", "p/x"),
-            repo("/b/x", "p/x"),
-            repo("/d/y", "p/y"),
-            repo("/e/y", "w/y"),
+            repo("/c/x", "p"),
+            repo("/a/x", "p"),
+            repo("/b/x", "p"),
+            repo("/d/y", "p"),
+            repo("/e/y", "w"),
         ];
-        assign_unique_slugs(&mut repos);
+        assign_unique_slugs(&BTreeMap::new(), &mut repos);
         assert_eq!(
             slugs(&repos),
             [
@@ -247,34 +296,109 @@ kind = "gitlab"
     }
 
     #[test]
-    fn suffixes_skip_slugs_already_taken() {
-        let mut repos = vec![
-            repo("/b/x", "p/x"),
-            repo("/a/x", "p/x"),
-            repo("/z/x-2", "p/x-2"),
-        ];
-        assign_unique_slugs(&mut repos);
+    fn unsuffixed_slugs_go_first() {
+        let mut repos = vec![repo("/b/x", "p"), repo("/a/x", "p"), repo("/a/x-2", "p")];
+        assign_unique_slugs(&BTreeMap::new(), &mut repos);
         assert_eq!(
             slugs(&repos),
-            [("/b/x", "p/x-3"), ("/a/x", "p/x"), ("/z/x-2", "p/x-2")]
+            [("/b/x", "p/x-3"), ("/a/x", "p/x"), ("/a/x-2", "p/x-2")]
         );
     }
 
     #[test]
-    fn unique_slugs_do_not_depend_on_input_order() {
-        let base = vec![
-            repo("/a/x", "p/x"),
-            repo("/b/x", "p/x"),
-            repo("/c/x", "p/x"),
-            repo("/d/x-2", "p/x-2"),
+    fn stable_slug_cases() {
+        // (repos before, repos now, expected slugs now)
+        type Case = (
+            Vec<(&'static str, &'static str)>,
+            Vec<(&'static str, &'static str)>,
+            Vec<(&'static str, &'static str)>,
+        );
+        let cases: Vec<Case> = vec![
+            // A new repository with a smaller path does not renumber the others.
+            (
+                vec![("/b/x", "p"), ("/c/x", "p")],
+                vec![("/a/x", "p"), ("/b/x", "p"), ("/c/x", "p")],
+                vec![("/a/x", "p/x-3"), ("/b/x", "p/x"), ("/c/x", "p/x-2")],
+            ),
+            // A context change re-slugs only that repository.
+            (
+                vec![("/a/x", "p"), ("/b/x", "p"), ("/c/x", "p")],
+                vec![("/a/x", "w"), ("/b/x", "p"), ("/c/x", "p")],
+                vec![("/a/x", "w/x"), ("/b/x", "p/x-2"), ("/c/x", "p/x-3")],
+            ),
+            // A removed repository frees its slug for the next new one.
+            (
+                vec![("/a/x", "p"), ("/b/x", "p"), ("/c/x", "p")],
+                vec![("/a/x", "p"), ("/c/x", "p"), ("/d/x", "p")],
+                vec![("/a/x", "p/x"), ("/c/x", "p/x-3"), ("/d/x", "p/x-2")],
+            ),
+            // The freed unsuffixed slug is reused before any suffix.
+            (
+                vec![("/a/x", "p"), ("/b/x", "p")],
+                vec![("/b/x", "p"), ("/z/x", "p")],
+                vec![("/b/x", "p/x-2"), ("/z/x", "p/x")],
+            ),
+            // Nothing changed: nothing moves.
+            (
+                vec![("/a/x", "p"), ("/b/x", "p"), ("/c/y", "w")],
+                vec![("/a/x", "p"), ("/b/x", "p"), ("/c/y", "w")],
+                vec![("/a/x", "p/x"), ("/b/x", "p/x-2"), ("/c/y", "w/y")],
+            ),
         ];
+        for (before, now, expected) in cases {
+            let mut old: Vec<_> = before.iter().map(|(p, c)| repo(p, c)).collect();
+            assign_unique_slugs(&BTreeMap::new(), &mut old);
+            let mut repos: Vec<_> = now.iter().map(|(p, c)| repo(p, c)).collect();
+            assign_unique_slugs(&persisted(&old), &mut repos);
+            assert_eq!(slugs(&repos), expected, "{before:?} -> {now:?}");
+        }
+    }
+
+    #[test]
+    fn existing_slugs_are_checked_against_context_and_name() {
+        let existing = BTreeMap::from([
+            (PathBuf::from("/a/x"), "p/x-7".to_owned()),
+            (PathBuf::from("/b/x"), "p/x-07".to_owned()),
+            (PathBuf::from("/c/x"), "p/xy".to_owned()),
+            (PathBuf::from("/d/x"), "p/x-1".to_owned()),
+            (PathBuf::from("/e/x"), "w/x".to_owned()),
+            // Two paths claiming the same slug: the first path keeps it.
+            (PathBuf::from("/f/y"), "p/y".to_owned()),
+            (PathBuf::from("/g/y"), "p/y".to_owned()),
+        ]);
+        let mut repos: Vec<_> = ["/a/x", "/b/x", "/c/x", "/d/x", "/e/x", "/f/y", "/g/y"]
+            .iter()
+            .map(|path| repo(path, "p"))
+            .collect();
+        assign_unique_slugs(&existing, &mut repos);
+        assert_eq!(
+            slugs(&repos),
+            [
+                ("/a/x", "p/x-7"),
+                ("/b/x", "p/x"),
+                ("/c/x", "p/x-2"),
+                ("/d/x", "p/x-3"),
+                ("/e/x", "p/x-4"),
+                ("/f/y", "p/y"),
+                ("/g/y", "p/y-2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn slugs_do_not_depend_on_input_order() {
+        let existing = BTreeMap::from([(PathBuf::from("/c/x"), "p/x".to_owned())]);
+        let base: Vec<_> = ["/a/x", "/b/x", "/c/x", "/d/x-2"]
+            .iter()
+            .map(|path| repo(path, "p"))
+            .collect();
         let mut forward = base.clone();
-        assign_unique_slugs(&mut forward);
+        assign_unique_slugs(&existing, &mut forward);
         let mut backward: Vec<_> = base.into_iter().rev().collect();
-        assign_unique_slugs(&mut backward);
+        assign_unique_slugs(&existing, &mut backward);
         backward.reverse();
         assert_eq!(forward, backward);
         let mut empty: Vec<RepoIdentity> = vec![];
-        assign_unique_slugs(&mut empty);
+        assign_unique_slugs(&existing, &mut empty);
     }
 }
