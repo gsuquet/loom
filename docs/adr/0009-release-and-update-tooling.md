@@ -7,7 +7,7 @@
 
 v0.1 ships `loom` and `loomd` for macOS and Linux (arm64, x86_64), with a stable channel (tags) and a `dev` channel (every merge to `main`), a verified installer, `loom upgrade` / `loom rollback` including local builds (`--from`), and an auto-upgrade in loomd with a health check and automatic rollback (#4, #5, #11, #12).
 
-Constraints from the briefs: one archive per target containing both binaries, install into `~/.local/bin`, never edit shell rc files, verification fails closed, base URL overridable for tests. The repository is **private** (GitHub Free plan: branch protection is refused with HTTP 403).
+Constraints from the briefs: one archive per target containing both binaries, install into `~/.local/bin`, never edit shell rc files, verification fails closed, base URL overridable for tests. The repository is **public** (decided on 2026-10-12, after recreating it with a clean history).
 
 Options evaluated:
 
@@ -27,17 +27,17 @@ Options evaluated:
   - stable: tag `vX.Y.Z` -> GitHub release marked latest.
   - dev: every push to `main` -> prerelease `vX.Y.Z-dev.<run_number>`, where `X.Y.Z` is the workspace version, which on `main` is always the **next** release version (so semver orders dev builds before the release). The last 10 dev prereleases are kept, older ones and their tags deleted.
   - The build stamps the version with `LOOM_BUILD_VERSION` (falls back to `CARGO_PKG_VERSION`) and the channel with `LOOM_CHANNEL`.
-- **Private repository access**: every download goes through the GitHub REST API, `GET /repos/{owner}/{repo}/releases` and `GET /repos/{owner}/{repo}/releases/assets/{asset_id}` with `Accept: application/octet-stream`, authenticated with a bearer token. Token resolution order: `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN`, then `gh auth token`. A fine-grained token needs only **Contents: read** on the repository. The same code works without a token if the repository becomes public.
+- **Downloads**: every download goes through the GitHub REST API, `GET /repos/{owner}/{repo}/releases` and `GET /repos/{owner}/{repo}/releases/assets/{asset_id}` with `Accept: application/octet-stream`. Authentication is optional: a token (resolution order `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN`, then `gh auth token`) raises the API rate limit, and keeps the same code working if the repository ever becomes private again (fine-grained token, **Contents: read**).
 - **Test hook**: `LOOM_RELEASES_URL` replaces `https://api.github.com` in the installer and the updater; tests serve an API-compatible fake.
-- **Installer**: `install.sh` (POSIX sh), attached to each release. Bootstrap while private: download it with `gh` (`gh release download` or `gh api`), then run it. Checksum verification is mandatory (`sha256sum` or `shasum -a 256`, abort if neither exists); minisign verification runs when `minisign` is installed, otherwise a warning. Never edits shell rc files.
+- **Installer**: `install.sh` (POSIX sh), attached to each release. Bootstrap: `curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh | sh` (latest stable release). Checksum verification is mandatory (`sha256sum` or `shasum -a 256`, abort if neither exists); minisign verification runs when `minisign` is installed, otherwise a warning. Never edits shell rc files.
 - **Updater**: written in `loom-update` (#10 decision logic, #11 download/verify/swap/rollback, #12 auto-upgrade, health check, rollback). No `axoupdater`, no install receipts. On macOS and Linux, replacing a running binary is a same-filesystem `rename`; `self_replace` is not needed (it targets Windows).
-- **Stay private for v0.1, public possible later.** Making the repository public would remove the token requirement, allow `curl | sh` and make artifact attestations available. The repository was recreated with a clean single-commit history, so nothing blocks going public; it is a choice left for later. The token-based code path keeps working unchanged once public.
+- **Public repository.** No token is needed to install or update. GitHub artifact attestations can be added later as a second, independent proof of origin; minisign stays the primary check because it works offline, with a public key embedded in the binary.
 
 ## Consequences
 
 - One workflow file, `install.sh` and the updater code are maintained by us. The updater had to be written anyway (rollback, health check, `--from`).
-- Every user needs a GitHub token while the repository is private; `gh auth token` makes it transparent on machines where `gh` is logged in.
-- Unauthenticated API calls (public repository later) are rate limited; the 6 h check interval keeps loomd far below any limit.
+- No GitHub account or token is needed to install or update loom.
+- Unauthenticated API calls are rate limited per IP; the 6 h check interval keeps loomd far below any limit, and a token raises it.
 - Integrity (checksums) and authenticity (minisign) are verified by the updater; the installer guarantees authenticity only when `minisign` is installed.
 - The minisign secret key is a long-lived secret: rotation means a new public key embedded in a new release, signed with the old key.
 - Musl builds avoid glibc compatibility issues; allocation-heavy workloads may be slower with musl's allocator (not relevant for v0.1).
@@ -61,14 +61,14 @@ Version checked: `dist` workspace version `0.33.0` on `main` ([Cargo.toml](https
 
 - **#3 `loom version`**: build script honours `LOOM_BUILD_VERSION` (dev prerelease versions) before `CARGO_PKG_VERSION`.
 - **#4 release pipeline**: workflow as decided above (zigbuild musl Linux job, macOS job for both darwin targets, version stamping, archives, `SHA256SUMS`, minisign signature, `install.sh` attached, dev prerelease pruning), `docs/reference/releases.md`. Maintainer: generate the minisign key pair, add `MINISIGN_SECRET_KEY` and `MINISIGN_PASSWORD` secrets, commit `dist/minisign.pub`.
-- **#5 `install.sh`**: API-based download with the token resolution order, `LOOM_RELEASES_URL`, mandatory checksum, optional minisign with warning, no rc file edits, private bootstrap documented with `gh`.
+- **#5 `install.sh`**: API-based download, optional token with the resolution order, `LOOM_RELEASES_URL`, mandatory checksum, optional minisign with warning, no rc file edits, `curl | sh` bootstrap from the latest release documented.
 - **#11 `loom upgrade` / `rollback`**: GitHub REST client in `loom-update` (`reqwest` + rustls), token resolution, mandatory checksum and minisign verification with the embedded public key, rename-based swap, 2 previous versions kept, `--from`.
 - **#12 auto-upgrade**: no tool support for health check or rollback; the mechanism stays to design in that task, as its brief requires.
 
 ## Unverified points
 
 1. Whether `dist` can put binaries of two packages into one archive.
-2. Artifact attestation availability for private repositories on the Free plan.
+2. Artifact attestation availability for private repositories on the Free plan (no longer relevant: the repository is public).
 3. `dist` latest release date.
 4. Building `x86_64-apple-darwin` on an arm64 `macos-latest` runner with a rustup target only (expected to work; #4 confirms).
-5. Exact `gh` command for the private bootstrap (`gh release download --pattern install.sh` with stdout output, or `gh api` on the asset): #5 confirms.
+5. `releases/latest/download/install.sh` resolves to the latest stable release and skips prereleases (expected behaviour of GitHub's latest release; #5 confirms).
