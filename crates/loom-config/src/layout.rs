@@ -8,6 +8,10 @@ use thiserror::Error;
 pub const RUN_DIR_MODE: u32 = 0o700;
 /// Mode of `run/loomd.lock` and `run/loomd.sock`: owner read and write.
 pub const RUN_FILE_MODE: u32 = 0o600;
+/// Mode of `log/`: owner only.
+pub const LOG_DIR_MODE: u32 = 0o700;
+/// Mode of `log/loomd.log`: owner read and write.
+pub const LOG_FILE_MODE: u32 = 0o600;
 
 /// Longest unix socket path, in bytes, that can be bound: `sun_path` holds 108 bytes on Linux
 /// and 104 on macOS and the BSDs, including the terminating NUL.
@@ -30,6 +34,10 @@ pub struct Layout {
     pub lock: PathBuf,
     /// `run/loomd.sock`: unix socket of the API.
     pub socket: PathBuf,
+    /// `log/`: logs of the daemon.
+    pub log_dir: PathBuf,
+    /// `log/loomd.log`: stderr of a `loomd` started by `loom`, appended across starts.
+    pub daemon_log: PathBuf,
 }
 
 impl Layout {
@@ -37,7 +45,10 @@ impl Layout {
     #[must_use]
     pub fn new(home: PathBuf) -> Self {
         let run_dir = home.join("run");
+        let log_dir = home.join("log");
         Self {
+            daemon_log: log_dir.join("loomd.log"),
+            log_dir,
             config: home.join("config.toml"),
             lock: run_dir.join("loomd.lock"),
             socket: run_dir.join("loomd.sock"),
@@ -110,6 +121,8 @@ mod tests {
         assert_eq!(layout.run_dir, Path::new("/home/me/.loom/run"));
         assert_eq!(layout.lock, Path::new("/home/me/.loom/run/loomd.lock"));
         assert_eq!(layout.socket, Path::new("/home/me/.loom/run/loomd.sock"));
+        assert_eq!(layout.log_dir, Path::new("/home/me/.loom/log"));
+        assert_eq!(layout.daemon_log, Path::new("/home/me/.loom/log/loomd.log"));
     }
 
     #[test]
