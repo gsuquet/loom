@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RollbackReport",
+  "description": "Output of `loom rollback`.",
+  "type": "object",
+  "properties": {
+    "current_version": {
+      "description": "Version of the running `loom`, replaced by the rollback.",
+      "type": "string"
+    },
+    "dry_run": {
+      "description": "`true` with `--dry-run`: nothing installed.",
+      "type": "boolean"
+    },
+    "install": {
+      "description": "What was restored, or would be with `--dry-run`.",
+      "$ref": "#/$defs/InstallReport"
+    }
+  },
+  "required": [
+    "current_version",
+    "dry_run",
+    "install"
+  ],
+  "$defs": {
+    "DaemonRestart": {
+      "description": "What `loom upgrade` and `loom rollback` did to a running loomd after replacing the binaries.",
+      "oneOf": [
+        {
+          "description": "Nothing was replaced (`--dry-run`), so loomd was left alone.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skipped"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "No loomd holds the lock of the loom home.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "not_running"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "`SIGTERM` was sent; a service manager restarts loomd on the new binary, otherwise the\nnext `loom` command starts it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "signalled"
+            },
+            "pid": {
+              "description": "PID of the loomd that was signalled.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "pid"
+          ]
+        },
+        {
+          "description": "loomd runs, but `SIGTERM` could not be sent: it keeps running the replaced binary.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "message": {
+              "description": "Why.",
+              "type": "string"
+            },
+            "pid": {
+              "description": "PID read from the lock file, when there is one.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        }
+      ]
+    },
+    "InstallReport": {
+      "description": "Installation of a new `loom` and `loomd`.",
+      "type": "object",
+      "properties": {
+        "daemon": {
+          "description": "What happened to a running loomd.",
+          "$ref": "#/$defs/DaemonRestart"
+        },
+        "install_dir": {
+          "description": "Directory holding `loom` and `loomd`: the directory of the running `loom`.",
+          "type": "string"
+        },
+        "installed": {
+          "description": "`true` when the binaries were replaced; `false` with `--dry-run`.",
+          "type": "boolean"
+        },
+        "pruned": {
+          "description": "Saved versions deleted to keep the most recent ones.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "saved_to": {
+          "description": "Directory where the replaced version was saved (`<loom home>/versions/<version>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verified": {
+          "description": "`true` when the signature of `SHA256SUMS` and the archive checksum were verified.\n`false` for `--from` and `loom rollback` (local files).",
+          "type": "boolean"
+        },
+        "version": {
+          "description": "Version installed, or that would be with `--dry-run`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "install_dir",
+        "verified",
+        "installed",
+        "pruned",
+        "daemon"
+      ]
+    }
+  }
+}

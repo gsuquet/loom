@@ -11,4 +11,28 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# gzip decompression of release archives (pure Rust backend).
+flate2.workspace = true
+loom-api.workspace = true
+# Lock file PID format of loomd.
+loom-config.workspace = true
+# Signature of SHA256SUMS against the embedded public key; no dependencies.
+minisign-verify.workspace = true
 semver.workspace = true
+serde.workspace = true
+# GitHub REST API responses.
+serde_json.workspace = true
+# Checksum of the downloaded archive against SHA256SUMS.
+sha2.workspace = true
+# Reading release archives entry by entry, to reject anything but the four expected files.
+tar.workspace = true
+# ring as the crypto provider of ureq's rustls (`rustls-no-provider` leaves it to us).
+rustls.workspace = true
+# Unique staging directories and same-directory temporary files for the atomic swap.
+tempfile.workspace = true
+thiserror.workspace = true
+# Blocking HTTPS client for the GitHub REST API; the updater needs no async runtime. Server
+# certificates are checked against the OS trust store (rustls-platform-verifier), so that
+# TLS-inspecting proxies trusted by the system work; no bundled root certificates.
+ureq.workspace = true
+

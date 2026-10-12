@@ -56,6 +56,9 @@ No shipped command asks for confirmation yet.
 | `NO_COLOR` | Non-empty: no color with `--color auto`. |
 | `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given, and of `loom`. See [configuration](../configuration.md). |
 | `PATH` | Searched for `loomd` by `loom status` when no `loomd` is next to the `loom` executable. |
+| `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN` | Optional GitHub token for `loom upgrade`, first non-empty one wins. Raises the API rate limit. Never printed. |
+| `LOOM_RELEASES_URL` | Replaces `https://api.github.com` in `loom upgrade` (test hook). Plain `http://` is then allowed. |
+| `LOOM_UPDATE_PUBKEY` | Test hook, debug builds only: minisign public key (base64 key line) replacing the embedded release key in `loom upgrade`. Ignored by release builds. |
 
 ## `loom version` output
 
@@ -152,3 +155,95 @@ A started `loomd` that is still running but did not answer within 5 s is left ru
 | --- | --- | --- |
 | `LOOM_BUILD_VERSION` | semver string | Overrides the reported version (dev prereleases such as `0.1.0-dev.42`). |
 | `LOOM_CHANNEL` | `stable`, `dev`, `local` | Sets the reported channel. Any other value fails the build. |
+
+## `loom upgrade`
+
+### What it does
+
+1. Looks up a release through the GitHub REST API (`https://api.github.com`, or `LOOM_RELEASES_URL`). Server certificates are checked against the operating system's trust store (Keychain on macOS, the system CA bundle on Linux), so a TLS-inspecting proxy trusted by the system works. Proxy variables are honoured: `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY` (first set wins) and `NO_PROXY`, upper or lower case.
+
+   | Options | Request | Release considered |
+   | --- | --- | --- |
+   | `--channel stable`, or none on a stable build | `GET /repos/gsuquet/loom/releases/latest` | The latest stable release. |
+   | `--channel dev`, or none on a dev build | `GET /repos/gsuquet/loom/releases?per_page=30` | Every non-draft release tagged `vX.Y.Z` or `vX.Y.Z-dev.N` in the 30 most recent; other tags are skipped. The highest by semver precedence wins, so a stable release above every dev build is installed. |
+   | `--version X.Y.Z` | `GET /repos/gsuquet/loom/releases/tags/vX.Y.Z` | That release; a 404 means not released. |
+   | `--from PATH` | none | The local build. |
+
+   A local build (channel `local`) has no default channel: without `--channel`, `--version` or `--from`, `loom upgrade` fails.
+
+2. Decides by semver precedence: a newer release is installed, the same version is up to date, and a `--version` lower than the running version is refused (use `loom rollback`). `--from` always installs, whatever its version.
+3. Checks that the install directory is writable, before any download.
+4. Downloads `SHA256SUMS` and `SHA256SUMS.minisig`, verifies the signature with the public key embedded at build time ([releases](../releases.md#signature)), then downloads `loom-<version>-<target>.tar.gz` and checks its SHA-256 against `SHA256SUMS`. A `*-linux-gnu` build takes the `*-linux-musl` archive. Any failure stops here: nothing installed has changed.
+5. Extracts the archive into `<loom home>/staging/`. Only the regular files `loom`, `loomd`, `LICENSE` and `README.md` at the archive root are accepted; any other entry (directory, link, path) rejects the archive. Then runs `loom version --json` and `loomd -V` from the staging directory: both must report the release version.
+6. Copies the installed `loom` and `loomd` into `<loom home>/versions/<running version>/`.
+7. Replaces `loomd`, then `loom`, in the directory of the running `loom` (symbolic links resolved): each new file is written next to its target, synced, set to mode `0755`, then renamed over it. A missing `loomd` is created.
+8. Keeps two previous versions in `versions/` (see [configuration](../configuration.md#versions)).
+9. If a loomd holds `<loom home>/run/loomd.lock`, sends `SIGTERM` to the PID in the file (`kill -TERM`), without waiting. A service manager restarts it on the new binary. A PID in a lock file no process holds is stale and is not signalled.
+
+`--from PATH` takes a `.tar.gz` archive with the release layout, or a directory holding `loom` and `loomd`. Its signature and checksum are not verified; a warning says so on stderr. Steps 5 to 9 apply.
+
+`--check` stops after step 2. `--dry-run` stops after step 5.
+
+### Human output
+
+```text
+$ loom upgrade --check
+loom 0.2.0 is available (stable), running 0.1.0
+$ loom upgrade
+upgraded loom and loomd from 0.1.0 to 0.2.0 in /home/me/.local/bin
+saved 0.1.0 in /home/me/.loom/versions/0.1.0
+removed saved versions 0.0.9
+sent SIGTERM to loomd (PID 4242) so that it restarts on the new version
+$ loom upgrade
+loom 0.2.0 is up to date (stable)
+$ loom upgrade --dry-run
+would upgrade loom and loomd from 0.1.0 to 0.2.0 in /home/me/.local/bin
+```
+
+The `removed` line appears only when saved versions were deleted. The last line is `loomd is not running` when no loomd holds the lock. With `--from`, a last line `source:   <path> (not verified)` is added. Progress (`downloading …`, `verified …`) goes to stderr, except with `-q`.
+
+### JSON output
+
+`loom upgrade --json`: [`UpgradeReport`](../schemas/upgrade_report.json).
+
+| Field | Content |
+| --- | --- |
+| `current_version` | Version of the running `loom`. |
+| `source` | `{"kind": "release", "channel": "stable" \| "dev" \| null, "pinned": "<version>" \| null}` or `{"kind": "local", "path": "<absolute path>"}`. |
+| `decision` | `{"kind": "up_to_date"}`, `{"kind": "apply", "version": …}`, or `{"kind": "skipped", "reason": {…}}` with reason `kind` `pinned_not_released` or `pinned_below_current` (and `pinned`). `available`, `updates_off` and `failed` are defined for the daemon and not produced by `loom upgrade`. |
+| `check`, `dry_run` | Flags given. |
+| `install` | `null` with `--check` or when nothing is installed; otherwise an install report (below). |
+
+Install report (also in `loom rollback`):
+
+| Field | Content |
+| --- | --- |
+| `version` | Version installed, or that would be with `--dry-run`. |
+| `install_dir` | Directory of the running `loom`. |
+| `verified` | `true` for a release (signature and checksum verified); `false` for `--from` and `loom rollback`. |
+| `installed` | `false` with `--dry-run`. |
+| `saved_to` | `<loom home>/versions/<previous version>`; `null` with `--dry-run`. |
+| `pruned` | Versions deleted from `versions/`. |
+| `daemon` | `{"kind": "skipped"}` (dry run), `{"kind": "not_running"}`, `{"kind": "signalled", "pid": …}`, or `{"kind": "failed", "pid": … \| null, "message": …}`. |
+
+### Exit status
+
+| Code | Cases |
+| --- | --- |
+| `0` | Installed; up to date; `--check` whatever the decision; `--dry-run` verified. Also when loomd could not be signalled: a warning on stderr says it keeps running the replaced version. |
+| `1` | Local build without `--channel`, `--version` or `--from`; `--version` not released or lower than the running version; install directory not writable; HTTP error (`401`, `403` and `429` name `LOOM_GITHUB_TOKEN`); missing asset; invalid signature; checksum mismatch; rejected archive; binaries not reporting the expected version; I/O error. Every download or verification error ends with `nothing was installed`. |
+| `2` | Usage error, including `--channel`, `--version` and `--from` together, or `--check` with `--from` or `--dry-run`. |
+
+## `loom rollback`
+
+Restores the highest version in `<loom home>/versions/` other than the running one (semver precedence). Only directories holding both `loom` and `loomd` count. The saved `loom version --json` and `loomd -V` must report the directory's version. Then steps 6 to 9 of `loom upgrade` apply: the running version is saved, the binaries replaced, two previous versions kept, loomd signalled. A second rollback returns to the version rolled back from when no higher version is saved.
+
+Human output: as `loom upgrade`, with `rolled back` (`would roll back` with `--dry-run`).
+
+JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `current_version`, `dry_run` and `install` (the install report above, `verified` always `false`).
+
+| Code | Cases |
+| --- | --- |
+| `0` | Restored, or would be with `--dry-run`. |
+| `1` | `nothing to roll back to: no saved version other than <version> in <dir>`; install directory not writable; saved binaries not reporting their version; I/O error. |
+| `2` | Usage error. |

@@ -1,0 +1,392 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UpgradeReport",
+  "description": "Output of `loom upgrade`.",
+  "type": "object",
+  "properties": {
+    "check": {
+      "description": "`true` with `--check`: the decision only, nothing downloaded or installed.",
+      "type": "boolean"
+    },
+    "current_version": {
+      "description": "Version of the running `loom`.",
+      "type": "string"
+    },
+    "decision": {
+      "description": "Which version, if any, to move to.",
+      "$ref": "#/$defs/UpgradeDecision"
+    },
+    "dry_run": {
+      "description": "`true` with `--dry-run`: downloaded and verified, nothing installed.",
+      "type": "boolean"
+    },
+    "install": {
+      "description": "What was installed, or would be with `--dry-run`. Absent with `--check` and when the\ndecision installs nothing.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InstallReport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "description": "Where the new version comes from.",
+      "$ref": "#/$defs/UpgradeSource"
+    }
+  },
+  "required": [
+    "current_version",
+    "source",
+    "decision",
+    "check",
+    "dry_run"
+  ],
+  "$defs": {
+    "Channel": {
+      "description": "Release channel, set with `LOOM_CHANNEL` at build time.",
+      "oneOf": [
+        {
+          "description": "Tagged release.",
+          "type": "string",
+          "const": "stable"
+        },
+        {
+          "description": "Prerelease built from every merge to `main`.",
+          "type": "string",
+          "const": "dev"
+        },
+        {
+          "description": "Any other build, such as `cargo build` on a workstation. Default when `LOOM_CHANNEL` is unset.",
+          "type": "string",
+          "const": "local"
+        }
+      ]
+    },
+    "DaemonRestart": {
+      "description": "What `loom upgrade` and `loom rollback` did to a running loomd after replacing the binaries.",
+      "oneOf": [
+        {
+          "description": "Nothing was replaced (`--dry-run`), so loomd was left alone.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skipped"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "No loomd holds the lock of the loom home.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "not_running"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "`SIGTERM` was sent; a service manager restarts loomd on the new binary, otherwise the\nnext `loom` command starts it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "signalled"
+            },
+            "pid": {
+              "description": "PID of the loomd that was signalled.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "pid"
+          ]
+        },
+        {
+          "description": "loomd runs, but `SIGTERM` could not be sent: it keeps running the replaced binary.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "message": {
+              "description": "Why.",
+              "type": "string"
+            },
+            "pid": {
+              "description": "PID read from the lock file, when there is one.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        }
+      ]
+    },
+    "InstallReport": {
+      "description": "Installation of a new `loom` and `loomd`.",
+      "type": "object",
+      "properties": {
+        "daemon": {
+          "description": "What happened to a running loomd.",
+          "$ref": "#/$defs/DaemonRestart"
+        },
+        "install_dir": {
+          "description": "Directory holding `loom` and `loomd`: the directory of the running `loom`.",
+          "type": "string"
+        },
+        "installed": {
+          "description": "`true` when the binaries were replaced; `false` with `--dry-run`.",
+          "type": "boolean"
+        },
+        "pruned": {
+          "description": "Saved versions deleted to keep the most recent ones.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "saved_to": {
+          "description": "Directory where the replaced version was saved (`<loom home>/versions/<version>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verified": {
+          "description": "`true` when the signature of `SHA256SUMS` and the archive checksum were verified.\n`false` for `--from` and `loom rollback` (local files).",
+          "type": "boolean"
+        },
+        "version": {
+          "description": "Version installed, or that would be with `--dry-run`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "install_dir",
+        "verified",
+        "installed",
+        "pruned",
+        "daemon"
+      ]
+    },
+    "UpgradeDecision": {
+      "description": "Which version, if any, `loom upgrade` moves to.",
+      "oneOf": [
+        {
+          "description": "No version to move to.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "up_to_date"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "A newer version exists; the policy says to report it only.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "available"
+            },
+            "version": {
+              "description": "Version to report.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "version"
+          ]
+        },
+        {
+          "description": "Install this version.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "apply"
+            },
+            "version": {
+              "description": "Version to install.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "version"
+          ]
+        },
+        {
+          "description": "No upgrade, for the given reason.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skipped"
+            },
+            "reason": {
+              "description": "Why no upgrade happens.",
+              "$ref": "#/$defs/UpgradeSkipReason"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "UpgradeSkipReason": {
+      "description": "Why no upgrade happens.",
+      "oneOf": [
+        {
+          "description": "Updates are turned off.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "updates_off"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The pinned version (`--version`) is not a published release.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pinned_not_released"
+            },
+            "pinned": {
+              "description": "Pinned version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pinned"
+          ]
+        },
+        {
+          "description": "The pinned version is lower than the current one: use `loom rollback`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pinned_below_current"
+            },
+            "pinned": {
+              "description": "Pinned version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pinned"
+          ]
+        },
+        {
+          "description": "The target version failed a health check.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "version": {
+              "description": "Version that failed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "version"
+          ]
+        }
+      ]
+    },
+    "UpgradeSource": {
+      "description": "Where `loom upgrade` takes the new version from.",
+      "oneOf": [
+        {
+          "description": "A GitHub release.",
+          "type": "object",
+          "properties": {
+            "channel": {
+              "description": "Channel followed: `--channel`, or the channel of the build. Absent with `--version`.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Channel"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "release"
+            },
+            "pinned": {
+              "description": "Version given with `--version`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "A local archive or directory given with `--from`. Never verified.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "local"
+            },
+            "path": {
+              "description": "The path given to `--from`, made absolute.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        }
+      ]
+    }
+  }
+}

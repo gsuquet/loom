@@ -7,12 +7,17 @@ mod api_version;
 mod error;
 mod status;
 mod timestamp;
+mod update;
 mod version;
 
 pub use api_version::ApiVersion;
 pub use error::{ApiError, ErrorCode};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;
+pub use update::{
+    DaemonRestart, InstallReport, RollbackReport, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource,
+};
 pub use version::{Channel, Profile, VersionInfo};
 
 #[cfg(test)]

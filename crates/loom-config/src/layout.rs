@@ -38,6 +38,11 @@ pub struct Layout {
     pub log_dir: PathBuf,
     /// `log/loomd.log`: stderr of a `loomd` started by `loom`, appended across starts.
     pub daemon_log: PathBuf,
+    /// `versions/`: previous versions of `loom` and `loomd` kept by `loom upgrade` and
+    /// `loom rollback`, one `versions/<version>/` directory each.
+    pub versions_dir: PathBuf,
+    /// `staging/`: downloads being verified and unpacked by `loom upgrade`.
+    pub staging_dir: PathBuf,
 }
 
 impl Layout {
@@ -52,6 +57,8 @@ impl Layout {
             config: home.join("config.toml"),
             lock: run_dir.join("loomd.lock"),
             socket: run_dir.join("loomd.sock"),
+            versions_dir: home.join("versions"),
+            staging_dir: home.join("staging"),
             run_dir,
             home,
         }
@@ -123,6 +130,8 @@ mod tests {
         assert_eq!(layout.socket, Path::new("/home/me/.loom/run/loomd.sock"));
         assert_eq!(layout.log_dir, Path::new("/home/me/.loom/log"));
         assert_eq!(layout.daemon_log, Path::new("/home/me/.loom/log/loomd.log"));
+        assert_eq!(layout.versions_dir, Path::new("/home/me/.loom/versions"));
+        assert_eq!(layout.staging_dir, Path::new("/home/me/.loom/staging"));
     }
 
     #[test]

@@ -2,6 +2,14 @@
 
 [graph]
 all-features = true
+# The release targets (docs/reference/releases.md): dependencies of other platforms
+# (Windows, Android, wasm) are never built, so their licenses and advisories do not apply.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
 
 [advisories]
 # RustSec advisories: vulnerable, unmaintained and yanked crates fail the check.
@@ -15,6 +23,25 @@ confidence-threshold = 0.9
 # axum's router; BSD-3-Clause is permissive and MIT-compatible. Allowed for this crate only.
 [[licenses.exceptions]]
 crate = "matchit"
+allow = ["BSD-3-Clause"]
+
+# TLS stack of the updater's HTTP client (ureq + rustls, `loom-update`). ISC, BSD-3-Clause and
+# CDLA-Permissive-2.0 (Mozilla's root certificates in webpki-roots) are permissive and
+# MIT-compatible. Allowed for these crates only.
+[[licenses.exceptions]]
+crate = "ring"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "rustls-webpki"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "untrusted"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "subtle"
 allow = ["BSD-3-Clause"]
 
 [licenses.private]
