@@ -1,9 +1,20 @@
 name: CI
 
 on:
+  pull_request:
+  # Pull requests must be up to date with main before merging (protect-main ruleset), so a push to
+  # main only reruns the checks to refresh the dependency cache: when dependencies or tools change,
+  # and weekly, before the unused cache is evicted (7 days).
   push:
     branches: [main]
-  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .mise/**
+      - .github/workflows/ci.yml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,8 +24,55 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Docs-only pull requests skip the Rust checks. Generated references (CLI, JSON Schemas)
+          # are checked against the code by tests, so touching them counts as code.
+          code=true
+          if [ "$EVENT" = pull_request ]; then
+            changed="$(git diff --name-only "$BASE...$HEAD")"
+            echo "$changed"
+            if ! grep -vE '^(docs/.*|[^/]*\.md|LICENSE)$' <<<"$changed" | grep -q . \
+              && ! grep -qE '^docs/reference/(cli/loomd?\.md|schemas/)' <<<"$changed"; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >>"$GITHUB_OUTPUT"
+          echo "code=$code"
+
+  docs:
+    name: docs
+    needs: changes
+    if: needs.changes.outputs.code == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: typos gitleaks
+      - run: mise run typos
+      - run: mise run gitleaks
+
   check:
     name: check (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -33,3 +91,21 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: mise run check
+
+  # The only required status check (protect-main ruleset): passes when every job that ran passed.
+  ci:
+    name: ci
+    needs: [changes, docs, check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *) exit 1 ;;
+            esac
+          done

@@ -4,8 +4,16 @@
 name: E2E
 
 on:
+  # Same rule as ci.yml: main runs refresh the cache (dependencies or tools changed, or weekly).
   push:
     branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .mise/**
+      - .github/workflows/e2e.yml
+  schedule:
+    - cron: "37 5 * * 1"
   pull_request:
     paths:
       - "crates/**"
@@ -29,7 +37,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Pull requests run each OS once: macOS here, Linux under systemd (job below). The plain
+        # Linux scenario only runs on main.
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["macos-latest"]' || '["ubuntu-latest","macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
