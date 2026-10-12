@@ -874,7 +874,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "loom"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "loom-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jsonschema",
  "schemars",
@@ -918,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "loom-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "loom-api",
  "serde",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "loom-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -948,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "loom-update"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "loom-api",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "loomd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "axum",
