@@ -60,6 +60,81 @@ loom status [OPTIONS]
 
 Global options apply.
 
+### `loom service`
+
+Install, remove or inspect loomd as a user service (launchd on macOS, systemd on Linux)
+
+```text
+loom service [OPTIONS] <COMMAND>
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom service install`
+
+Install loomd as a user service and start it; no-op when already installed and loaded. Refused when `[daemon] service = false`
+
+```text
+loom service install [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--dry-run` |  |  | Print the file that would be written and the commands that would run; change nothing |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom service uninstall`
+
+Stop loomd, unload the user service and remove its file; no-op when not installed
+
+```text
+loom service uninstall [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--dry-run` |  |  | Print the commands that would run and the file that would be removed; change nothing |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom service status`
+
+Report whether the user service is installed, loaded and running
+
+```text
+loom service status [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the state as JSON (`ServiceStatus` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom service help`
+
+Print this message or the help of the given subcommand(s)
+
+```text
+loom service help [COMMAND]
+```
+
 ### `loom help`
 
 Print this message or the help of the given subcommand(s)

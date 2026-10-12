@@ -28,7 +28,8 @@ Path: `<loom home>/config.toml`. Format: [TOML](https://toml.io/en/v1.1.0).
 | --- | --- |
 | File missing | Defaults. |
 | File empty or comments only | Defaults. |
-| Any key or table | Rejected: no key exists yet. |
+| Unknown key or table, at any level | Rejected. |
+| Value of the wrong type | Rejected. |
 | TOML syntax error | Rejected. |
 
 A rejected file stops `loomd` with exit code 1 before it creates anything, and this message on stderr:
@@ -40,12 +41,51 @@ Error: invalid configuration <path>:<line>:<column>: <message>
 `line` and `column` start at 1; `column` counts characters. For an unknown key, `message` names it:
 
 ```text
-Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, there are no fields
+Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected `daemon`
 ```
 
 ### Keys
 
-None yet.
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `[daemon] service` | boolean | `true` | `false`: `loom service install` refuses with exit code 1 and a message naming this key and the file. `loom service uninstall` and `loom service status` still work. Does not stop or remove an installed service. |
+
+```toml
+[daemon]
+service = false
+```
+
+## User service
+
+`loom service install` installs `loomd` as a user service. `loom service` reads `config.toml` only for `[daemon] service`.
+
+| Platform | Manager | File | Logs |
+| --- | --- | --- | --- |
+| macOS | launchd user agent, label `io.github.gsuquet.loomd`, domain `gui/<uid>` | `~/Library/LaunchAgents/io.github.gsuquet.loomd.plist` | `<loom home>/log/loomd.log` (stdout and stderr) |
+| Linux | systemd user unit `loomd.service` | `$XDG_CONFIG_HOME/systemd/user/loomd.service` when `XDG_CONFIG_HOME` is an absolute path, otherwise `~/.config/systemd/user/loomd.service` | systemd journal: `journalctl --user -u loomd.service` |
+
+The service runs the `loomd` found by `loom service install`: the `loomd` next to the `loom` executable (symbolic links to `loom` resolved), otherwise the first `loomd` file in a `PATH` directory. Its path is written canonicalized (absolute, symbolic links resolved). The resolved loom home is passed as `LOOM_HOME`.
+
+Property list content (macOS): `ProgramArguments` = [`loomd` path], `EnvironmentVariables` = `LOOM_HOME`, `RunAtLoad` true, `KeepAlive` true, `ProcessType` `Background`, `StandardOutPath` and `StandardErrorPath` = `<loom home>/log/loomd.log`. Values are XML-escaped.
+
+Unit content (Linux):
+
+```ini
+[Unit]
+Description=Loom daemon
+
+[Service]
+ExecStart="/usr/local/bin/loomd"
+Environment="LOOM_HOME=/home/me/.loom"
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+Values are double-quoted; `\` and `"` are backslash-escaped, `%` is written `%%`, and `$` in `ExecStart` is written `$$`.
+
+A `loomd` path or loom home that is not valid UTF-8 or contains a control character is refused with exit code 1. The file is rewritten by `install` whenever its content differs from the generated one: hand edits are overwritten.
 
 ## `run/`
 

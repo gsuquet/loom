@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ServiceStatus",
+  "description": "State of the `loomd` user service.",
+  "type": "object",
+  "properties": {
+    "installed": {
+      "description": "The file at `unit_path` exists.",
+      "type": "boolean"
+    },
+    "loaded": {
+      "description": "The service manager knows the service: loaded in launchd, or enabled in systemd.",
+      "type": "boolean"
+    },
+    "platform": {
+      "description": "Service manager family.",
+      "$ref": "#/$defs/ServicePlatform"
+    },
+    "running": {
+      "description": "The `loomd` process of the service is running.",
+      "type": "boolean"
+    },
+    "unit_path": {
+      "description": "Absolute path of the launchd property list or the systemd unit file.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "platform",
+    "unit_path",
+    "installed",
+    "loaded",
+    "running"
+  ],
+  "$defs": {
+    "ServicePlatform": {
+      "description": "Service manager family the `loomd` user service is installed with.",
+      "oneOf": [
+        {
+          "description": "macOS: a launchd user agent.",
+          "type": "string",
+          "const": "macos"
+        },
+        {
+          "description": "Linux: a systemd user unit.",
+          "type": "string",
+          "const": "linux"
+        }
+      ]
+    }
+  }
+}

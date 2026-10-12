@@ -5,10 +5,29 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Daemon configuration. No key exists yet: any key is rejected.
+/// Content of `config.toml`. Unknown keys and tables are rejected at every level.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {}
+pub struct Config {
+    /// `[daemon]` table.
+    #[serde(default)]
+    pub daemon: Daemon,
+}
+
+/// `[daemon]` table: how `loomd` runs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Daemon {
+    /// `service`: whether `loom service install` may install `loomd` as a user service.
+    /// Default `true`.
+    pub service: bool,
+}
+
+impl Default for Daemon {
+    fn default() -> Self {
+        Self { service: true }
+    }
+}
 
 /// Position in a text file, both 1-based. `column` counts characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +92,7 @@ fn location(text: &str, offset: usize) -> Location {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Location, location, parse_config};
+    use super::{Config, Daemon, Location, location, parse_config};
     use std::path::Path;
 
     const PATH: &str = "/home/me/.loom/config.toml";
@@ -102,9 +121,45 @@ mod tests {
 
     #[test]
     fn unknown_table_is_rejected() {
-        let error = parse_config("[daemon]\nport = 1\n", Path::new(PATH)).unwrap_err();
+        let error = parse_config("[server]\nport = 1\n", Path::new(PATH)).unwrap_err();
         assert_eq!(error.location.map(|at| at.line), Some(1));
-        assert!(error.message.contains("daemon"), "{}", error.message);
+        assert!(error.message.contains("server"), "{}", error.message);
+    }
+
+    #[test]
+    fn daemon_service_defaults_to_true() {
+        assert!(Config::default().daemon.service);
+        let empty_table = parse_config("[daemon]\n", Path::new(PATH)).unwrap();
+        assert_eq!(empty_table.daemon, Daemon { service: true });
+    }
+
+    #[test]
+    fn daemon_service_can_be_disabled() {
+        for (text, expected) in [
+            ("[daemon]\nservice = false\n", false),
+            ("[daemon]\nservice = true\n", true),
+            ("daemon.service = false\n", false),
+        ] {
+            let config = parse_config(text, Path::new(PATH)).unwrap();
+            assert_eq!(config.daemon.service, expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_daemon_key_is_rejected() {
+        let error = parse_config("[daemon]\nport = 1\n", Path::new(PATH)).unwrap_err();
+        assert_eq!(error.location, Some(Location { line: 2, column: 1 }));
+        assert!(
+            error.message.contains("unknown field `port`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn daemon_service_must_be_a_boolean() {
+        let error = parse_config("[daemon]\nservice = \"no\"\n", Path::new(PATH)).unwrap_err();
+        assert_eq!(error.location.map(|at| at.line), Some(2));
     }
 
     #[test]
