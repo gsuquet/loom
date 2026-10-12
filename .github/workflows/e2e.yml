@@ -1,0 +1,77 @@
+# End-to-end upgrade scenario (dist/e2e-upgrade.sh): install, upgrade, failed auto-upgrade
+# rolled back by the watchdog, manual rollback, on real builds against a local fake API.
+# Separate from ci.yml: it only runs when the code paths it covers change, and it is slow.
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "crates/**"
+      - "dist/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".mise/**"
+      - ".github/workflows/e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust minisign
+      # Only main writes the cache, pull requests read it.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # loomd without a service manager: runners have no reliable launchd GUI domain or
+      # systemd user instance by default.
+      - run: mise run e2e
+
+  # The same auto-upgrade and watchdog rollback with loomd as a systemd user service: checks
+  # that KillMode=process keeps the watchdog alive when the old loomd exits (ADR-0011).
+  e2e-systemd:
+    name: e2e (ubuntu-latest, systemd user service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust minisign
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Start a systemd user instance for the runner user
+        run: |
+          sudo loginctl enable-linger "$USER"
+          uid="$(id -u)"
+          for _ in $(seq 100); do
+            [ -S "/run/user/$uid/bus" ] && break
+            sleep 0.1
+          done
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >>"$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >>"$GITHUB_ENV"
+          XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user show-environment >/dev/null
+      - run: bash dist/e2e-upgrade.sh --systemd

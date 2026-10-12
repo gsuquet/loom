@@ -33,8 +33,10 @@ The watchdog is the previous version's `loom`, which was running a moment ago an
 
 Someone has to start the new `loomd`:
 
-- under `loom service` (launchd `KeepAlive`, systemd `Restart=always`), the service manager restarts it at once;
+- under `loom service` (launchd `KeepAlive`, systemd `Restart=always`), the service manager restarts it, and the watchdog never starts one itself;
 - otherwise, when nobody holds `run/loomd.lock` for 15 s, the watchdog starts it itself, the way `loom status` does.
+
+The watchdog counts the service only when its file runs `loomd` for the same loom home (`LOOM_HOME`) and the service manager has it loaded. A `loomd` started by the watchdog next to a service would hold the lock: every start of the service would then fail on it (launchd retrying every 10 s, systemd giving up), and the running `loomd` would have no supervisor.
 
 When the new `loomd` answers in time, the watchdog records `upgraded` and exits.
 
@@ -44,7 +46,7 @@ When the deadline passes without an answer from the new version (it crashed, han
 
 1. copies the saved previous `loom` and `loomd` back into the install directory, with its own code;
 2. adds the new version to `failed_versions` and records `rolled_back` with the reason;
-3. stops the unhealthy `loomd` if it still holds the lock;
+3. under `loom service`, asks the service manager to run `loomd` again: `launchctl kickstart -k` on macOS, which also skips launchd's 10 s restart throttle; `systemctl --user reset-failed` then `restart` on Linux. The new version exiting at once on each restart may have hit systemd's start limit (5 starts in 10 s), which leaves the unit failed until `reset-failed`. Without a service, it stops the unhealthy `loomd` if it still holds the lock;
 4. waits, with the same rules, for the previous `loomd` to answer again: the service manager restarts it, or the watchdog starts it.
 
 The failed binaries are not kept in `versions/`, so `loom rollback` never brings them back. The saved copy of the restored version is deleted too: it is the running version again, and would take one of the two kept slots.
@@ -71,3 +73,5 @@ A version in `failed_versions` is never installed automatically again, neither b
 | `last_result` is `failed … not writable` | The directory of `loomd` cannot be written by its user. | Fix the permissions, or upgrade by hand with `loom upgrade` as a user who can write there. |
 | The same version keeps being skipped | It is in `failed_versions`. | Retry it with `loom upgrade --version <version>`, or wait for the next release. |
 | An installed systemd unit lacks `KillMode=process` | Installed before the auto-upgrade shipped; systemd may stop the watchdog with `loomd`. | Run `loom service install` again. |
+| An installed systemd unit lacks `RestartSec=1s` | Installed before the rollback recovery shipped; a failing `loomd` is restarted every 100 ms. | Run `loom service install` again. |
+| `loomd.service` is `failed` after a rollback, or `loom service status` says `running: no` | The watchdog could not run `systemctl --user` or `launchctl` (see `loomd.log`). | `systemctl --user reset-failed loomd.service && systemctl --user restart loomd.service`, or `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`. |

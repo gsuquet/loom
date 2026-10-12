@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use loom::service::{
     Manager, ManagerState, Retry, ServicePaths, Step, bootstrap_retry, display_argv, id_u,
-    launchctl_print, launchd_state, parse_uid, plan_install, plan_uninstall, systemctl_is_active,
-    systemctl_is_enabled,
+    launchctl_print, launchd_state, parse_uid, plan_install, plan_uninstall, recover_commands,
+    systemctl_is_active, systemctl_is_enabled, unit_serves_home,
 };
 use loom_api::{ServicePlatform, ServiceStatus};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
@@ -140,6 +140,58 @@ pub fn status(target: &Target, runner: &mut impl CommandRunner) -> Result<Servic
         loaded: state.loaded,
         running: state.running,
     })
+}
+
+/// Who brings loomd back after the watchdog's rollback (ADR-0011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Supervisor {
+    /// The user service of this loom home is installed and loaded: its manager restarts loomd,
+    /// and the watchdog never starts one itself.
+    Service(Manager),
+    /// No service for this loom home: the watchdog starts loomd detached.
+    Unsupervised,
+}
+
+/// The supervisor of the loomd of the loom home `home`. No service file, or one that runs
+/// loomd for another loom home: [`Supervisor::Unsupervised`], without running any command.
+pub fn supervisor(
+    target: &Target,
+    home: &Path,
+    runner: &mut impl CommandRunner,
+) -> Result<Supervisor> {
+    let Some(content) = read_current(&target.paths.unit)? else {
+        return Ok(Supervisor::Unsupervised);
+    };
+    if !unit_serves_home(target.platform, &content, home).into_diagnostic()? {
+        return Ok(Supervisor::Unsupervised);
+    }
+    let manager = manager(target.platform, runner)?;
+    let state = query_state(manager, runner)?;
+    Ok(if state.loaded {
+        Supervisor::Service(manager)
+    } else {
+        Supervisor::Unsupervised
+    })
+}
+
+/// Whether the watchdog starts loomd itself when nobody holds the lock: only without a
+/// service manager. Under one, a loomd the watchdog started would hold the lock and make
+/// every start of the service fail (launchd `KeepAlive` retrying forever, systemd failing
+/// the unit), and loomd would end up outside its supervisor.
+pub const fn starts_loomd_itself(supervisor: Supervisor) -> bool {
+    match supervisor {
+        Supervisor::Service(_) => false,
+        Supervisor::Unsupervised => true,
+    }
+}
+
+/// Makes `manager` run loomd again on the installed binaries ([`recover_commands`]); stops at
+/// the first command that fails.
+pub fn recover(manager: Manager, runner: &mut impl CommandRunner) -> Result<()> {
+    for argv in recover_commands(manager) {
+        run_checked(runner, &argv)?;
+    }
+    Ok(())
 }
 
 /// The manager of `platform`; on macOS, asks `id -u` for the launchd domain.
@@ -281,8 +333,11 @@ fn failure(argv: &[String], output: &Output) -> miette::Report {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandRunner, Output, Target, install, status, uninstall};
-    use loom::service::{ServicePaths, ServiceSpec, render_unit};
+    use super::{
+        CommandRunner, Output, Supervisor, Target, install, recover, starts_loomd_itself, status,
+        supervisor, uninstall,
+    };
+    use loom::service::{Manager, ServicePaths, ServiceSpec, render_unit};
     use loom_api::{ServicePlatform, ServiceStatus};
     use std::collections::HashMap;
     use std::fs;
@@ -678,6 +733,87 @@ mod tests {
                 "run {DISABLE}\nremove {}\nrun {RELOAD}\n",
                 fixture.unit().display()
             )
+        );
+    }
+
+    // --- Supervisor of the watchdog ------------------------------------------------------
+
+    impl Fixture {
+        fn home(&self) -> PathBuf {
+            self.dir.path().join("loom home")
+        }
+    }
+
+    const KICKSTART: &str = "launchctl kickstart -k gui/501/io.github.gsuquet.loomd";
+    const RESET_FAILED: &str = "systemctl --user reset-failed loomd.service";
+
+    #[test]
+    fn installed_and_loaded_service_supervises_and_recovers_with_exact_commands() {
+        let fixture = Fixture::new(ServicePlatform::Macos);
+        fixture.put_unit(&fixture.desired);
+        let mut runner = macos_runner(true);
+        let found = supervisor(&fixture.target, &fixture.home(), &mut runner).unwrap();
+        assert_eq!(found, Supervisor::Service(Manager::Launchd { uid: 501 }));
+        assert!(
+            !starts_loomd_itself(found),
+            "no detached start under launchd"
+        );
+        recover(Manager::Launchd { uid: 501 }, &mut runner).unwrap();
+        assert_eq!(runner.calls, [ID, PRINT, KICKSTART]);
+
+        let fixture = Fixture::new(ServicePlatform::Linux);
+        fixture.put_unit(&fixture.desired);
+        // A failed unit (start limit hit) is still enabled.
+        let mut runner = linux_runner(true, false);
+        let found = supervisor(&fixture.target, &fixture.home(), &mut runner).unwrap();
+        assert_eq!(found, Supervisor::Service(Manager::Systemd));
+        assert!(
+            !starts_loomd_itself(found),
+            "no detached start under systemd"
+        );
+        recover(Manager::Systemd, &mut runner).unwrap();
+        assert_eq!(runner.calls, [IS_ENABLED, IS_ACTIVE, RESET_FAILED, RESTART]);
+    }
+
+    #[test]
+    fn without_a_service_of_this_home_the_watchdog_starts_loomd_itself() {
+        for platform in [ServicePlatform::Macos, ServicePlatform::Linux] {
+            // No service file: no command at all.
+            let fixture = Fixture::new(platform);
+            let mut runner = FakeRunner::default();
+            let found = supervisor(&fixture.target, &fixture.home(), &mut runner).unwrap();
+            assert_eq!(found, Supervisor::Unsupervised, "{platform:?}");
+            assert!(starts_loomd_itself(found));
+            assert_eq!(runner.calls, Vec::<String>::new(), "{platform:?}");
+
+            // A service of another loom home does not supervise this one.
+            fixture.put_unit(&fixture.desired);
+            let other = fixture.dir.path().join("other home");
+            let found = supervisor(&fixture.target, &other, &mut runner).unwrap();
+            assert_eq!(found, Supervisor::Unsupervised, "{platform:?}");
+            assert_eq!(runner.calls, Vec::<String>::new(), "{platform:?}");
+
+            // Installed but not loaded.
+            let mut runner = match platform {
+                ServicePlatform::Macos => macos_runner(false),
+                ServicePlatform::Linux => linux_runner(false, false),
+            };
+            let found = supervisor(&fixture.target, &fixture.home(), &mut runner).unwrap();
+            assert_eq!(found, Supervisor::Unsupervised, "{platform:?}");
+            assert_eq!(runner.calls.len(), 2, "{platform:?}: queries only");
+        }
+    }
+
+    #[test]
+    fn a_failing_recovery_command_stops_and_reports_it() {
+        let mut runner = FakeRunner::default().answer(RESET_FAILED, 1, "", "Unit not loaded.\n");
+        let error = recover(Manager::Systemd, &mut runner).unwrap_err();
+        assert_eq!(runner.calls, [RESET_FAILED]);
+        assert!(
+            error
+                .to_string()
+                .ends_with("exited with code 1: Unit not loaded."),
+            "{error}"
         );
     }
 

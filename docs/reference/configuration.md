@@ -102,7 +102,7 @@ The service runs the `loomd` found by `loom service install`: the `loomd` next t
 
 Property list content (macOS): `ProgramArguments` = [`loomd` path], `EnvironmentVariables` = `LOOM_HOME`, `RunAtLoad` true, `KeepAlive` true, `ProcessType` `Background`, `StandardOutPath` and `StandardErrorPath` = `<loom home>/log/loomd.log`. Values are XML-escaped.
 
-Unit content (Linux). `KillMode=process` makes systemd stop only `loomd` when it exits, not the watchdog it starts after an auto-upgrade; rerun `loom service install` to update a unit written without it.
+Unit content (Linux). `KillMode=process` makes systemd stop only `loomd` when it exits, not the watchdog it starts after an auto-upgrade. `RestartSec=1s` restarts a failing `loomd` every second; systemd's default start limit (5 starts in 10 s) still stops a crash loop, and the watchdog clears it after a rollback. A unit written before either line was added is updated by running `loom service install` again.
 
 ```ini
 [Unit]
@@ -112,6 +112,7 @@ Description=Loom daemon
 ExecStart="/usr/local/bin/loomd"
 Environment="LOOM_HOME=/home/me/.loom"
 Restart=always
+RestartSec=1s
 KillMode=process
 
 [Install]
@@ -121,6 +122,8 @@ WantedBy=default.target
 Values are double-quoted; `\` and `"` are backslash-escaped, `%` is written `%%`, and `$` in `ExecStart` is written `$$`.
 
 A `loomd` path or loom home that is not valid UTF-8 or contains a control character is refused with exit code 1. The file is rewritten by `install` whenever its content differs from the generated one: hand edits are overwritten.
+
+The auto-upgrade watchdog treats `loomd` as supervised when the service file exists, sets `LOOM_HOME` to the watchdog's loom home, and the service is loaded (macOS: `launchctl print gui/<uid>/io.github.gsuquet.loomd` succeeds; Linux: `systemctl --user is-enabled loomd.service` succeeds). It then never starts `loomd` itself, and after a rollback runs `launchctl kickstart -k gui/<uid>/io.github.gsuquet.loomd` (macOS) or `systemctl --user reset-failed loomd.service` then `systemctl --user restart loomd.service` (Linux). Otherwise it starts `loomd` detached. See [how loomd upgrades itself](../explanation/auto-upgrade.md).
 
 ## `[telemetry]`
 
