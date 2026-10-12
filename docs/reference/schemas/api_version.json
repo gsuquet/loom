@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiVersion",
+  "description": "Version of the loomd API a message belongs to.\n\nA breaking change to any API type adds a variant; compatible changes (new optional fields,\nnew endpoints) keep the current one.",
+  "oneOf": [
+    {
+      "description": "First version of the API.",
+      "type": "string",
+      "const": "v1"
+    }
+  ]
+}

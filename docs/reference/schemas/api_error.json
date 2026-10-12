@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiError",
+  "description": "Error returned by the loomd API instead of a response body.",
+  "type": "object",
+  "properties": {
+    "code": {
+      "description": "Machine-readable category; clients branch on it, never on `message`.",
+      "$ref": "#/$defs/ErrorCode"
+    },
+    "details": {
+      "description": "Structured context for the error, such as the name of an invalid field. Its shape depends\non `code` and the endpoint; absent when there is none."
+    },
+    "message": {
+      "description": "Human-readable explanation, in English.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "$defs": {
+    "ErrorCode": {
+      "description": "Category of an `ApiError`. Closed set: a new code is an API change.",
+      "oneOf": [
+        {
+          "description": "The request is malformed: unparsable body, unknown or missing field, invalid value.\nRetrying the same request fails the same way.",
+          "type": "string",
+          "const": "invalid_request"
+        },
+        {
+          "description": "The addressed resource or endpoint does not exist.",
+          "type": "string",
+          "const": "not_found"
+        },
+        {
+          "description": "The client asked for an API version this daemon does not serve.",
+          "type": "string",
+          "const": "version_mismatch"
+        },
+        {
+          "description": "The daemon cannot serve the request right now (starting, shutting down, a dependency is\ndown). The same request may succeed later.",
+          "type": "string",
+          "const": "unavailable"
+        },
+        {
+          "description": "The daemon failed while handling a valid request: a bug or an unexpected I/O failure.",
+          "type": "string",
+          "const": "internal"
+        }
+      ]
+    }
+  }
+}

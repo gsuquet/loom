@@ -10,9 +10,11 @@ publish.workspace = true
 [dependencies]
 schemars.workspace = true
 serde.workspace = true
+# `ApiError.details` carries endpoint-specific JSON.
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+jsonschema.workspace = true
 
 [lints]
 workspace = true

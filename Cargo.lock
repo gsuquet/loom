@@ -413,6 +413,7 @@ dependencies = [
 name = "loom-api"
 version = "0.0.0"
 dependencies = [
+ "jsonschema",
  "schemars",
  "serde",
  "serde_json",

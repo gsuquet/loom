@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StatusResponse",
+  "description": "State of a running loomd.",
+  "type": "object",
+  "properties": {
+    "api_version": {
+      "description": "API version the daemon serves.",
+      "$ref": "#/$defs/ApiVersion"
+    },
+    "config_path": {
+      "description": "Absolute path of the configuration file the daemon loaded.",
+      "type": "string"
+    },
+    "daemon": {
+      "description": "Build information of the daemon binary.",
+      "$ref": "#/$defs/VersionInfo"
+    },
+    "loom_home": {
+      "description": "Absolute path of the loom home directory the daemon uses.",
+      "type": "string"
+    },
+    "pid": {
+      "description": "Process ID of the daemon.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "socket_path": {
+      "description": "Absolute path of the unix socket the daemon listens on.",
+      "type": "string"
+    },
+    "started_at": {
+      "description": "Instant the daemon started.",
+      "$ref": "#/$defs/Timestamp"
+    },
+    "uptime_secs": {
+      "description": "Whole seconds elapsed since `started_at`.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "api_version",
+    "daemon",
+    "pid",
+    "started_at",
+    "uptime_secs",
+    "loom_home",
+    "socket_path",
+    "config_path"
+  ],
+  "$defs": {
+    "ApiVersion": {
+      "description": "Version of the loomd API a message belongs to.\n\nA breaking change to any API type adds a variant; compatible changes (new optional fields,\nnew endpoints) keep the current one.",
+      "oneOf": [
+        {
+          "description": "First version of the API.",
+          "type": "string",
+          "const": "v1"
+        }
+      ]
+    },
+    "Channel": {
+      "description": "Release channel, set with `LOOM_CHANNEL` at build time.",
+      "oneOf": [
+        {
+          "description": "Tagged release.",
+          "type": "string",
+          "const": "stable"
+        },
+        {
+          "description": "Prerelease built from every merge to `main`.",
+          "type": "string",
+          "const": "dev"
+        },
+        {
+          "description": "Any other build, such as `cargo build` on a workstation. Default when `LOOM_CHANNEL` is unset.",
+          "type": "string",
+          "const": "local"
+        }
+      ]
+    },
+    "Profile": {
+      "description": "Cargo profile family, as reported by Cargo's `PROFILE` build variable.",
+      "oneOf": [
+        {
+          "description": "`dev` or `test` profile, or a custom profile inheriting from them.",
+          "type": "string",
+          "const": "debug"
+        },
+        {
+          "description": "`release` or `bench` profile, or a custom profile inheriting from them.",
+          "type": "string",
+          "const": "release"
+        }
+      ]
+    },
+    "Timestamp": {
+      "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "VersionInfo": {
+      "description": "Build information embedded in a loom binary at compile time.",
+      "type": "object",
+      "properties": {
+        "channel": {
+          "description": "Release channel the binary was built for.",
+          "$ref": "#/$defs/Channel"
+        },
+        "commit": {
+          "description": "Full git commit hash of the build, or `unknown` outside a git checkout.",
+          "type": "string"
+        },
+        "commit_date": {
+          "description": "Committer date of `commit` in strict ISO 8601, or `unknown` outside a git checkout.",
+          "type": "string"
+        },
+        "profile": {
+          "description": "Cargo profile the binary was built with.",
+          "$ref": "#/$defs/Profile"
+        },
+        "target": {
+          "description": "Target triple the binary was compiled for.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Release version: `LOOM_BUILD_VERSION` at build time, otherwise the crate version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "commit",
+        "commit_date",
+        "target",
+        "channel",
+        "profile"
+      ]
+    }
+  }
+}

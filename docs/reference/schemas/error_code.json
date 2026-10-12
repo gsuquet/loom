@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ErrorCode",
+  "description": "Category of an `ApiError`. Closed set: a new code is an API change.",
+  "oneOf": [
+    {
+      "description": "The request is malformed: unparsable body, unknown or missing field, invalid value.\nRetrying the same request fails the same way.",
+      "type": "string",
+      "const": "invalid_request"
+    },
+    {
+      "description": "The addressed resource or endpoint does not exist.",
+      "type": "string",
+      "const": "not_found"
+    },
+    {
+      "description": "The client asked for an API version this daemon does not serve.",
+      "type": "string",
+      "const": "version_mismatch"
+    },
+    {
+      "description": "The daemon cannot serve the request right now (starting, shutting down, a dependency is\ndown). The same request may succeed later.",
+      "type": "string",
+      "const": "unavailable"
+    },
+    {
+      "description": "The daemon failed while handling a valid request: a bug or an unexpected I/O failure.",
+      "type": "string",
+      "const": "internal"
+    }
+  ]
+}
