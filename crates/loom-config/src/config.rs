@@ -12,6 +12,9 @@ pub struct Config {
     /// `[daemon]` table.
     #[serde(default)]
     pub daemon: Daemon,
+    /// `[telemetry]` table: export of traces for diagnosing loom.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 /// `[daemon]` table: how `loomd` runs.
@@ -26,6 +29,51 @@ pub struct Daemon {
 impl Default for Daemon {
     fn default() -> Self {
         Self { service: true }
+    }
+}
+
+/// `[telemetry]` table: OTLP export of traces. Off by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetryConfig {
+    /// Whether traces are exported. `OTEL_SDK_DISABLED=true` turns it off again.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OTLP/HTTP traces endpoint; overrides the `OTEL_EXPORTER_OTLP_*_ENDPOINT` variables.
+    #[serde(default)]
+    pub otlp_endpoint: Option<OtlpEndpoint>,
+}
+
+/// An `http` or `https` URL with a host, such as `http://localhost:4318/v1/traces`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct OtlpEndpoint(String);
+
+impl OtlpEndpoint {
+    /// The URL, as written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for OtlpEndpoint {
+    type Error = String;
+
+    fn try_from(url: String) -> Result<Self, Self::Error> {
+        let invalid = || {
+            format!(
+                "invalid otlp_endpoint `{url}`: expected an http:// or https:// URL with a host"
+            )
+        };
+        let (scheme, rest) = url.split_once("://").ok_or_else(invalid)?;
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        let valid_scheme =
+            scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+        if !valid_scheme || host.is_empty() || url.chars().any(char::is_whitespace) {
+            return Err(invalid());
+        }
+        Ok(Self(url))
     }
 }
 
@@ -92,7 +140,7 @@ fn location(text: &str, offset: usize) -> Location {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Daemon, Location, location, parse_config};
+    use super::{Config, Daemon, Location, OtlpEndpoint, TelemetryConfig, location, parse_config};
     use std::path::Path;
 
     const PATH: &str = "/home/me/.loom/config.toml";
@@ -172,6 +220,86 @@ mod tests {
                 .starts_with(&format!("invalid configuration {PATH}:2:")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn telemetry_is_off_by_default() {
+        let config = parse_config("", Path::new(PATH)).unwrap();
+        assert_eq!(config.telemetry, TelemetryConfig::default());
+        assert!(!config.telemetry.enabled);
+        assert_eq!(config.telemetry.otlp_endpoint, None);
+        let config = parse_config("[telemetry]\n", Path::new(PATH)).unwrap();
+        assert_eq!(config.telemetry, TelemetryConfig::default());
+    }
+
+    #[test]
+    fn telemetry_keys_parse() {
+        let text = "[telemetry]\nenabled = true\notlp_endpoint = \"https://otel.example:4318/v1/traces\"\n";
+        let config = parse_config(text, Path::new(PATH)).unwrap();
+        assert!(config.telemetry.enabled);
+        assert_eq!(
+            config
+                .telemetry
+                .otlp_endpoint
+                .as_ref()
+                .map(OtlpEndpoint::as_str),
+            Some("https://otel.example:4318/v1/traces")
+        );
+    }
+
+    #[test]
+    fn otlp_endpoint_must_be_an_http_url_with_a_host() {
+        for url in [
+            "http://localhost:4318/v1/traces",
+            "https://otel.example",
+            "HTTP://localhost:4318",
+            "http://[::1]:4318/v1/traces",
+        ] {
+            assert!(OtlpEndpoint::try_from(url.to_owned()).is_ok(), "{url}");
+        }
+        for url in [
+            "",
+            "localhost:4318",
+            "grpc://localhost:4317",
+            "file:///tmp/traces",
+            "http://",
+            "http:///v1/traces",
+            "http://local host:4318",
+        ] {
+            assert!(OtlpEndpoint::try_from(url.to_owned()).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn invalid_otlp_endpoint_names_file_line_column_and_value() {
+        let text = "[telemetry]\nenabled = true\notlp_endpoint = \"localhost:4318\"\n";
+        let error = parse_config(text, Path::new(PATH)).unwrap_err();
+        assert_eq!(error.location.map(|at| at.line), Some(3));
+        let message = error.to_string();
+        assert!(
+            message.starts_with(&format!("invalid configuration {PATH}:3:")),
+            "{message}"
+        );
+        assert!(message.contains("`localhost:4318`"), "{message}");
+        assert!(message.contains("http:// or https://"), "{message}");
+    }
+
+    #[test]
+    fn unknown_telemetry_key_is_rejected() {
+        let error =
+            parse_config("[telemetry]\nendpoint = \"http://x\"\n", Path::new(PATH)).unwrap_err();
+        assert_eq!(error.location.map(|at| at.line), Some(2));
+        assert!(
+            error.message.contains("unknown field `endpoint`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn enabled_must_be_a_boolean() {
+        let error = parse_config("[telemetry]\nenabled = \"yes\"\n", Path::new(PATH)).unwrap_err();
+        assert_eq!(error.location.map(|at| at.line), Some(2));
     }
 
     #[test]

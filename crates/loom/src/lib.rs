@@ -4,7 +4,6 @@
 pub mod cli;
 pub mod cli_doc;
 pub mod conventions;
-pub mod logging;
 pub mod loomd_path;
 pub mod service;
 pub mod status;

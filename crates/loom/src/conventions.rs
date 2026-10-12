@@ -1,24 +1,11 @@
 //! Process conventions shared by every command (ADR-0010): colors,
 //! confirmations, exit codes, stdout writes.
 
-use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use clap::ColorChoice;
-
-/// Whether to color a stream.
-///
-/// `auto` colors only a terminal, and only when `NO_COLOR` is unset or empty.
-/// `always` and `never` ignore both.
-#[must_use]
-pub fn use_color(choice: ColorChoice, no_color: Option<&OsStr>, is_terminal: bool) -> bool {
-    match choice {
-        ColorChoice::Always => true,
-        ColorChoice::Never => false,
-        ColorChoice::Auto => is_terminal && no_color.is_none_or(OsStr::is_empty),
-    }
-}
+/// Whether to color a stream; same rule in `loom` and `loomd`.
+pub use loom_telemetry::logging::use_color;
 
 /// What a command does when it needs a confirmation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,31 +80,8 @@ pub fn write_out(out: &mut impl Write, text: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Confirmation, Exit, confirmation, use_color, write_out};
-    use clap::ColorChoice;
-    use std::ffi::OsStr;
+    use super::{Confirmation, Exit, confirmation, write_out};
     use std::io::{self, Write};
-
-    #[test]
-    fn color_decision_table() {
-        let set = Some(OsStr::new("1"));
-        let empty = Some(OsStr::new(""));
-        let cases = [
-            (ColorChoice::Auto, None, true, true),
-            (ColorChoice::Auto, None, false, false),
-            (ColorChoice::Auto, set, true, false),
-            (ColorChoice::Auto, empty, true, true),
-            (ColorChoice::Always, set, false, true),
-            (ColorChoice::Never, None, true, false),
-        ];
-        for (choice, no_color, is_terminal, expected) in cases {
-            assert_eq!(
-                use_color(choice, no_color, is_terminal),
-                expected,
-                "{choice:?} NO_COLOR={no_color:?} terminal={is_terminal}"
-            );
-        }
-    }
 
     #[test]
     fn confirmation_decision_table() {

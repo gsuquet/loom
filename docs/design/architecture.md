@@ -42,6 +42,7 @@ Crates are added when a version needs them, never ahead of time.
 | `loom-api` | lib | v0.1 | Types shared by the API, the CLI `--json` output and the MCP tools. No I/O. |
 | `loom-config` | lib | v0.1 | Loom home resolution, files under it, `config.toml` parsing. No I/O. Shared by `loom` and `loomd` |
 | `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback. Shared by `loom` and `loomd` |
+| `loom-telemetry` | lib | v0.1 | `tracing` subscriber of both binaries: logs on stderr, OTLP/HTTP trace export when enabled (decisions pure), W3C trace context propagation. Shared by `loom` and `loomd` |
 | `loom-repo` | lib | v0.2 | Repo identity, scanning, state, update policy |
 | `loom-core` | lib | v0.3 | Domain: tasks, events, notes, priority, contexts. No I/O. |
 | `loom-store` | lib | v0.3 | `StorePort` and the local files + git adapter, SQLite index |
@@ -61,3 +62,8 @@ See [ADR-0008](../adr/0008-git-cli-for-writes.md).
 ## Observability
 
 `tracing` everywhere, OTLP export configurable and off by default. otel is for diagnosing loom itself; the work ledger is `events.jsonl` (see [Capture and learnings](capture-and-learnings.md)).
+
+- `loom-telemetry` builds the subscriber of both binaries. Disabled means no exporter, HTTP client or thread.
+- Export: OTLP over HTTP/protobuf, batch span processor, over the same blocking HTTP client and TLS configuration as the updater (`ureq` + rustls with ring and the OS trust store, `loom_update::tls`); no gRPC.
+- One trace per CLI command: `loom` sends the W3C trace context with each API request, and `loomd`'s request span is its child.
+- `loom` waits at most 2 s at exit for its spans to be exported.

@@ -41,7 +41,13 @@ Error: invalid configuration <path>:<line>:<column>: <message>
 `line` and `column` start at 1; `column` counts characters. For an unknown key, `message` names it:
 
 ```text
-Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected `daemon`
+Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected `daemon` or `telemetry`
+```
+
+`loom` reads `config.toml` at each command for `[telemetry]`. A file it cannot read or parse does not stop a command for that reason: `loom` exports no traces, prints this warning on stderr (hidden by `-q`) and runs the command. Commands that need the file for something else, such as `loom service install`, still fail on it.
+
+```text
+ WARN traces are not exported: invalid configuration <path>:<line>:<column>: <message>
 ```
 
 ### Keys
@@ -49,6 +55,8 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `[daemon] service` | boolean | `true` | `false`: `loom service install` refuses with exit code 1 and a message naming this key and the file. `loom service uninstall` and `loom service status` still work. Does not stop or remove an installed service. |
+| `[telemetry] enabled` | boolean | `false` | Export traces. See [`[telemetry]`](#telemetry). |
+| `[telemetry] otlp_endpoint` | string | none | OTLP/HTTP traces endpoint. See [`[telemetry]`](#telemetry). |
 
 ```toml
 [daemon]
@@ -86,6 +94,51 @@ WantedBy=default.target
 Values are double-quoted; `\` and `"` are backslash-escaped, `%` is written `%%`, and `$` in `ExecStart` is written `$$`.
 
 A `loomd` path or loom home that is not valid UTF-8 or contains a control character is refused with exit code 1. The file is rewritten by `install` whenever its content differs from the generated one: hand edits are overwritten.
+
+## `[telemetry]`
+
+Export of traces over OTLP, for diagnosing loom itself. Read by `loom` at each command and by `loomd` at start.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `false` | Export traces. |
+| `otlp_endpoint` | string | none | Full URL of the OTLP/HTTP traces endpoint, such as `http://localhost:4318/v1/traces`. Must start with `http://` or `https://` and have a host; anything else is rejected with the location of the value. |
+
+```toml
+[telemetry]
+enabled = true
+otlp_endpoint = "http://localhost:4318/v1/traces"
+```
+
+Traces are exported only when `enabled = true` and `OTEL_SDK_DISABLED` is not `true` (any case). Otherwise no exporter, HTTP client or thread is created, and no connection is opened.
+
+The traces endpoint is the first of:
+
+| Order | Source | Used as |
+| --- | --- | --- |
+| 1 | `otlp_endpoint` | Given. |
+| 2 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Given. |
+| 3 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Followed by `/v1/traces`. |
+| 4 | Default | `http://localhost:4318/v1/traces` |
+
+Empty variables count as unset. Other environment variables: see [environment variables](cli/conventions.md#environment-variables).
+
+Export:
+
+- Protocol: OTLP over HTTP with protobuf bodies (`http/protobuf`). `OTEL_EXPORTER_OTLP_PROTOCOL` is ignored; gRPC is not supported.
+- Spans are batched: `loomd` sends a batch every 5 s (`OTEL_BSP_SCHEDULE_DELAY`), and at exit waits at most 5 s for the last one. `loom` sends its spans when the command ends and waits at most 2 s, so an unreachable or slow collector delays a command by at most 2 s.
+- An export that fails is logged on stderr (for `loomd` started by `loom status`, in `log/loomd.log`) and the spans are dropped. It never changes the exit code.
+- Resource: `service.name` is `loom` or `loomd` unless `OTEL_SERVICE_NAME` or `service.name` in `OTEL_RESOURCE_ATTRIBUTES` sets it; `service.version` is the build version; `loom.channel` is the build channel (`stable`, `dev`, `local`).
+
+Spans:
+
+| Process | Span | Kind | Attributes |
+| --- | --- | --- | --- |
+| `loom` | One root span per command, named after the command path: `loom version`, `loom status`, `loom service install`. | internal | `loom.context` when `-c` is given. Error status and message when the command fails. |
+| `loom` | `GET <path>`: each request to `loomd`, child of the command span. | client | `http.request.method`, `url.path`, `http.response.status_code`. Error status when the request fails. |
+| `loomd` | `<METHOD> <route>` (`GET /v1/status`), or `<METHOD>` alone when no route matches: each API request. | server | `http.request.method`, `url.path`, `http.route`, `http.response.status_code`. Error status on a 5xx. |
+
+`loom` sends the [W3C trace context](https://www.w3.org/TR/trace-context/) (`traceparent`, `tracestate` headers) with each request; the request span of `loomd` is a child of the client span, in the same trace. Spans at `info` level are exported; `-v` and `-vv` add `debug` and `trace` spans. `-q` does not reduce what is exported.
 
 ## `run/`
 

@@ -1,0 +1,31 @@
+[package]
+name = "loom-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+clap.workspace = true
+http.workspace = true
+loom-api.workspace = true
+# TLS configuration shared with the updater (`loom_update::tls`).
+loom-update.workspace = true
+opentelemetry.workspace = true
+opentelemetry-http.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

@@ -25,8 +25,8 @@ confidence-threshold = 0.9
 crate = "matchit"
 allow = ["BSD-3-Clause"]
 
-# TLS stack of the updater's HTTP client (ureq + rustls, `loom-update`). ISC, BSD-3-Clause and
-# CDLA-Permissive-2.0 (Mozilla's root certificates in webpki-roots) are permissive and
+# TLS stack of the HTTP clients (ureq + rustls, configured in `loom_update::tls`, used by the
+# updater and the OTLP exporter). ISC and BSD-3-Clause are permissive and
 # MIT-compatible. Allowed for these crates only.
 [[licenses.exceptions]]
 crate = "ring"

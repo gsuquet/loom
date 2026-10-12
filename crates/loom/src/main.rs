@@ -11,59 +11,127 @@ use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Parser as _;
-use loom::cli::{Cli, Command, GlobalArgs, ServiceCommand, VERSION_INFO};
+use clap::{CommandFactory as _, FromArgMatches as _};
+use loom::cli::{Cli, Command, GlobalArgs, ServiceCommand, VERSION_INFO, command_path};
 use loom::conventions::{Exit, use_color, write_out};
-use loom::logging::level;
 use loom::loomd_path::loomd_candidates;
 use loom::service::{
     ServicePaths, ServiceSpec, format_status, opt_out_message, render_unit, unit_path,
 };
 use loom::status::{render_human, version_mismatch};
 use loom_api::{ServicePlatform, StatusResponse, VersionInfo};
-use loom_config::config::{Config, parse_config};
+use loom_config::config::{Config, OtlpEndpoint, TelemetryConfig, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
 use loom_config::layout::{Layout, MAX_SOCKET_PATH_BYTES, check_socket_path};
+use loom_telemetry::logging::level;
+use loom_telemetry::settings::resolve;
+use loom_telemetry::{LOOM_SHUTDOWN_TIMEOUT, Options, TelemetryGuard};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use service_cmd::{SystemRunner, Target};
-use tracing::warn;
+use tracing::field::Empty;
+use tracing::{info_span, warn};
 
 use crate::client::{Client, ClientError};
 
 fn main() -> ExitCode {
     // Usage errors exit with code 2, `--help` and `--version` with 0 (clap).
-    let cli = Cli::parse();
-    init_logging(&cli.global);
-    match run(&cli) {
-        Ok(()) => Exit::Success.into(),
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches)
+        .map_err(|error| error.format(&mut Cli::command()))
+        .unwrap_or_else(|error| error.exit());
+    let (config, config_problem) = telemetry_config();
+    let telemetry = init_telemetry(&cli.global, &config);
+    if let Some(problem) = config_problem {
+        warn!("traces are not exported: {problem}");
+    }
+
+    // Root span of the command; every other span of `loom` is its descendant.
+    let span = info_span!(
+        "command",
+        otel.name = %command_path(&matches),
+        otel.status_code = Empty,
+        otel.status_description = Empty,
+        loom.context = Empty,
+    );
+    if let Some(context) = &cli.global.context {
+        span.record("loom.context", context.as_str());
+    }
+    let result = span.in_scope(|| run(&cli));
+    let exit = match result {
+        Ok(()) => Exit::Success,
         Err(report) => {
+            span.record("otel.status_code", "ERROR");
+            span.record("otel.status_description", report.to_string());
             // Same layout as `loomd`: miette's default `Debug` output is a struct dump.
             eprintln!("Error: {report}");
             for cause in report.chain().skip(1) {
                 eprintln!("  caused by: {cause}");
             }
-            Exit::Failure.into()
+            Exit::Failure
         }
+    };
+    // Ends the root span, then exports every span, waiting at most `LOOM_SHUTDOWN_TIMEOUT`.
+    drop(span);
+    telemetry.shutdown();
+    exit.into()
+}
+
+/// `[telemetry]` of `config.toml`, and why it was ignored. Only telemetry depends on it here: a
+/// configuration that cannot be read or parsed leaves telemetry off and the command runs.
+fn telemetry_config() -> (TelemetryConfig, Option<String>) {
+    let Ok(cwd) = env::current_dir() else {
+        return (TelemetryConfig::default(), None);
+    };
+    // No loom home, no configuration: commands that need the home report it themselves.
+    let Ok(home) = resolve_home(
+        None,
+        env::var_os(LOOM_HOME_ENV).as_deref(),
+        env::home_dir().as_deref(),
+        &cwd,
+    ) else {
+        return (TelemetryConfig::default(), None);
+    };
+    let path = Layout::new(home).config;
+    match fs::read_to_string(&path) {
+        Ok(text) => match parse_config(&text, &path) {
+            Ok(config) => (config.telemetry, None),
+            Err(error) => (TelemetryConfig::default(), Some(error.to_string())),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (TelemetryConfig::default(), None),
+        Err(error) => (
+            TelemetryConfig::default(),
+            Some(format!(
+                "cannot read the configuration {}: {error}",
+                path.display()
+            )),
+        ),
     }
 }
 
-/// Logs to stderr, at the level and with the colors the global flags ask for.
-fn init_logging(global: &GlobalArgs) {
+/// Logs to stderr, at the level and with the colors the global flags ask for, and exports
+/// traces when `[telemetry]` enables it.
+fn init_telemetry(global: &GlobalArgs, config: &TelemetryConfig) -> TelemetryGuard {
     let color = use_color(
         global.color,
         env::var_os("NO_COLOR").as_deref(),
         io::stderr().is_terminal(),
     );
-    let result = tracing_subscriber::fmt()
-        .with_writer(io::stderr)
-        .with_ansi(color)
-        .with_max_level(level(global.quiet, global.verbose))
-        .without_time()
-        .with_target(false)
-        .try_init();
-    if let Err(error) = result {
-        eprintln!("Error: cannot set up logging: {error}");
-    }
+    let env_var = |name: &str| env::var(name).ok();
+    let telemetry = resolve(
+        config.enabled,
+        config.otlp_endpoint.as_ref().map(OtlpEndpoint::as_str),
+        &env_var,
+    );
+    let options = Options {
+        service_name: "loom",
+        version: &VERSION_INFO,
+        level: level(global.quiet, global.verbose),
+        color,
+        timestamps: false,
+        telemetry: &telemetry,
+        shutdown_timeout: LOOM_SHUTDOWN_TIMEOUT,
+    };
+    loom_telemetry::init(&options, &env_var)
 }
 
 fn run(cli: &Cli) -> Result<()> {
