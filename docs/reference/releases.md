@@ -104,4 +104,4 @@ minisign prints `Signature and comment signature verified`; the checksum tool pr
 
 ## Pull request dry run
 
-On every pull request, the workflow builds the four targets, packages the archives, writes `SHA256SUMS`, signs it with a key pair generated in the job and verifies the signature and every checksum. It uses no secrets and publishes nothing.
+On every pull request that changes `Cargo.toml`, `Cargo.lock`, `crates/`, `dist/`, `.mise/` or the release workflow, the workflow builds the four targets, packages the archives, writes `SHA256SUMS`, signs it with a key pair generated in the job and verifies the signature and every checksum. It uses no secrets and publishes nothing.
