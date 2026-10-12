@@ -69,6 +69,12 @@ pub enum Command {
         #[arg(long)]
         no_start: bool,
     },
+    /// Install, remove or inspect loomd as a user service (launchd on macOS, systemd on Linux).
+    Service {
+        /// Service command to run.
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     /// Upgrade `loom` and `loomd` to the latest release of a channel, to a given release, or to
     /// a local build.
     ///
@@ -132,6 +138,30 @@ pub enum ReleaseChannel {
 fn parse_release_version(text: &str) -> Result<Version, String> {
     loom_update::release::tag_version(&format!("v{text}"))
         .ok_or_else(|| format!("expected X.Y.Z or X.Y.Z-dev.N, got `{text}`"))
+}
+
+/// `loom service` commands.
+#[derive(Debug, Subcommand)]
+pub enum ServiceCommand {
+    /// Install loomd as a user service and start it; no-op when already installed and loaded.
+    /// Refused when `[daemon] service = false`.
+    Install {
+        /// Print the file that would be written and the commands that would run; change nothing.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
+    /// Stop loomd, unload the user service and remove its file; no-op when not installed.
+    Uninstall {
+        /// Print the commands that would run and the file that would be removed; change nothing.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
+    /// Report whether the user service is installed, loaded and running.
+    Status {
+        /// Print the state as JSON (`ServiceStatus` schema).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Name of a context, as given to `-c`/`--context`.
@@ -209,7 +239,7 @@ impl fmt::Display for ContextName {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, ContextName, ContextNameError, ReleaseChannel};
+    use super::{Cli, Command, ContextName, ContextNameError, ReleaseChannel, ServiceCommand};
     use clap::error::ErrorKind;
     use clap::{ColorChoice, CommandFactory, Parser};
 
@@ -279,6 +309,46 @@ mod tests {
                 no_start: true
             }
         ));
+    }
+
+    #[test]
+    fn service_commands_parse() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Command::Service { command } => command,
+            Command::Version { .. }
+            | Command::Status { .. }
+            | Command::Upgrade(_)
+            | Command::Rollback(_) => {
+                panic!("not a service command: {args:?}")
+            }
+        };
+        assert!(matches!(
+            parse(&["loom", "service", "install"]),
+            ServiceCommand::Install { dry_run: false }
+        ));
+        assert!(matches!(
+            parse(&["loom", "service", "install", "-n"]),
+            ServiceCommand::Install { dry_run: true }
+        ));
+        assert!(matches!(
+            parse(&["loom", "service", "uninstall", "--dry-run"]),
+            ServiceCommand::Uninstall { dry_run: true }
+        ));
+        assert!(matches!(
+            parse(&["loom", "service", "status", "--json"]),
+            ServiceCommand::Status { json: true }
+        ));
+    }
+
+    #[test]
+    fn service_needs_a_subcommand_and_status_has_no_dry_run() {
+        let missing = Cli::try_parse_from(["loom", "service"]).unwrap_err();
+        assert_eq!(
+            missing.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+        let error = Cli::try_parse_from(["loom", "service", "status", "-n"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]

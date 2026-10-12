@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use loom_api::{
     ApiError, ApiVersion, Channel, DaemonRestart, ErrorCode, InstallReport, Profile,
-    RollbackReport, StatusResponse, Timestamp, UpgradeDecision, UpgradeReport, UpgradeSkipReason,
-    UpgradeSource, VersionInfo,
+    RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp, UpgradeDecision,
+    UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -24,6 +24,8 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("api_version", schema_for!(ApiVersion)),
         ("error_code", schema_for!(ErrorCode)),
         ("rollback_report", schema_for!(RollbackReport)),
+        ("service_platform", schema_for!(ServicePlatform)),
+        ("service_status", schema_for!(ServiceStatus)),
         ("status_response", schema_for!(StatusResponse)),
         ("upgrade_report", schema_for!(UpgradeReport)),
         ("version_info", schema_for!(VersionInfo)),
@@ -98,6 +100,16 @@ fn samples_validate_against_their_schema() {
     let started_at = Timestamp::from_unix_secs(1_791_792_000).unwrap();
     let mut errors = violations(&status(started_at)).unwrap();
     errors.extend(violations(&ApiVersion::V1).unwrap());
+    errors.extend(
+        violations(&ServiceStatus {
+            platform: ServicePlatform::Linux,
+            unit_path: "/home/me/.config/systemd/user/loomd.service".into(),
+            installed: true,
+            loaded: true,
+            running: true,
+        })
+        .unwrap(),
+    );
     errors.extend(violations(&ErrorCode::VersionMismatch).unwrap());
     errors.extend(violations(&ApiError::new(ErrorCode::Unavailable, "shutting down")).unwrap());
     errors.extend(
