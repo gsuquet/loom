@@ -13,9 +13,10 @@ use axum::Json;
 use axum::Router;
 use axum::extract::State;
 use axum::http::{Method, StatusCode, Uri};
+use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
-use loom_api::{ApiError, ApiVersion, StatusResponse, VersionInfo};
+use loom_api::{ApiError, ApiVersion, StatusResponse, Timestamp, VersionInfo};
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
 use loom_config::layout::{
@@ -25,13 +26,24 @@ use loom_config::layout::{
 use loomd::api::{STATUS_PATH, clock_error, method_not_allowed, not_found, status_at, timestamp};
 use loomd::cli::Cli;
 use loomd::exit::Shutdown;
+use loomd::trace::request_span;
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{debug, info, warn};
 
-/// Starts the daemon and serves until `SIGTERM` or `SIGINT`.
-pub fn run(cli: &Cli) -> Result<Shutdown> {
+/// What the daemon reads before it changes anything.
+pub struct Setup {
+    started_at: Timestamp,
+    layout: Layout,
+    /// The configuration, defaults when the file is missing.
+    pub config: Config,
+    config_missing: bool,
+}
+
+/// Resolves the loom home and reads the configuration, without side effects: a bad
+/// configuration leaves nothing behind.
+pub fn load(cli: &Cli) -> Result<Setup> {
     let started_at = timestamp(SystemTime::now())
         .ok_or_else(|| miette!("the system clock is outside the range of timestamps"))?;
     let cwd = env::current_dir()
@@ -45,10 +57,27 @@ pub fn run(cli: &Cli) -> Result<Shutdown> {
     )
     .into_diagnostic()?;
     let layout = Layout::new(home);
-
-    // Checks without side effects first: a bad configuration leaves nothing behind.
-    let _config = load_config(&layout.config)?;
+    let (config, config_missing) = load_config(&layout.config)?;
     check_socket_path(&layout.socket, MAX_SOCKET_PATH_BYTES).into_diagnostic()?;
+    Ok(Setup {
+        started_at,
+        layout,
+        config,
+        config_missing,
+    })
+}
+
+/// Starts the daemon and serves until `SIGTERM` or `SIGINT`.
+pub fn run(setup: Setup) -> Result<Shutdown> {
+    let Setup {
+        started_at,
+        layout,
+        config: _,
+        config_missing,
+    } = setup;
+    if config_missing {
+        debug!(path = %layout.config.display(), "no configuration file, using defaults");
+    }
 
     create_run_dir(&layout)?;
     // Held, and the lock with it, until the process exits.
@@ -73,14 +102,12 @@ pub fn run(cli: &Cli) -> Result<Shutdown> {
     runtime.block_on(serve(&layout, base))
 }
 
-/// Reads the configuration; a missing file gives the defaults.
-fn load_config(path: &Path) -> Result<Config> {
+/// Reads the configuration, and whether the file is missing: a missing file gives the
+/// defaults.
+fn load_config(path: &Path) -> Result<(Config, bool)> {
     match fs::read_to_string(path) {
-        Ok(text) => parse_config(&text, path).into_diagnostic(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            debug!(path = %path.display(), "no configuration file, using defaults");
-            Ok(Config::default())
-        }
+        Ok(text) => Ok((parse_config(&text, path).into_diagnostic()?, false)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((Config::default(), true)),
         Err(error) => Err(error)
             .into_diagnostic()
             .wrap_err_with(|| format!("cannot read the configuration {}", path.display())),
@@ -212,6 +239,7 @@ fn router(base: StatusResponse) -> Router {
         .route(STATUS_PATH, get(status))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
+        .layer(middleware::from_fn(request_span))
         .with_state(Arc::new(base))
 }
 

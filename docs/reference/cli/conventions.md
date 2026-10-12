@@ -64,6 +64,16 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN` | Optional GitHub token for `loom upgrade`, first non-empty one wins. Raises the API rate limit. Never printed. |
 | `LOOM_RELEASES_URL` | Replaces `https://api.github.com` in `loom upgrade` (test hook). Plain `http://` is then allowed. |
 | `LOOM_UPDATE_PUBKEY` | Test hook, debug builds only: minisign public key (base64 key line) replacing the embedded release key in `loom upgrade`. Ignored by release builds. |
+| `OTEL_SDK_DISABLED` | `true` (any case): no traces are exported, even with `[telemetry] enabled = true`. See [`[telemetry]`](../configuration.md#telemetry). |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Traces endpoint, used as given, when `[telemetry] otlp_endpoint` is not set. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL; traces go to `<value>/v1/traces` when neither `otlp_endpoint` nor `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Headers sent with each export, `key=value` pairs separated by commas (for example an authorization header). The traces variable wins. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | Timeout of one export, in milliseconds; default 10000. The traces variable wins. `loom` still waits at most 2 s at exit. |
+| `OTEL_SERVICE_NAME` | `service.name` of the exported traces, instead of `loom` and `loomd`. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, `key=value` pairs separated by commas. |
+| `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | Batching of spans: delay between two exports in milliseconds (default 5000), queue size (default 2048), batch size (default 512). |
+
+The `OTEL_*` variables only apply when `[telemetry] enabled = true`. `loom status` passes its environment to the `loomd` it starts.
 
 ## `loom version` output
 

@@ -12,19 +12,29 @@ publish = false
 
 [workspace.dependencies]
 assert_cmd = "2.2"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio"] }
+bytes = "1"
 clap = { version = "4.5", features = ["derive"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+http = "1"
 http-body-util = "0.1"
 hyper = { version = "1.12", default-features = false, features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 jsonschema = { version = "0.58", default-features = false }
 loom-api = { path = "crates/loom-api" }
 loom-config = { path = "crates/loom-config" }
+loom-telemetry = { path = "crates/loom-telemetry" }
 loom-update = { path = "crates/loom-update" }
 loomd = { path = "crates/loomd" }
 miette = "7.6"
 minisign-verify = "0.3"
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry-http = { version = "0.33", default-features = false }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "trace", "internal-logs"] }
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "trace"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
+prost = { version = "0.14", default-features = false, features = ["std"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }
@@ -37,7 +47,8 @@ thiserror = "2.0"
 tokio = { version = "1.53", features = ["macros", "net", "rt", "signal"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "std"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "registry", "std"] }
 ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 
 [workspace.lints.rust]

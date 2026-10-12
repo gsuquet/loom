@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use clap::{ArgAction, ArgGroup, ColorChoice, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, ArgMatches, ColorChoice, Parser, Subcommand, ValueEnum};
 use loom_api::VersionInfo;
 use semver::Version;
 
@@ -164,6 +164,20 @@ pub enum ServiceCommand {
     },
 }
 
+/// The command line's command path, such as `loom status`: `loom` followed by each
+/// subcommand name. Names the root span of the command.
+#[must_use]
+pub fn command_path(matches: &ArgMatches) -> String {
+    let mut path = String::from("loom");
+    let mut current = matches;
+    while let Some((name, sub)) = current.subcommand() {
+        path.push(' ');
+        path.push_str(name);
+        current = sub;
+    }
+    path
+}
+
 /// Name of a context, as given to `-c`/`--context`.
 ///
 /// 1 to 64 characters: lowercase ASCII letters, digits and `-`, starting with a
@@ -239,13 +253,33 @@ impl fmt::Display for ContextName {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, ContextName, ContextNameError, ReleaseChannel, ServiceCommand};
+    use super::{
+        Cli, Command, ContextName, ContextNameError, ReleaseChannel, ServiceCommand, command_path,
+    };
     use clap::error::ErrorKind;
     use clap::{ColorChoice, CommandFactory, Parser};
 
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn command_path_names_every_subcommand() {
+        let path =
+            |args: &[&str]| command_path(&Cli::command().try_get_matches_from(args).unwrap());
+        assert_eq!(path(&["loom", "version"]), "loom version");
+        assert_eq!(
+            path(&["loom", "-c", "personal", "status", "--json"]),
+            "loom status"
+        );
+        // Nested subcommands, as `loom service install` will have.
+        let nested = clap::Command::new("loom")
+            .subcommand(clap::Command::new("service").subcommand(clap::Command::new("install")));
+        let matches = nested
+            .try_get_matches_from(["loom", "service", "install"])
+            .unwrap();
+        assert_eq!(command_path(&matches), "loom service install");
     }
 
     #[test]

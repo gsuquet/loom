@@ -106,7 +106,23 @@ pub enum SkipReason {
 }
 
 /// Decides which update action to take. Pure: no I/O. See the module docs for the rules.
+///
+/// Traced as the span `update.decide`; the decision is logged at debug level.
 #[must_use]
+#[tracing::instrument(
+    name = "update.decide",
+    level = "info",
+    skip_all,
+    fields(
+        current = %current,
+        channel = ?channel,
+        mode = ?policy.mode,
+        pinned = policy.pinned.as_ref().map(tracing::field::display),
+        releases = releases.len(),
+        failed_versions = failed_versions.len(),
+    ),
+    ret(level = "debug"),
+)]
 pub fn decide(
     current: &Version,
     channel: Channel,

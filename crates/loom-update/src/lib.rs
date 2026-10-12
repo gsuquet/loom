@@ -20,6 +20,7 @@ pub mod github;
 pub mod install;
 pub mod release;
 pub mod stage;
+pub mod tls;
 pub mod verify;
 pub mod versions;
 

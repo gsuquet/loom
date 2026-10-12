@@ -1,4 +1,4 @@
-//! Log level and colors on stderr, from the global flags (ADR-0010).
+//! Log level and colors on stderr, from the global flags (ADR-0010). Shared by `loom` and `loomd`.
 
 use std::ffi::OsStr;
 
@@ -16,8 +16,8 @@ pub const fn level(quiet: bool, verbose: u8) -> LevelFilter {
     }
 }
 
-/// Whether to color stderr: `auto` colors only a terminal, and only when `NO_COLOR` is unset
-/// or empty; `always` and `never` ignore both. Same rule as `loom`.
+/// Whether to color a stream: `auto` colors only a terminal, and only when `NO_COLOR` is unset
+/// or empty; `always` and `never` ignore both.
 #[must_use]
 pub fn use_color(choice: ColorChoice, no_color: Option<&OsStr>, is_terminal: bool) -> bool {
     match choice {
@@ -37,6 +37,7 @@ mod tests {
     #[test]
     fn level_follows_quiet_and_verbose() {
         assert_eq!(level(true, 0), LevelFilter::ERROR);
+        assert_eq!(level(true, 3), LevelFilter::ERROR);
         assert_eq!(level(false, 0), LevelFilter::INFO);
         assert_eq!(level(false, 1), LevelFilter::DEBUG);
         assert_eq!(level(false, 2), LevelFilter::TRACE);
@@ -44,14 +45,23 @@ mod tests {
     }
 
     #[test]
-    fn color_rule() {
+    fn color_decision_table() {
         let set = Some(OsStr::new("1"));
         let empty = Some(OsStr::new(""));
-        assert!(use_color(ColorChoice::Auto, None, true));
-        assert!(use_color(ColorChoice::Auto, empty, true));
-        assert!(!use_color(ColorChoice::Auto, set, true));
-        assert!(!use_color(ColorChoice::Auto, None, false));
-        assert!(use_color(ColorChoice::Always, set, false));
-        assert!(!use_color(ColorChoice::Never, None, true));
+        let cases = [
+            (ColorChoice::Auto, None, true, true),
+            (ColorChoice::Auto, None, false, false),
+            (ColorChoice::Auto, set, true, false),
+            (ColorChoice::Auto, empty, true, true),
+            (ColorChoice::Always, set, false, true),
+            (ColorChoice::Never, None, true, false),
+        ];
+        for (choice, no_color, is_terminal, expected) in cases {
+            assert_eq!(
+                use_color(choice, no_color, is_terminal),
+                expected,
+                "{choice:?} NO_COLOR={no_color:?} terminal={is_terminal}"
+            );
+        }
     }
 }

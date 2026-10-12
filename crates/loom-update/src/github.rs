@@ -4,12 +4,10 @@
 use std::ffi::OsStr;
 use std::time::Duration;
 
-use std::sync::Arc;
-
 use ureq::Agent;
-use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::release::Release;
+use crate::tls::tls_config;
 
 /// Default API base URL.
 pub const GITHUB_API: &str = "https://api.github.com";
@@ -151,13 +149,8 @@ impl Client {
     /// TLS-inspecting proxy whose root the system trusts is accepted.
     #[must_use]
     pub fn new(base: String, token: Option<String>, user_agent: &str) -> Self {
-        let tls = TlsConfig::builder()
-            .root_certs(RootCerts::PlatformVerifier)
-            .provider(TlsProvider::Rustls)
-            .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .build();
         let agent: Agent = Agent::config_builder()
-            .tls_config(tls)
+            .tls_config(tls_config())
             .https_only(base == GITHUB_API)
             .timeout_global(Some(TIMEOUT))
             .user_agent(user_agent)
