@@ -1,0 +1,272 @@
+# Release pipeline, see docs/adr/0009-release-and-update-tooling.md and docs/reference/releases.md.
+#
+# - pull_request: dry run. Builds the 4 targets, packages, checksums and signs with a throwaway key.
+#   No secrets, nothing published.
+# - push to main: dev prerelease vX.Y.Z-dev.<run_number>, then prunes old dev prereleases.
+# - push of a vX.Y.Z tag: stable release, marked latest.
+name: Release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Publishes (main and tags) share one group and queue; pull requests cancel their previous run.
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Every release ships one archive per target.
+  TARGETS: >-
+    aarch64-apple-darwin
+    x86_64-apple-darwin
+    aarch64-unknown-linux-musl
+    x86_64-unknown-linux-musl
+  # Dev prereleases kept after pruning.
+  DEV_KEEP: "10"
+
+jobs:
+  meta:
+    name: version and channel
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust
+      - id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          workspace_version="$(cargo metadata --format-version 1 --no-deps --locked \
+            | jq -r '.packages[] | select(.name == "loom") | .version')"
+          if ! [[ "$workspace_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::workspace version '$workspace_version' is not X.Y.Z"
+            exit 1
+          fi
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
+            if ! [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::tag '$REF_NAME' is not vX.Y.Z"
+              exit 1
+            fi
+            version="${REF_NAME#v}"
+            if [ "$version" != "$workspace_version" ]; then
+              echo "::error::tag $REF_NAME does not match the workspace version $workspace_version"
+              exit 1
+            fi
+            channel=stable
+            tag="$REF_NAME"
+          else
+            # main and pull requests: dev build of the next release.
+            version="$workspace_version-dev.$RUN_NUMBER"
+            channel=dev
+            tag="v$version"
+          fi
+          {
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "tag=$tag"
+          } >>"$GITHUB_OUTPUT"
+          echo "version=$version channel=$channel tag=$tag"
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: meta
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            tools: rust zig aqua:rust-cross/cargo-zigbuild
+            cargo: zigbuild
+            targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+            native: x86_64-unknown-linux-musl
+          - os: macos-latest
+            tools: rust
+            cargo: build
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            native: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      LOOM_BUILD_VERSION: ${{ needs.meta.outputs.version }}
+      LOOM_CHANNEL: ${{ needs.meta.outputs.channel }}
+      CARGO_SUBCOMMAND: ${{ matrix.cargo }}
+      BUILD_TARGETS: ${{ matrix.targets }}
+      NATIVE_TARGET: ${{ matrix.native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: ${{ matrix.tools }}
+      - name: Add rustup targets
+        run: |
+          for target in $BUILD_TARGETS; do
+            rustup target add "$target"
+          done
+      - name: Build
+        run: |
+          for target in $BUILD_TARGETS; do
+            cargo "$CARGO_SUBCOMMAND" --release --locked -p loom -p loomd --target "$target"
+          done
+      - name: Package
+        run: |
+          for target in $BUILD_TARGETS; do
+            dist/package.sh archive "$LOOM_BUILD_VERSION" "$target" "target/$target/release" out
+          done
+      - name: Smoke test the native archive
+        run: |
+          dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$dir"
+          tar -xzf "out/loom-$LOOM_BUILD_VERSION-$NATIVE_TARGET.tar.gz" -C "$dir"
+          ls -l "$dir"
+          info="$("$dir/loom" version --json)"
+          echo "$info"
+          jq -e --arg v "$LOOM_BUILD_VERSION" --arg c "$LOOM_CHANNEL" --arg t "$NATIVE_TARGET" \
+            --arg sha "$GITHUB_SHA" \
+            '.version == $v and .channel == $c and .target == $t and .commit == $sha and .profile == "release"' \
+            <<<"$info"
+          "$dir/loomd" --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archives-${{ matrix.os }}
+          path: out/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  dry-run:
+    name: dry run (sign with a throwaway key)
+    if: github.event_name == 'pull_request'
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: minisign
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archives-*
+          path: assets
+          merge-multiple: true
+      - name: Assemble assets
+        run: |
+          for target in $TARGETS; do
+            test -f "assets/loom-$VERSION-$target.tar.gz" || { echo "::error::missing archive for $target"; exit 1; }
+          done
+          if [ -f dist/install.sh ]; then
+            cp dist/install.sh assets/install.sh
+          fi
+          dist/package.sh checksums assets
+          cat assets/SHA256SUMS
+      - name: Sign and verify with a throwaway key
+        run: |
+          key_dir="$RUNNER_TEMP/throwaway"
+          mkdir -p "$key_dir"
+          # -W: no password, the key pair only lives for this job.
+          minisign -G -W -p "$key_dir/minisign.pub" -s "$key_dir/minisign.key"
+          minisign -S -s "$key_dir/minisign.key" -m assets/SHA256SUMS
+          minisign -V -p "$key_dir/minisign.pub" -m assets/SHA256SUMS
+          dist/package.sh verify assets
+          ls -l assets
+
+  publish:
+    name: publish ${{ needs.meta.outputs.tag }}
+    if: github.event_name == 'push'
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      CHANNEL: ${{ needs.meta.outputs.channel }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: minisign
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archives-*
+          path: assets
+          merge-multiple: true
+      - name: Assemble assets
+        run: |
+          for target in $TARGETS; do
+            test -f "assets/loom-$VERSION-$target.tar.gz" || { echo "::error::missing archive for $target"; exit 1; }
+          done
+          if [ -f dist/install.sh ]; then
+            cp dist/install.sh assets/install.sh
+          fi
+          dist/package.sh checksums assets
+          cat assets/SHA256SUMS
+      - name: Sign SHA256SUMS
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ] || [ -z "$MINISIGN_PASSWORD" ]; then
+            echo "::error::MINISIGN_SECRET_KEY and MINISIGN_PASSWORD secrets are required"
+            exit 1
+          fi
+          key="$RUNNER_TEMP/minisign.key"
+          (umask 077 && printf '%s\n' "$MINISIGN_SECRET_KEY" >"$key")
+          chmod 600 "$key"
+          # minisign reads the password from the first line of stdin when it is not a terminal.
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m assets/SHA256SUMS
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/minisign.key"
+      - name: Verify signature and checksums
+        run: |
+          # Fails if the secret key does not match the committed public key.
+          minisign -V -p dist/minisign.pub -m assets/SHA256SUMS
+          dist/package.sh verify assets
+      - name: Create release
+        run: |
+          # Created as a draft, then published once every asset is uploaded.
+          if [ "$CHANNEL" = stable ]; then
+            gh release create "$TAG" assets/* --draft --verify-tag \
+              --title "loom $VERSION" --notes "Stable release $VERSION."
+            gh release edit "$TAG" --draft=false --latest
+          else
+            gh release create "$TAG" assets/* --draft --target "$GITHUB_SHA" --prerelease \
+              --title "loom $VERSION" --notes "Dev build of $GITHUB_SHA. Not for general use."
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          fi
+      - name: Prune old dev prereleases
+        if: needs.meta.outputs.channel == 'dev'
+        run: |
+          # Only prereleases tagged vX.Y.Z-dev.N; stable releases never match.
+          gh release list --limit 1000 --exclude-drafts --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]+$")))]
+                  | sort_by(.createdAt) | reverse | .[(env.DEV_KEEP | tonumber):] | .[].tagName' \
+            | while IFS= read -r old; do
+                echo "deleting $old"
+                gh release delete "$old" --cleanup-tag --yes
+              done
