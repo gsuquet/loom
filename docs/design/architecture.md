@@ -13,6 +13,8 @@
 ## Interfaces
 
 - **loomd API**: HTTP + JSON with SSE streams, on a unix socket locally, TCP + auth for the future central instance. CLI, TUI, MCP server and web UI are all clients of this one API.
+  - HTTP/1.1 on the unix socket: HTTP/2 brings nothing locally (no handshake or connection cost) and would need prior-knowledge h2c without TLS; every client, `curl --unix-socket` included, speaks HTTP/1.1.
+  - HTTP/2 negotiated through TLS (ALPN) on the central instance: browsers allow 6 HTTP/1.1 connections per host and each SSE stream holds one, so the web UI needs HTTP/2 there.
 - **CLI**: every command supports `--json`, with a versioned output schema. Every TUI action has a CLI equivalent.
 - **TUI** (ratatui): the cockpit. See [User workflow](user-workflow.md).
 - **Web UI**: served by loomd once the central instance exists; works locally too. A desktop app would be the same web UI in a shell, only if needed.

@@ -15,6 +15,7 @@ loomd [OPTIONS]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
+| `--loom-home <DIR>` |  |  | Loom home directory. Overrides `LOOM_HOME`; default `~/.loom` |
 | `-q`, `--quiet` |  |  | Print errors only on stderr |
 | `-v`, `--verbose` | repeatable |  | Print more diagnostics on stderr; repeat for more (`-vv`) |
 | `--color <WHEN>` | `auto`, `always`, `never` | `auto` | When to use colors: `auto` colors a terminal unless `NO_COLOR` is set |

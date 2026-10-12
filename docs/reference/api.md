@@ -1,6 +1,41 @@
-# API types reference
+# API reference
 
-> Types of the `loom-api` crate, shared by the loomd API and the CLI `--json` output, as shipped.
+> Transport and endpoints of the loomd API, and the types of the `loom-api` crate, shared by the loomd API and the CLI `--json` output, as shipped.
+
+## Transport
+
+| Property | Value |
+| --- | --- |
+| Protocol | HTTP/1.1, JSON bodies. |
+| Socket | Unix socket `<loom home>/run/loomd.sock`, mode `0600` (see [configuration](configuration.md)). |
+| Authentication | None: access is limited by the socket and `run/` modes to the user running `loomd`. |
+| Response `content-type` | `application/json`, for successes and errors. |
+
+`HEAD` is accepted wherever `GET` is.
+
+## Endpoints
+
+| Method | Path | Success | Body |
+| --- | --- | --- | --- |
+| `GET` | `/v1/status` | `200` | [`StatusResponse`](#statusresponse) |
+
+`uptime_secs` is computed when the request is handled.
+
+### Errors
+
+Every error response has an [`ApiError`](#apierror) body.
+
+| Case | HTTP status | `code` |
+| --- | --- | --- |
+| No endpoint at the path | `404` | `not_found` |
+| Endpoint exists, method not accepted | `405` (with an `allow` header) | `invalid_request` |
+| The daemon cannot read its clock as a timestamp | `500` | `internal` |
+
+```bash
+curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/status
+```
+
+## Types
 
 The JSON Schema (draft 2020-12) of each type is generated from the Rust types and committed under [`schemas/`](schemas/). A test fails when a committed schema differs from the types; `mise run docs` regenerates them.
 
@@ -12,7 +47,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
 | `VersionInfo` | [`schemas/version_info.json`](schemas/version_info.json) |
 
-## API versioning
+### API versioning
 
 `ApiVersion` is a closed enum serialized as a string.
 
@@ -22,7 +57,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 
 A breaking change to any API type adds a new value. Compatible changes (new optional fields, new endpoints) keep the current value.
 
-## Unknown fields
+### Unknown fields
 
 | Message | Unknown fields |
 | --- | --- |
@@ -31,7 +66,7 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 
 Unknown enum values (`api_version`, `code`, `channel`, `profile`) are rejected.
 
-## Scalar encodings
+### Scalar encodings
 
 | Kind | Encoding | Example |
 | --- | --- | --- |
@@ -41,7 +76,7 @@ Unknown enum values (`api_version`, `code`, `channel`, `profile`) are rejected.
 
 `VersionInfo.commit_date` predates `Timestamp`: it is the git committer date with its original offset (`2026-10-12T10:00:00+02:00`) or `unknown`.
 
-## `StatusResponse`
+### `StatusResponse`
 
 State of a running loomd.
 
@@ -78,7 +113,7 @@ Every field is required.
 }
 ```
 
-## `ApiError`
+### `ApiError`
 
 Error returned instead of a response body.
 
@@ -96,7 +131,7 @@ Error returned instead of a response body.
 }
 ```
 
-## Error codes
+### Error codes
 
 `ErrorCode` is a closed enum serialized in `snake_case`. A new code is an API change.
 

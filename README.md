@@ -64,7 +64,7 @@ Read the [Contributing Guide](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CO
 
 Organized with the [Diátaxis](https://diataxis.fr/) framework:
 
-* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [style guide](docs/reference/style-guide.md). Configuration and file formats are added as features ship.
+* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [style guide](docs/reference/style-guide.md). File formats are added as features ship.
 * **How-to guides:** [install loom](docs/how-to-guides/install.md).
 * **Explanation, tutorials:** written as features ship.
 

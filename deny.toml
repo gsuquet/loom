@@ -12,6 +12,11 @@ yanked = "deny"
 allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
 confidence-threshold = 0.9
 
+# axum's router; BSD-3-Clause is permissive and MIT-compatible. Allowed for this crate only.
+[[licenses.exceptions]]
+crate = "matchit"
+allow = ["BSD-3-Clause"]
+
 [licenses.private]
 # Workspace crates are not published (`publish = false`).
 ignore = true
