@@ -5,12 +5,14 @@
 
 mod api_version;
 mod error;
+mod service;
 mod status;
 mod timestamp;
 mod version;
 
 pub use api_version::ApiVersion;
 pub use error::{ApiError, ErrorCode};
+pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;
 pub use version::{Channel, Profile, VersionInfo};

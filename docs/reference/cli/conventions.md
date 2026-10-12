@@ -32,6 +32,10 @@
 
 No shipped command asks for confirmation yet.
 
+## Dry run
+
+Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install` and `loom service uninstall`.
+
 ## Streams
 
 - stdout: the command's data only (human output, or JSON with `--json`).
@@ -55,7 +59,8 @@ No shipped command asks for confirmation yet.
 | --- | --- |
 | `NO_COLOR` | Non-empty: no color with `--color auto`. |
 | `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given, and of `loom`. See [configuration](../configuration.md). |
-| `PATH` | Searched for `loomd` by `loom status` when no `loomd` is next to the `loom` executable. |
+| `PATH` | Searched for `loomd` by `loom status` and `loom service install` when no `loomd` is next to the `loom` executable. |
+| `XDG_CONFIG_HOME` | Absolute path: `loom service` on Linux writes the systemd unit under `$XDG_CONFIG_HOME/systemd/user/` instead of `~/.config/systemd/user/`. |
 
 ## `loom version` output
 
@@ -145,6 +150,94 @@ When the `version` or `commit` of the daemon differs from the `loom` binary's, `
 - Another process holds it: another `loomd` won the race. `loom status` keeps querying the socket until the 5 s end, and succeeds with that daemon's status if it answers.
 
 A started `loomd` that is still running but did not answer within 5 s is left running.
+## `loom service` output
+
+`loom service` manages `loomd` as a user service: a launchd user agent on macOS, a systemd user unit on Linux. Files and keys: [configuration](../configuration.md#user-service).
+
+### `loom service status`
+
+Human output, one field per line:
+
+```text
+platform:  macos
+unit:      /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist
+installed: yes
+loaded:    yes
+running:   yes
+```
+
+JSON output (`loom service status --json`), `ServiceStatus` schema ([service_status.json](../schemas/service_status.json)):
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `platform` | `macos` \| `linux` | Service manager family: launchd or systemd. |
+| `unit_path` | string | Absolute path of the property list (macOS) or unit file (Linux). |
+| `installed` | boolean | The file at `unit_path` exists. |
+| `loaded` | boolean | macOS: `launchctl print gui/<uid>/io.github.gsuquet.loomd` succeeds. Linux: `systemctl --user is-enabled loomd.service` succeeds. |
+| `running` | boolean | macOS: loaded, and the `launchctl print` output has a `state = running` line. Linux: `systemctl --user is-active loomd.service` succeeds. |
+
+`status` exits with `0` whatever the state.
+
+### `loom service install` and `uninstall`
+
+On success, one line on stdout:
+
+| Command | Case | Output |
+| --- | --- | --- |
+| `install` | Something changed | `loomd service installed: <unit path>` |
+| `install` | File identical and service loaded: nothing run | `loomd service already installed: <unit path>` |
+| `uninstall` | Something changed | `loomd service uninstalled: <unit path>` |
+| `uninstall` | No file and service not loaded: nothing run | `loomd service not installed: <unit path>` |
+
+With `-n`/`--dry-run`, when something would change, stdout lists the steps instead, one per line, in order: `write <path>:` followed by the full file content, `create directory <path>`, `remove <path>`, `run <command>`. Arguments with spaces or quotes are shown single-quoted.
+
+```text
+write /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist:
+<?xml version="1.0" encoding="UTF-8"?>
+...
+</plist>
+create directory /Users/me/.loom/log
+run launchctl bootstrap gui/501 /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist
+```
+
+Commands run, by case. "Loaded" and "running" are as in `status`.
+
+| Platform | Command | Case | Commands that change state |
+| --- | --- | --- | --- |
+| macOS | `install` | No file, or different content | `launchctl bootout gui/<uid>/io.github.gsuquet.loomd` if loaded, then `launchctl bootstrap gui/<uid> <plist>` |
+| macOS | `install` | Identical file, not loaded | `launchctl bootstrap gui/<uid> <plist>` |
+| macOS | `uninstall` | Any | `launchctl bootout gui/<uid>/io.github.gsuquet.loomd` if loaded, then the file is removed |
+| Linux | `install` | No file, or different content | `systemctl --user daemon-reload`, `systemctl --user enable --now loomd.service`, then `systemctl --user restart loomd.service` if it was running |
+| Linux | `install` | Identical file, not enabled | `systemctl --user daemon-reload`, `systemctl --user enable --now loomd.service` |
+| Linux | `uninstall` | Any | `systemctl --user disable --now loomd.service` if enabled or running; if the file exists, it is removed, then `systemctl --user daemon-reload` |
+
+On macOS, `<uid>` comes from `id -u`, and `install` creates `<loom home>/log` (mode `0700`) before `bootstrap`. `install` creates the missing parent directories of the unit file.
+
+When `bootstrap` follows a `bootout` in the same run (the plist changed while the service was loaded), launchd may still be unloading the service. That `bootstrap` is retried while it exits non-zero: up to 5 attempts, 200 ms apart, and the last attempt's stderr is reported if all fail. A `bootstrap` without a preceding `bootout` runs once.
+
+`install` and `uninstall` never ask for confirmation.
+
+### Exit behavior
+
+| Code | Case |
+| --- | --- |
+| `0` | Success, including the no-op cases and `--dry-run`. |
+| `1` | `install` refused by `[daemon] service = false`; invalid `config.toml`; `loomd` not found; a service manager command could not start or exited non-zero (its command line, exit code and stderr are printed); a file could not be read or written; platform other than macOS and Linux. |
+| `2` | Usage error, such as `loom service` without a subcommand. |
+
+Refusal message:
+
+```text
+the loomd service is disabled by `[daemon] service = false` in /Users/me/.loom/config.toml: set it to true or remove it to install the service
+```
+
+A failing manager command:
+
+```text
+`launchctl bootstrap gui/501 /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist` exited with code 5: Bootstrap failed: 5: Input/output error
+```
+
+`install` reads `config.toml` before anything else: when refused, no command runs and no file is written. The steps of a plan run in order and stop at the first failure.
 
 ## Build-time variables
 

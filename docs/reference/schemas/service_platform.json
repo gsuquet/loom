@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ServicePlatform",
+  "description": "Service manager family the `loomd` user service is installed with.",
+  "oneOf": [
+    {
+      "description": "macOS: a launchd user agent.",
+      "type": "string",
+      "const": "macos"
+    },
+    {
+      "description": "Linux: a systemd user unit.",
+      "type": "string",
+      "const": "linux"
+    }
+  ]
+}
