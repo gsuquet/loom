@@ -67,6 +67,7 @@ mod tests {
             loom_home: "/l".into(),
             socket_path: "/l/run/loomd.sock".into(),
             config_path: "/l/config.toml".into(),
+            update: None,
         }
     }
 

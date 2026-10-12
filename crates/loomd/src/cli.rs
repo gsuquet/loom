@@ -4,10 +4,13 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use clap::{ArgAction, ColorChoice, Parser};
-use loom_api::VersionInfo;
+use loom_api::{TEST_BUILD_VERSION_ENV, VersionInfo};
 
-/// Build information, computed once for `--version`.
-static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(VersionInfo::current);
+/// Build information, computed once; `LOOM_TEST_BUILD_VERSION` replaces the version in a debug
+/// build (test hook).
+pub static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(|| {
+    VersionInfo::current().with_test_version(std::env::var(TEST_BUILD_VERSION_ENV).ok().as_deref())
+});
 /// `--version` output: every build field, identical to `loom version`.
 static LONG_VERSION: LazyLock<String> = LazyLock::new(|| VERSION_INFO.to_string());
 

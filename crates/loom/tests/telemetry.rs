@@ -7,19 +7,20 @@
 )]
 
 use std::fs::{self, File};
-use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
+use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
-use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
+use opentelemetry_proto::tonic::common::v1::{AnyValue, any_value};
 use opentelemetry_proto::tonic::trace::v1::Span;
-use prost::Message as _;
 use tempfile::TempDir;
+
+mod common;
+
+use common::{Collector, string_attribute};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(20);
@@ -186,125 +187,6 @@ fn a_connection_to_the_listener_is_detected() {
         thread::sleep(POLL);
     }
     assert!(contacted);
-}
-
-/// A fake OTLP/HTTP collector: answers `200` to every request and keeps each body decoded.
-struct Collector {
-    url: String,
-    requests: Arc<Mutex<Vec<(String, ExportTraceServiceRequest)>>>,
-}
-
-impl Collector {
-    fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let received = Arc::clone(&requests);
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { return };
-                let received = Arc::clone(&received);
-                thread::spawn(move || serve(&stream, &received));
-            }
-        });
-        Self { url, requests }
-    }
-
-    /// Spans received so far, with the `service.name` of their resource.
-    fn spans(&self) -> Vec<(String, Span)> {
-        self.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .flat_map(|(_, request)| request.resource_spans.iter())
-            .flat_map(|resource_spans| {
-                let service = resource_spans
-                    .resource
-                    .as_ref()
-                    .and_then(|resource| string_attribute(&resource.attributes, "service.name"))
-                    .unwrap_or_default();
-                resource_spans
-                    .scope_spans
-                    .iter()
-                    .flat_map(|scope| scope.spans.iter())
-                    .map(move |span| (service.clone(), span.clone()))
-            })
-            .collect()
-    }
-
-    fn resource_attribute(&self, service: &str, key: &str) -> Option<String> {
-        self.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .flat_map(|(_, request)| request.resource_spans.iter())
-            .filter_map(|resource_spans| resource_spans.resource.as_ref())
-            .filter(|resource| {
-                string_attribute(&resource.attributes, "service.name").as_deref() == Some(service)
-            })
-            .find_map(|resource| string_attribute(&resource.attributes, key))
-    }
-
-    fn paths(&self) -> Vec<String> {
-        self.requests
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(path, _)| path.clone())
-            .collect()
-    }
-}
-
-/// Serves the HTTP/1.1 requests of one connection until the client closes it.
-fn serve(stream: &TcpStream, received: &Mutex<Vec<(String, ExportTraceServiceRequest)>>) {
-    let mut reader = BufReader::new(stream);
-    loop {
-        let mut request_line = String::new();
-        if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
-            return;
-        }
-        let path = request_line
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or_default()
-            .to_owned();
-        let mut length = 0;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                return;
-            }
-            if line == "\r\n" {
-                break;
-            }
-            if let Some((name, value)) = line.split_once(':')
-                && name.eq_ignore_ascii_case("content-length")
-            {
-                length = value.trim().parse().unwrap();
-            }
-        }
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body).unwrap();
-        let request = ExportTraceServiceRequest::decode(body.as_slice()).unwrap();
-        received.lock().unwrap().push((path, request));
-        let mut writer = stream;
-        writer
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\n\r\n",
-            )
-            .unwrap();
-    }
-}
-
-fn string_attribute(attributes: &[KeyValue], key: &str) -> Option<String> {
-    attributes
-        .iter()
-        .find(|kv| kv.key == key)
-        .and_then(|kv| kv.value.as_ref())
-        .and_then(|value| match &value.value {
-            Some(any_value::Value::StringValue(text)) => Some(text.clone()),
-            _ => None,
-        })
 }
 
 fn int_attribute(span: &Span, key: &str) -> Option<i64> {

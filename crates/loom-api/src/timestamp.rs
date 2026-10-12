@@ -24,6 +24,9 @@ pub struct Timestamp {
 }
 
 impl Timestamp {
+    /// `1970-01-01T00:00:00Z`.
+    pub const EPOCH: Self = Self { unix_secs: 0 };
+
     /// Builds the instant `unix_secs` seconds after `1970-01-01T00:00:00Z`.
     ///
     /// Returns `None` after `9999-12-31T23:59:59Z`, which RFC 3339 cannot represent.

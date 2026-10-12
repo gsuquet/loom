@@ -193,6 +193,7 @@ mod tests {
             loom_home: "/home/me/.loom".into(),
             socket_path: socket.to_path_buf(),
             config_path: "/home/me/.loom/config.toml".into(),
+            update: None,
         }
     }
 

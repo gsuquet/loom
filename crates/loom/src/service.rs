@@ -128,8 +128,11 @@ pub fn render_plist(spec: &ServiceSpec) -> Result<String, RenderError> {
     ))
 }
 
-/// systemd user unit of the service. Values are double-quoted and escaped (systemd.syntax(7),
-/// systemd.service(5) "Command lines").
+/// systemd user unit of the service.
+///
+/// Values are double-quoted and escaped (systemd.syntax(7), systemd.service(5) "Command
+/// lines"). `KillMode=process`: when loomd exits after an auto-upgrade, systemd stops only
+/// loomd, not the watchdog it started (ADR-0011).
 ///
 /// # Errors
 ///
@@ -145,6 +148,7 @@ Description=Loom daemon
 ExecStart={exec_start}
 Environment={environment}
 Restart=always
+KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -555,6 +559,7 @@ Description=Loom daemon
 ExecStart="/usr/local/bin/loomd"
 Environment="LOOM_HOME=/home/me/.loom"
 Restart=always
+KillMode=process
 
 [Install]
 WantedBy=default.target

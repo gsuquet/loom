@@ -6,11 +6,14 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use clap::{ArgAction, ArgGroup, ArgMatches, ColorChoice, Parser, Subcommand, ValueEnum};
-use loom_api::VersionInfo;
+use loom_api::{TEST_BUILD_VERSION_ENV, VersionInfo};
 use semver::Version;
 
-/// Build information, computed once for `--version` and `loom version`.
-pub static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(VersionInfo::current);
+/// Build information, computed once for `--version` and `loom version`;
+/// `LOOM_TEST_BUILD_VERSION` replaces the version in a debug build (test hook).
+pub static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(|| {
+    VersionInfo::current().with_test_version(std::env::var(TEST_BUILD_VERSION_ENV).ok().as_deref())
+});
 /// `--version` output: every build field, identical to `loomd --version`.
 static LONG_VERSION: LazyLock<String> = LazyLock::new(|| VERSION_INFO.to_string());
 
@@ -85,6 +88,27 @@ pub enum Command {
     /// Restore the previous version: the highest version kept in `<loom home>/versions/` other
     /// than the running one.
     Rollback(RollbackArgs),
+    /// Internal: started by loomd from the saved previous version after an auto-upgrade;
+    /// waits for the new loomd and rolls back when it does not answer (ADR-0011).
+    #[command(name = "__upgrade-watchdog", hide = true)]
+    UpgradeWatchdog(WatchdogArgs),
+}
+
+/// Options of the internal `__upgrade-watchdog` command.
+#[derive(Debug, clap::Args)]
+pub struct WatchdogArgs {
+    /// Version replaced, restored on failure (`<loom home>/versions/<from>/`).
+    #[arg(long, value_name = "VERSION")]
+    pub from: Version,
+    /// Version the new loomd must report.
+    #[arg(long, value_name = "VERSION")]
+    pub expect: Version,
+    /// Seconds the new loomd has to answer.
+    #[arg(long, value_name = "SECS")]
+    pub deadline: u64,
+    /// Directory holding the installed `loom` and `loomd`.
+    #[arg(long, value_name = "DIR")]
+    pub install_dir: PathBuf,
 }
 
 /// Options of `loom upgrade`.
@@ -352,7 +376,8 @@ mod tests {
             Command::Version { .. }
             | Command::Status { .. }
             | Command::Upgrade(_)
-            | Command::Rollback(_) => {
+            | Command::Rollback(_)
+            | Command::UpgradeWatchdog(_) => {
                 panic!("not a service command: {args:?}")
             }
         };
@@ -454,6 +479,30 @@ mod tests {
                 json: false
             })
         ));
+    }
+
+    #[test]
+    fn watchdog_is_hidden_and_parses() {
+        let cli = Cli::try_parse_from([
+            "loom",
+            "__upgrade-watchdog",
+            "--from",
+            "0.1.0",
+            "--expect",
+            "0.2.0-dev.3",
+            "--deadline",
+            "60",
+            "--install-dir",
+            "/bin",
+        ])
+        .unwrap();
+        let Command::UpgradeWatchdog(args) = cli.command else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.expect.to_string(), "0.2.0-dev.3");
+        assert_eq!(args.deadline, 60);
+        let help = Cli::command().render_long_help().to_string();
+        assert!(!help.contains("watchdog"), "{help}");
     }
 
     #[test]

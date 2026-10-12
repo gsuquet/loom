@@ -4,6 +4,7 @@ mod client;
 mod service_cmd;
 mod start;
 mod upgrade;
+mod watchdog;
 
 use std::env;
 use std::fs;
@@ -40,7 +41,9 @@ fn main() -> ExitCode {
         .map_err(|error| error.format(&mut Cli::command()))
         .unwrap_or_else(|error| error.exit());
     let (config, config_problem) = telemetry_config();
-    let telemetry = init_telemetry(&cli.global, &config);
+    // The watchdog writes to `log/loomd.log`, which needs timestamps like loomd's own lines.
+    let timestamps = matches!(cli.command, Command::UpgradeWatchdog(_));
+    let telemetry = init_telemetry(&cli.global, &config, timestamps);
     if let Some(problem) = config_problem {
         warn!("traces are not exported: {problem}");
     }
@@ -110,7 +113,11 @@ fn telemetry_config() -> (TelemetryConfig, Option<String>) {
 
 /// Logs to stderr, at the level and with the colors the global flags ask for, and exports
 /// traces when `[telemetry]` enables it.
-fn init_telemetry(global: &GlobalArgs, config: &TelemetryConfig) -> TelemetryGuard {
+fn init_telemetry(
+    global: &GlobalArgs,
+    config: &TelemetryConfig,
+    timestamps: bool,
+) -> TelemetryGuard {
     let color = use_color(
         global.color,
         env::var_os("NO_COLOR").as_deref(),
@@ -127,7 +134,7 @@ fn init_telemetry(global: &GlobalArgs, config: &TelemetryConfig) -> TelemetryGua
         version: &VERSION_INFO,
         level: level(global.quiet, global.verbose),
         color,
-        timestamps: false,
+        timestamps,
         telemetry: &telemetry,
         shutdown_timeout: LOOM_SHUTDOWN_TIMEOUT,
     };
@@ -141,6 +148,7 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Upgrade(args) => print(&upgrade::upgrade(&VERSION_INFO, args, &layout()?)?),
         Command::Rollback(args) => print(&upgrade::rollback(&VERSION_INFO, args, &layout()?)?),
         Command::Service { command } => run_service(command),
+        Command::UpgradeWatchdog(args) => watchdog::run(args, &layout()?),
     }
 }
 
