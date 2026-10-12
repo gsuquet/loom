@@ -67,14 +67,14 @@ Other codes are added only through this ADR's successor.
 ### Generated CLI reference
 
 - The reference of each binary's commands, arguments, flags and help texts is **generated from the `clap` definitions**: `docs/reference/cli/loom.md` and `docs/reference/cli/loomd.md`. Help texts are written once, in the code (`///` doc comments on the clap types).
-- Generator: `clap-markdown`, called from an integration test in each binary crate. The test renders the markdown and compares it with the committed file; it fails when they differ. `LOOM_UPDATE_DOCS=1` rewrites the files, and `mise run docs` runs that. CI therefore fails on a stale reference.
+- Generator: a renderer of our own over `clap::Command` (subcommands, arguments, flags, defaults, possible values, help texts), called from an integration test. `clap-markdown` was rejected: no release in over a year, and its layout cannot be changed. The test renders the markdown and compares it with the committed file; it fails when they differ. `LOOM_UPDATE_DOCS=1` rewrites the files, and `mise run docs` runs that. CI therefore fails on a stale reference.
 - To reach the `clap` definitions from a test, each binary crate exposes its `Cli` type through a `lib.rs`; `main.rs` keeps the I/O.
 - What `clap` cannot describe stays hand-written in `docs/reference/cli/conventions.md`: these conventions, exit codes, environment variables, build-time variables, and the `--json` output of each command (generated from `schemars` in a later task).
 
 ## Consequences
 
 - Help output and reference cannot disagree.
-- `clap-markdown` (0.1.x, single maintainer) fixes the markdown layout. If it blocks us, it is replaced by a renderer of our own over `clap::Command`, behind the same test; nothing else changes.
+- About a hundred lines of renderer to maintain, with no new dependency; the layout is ours, and the same code can later emit other formats.
 - Every new command must declare whether it changes state (then `--dry-run`, and `-y` if it confirms) and whether it outputs data (then `--json`).
 - Shell completions (`clap_complete`) and man pages (`clap_mangen`) come from the same definitions, in a later task.
 - `docs/design/domain-model.md` uses `-c` instead of `-C` for the context.
