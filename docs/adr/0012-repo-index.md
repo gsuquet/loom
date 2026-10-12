@@ -1,6 +1,6 @@
 # ADR-0012: Repo index, contexts and automatic updates
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-12
 
 ## Context
