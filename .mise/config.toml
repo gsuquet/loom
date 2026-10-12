@@ -62,6 +62,10 @@ run = "shellcheck dist/*.sh"
 description = "Test dist/install.sh against fake releases on a local fake API"
 run = "sh dist/test-install.sh"
 
+[tasks.e2e]
+description = "End-to-end upgrade scenario on real builds: install, upgrade, failed auto-upgrade, rollback (slow, not part of check)"
+run = "bash dist/e2e-upgrade.sh"
+
 [tasks.otel-dev]
 description = "Run a local trace backend in the foreground: Jaeger, in memory, OTLP/HTTP on localhost:4318, UI on http://localhost:16686"
 # Installed when the task runs, not by `mise install`: CI does not need it. Checksums in mise.lock.
