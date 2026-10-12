@@ -132,7 +132,9 @@ pub fn render_plist(spec: &ServiceSpec) -> Result<String, RenderError> {
 ///
 /// Values are double-quoted and escaped (systemd.syntax(7), systemd.service(5) "Command
 /// lines"). `KillMode=process`: when loomd exits after an auto-upgrade, systemd stops only
-/// loomd, not the watchdog it started (ADR-0011).
+/// loomd, not the watchdog it started (ADR-0011). `RestartSec=1s`: a loomd failing at start is
+/// restarted every second instead of every 100 ms; the default start limit (5 starts in 10 s)
+/// still stops a crash loop, and after a rollback the watchdog clears it (`reset-failed`).
 ///
 /// # Errors
 ///
@@ -148,12 +150,41 @@ Description=Loom daemon
 ExecStart={exec_start}
 Environment={environment}
 Restart=always
+RestartSec=1s
 KillMode=process
 
 [Install]
 WantedBy=default.target
 "
     ))
+}
+
+/// Whether the service file `content` runs loomd for the loom home `home`: the `LOOM_HOME` it
+/// sets, as [`render_unit`] writes it. A service of another loom home (another setup, a test)
+/// does not supervise this one.
+///
+/// # Errors
+///
+/// [`RenderError`] when `home` cannot be written in a service file.
+pub fn unit_serves_home(
+    platform: ServicePlatform,
+    content: &str,
+    home: &Path,
+) -> Result<bool, RenderError> {
+    let home = text(home)?;
+    Ok(match platform {
+        ServicePlatform::Macos => content.contains(&format!(
+            "<key>LOOM_HOME</key>\n\t\t<string>{}</string>\n",
+            xml_escape(home)
+        )),
+        ServicePlatform::Linux => {
+            let line = format!(
+                "Environment={}",
+                systemd_quote(&format!("LOOM_HOME={home}"), false)
+            );
+            content.lines().any(|candidate| candidate == line)
+        }
+    })
 }
 
 /// `path` as UTF-8 without control characters.
@@ -424,6 +455,28 @@ fn launchd_service(uid: u32) -> String {
     format!("gui/{uid}/{LAUNCHD_LABEL}")
 }
 
+/// Commands that make the service manager run the restored loomd after a rollback.
+///
+/// Run by the watchdog (ADR-0011). launchd: `kickstart -k` kills the
+/// running instance, if any, and starts the job at once, without waiting for the `KeepAlive`
+/// throttle. systemd: `reset-failed` clears a start limit hit by the failed version's crash
+/// loop, then `restart` stops whatever runs and starts the unit.
+#[must_use]
+pub fn recover_commands(manager: Manager) -> Vec<Vec<String>> {
+    match manager {
+        Manager::Launchd { uid } => vec![vec![
+            "launchctl".to_owned(),
+            "kickstart".to_owned(),
+            "-k".to_owned(),
+            launchd_service(uid),
+        ]],
+        Manager::Systemd => vec![
+            systemctl(&["reset-failed", SYSTEMD_UNIT]),
+            systemctl(&["restart", SYSTEMD_UNIT]),
+        ],
+    }
+}
+
 /// `id -u`: user ID, for the launchd domain.
 #[must_use]
 pub fn id_u() -> Vec<String> {
@@ -516,8 +569,8 @@ mod tests {
         BOOTSTRAP_RETRY_DELAY, Manager, ManagerState, RenderError, Retry, ServicePaths,
         ServiceSpec, Step, bootstrap_retry, display_argv, format_status, launchctl_print,
         launchd_state, log_file, opt_out_message, parse_uid, plan_install, plan_uninstall,
-        render_plist, render_systemd_unit, render_unit, systemctl_is_active, systemctl_is_enabled,
-        unit_path,
+        recover_commands, render_plist, render_systemd_unit, render_unit, systemctl_is_active,
+        systemctl_is_enabled, unit_path, unit_serves_home,
     };
     use loom_api::{ServicePlatform, ServiceStatus};
     use std::ffi::OsStr;
@@ -559,6 +612,7 @@ Description=Loom daemon
 ExecStart="/usr/local/bin/loomd"
 Environment="LOOM_HOME=/home/me/.loom"
 Restart=always
+RestartSec=1s
 KillMode=process
 
 [Install]
@@ -915,6 +969,49 @@ WantedBy=default.target
             systemctl_is_active(),
             ["systemctl", "--user", "is-active", "loomd.service"]
         );
+    }
+
+    #[test]
+    fn recovery_commands() {
+        let joined = |manager| {
+            recover_commands(manager)
+                .iter()
+                .map(|argv| argv.join(" "))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            joined(LAUNCHD),
+            ["launchctl kickstart -k gui/501/io.github.gsuquet.loomd"]
+        );
+        assert_eq!(
+            joined(Manager::Systemd),
+            [
+                "systemctl --user reset-failed loomd.service",
+                "systemctl --user restart loomd.service"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_unit_serves_the_home_it_sets() {
+        let homes = ["/home/me/.loom", r#"/home/me/50% "it's" & $HOME\x"#];
+        for platform in [ServicePlatform::Macos, ServicePlatform::Linux] {
+            for home in homes {
+                let unit = render_unit(platform, &spec("/usr/local/bin/loomd", home)).unwrap();
+                assert!(
+                    unit_serves_home(platform, &unit, Path::new(home)).unwrap(),
+                    "{platform:?} {home}"
+                );
+                for other in ["/home/me", "/home/me/.loom/sub", "/tmp/loom-e2e"] {
+                    assert!(
+                        !unit_serves_home(platform, &unit, Path::new(other)).unwrap(),
+                        "{platform:?} {home} vs {other}"
+                    );
+                }
+            }
+            assert!(!unit_serves_home(platform, "", Path::new("/h")).unwrap());
+            assert!(unit_serves_home(platform, "", Path::new("/a\nb")).is_err());
+        }
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! `loom __upgrade-watchdog` (ADR-0011): started by loomd from the saved previous version after
 //! it replaced the binaries. Waits for the new loomd to answer with the expected version; on
 //! failure, restores the previous binaries with its own (previous) code, records the failed
-//! version, and makes sure the previous loomd runs again.
+//! version, and makes sure the previous loomd runs again: through the service manager when the
+//! user service of this loom home is installed and loaded, otherwise by starting it detached.
 
 use std::path::Path;
 use std::process::Child;
@@ -17,6 +18,7 @@ use semver::Version;
 use tracing::field::Empty;
 use tracing::{error, info, info_span, warn};
 
+use crate::service_cmd::{self, Supervisor, SystemRunner, starts_loomd_itself};
 use crate::start::spawn_detached;
 
 const POLL: Duration = Duration::from_millis(200);
@@ -24,7 +26,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Runs the watchdog, traced as the span `update.watchdog` (attributes `update.from`,
 /// `update.to`, `update.outcome`: `upgraded`, `rolled_back` or `rollback_failed`).
-pub fn run(args: &WatchdogArgs, layout: &Layout) -> Result<()> {
+pub fn run(args: &WatchdogArgs, layout: &Layout, supervisor: Supervisor) -> Result<()> {
     let span = info_span!(
         "update.watchdog",
         update.from = %args.from,
@@ -33,7 +35,7 @@ pub fn run(args: &WatchdogArgs, layout: &Layout) -> Result<()> {
         otel.status_code = Empty,
         otel.status_description = Empty,
     );
-    let (outcome, result) = span.in_scope(|| watch(args, layout));
+    let (outcome, result) = span.in_scope(|| watch(args, layout, supervisor));
     span.record("update.outcome", outcome);
     if let Err(error) = &result {
         loom_update::record_error(&span, error);
@@ -41,16 +43,22 @@ pub fn run(args: &WatchdogArgs, layout: &Layout) -> Result<()> {
     result
 }
 
-fn watch(args: &WatchdogArgs, layout: &Layout) -> (&'static str, Result<()>) {
+fn watch(
+    args: &WatchdogArgs,
+    layout: &Layout,
+    supervisor: Supervisor,
+) -> (&'static str, Result<()>) {
     let deadline = Duration::from_secs(args.deadline);
-    let loomd = args.install_dir.join("loomd");
+    // `None`: the service manager starts loomd, never the watchdog.
+    let loomd = starts_loomd_itself(supervisor).then(|| args.install_dir.join("loomd"));
     info!(
         from = %args.from,
         expect = %args.expect,
         deadline_secs = args.deadline,
+        ?supervisor,
         "watching the upgraded loomd"
     );
-    let Err(reason) = wait_for(layout, &loomd, &args.expect, deadline) else {
+    let Err(reason) = wait_for(layout, loomd.as_deref(), &args.expect, deadline) else {
         info!(version = %args.expect, "the upgraded loomd answers: upgrade complete");
         record(layout, |state| {
             auto::after_upgraded(state, &args.from, &args.expect, now())
@@ -83,14 +91,26 @@ fn watch(args: &WatchdogArgs, layout: &Layout) -> (&'static str, Result<()>) {
         info!(pruned = ?pruned.iter().map(ToString::to_string).collect::<Vec<_>>(), "removed saved versions");
     }
 
-    // The unhealthy loomd may still hold the lock: stop it so the restored one can start.
-    if daemon::lock_held(&layout.lock) {
-        info!(
-            "stopping the unhealthy loomd: {:?}",
-            daemon::restart(&layout.lock)
-        );
+    match supervisor {
+        // The manager stops the unhealthy loomd and starts the restored one; on systemd it
+        // also clears the start limit the failed version's crash loop may have hit.
+        Supervisor::Service(manager) => {
+            info!(?manager, "restarting the loomd service on {}", args.from);
+            if let Err(error) = service_cmd::recover(manager, &mut SystemRunner) {
+                error!("cannot restart the loomd service: {error}");
+            }
+        }
+        // The unhealthy loomd may still hold the lock: stop it so the restored one can start.
+        Supervisor::Unsupervised => {
+            if daemon::lock_held(&layout.lock) {
+                info!(
+                    "stopping the unhealthy loomd: {:?}",
+                    daemon::restart(&layout.lock)
+                );
+            }
+        }
     }
-    match wait_for(layout, &loomd, &args.from, deadline) {
+    match wait_for(layout, loomd.as_deref(), &args.from, deadline) {
         Ok(()) => {
             info!(version = %args.from, "rolled back: the previous loomd answers");
             // The upgrade failed: the span carries the reason as an error.
@@ -116,12 +136,12 @@ fn watch(args: &WatchdogArgs, layout: &Layout) -> (&'static str, Result<()>) {
     }
 }
 
-/// Waits up to `deadline` for a loomd answering with `version` on the socket. When nobody
-/// holds the lock for the grace period (no service manager restarted it), starts `loomd`
-/// detached, once.
+/// Waits up to `deadline` for a loomd answering with `version` on the socket. With `loomd`
+/// (no service manager), when nobody holds the lock for the grace period, starts it detached,
+/// once.
 fn wait_for(
     layout: &Layout,
-    loomd: &Path,
+    loomd: Option<&Path>,
     version: &Version,
     deadline: Duration,
 ) -> Result<(), String> {
@@ -150,10 +170,13 @@ fn wait_for(
             free_since = None;
         } else {
             let since = *free_since.get_or_insert_with(Instant::now);
-            if started.is_none() && since.elapsed() >= grace {
+            if let Some(loomd) = loomd
+                && started.is_none()
+                && since.elapsed() >= grace
+            {
                 info!(
                     loomd = %loomd.display(),
-                    "no service manager restarted loomd within {} s, starting it",
+                    "nobody restarted loomd within {} s, starting it",
                     grace.as_secs()
                 );
                 match spawn_detached(loomd, layout) {

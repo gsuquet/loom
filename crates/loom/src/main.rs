@@ -28,7 +28,7 @@ use loom_telemetry::logging::level;
 use loom_telemetry::settings::resolve;
 use loom_telemetry::{LOOM_SHUTDOWN_TIMEOUT, Options, TelemetryGuard};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
-use service_cmd::{SystemRunner, Target};
+use service_cmd::{Supervisor, SystemRunner, Target};
 use tracing::field::Empty;
 use tracing::{info_span, warn};
 
@@ -148,7 +148,11 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Upgrade(args) => print(&upgrade::upgrade(&VERSION_INFO, args, &layout()?)?),
         Command::Rollback(args) => print(&upgrade::rollback(&VERSION_INFO, args, &layout()?)?),
         Command::Service { command } => run_service(command),
-        Command::UpgradeWatchdog(args) => watchdog::run(args, &layout()?),
+        Command::UpgradeWatchdog(args) => {
+            let layout = layout()?;
+            let supervisor = watchdog_supervisor(&layout);
+            watchdog::run(args, &layout, supervisor)
+        }
     }
 }
 
@@ -254,24 +258,7 @@ fn run_service(command: &ServiceCommand) -> Result<()> {
     )
     .into_diagnostic()?;
     let layout = Layout::new(home);
-    let unit = unit_path(
-        platform,
-        &user_home,
-        env::var_os("XDG_CONFIG_HOME").as_deref(),
-    );
-    if unit.to_str().is_none() {
-        return Err(miette!(
-            "{} is not valid UTF-8: it cannot be passed to the service manager",
-            unit.display()
-        ));
-    }
-    let target = Target {
-        platform,
-        paths: ServicePaths {
-            unit,
-            log_dir: layout.log_dir.clone(),
-        },
-    };
+    let target = service_target(platform, &user_home, &layout)?;
 
     let mut runner = SystemRunner;
     let text = match command {
@@ -301,6 +288,47 @@ fn run_service(command: &ServiceCommand) -> Result<()> {
         }
     };
     write_out(&mut io::stdout().lock(), &text).into_diagnostic()
+}
+
+/// Service file and log directory of `loom service` for the loom home of `layout`.
+fn service_target(platform: ServicePlatform, user_home: &Path, layout: &Layout) -> Result<Target> {
+    let unit = unit_path(
+        platform,
+        user_home,
+        env::var_os("XDG_CONFIG_HOME").as_deref(),
+    );
+    if unit.to_str().is_none() {
+        return Err(miette!(
+            "{} is not valid UTF-8: it cannot be passed to the service manager",
+            unit.display()
+        ));
+    }
+    Ok(Target {
+        platform,
+        paths: ServicePaths {
+            unit,
+            log_dir: layout.log_dir.clone(),
+        },
+    })
+}
+
+/// The supervisor of loomd for the watchdog: the user service when it is installed for this
+/// loom home and loaded. Anything that prevents the check (unsupported platform, no `HOME`,
+/// a failing query) is logged and means unsupervised.
+fn watchdog_supervisor(layout: &Layout) -> Supervisor {
+    let Some(platform) = current_platform() else {
+        return Supervisor::Unsupervised;
+    };
+    let Some(user_home) = env::home_dir().filter(|home| !home.as_os_str().is_empty()) else {
+        warn!("HOME is unset or empty: cannot check for the loomd service");
+        return Supervisor::Unsupervised;
+    };
+    let found = service_target(platform, &user_home, layout)
+        .and_then(|target| service_cmd::supervisor(&target, &layout.home, &mut SystemRunner));
+    found.unwrap_or_else(|error| {
+        warn!("cannot check for the loomd service, assuming none: {error}");
+        Supervisor::Unsupervised
+    })
 }
 
 /// Reads the configuration; a missing file gives the defaults.

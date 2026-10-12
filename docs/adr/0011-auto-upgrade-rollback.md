@@ -21,7 +21,7 @@ The difficulty: after the swap, the process that must judge the new loomd cannot
 The watchdog:
 
 - polls the socket until a loomd answers with `daemon.version == <new>`, for at most the deadline (default 60 s);
-- when nobody holds `run/loomd.lock` for a grace period (deadline / 4, at most 15 s), starts `<install dir>/loomd` detached itself, as `loom status` does. Under a service manager (launchd `KeepAlive`, systemd `Restart=always`) the manager restarts loomd first and the grace period never elapses;
+- without a service manager, when nobody holds `run/loomd.lock` for a grace period (deadline / 4, at most 15 s), starts `<install dir>/loomd` detached itself, as `loom status` does. Under a service manager it never starts loomd itself (see [Recovery under a service manager](#recovery-under-a-service-manager));
 - **success**: clears `pending`, records `last_result = upgraded`, exits 0;
 - **failure**: copies `versions/<old>/loom` and `loomd` back into the install directory (same rename-based swap), adds `<new>` to `failed_versions`, records `last_result = rolled_back`, deletes `versions/<old>/` (it duplicates the running binaries again) and keeps the two highest other versions, sends `SIGTERM` to a loomd still holding the lock (the unhealthy new one), then waits, with the same deadline and grace rules, for a loomd answering `<old>`, starting it detached when nobody restarts it. Exits 1 after any rollback (nobody reads the code of a detached process; the error status marks the trace); the binaries are restored even when the old loomd does not come back.
 
@@ -83,6 +83,19 @@ check_interval = "6h"   # at least 10m
 
 systemd kills every process of a service's control group when the main process exits, including a detached watchdog in its own process group. The generated unit gets `KillMode=process`, so only `loomd` itself is stopped. Users who installed the service before this change rerun `loom service install`.
 
+### Recovery under a service manager
+
+Found by the end-to-end test of #14. Under systemd, the failed loomd exits at once on each restart; with `Restart=always` and the default `RestartSec=100ms`, five starts take under a second and hit the default start limit (5 starts in 10 s): the unit is failed and nobody restarts it. The watchdog then started the restored loomd detached, outside the service. On macOS, a loomd the watchdog starts holds the lock, so every `KeepAlive` start of the launchd job fails on it, every 10 s, for as long as it runs. In both cases the restored loomd ends up unsupervised.
+
+So the watchdog checks, at start, whether the user service of its loom home is installed and loaded: the service file exists, sets `LOOM_HOME` to the watchdog's loom home, and `launchctl print gui/<uid>/io.github.gsuquet.loomd` (macOS) or `systemctl --user is-enabled loomd.service` (Linux) succeeds. The `LOOM_HOME` check keeps a service of another loom home (a test, another setup) from being taken for this one's. When it is:
+
+- it never starts loomd itself, neither while waiting for the new version nor after the rollback;
+- after restoring the binaries, it recovers through the manager: `launchctl kickstart -k gui/<uid>/io.github.gsuquet.loomd` (kills the running instance if any and starts the job at once, without the `KeepAlive` throttle), or `systemctl --user reset-failed loomd.service` then `systemctl --user restart loomd.service`. A failing command is logged; the wait for the restored version then reports the rollback as failed.
+
+Otherwise (no service, another home, not loaded, or the check itself fails), the detached start above applies.
+
+The unit also gets `RestartSec=1s`. `StartLimitIntervalSec=0` (no start limit) was rejected: a loomd that cannot start would then be restarted every second forever, filling the journal; the start limit is what stops a crash loop, and `reset-failed` by the watchdog, which knows the binaries changed, is the right moment to clear it. With `RestartSec=1s`, the failed version still hits the limit within the default 60 s deadline, which the recovery handles. Users who installed the service before this change rerun `loom service install`.
+
 ### launchd property list: unchanged
 
 launchd.plist(5), key `AbandonProcessGroup`: "When a job dies, launchd kills any remaining processes with the same process group ID as the job. Setting this key to true disables that behavior." The watchdog is started with `process_group(0)`, so it has its own process group and is not killed when the old loomd exits; the property list needs no change. Source: the `launchd.plist(5)` manual page, text checked on 2026-10-12 on macOS (Darwin 25.6). The behaviour itself is to be verified on a real machine with the service installed (not covered by the tests, which never touch the host's launchd).
@@ -107,7 +120,8 @@ The integration tests build release archives whose `loom` and `loomd` are shell 
 - A broken release whose daemon starts in a fresh home but not in the user's home (configuration or state migration) is caught by the watchdog only.
 - One upgrade costs a few seconds of downtime of the API (old loomd exit, new start).
 - Unsupervised loomd: the watchdog restarts it after the grace period (up to 15 s of downtime).
-- Supervised by launchd with `KeepAlive`: launchd throttles restarts of a job that ran less than 10 s (`ThrottleInterval`); the grace period (15 s with the default deadline) is longer, so the watchdog does not race launchd. With a shorter deadline (test hook) both may start a loomd; the loser exits on the lock.
+- Supervised (launchd `KeepAlive`, systemd `Restart=always`): only the manager starts loomd, so it never fails on a lock held by a loomd the watchdog started, and the restored loomd stays supervised. launchd throttles restarts of a job that ran less than 10 s (`ThrottleInterval`); `kickstart -k` bypasses it after the rollback.
+- A service file of the same loom home that is installed but not loaded counts as no service: the watchdog starts loomd detached.
 - The watchdog trusts the version reported by `/v1/status`; a release that serves the endpoint but is broken elsewhere is not detected.
 - If the watchdog itself is killed (reboot during the deadline), `pending` stays until it is stale (1 h); the broken binaries stay installed until `loom rollback`.
 - `loom` and `loomd` are assumed to be installed in the same directory (as `install.sh` does): the auto-upgrade replaces both in the directory of the running `loomd`.
@@ -116,5 +130,6 @@ The integration tests build release archives whose `loom` and `loomd` are shell 
 
 1. systemd's default `KillMode=control-group` killing the detached watchdog when `loomd` exits under `Restart=always`, and `KillMode=process` preventing it (systemd.kill(5), not re-read in this task).
 2. launchd killing only the job's process group, not its other descendants (launchd.plist(5) `AbandonProcessGroup`, quoted above from the manual page; behaviour with the service installed to be verified on a real machine).
+3. The systemd recovery (`reset-failed` then `restart` after the start limit was hit) is exercised by the systemd job of the end-to-end workflow (`.github/workflows/e2e.yml`); `launchctl kickstart -k` is not exercised by any automated test (no launchd in CI).
 
 Neither is covered by automated tests: the tests never touch the host's launchd or systemd.
