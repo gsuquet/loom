@@ -33,7 +33,7 @@
 ┌ Today ─────────────── all contexts ▾ ─ inbox 4 · approvals 2 · runs 3 ┐
 │ ● p0 [company-a] Investigation  checkout 5xx spike         due 11:00 │
 │ ● p1 [company-a] Bug            login timeout mobile       active    │
-│ ◐ p1 [ippon]     Review         !412 auth refactor         agent ▸   │
+│ ◐ p1 [company-b] Review         !412 auth refactor         agent ▸   │
 │ ○ p2 [personal]  Chore          renew certs                due fri   │
 ├ Runs ───────────────────────────────────────────────────────────────┤
 │ ▸ reviewer@3  !412   stage review   2m14  $0.41  streaming…         │
@@ -63,7 +63,7 @@ Editing in place: fields through pickers (status, kind, importance, due, context
 ### Code review
 
 ```
-┌ Review !412 auth refactor ── [ippon] ── head a1b2c3 · since last review: 3 files ┐
+┌ Review !412 auth refactor ─ [company-b] ─ head a1b2 · since last review: 3 files ┐
 │ ✓ src/auth/mod.rs   +12 -4 │ @@ -40,7 +40,9 @@ fn verify(token: &str)          │
 │ ● src/auth/jwt.rs   +88 -31│  40   let claims = decode(token)?;                 │
 │   src/api/login.rs  +5  -2 │  41 - if claims.exp < now() {                       │
