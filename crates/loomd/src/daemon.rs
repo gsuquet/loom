@@ -16,15 +16,15 @@ use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use loom_api::{ApiError, ApiVersion, StatusResponse, VersionInfo};
-use loomd::api::{STATUS_PATH, clock_error, method_not_allowed, not_found, status_at, timestamp};
-use loomd::cli::Cli;
-use loomd::config::{Config, parse_config};
-use loomd::exit::Shutdown;
-use loomd::home::{LOOM_HOME_ENV, resolve_home};
-use loomd::layout::{
+use loom_config::config::{Config, parse_config};
+use loom_config::home::{LOOM_HOME_ENV, resolve_home};
+use loom_config::layout::{
     Layout, MAX_SOCKET_PATH_BYTES, RUN_DIR_MODE, RUN_FILE_MODE, check_socket_path,
     lock_taken_message, parse_lock_pid,
 };
+use loomd::api::{STATUS_PATH, clock_error, method_not_allowed, not_found, status_at, timestamp};
+use loomd::cli::Cli;
+use loomd::exit::Shutdown;
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
