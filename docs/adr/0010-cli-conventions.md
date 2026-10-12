@@ -1,6 +1,6 @@
 # ADR-0010: CLI conventions and generated CLI reference
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-12
 
 ## Context

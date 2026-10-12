@@ -13,4 +13,4 @@
 | [0007](0007-autonomy-policy.md) | Three-class autonomy policy for proposed actions |
 | [0008](0008-git-cli-for-writes.md) | git CLI for writes, gix for reads |
 | [0009](0009-release-and-update-tooling.md) | Release, install and update tooling |
-| [0010](0010-cli-conventions.md) | CLI conventions and generated CLI reference (proposed) |
+| [0010](0010-cli-conventions.md) | CLI conventions and generated CLI reference |
