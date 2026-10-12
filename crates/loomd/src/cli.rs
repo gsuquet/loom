@@ -1,5 +1,6 @@
 //! Command-line definition of `loomd` (ADR-0010).
 
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use clap::{ArgAction, ColorChoice, Parser};
@@ -19,6 +20,9 @@ static LONG_VERSION: LazyLock<String> = LazyLock::new(|| VERSION_INFO.to_string(
     about
 )]
 pub struct Cli {
+    /// Loom home directory. Overrides `LOOM_HOME`; default `~/.loom`.
+    #[arg(long, value_name = "DIR")]
+    pub loom_home: Option<PathBuf>,
     /// Print errors only on stderr.
     #[arg(short, long, conflicts_with = "verbose")]
     pub quiet: bool,
@@ -47,6 +51,16 @@ mod tests {
         assert_eq!(cli.verbose, 2);
         assert_eq!(cli.color, ColorChoice::Never);
         assert!(!cli.quiet);
+        assert_eq!(cli.loom_home, None);
+    }
+
+    #[test]
+    fn loom_home_takes_a_directory() {
+        let cli = Cli::try_parse_from(["loomd", "--loom-home", "/tmp/l"]).unwrap();
+        assert_eq!(
+            cli.loom_home.as_deref(),
+            Some(std::path::Path::new("/tmp/l"))
+        );
     }
 
     #[test]

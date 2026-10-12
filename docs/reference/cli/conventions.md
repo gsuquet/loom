@@ -20,7 +20,7 @@
 | `--color <WHEN>` | `auto` (default): color only when the stream is a terminal and `NO_COLOR` is unset or empty. `always`, `never`: ignore both. |
 | `-y`, `--yes` | Answers yes to every confirmation. The only way to skip a confirmation. |
 
-`loomd` accepts `-q`, `-v` and `--color` with the same behavior.
+`loomd` accepts `-q`, `-v` and `--color` with the same behavior. Its log levels: `-q` errors only, default info, `-v` debug, `-vv` trace.
 
 ## Confirmations
 
@@ -47,11 +47,14 @@ No shipped command asks for confirmation yet.
 | `2` | Usage error: unknown option, missing command, invalid value, conflicting options. |
 | `130` | Interrupted by `SIGINT` (Ctrl-C). |
 
+`loomd` stopped by `SIGTERM` (a service manager stopping it, or `kill`) exits with `0` after a graceful shutdown; stopped by `SIGINT`, it exits with `130` after the same shutdown.
+
 ## Environment variables
 
 | Variable | Effect |
 | --- | --- |
 | `NO_COLOR` | Non-empty: no color with `--color auto`. |
+| `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given. See [configuration](../configuration.md). |
 
 ## `loom version` output
 
