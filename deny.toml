@@ -44,6 +44,12 @@ allow = ["ISC"]
 crate = "subtle"
 allow = ["BSD-3-Clause"]
 
+# Default hasher of `hashbrown`, enabled by `gix-hashtable` (`gix-config` of `loom-repo`). Zlib is
+# permissive and MIT-compatible. Allowed for this crate only.
+[[licenses.exceptions]]
+crate = "foldhash"
+allow = ["Zlib"]
+
 [licenses.private]
 # Workspace crates are not published (`publish = false`).
 ignore = true

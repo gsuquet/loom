@@ -121,8 +121,8 @@ kind = "gitlab"
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A trailing `/` is ignored. |
 | `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. |
 | `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
-| `[repos] max_depth` | integer | `4` | 0 to 4294967295. |
-| `[repos] exclude` | array of strings: glob patterns | `[]` | Each pattern is not empty and is a valid glob (`*`, `?`, `**`, `[…]`, `{a,b}`). |
+| `[repos] max_depth` | integer | `4` | 0 to 4294967295. Deepest directory level examined below each root, the root being level 0. |
+| `[repos] exclude` | array of strings: glob patterns | `[]` | Each pattern is not empty and is a valid glob (`*`, `?`, `**`, `[…]`, `{a,b}`). A pattern without `/` matches a directory name at any depth (`archive`, `*-old`); a pattern with `/` matches the whole directory path relative to its root, with `/` separators (`clients/old`, `**/fixtures`). A matching directory is not walked. Hidden directories and `node_modules`, `vendor`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__` are always excluded. |
 | `[repos] fetch_interval` | string: duration | `"1h"` | Duration syntax of `[update] check_interval`. At least `"1m"`. |
 | `[repos] fetch_concurrency` | integer | `4` | 1 to 4294967295. |
 | `[repos."<path>"]` | table | none | `<path>`: same path rules as `match.paths`. Two keys naming the same path (`"~/a"` and `"~/a/"`) are rejected. |
