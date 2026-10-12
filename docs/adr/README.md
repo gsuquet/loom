@@ -12,3 +12,4 @@
 | [0006](0006-private-task-shared-mirror.md) | Private task file, shared issue mirrors with 3-way merge |
 | [0007](0007-autonomy-policy.md) | Three-class autonomy policy for proposed actions |
 | [0008](0008-git-cli-for-writes.md) | git CLI for writes, gix for reads |
+| [0009](0009-release-and-update-tooling.md) | Release, install and update tooling (proposed) |
