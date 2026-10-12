@@ -1,6 +1,6 @@
 # ADR-0009: Release, install and update tooling
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-12
 
 ## Context
