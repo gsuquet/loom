@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "loom"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "loom-api"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "jsonschema",
  "schemars",
@@ -423,14 +423,14 @@ dependencies = [
 
 [[package]]
 name = "loom-update"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "semver",
 ]
 
 [[package]]
 name = "loomd"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
