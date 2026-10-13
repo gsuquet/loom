@@ -529,7 +529,7 @@ fn unix_now() -> u64 {
 }
 
 /// A number in `[0, 1]` from the standard library's randomly seeded hasher.
-fn random_unit() -> f64 {
+pub fn random_unit() -> f64 {
     let mut hasher = RandomState::new().build_hasher();
     hasher.write_u128(
         SystemTime::now()

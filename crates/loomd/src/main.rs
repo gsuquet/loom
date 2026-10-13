@@ -3,6 +3,7 @@
 mod daemon;
 mod repos;
 mod updater;
+mod updates;
 
 use std::env;
 use std::io::{self, IsTerminal as _};
