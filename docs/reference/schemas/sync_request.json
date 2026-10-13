@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SyncRequest",
+  "description": "Body of `POST /v1/repos/sync`.",
+  "type": "object",
+  "properties": {
+    "dry_run": {
+      "description": "`true`: decide from the stored state without fetching or merging.",
+      "type": "boolean",
+      "default": false
+    },
+    "repos": {
+      "description": "Slugs of the repositories to update; empty: every repository of the index.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

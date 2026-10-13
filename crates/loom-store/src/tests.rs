@@ -3,8 +3,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
-    ContextAssignment, MaybeKnown, Remote, RepoHead, RepoIdentity, RepoState, Timestamp, Untracked,
-    Upstream,
+    ContextAssignment, LastUpdate, MaybeKnown, Remote, RepoHead, RepoIdentity, RepoState,
+    RepoUpdatePolicy, SkipReason, Timestamp, Untracked, UpdateOutcome, Upstream,
 };
 use loom_repo::ScanDiff;
 use rusqlite::Connection;
@@ -726,7 +726,7 @@ fn version_1_database_migrates_to_2_with_its_repositories() {
     drop(conn);
 
     let mut store = Store::open(&path).unwrap();
-    assert_eq!(user_version(&store.conn).unwrap(), 2);
+    assert_eq!(user_version(&store.conn).unwrap(), SCHEMA_VERSION);
     let repo = store.get("unassigned/a").unwrap().unwrap();
     assert!(repo.registered);
     assert_eq!(repo.state, None);
@@ -747,6 +747,130 @@ fn version_1_database_migrates_to_2_with_its_repositories() {
     assert_eq!(
         reader.get("unassigned/a").unwrap().unwrap().state,
         Some(state_on("dev", 20))
+    );
+}
+
+fn update_at(time: u64, outcomes: Vec<UpdateOutcome>) -> LastUpdate {
+    LastUpdate {
+        time: at(time),
+        policy: RepoUpdatePolicy::Ff,
+        outcomes,
+    }
+}
+
+#[test]
+fn last_updates_are_saved_kept_across_refreshes_and_removed_with_the_repository() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut store = Store::open(&path).unwrap();
+    store
+        .apply_scan(&added(vec![repo("/w/a", "p", "p/a", &[])]), at(100))
+        .unwrap();
+    assert_eq!(store.get("p/a").unwrap().unwrap().last_update, None);
+
+    // With a state: both written.
+    let fast_forwarded = update_at(
+        150,
+        vec![UpdateOutcome::FastForwarded {
+            branch: "main".to_owned(),
+            from: "a".repeat(40),
+            to: "b".repeat(40),
+        }],
+    );
+    let state = state_on("main", 150);
+    assert!(
+        store
+            .save_update(Path::new("/w/a"), &fast_forwarded, Some(&state))
+            .unwrap()
+    );
+    let reader = Reader::open(&path).unwrap();
+    let read = reader.get("p/a").unwrap().unwrap();
+    assert_eq!(read.last_update, Some(fast_forwarded));
+    assert_eq!(read.state, Some(state));
+
+    // Without a state: the state is kept.
+    let skipped = update_at(
+        160,
+        vec![UpdateOutcome::Skipped {
+            reason: SkipReason::NoRemote,
+        }],
+    );
+    assert!(
+        store
+            .save_update(Path::new("/w/a"), &skipped, None)
+            .unwrap()
+    );
+    let read = reader.get("p/a").unwrap().unwrap();
+    assert_eq!(read.last_update.as_ref(), Some(&skipped));
+    assert_eq!(read.state, Some(state_on("main", 150)));
+
+    // A state refresh and a scan update keep it.
+    assert!(
+        store
+            .save_state(Path::new("/w/a"), &state_on("dev", 170))
+            .unwrap()
+    );
+    store
+        .apply_scan(
+            &ScanDiff {
+                updated: vec![repo("/w/a", "w", "w/a", &[])],
+                ..ScanDiff::default()
+            },
+            at(180),
+        )
+        .unwrap();
+    let listed = reader.list(&RepoFilter::default()).unwrap();
+    assert_eq!(listed[0].last_update.as_ref(), Some(&skipped));
+
+    // Removed since the update started: nothing written.
+    assert!(
+        !store
+            .save_update(Path::new("/w/gone"), &skipped, Some(&state_on("x", 1)))
+            .unwrap()
+    );
+    store.forget("w/a").unwrap();
+    let conn = Connection::open(&path).unwrap();
+    for table in ["repo_update", "repo_state"] {
+        let rows: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0, "{table}");
+    }
+}
+
+#[test]
+fn version_2_database_migrates_to_3_with_its_states() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut conn = Connection::open(&path).unwrap();
+    migrate_with(&mut conn, &path, migrations_up_to(2)).unwrap();
+    conn.execute(
+        "INSERT INTO repos (path, name, slug, context, assignment, remotes, registered, \
+                            first_seen, updated_at) \
+         VALUES ('/w/a', 'a', 'unassigned/a', 'unassigned', '{\"rule\":\"unassigned\"}', \
+                 '[]', 0, 10, 10)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO repo_state (repo_id, refreshed_at, dirty) VALUES (1, 20, '0')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(user_version(&store.conn).unwrap(), SCHEMA_VERSION);
+    let repo = store.get("unassigned/a").unwrap().unwrap();
+    assert_eq!(repo.state.unwrap().dirty, MaybeKnown::Known(0));
+    assert_eq!(repo.last_update, None);
+    let update = update_at(30, vec![UpdateOutcome::Fetched]);
+    assert!(store.save_update(Path::new("/w/a"), &update, None).unwrap());
+    assert_eq!(
+        store.get("unassigned/a").unwrap().unwrap().last_update,
+        Some(update)
     );
 }
 
@@ -789,6 +913,13 @@ fn replace_all_drops_everything_else() {
     store
         .save_state(Path::new("/w/x"), &state_on("main", 3))
         .unwrap();
+    store
+        .save_update(
+            Path::new("/w/x"),
+            &update_at(3, vec![UpdateOutcome::Fetched]),
+            None,
+        )
+        .unwrap();
 
     store
         .replace_all(
@@ -800,6 +931,7 @@ fn replace_all_drops_everything_else() {
     let x = store.get("p/x").unwrap().unwrap();
     assert_eq!(x.last_used, None);
     assert_eq!(x.state, None);
+    assert_eq!(x.last_update, None);
     assert!(!x.registered);
     assert_eq!(store.registered_paths().unwrap(), Vec::<PathBuf>::new());
     assert_eq!(fts_orphans(&db(&dir)), (0, 0));

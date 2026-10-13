@@ -13,6 +13,7 @@ mod identity;
 mod remote;
 pub mod scan;
 pub mod state;
+pub mod update;
 
 pub use context::{ContextRules, ContextRulesError};
 pub use diff::{ScanDiff, diff};
@@ -23,4 +24,5 @@ pub use scan::{
     ScanOptions, ScanReport, find_root, git_dirs, read_repos, scan, scan_roots,
     scan_with_registered,
 };
-pub use state::{StateOptions, state};
+pub use state::{StateOptions, UpdateRefs, state, update_refs};
+pub use update::{Action, FetchDecision, UpdatePolicies, decide_fetch, decide_update, plan};

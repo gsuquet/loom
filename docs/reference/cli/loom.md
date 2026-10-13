@@ -249,7 +249,7 @@ loom repo scan [OPTIONS]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--rebuild` |  |  | Drop the whole index and rebuild it from the roots: registered repositories outside the roots, `last_used` and states are lost. Asks for confirmation |
+| `--rebuild` |  |  | Drop the whole index and rebuild it from the roots: registered repositories outside the roots, `last_used`, states and the results of the last updates are lost. Asks for confirmation |
 | `-n`, `--dry-run` |  |  | Print what would change, change nothing |
 | `--json` |  |  | Print the result as JSON (`ScanResult` schema) |
 | `-h`, `--help` |  |  | Print help |
@@ -318,6 +318,32 @@ loom repo doctor [OPTIONS]
 | --- | --- | --- | --- |
 | `--json` |  |  | Print the report as JSON (`DoctorReport` schema) |
 | `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom repo sync`
+
+Update repositories now, as loomd does on its schedule: fetch the primary remote, then fast-forward only when no local work can be affected.
+
+Ignores the schedule and the backoff of unreachable hosts; follows the update policy of each repository. Prints one line per repository: its slug and what happened.
+
+```text
+loom repo sync [OPTIONS] [REPO]...
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<REPO>` |  |  | Repositories to update: path, `<context>/<name>` or name; every repository of the index when none is given |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--dry-run` |  |  | Print what each update would do, decided from the state read now; fetch nothing, change nothing |
+| `--json` |  |  | Print the result as JSON (`SyncResult` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
 
 Global options apply.
 

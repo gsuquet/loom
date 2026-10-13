@@ -194,6 +194,28 @@ pub enum RepoCommand {
     /// Check roots, contexts, unassigned repositories, loomd's SSH agent and SSH access to
     /// each host; print the fixes. Exits with 1 when a check fails.
     Doctor(RepoDoctorArgs),
+    /// Update repositories now, as loomd does on its schedule: fetch the primary remote, then
+    /// fast-forward only when no local work can be affected.
+    ///
+    /// Ignores the schedule and the backoff of unreachable hosts; follows the update policy of
+    /// each repository. Prints one line per repository: its slug and what happened.
+    Sync(RepoSyncArgs),
+}
+
+/// Options of `loom repo sync`.
+#[derive(Debug, clap::Args)]
+pub struct RepoSyncArgs {
+    /// Repositories to update: path, `<context>/<name>` or name; every repository of the index
+    /// when none is given.
+    #[arg(value_name = "REPO")]
+    pub repos: Vec<String>,
+    /// Print what each update would do, decided from the state read now; fetch nothing, change
+    /// nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the result as JSON (`SyncResult` schema).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Output format of `loom repo ls`.
@@ -235,7 +257,8 @@ pub struct RepoShowArgs {
 #[derive(Debug, clap::Args)]
 pub struct RepoScanArgs {
     /// Drop the whole index and rebuild it from the roots: registered repositories outside the
-    /// roots, `last_used` and states are lost. Asks for confirmation.
+    /// roots, `last_used`, states and the results of the last updates are lost. Asks for
+    /// confirmation.
     #[arg(long)]
     pub rebuild: bool,
     /// Print what would change, change nothing.
@@ -414,6 +437,24 @@ mod tests {
             parse(&["loom", "service", "status", "--json"]),
             ServiceCommand::Status { json: true }
         ));
+    }
+
+    #[test]
+    fn repo_sync_parses() {
+        let sync = |args: &[&str]| {
+            let mut full = vec!["sync"];
+            full.extend_from_slice(args);
+            match repo(&full) {
+                super::RepoCommand::Sync(args) => args,
+                other => panic!("not repo sync: {other:?}"),
+            }
+        };
+        let all = sync(&[]);
+        assert!(all.repos.is_empty() && !all.dry_run && !all.json);
+        let some = sync(&["-n", "personal/a", "work/b", "--json"]);
+        assert_eq!(some.repos, ["personal/a", "work/b"]);
+        assert!(some.dry_run && some.json);
+        assert!(sync(&["--dry-run"]).dry_run);
     }
 
     #[test]

@@ -11,11 +11,13 @@ use std::path::PathBuf;
 use loom_api::{
     ApiError, ApiVersion, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
     ContextName, DaemonDiagnostics, DaemonRestart, DoctorCheck, DoctorReport, ErrorCode, ForgeKind,
-    InstallReport, MaybeKnown, PendingUpgrade, Profile, RegisterRequest, Remote, RemoteUrl,
-    RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary, RollbackReport,
-    ScanIssue, ScanResult, ServicePlatform, ServiceStatus, SshAgentSocket, StatusResponse,
-    Timestamp, Untracked, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
-    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
+    InstallReport, LastUpdate, MaybeKnown, PendingUpgrade, PlannedAction, Profile, RegisterRequest,
+    Remote, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary,
+    RepoSync, RepoUpdatePolicy, RollbackReport, ScanIssue, ScanResult, ServicePlatform,
+    ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse, SyncOutcome,
+    SyncRequest, SyncResult, Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode,
+    UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -30,6 +32,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("daemon_diagnostics", schema_for!(DaemonDiagnostics)),
         ("doctor_report", schema_for!(DoctorReport)),
         ("error_code", schema_for!(ErrorCode)),
+        ("last_update", schema_for!(LastUpdate)),
         ("register_request", schema_for!(RegisterRequest)),
         ("repo_identity", schema_for!(RepoIdentity)),
         ("repo_list", schema_for!(RepoList)),
@@ -40,6 +43,8 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("service_platform", schema_for!(ServicePlatform)),
         ("service_status", schema_for!(ServiceStatus)),
         ("status_response", schema_for!(StatusResponse)),
+        ("sync_request", schema_for!(SyncRequest)),
+        ("sync_result", schema_for!(SyncResult)),
         ("update_state", schema_for!(UpdateState)),
         ("upgrade_report", schema_for!(UpgradeReport)),
         ("version_info", schema_for!(VersionInfo)),
@@ -488,6 +493,7 @@ fn repo_samples_validate_against_their_schema() {
             registered: false,
             last_used: None,
             state: None,
+            last_update: None,
         },
         RepoSummary {
             identity: repo_identity(ContextAssignment::Default {
@@ -496,6 +502,7 @@ fn repo_samples_validate_against_their_schema() {
             registered: true,
             last_used: Some(used),
             state: Some(repo_states(used).remove(0)),
+            last_update: Some(last_updates(used).remove(0)),
         },
     ];
     for state in repo_states(used) {
@@ -534,6 +541,139 @@ fn repo_samples_validate_against_their_schema() {
         .unwrap(),
     );
     assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+/// Every kind of update outcome and skip reason, at `at`.
+fn last_updates(at: Timestamp) -> Vec<LastUpdate> {
+    let s = |text: &str| text.to_owned();
+    let id = |c: char| c.to_string().repeat(40);
+    let skipped = |reason| UpdateOutcome::Skipped { reason };
+    vec![
+        LastUpdate {
+            time: at,
+            policy: RepoUpdatePolicy::Ff,
+            outcomes: vec![
+                UpdateOutcome::FastForwarded {
+                    branch: s("feat/x"),
+                    from: id('a'),
+                    to: id('b'),
+                },
+                UpdateOutcome::DefaultBranchMoved {
+                    branch: s("main"),
+                    from: id('c'),
+                    to: id('d'),
+                },
+            ],
+        },
+        LastUpdate {
+            time: at,
+            policy: RepoUpdatePolicy::Fetch,
+            outcomes: vec![UpdateOutcome::Fetched],
+        },
+        LastUpdate {
+            time: at,
+            policy: RepoUpdatePolicy::Off,
+            outcomes: vec![skipped(SkipReason::PolicyOff)],
+        },
+        LastUpdate {
+            time: at,
+            policy: RepoUpdatePolicy::Ff,
+            outcomes: vec![
+                skipped(SkipReason::NoRemote),
+                skipped(SkipReason::Unreadable {
+                    error: s("no HEAD"),
+                }),
+                skipped(SkipReason::Unknown {
+                    field: StateField::Dirty,
+                }),
+                skipped(SkipReason::Operation {
+                    operation: RepoOperation::Am,
+                }),
+                skipped(SkipReason::Dirty { paths: 3 }),
+                skipped(SkipReason::Detached),
+                skipped(SkipReason::Unborn { branch: s("main") }),
+                skipped(SkipReason::NoUpstream { branch: s("x") }),
+                skipped(SkipReason::Diverged {
+                    branch: s("x"),
+                    ahead: 1,
+                    behind: 2,
+                }),
+                skipped(SkipReason::MergeRefused {
+                    stderr_tail: s("error: untracked working tree files would be overwritten"),
+                }),
+                skipped(SkipReason::DefaultBranchDiverged {
+                    branch: s("main"),
+                    ahead: 1,
+                    behind: 1,
+                }),
+            ],
+        },
+        LastUpdate {
+            time: at,
+            policy: RepoUpdatePolicy::Ff,
+            outcomes: vec![
+                UpdateOutcome::Failed {
+                    step: UpdateStep::Fetch,
+                    error: s("timed out after 120s"),
+                    stderr_tail: String::new(),
+                },
+                UpdateOutcome::Failed {
+                    step: UpdateStep::FastForward,
+                    error: s("exit status 128"),
+                    stderr_tail: s("fatal: x"),
+                },
+                UpdateOutcome::Failed {
+                    step: UpdateStep::MoveDefaultBranch,
+                    error: s("cannot start git: not found"),
+                    stderr_tail: String::new(),
+                },
+            ],
+        },
+    ]
+}
+
+#[test]
+fn update_samples_validate_against_their_schema() {
+    let at = Timestamp::from_unix_secs(1_791_792_000).unwrap();
+    let mut errors = Vec::new();
+    let updates = last_updates(at);
+    for update in &updates {
+        errors.extend(violations(update).unwrap());
+    }
+    let mut repos: Vec<RepoSync> = updates
+        .into_iter()
+        .map(|update| RepoSync {
+            slug: "personal/loom".to_owned(),
+            result: SyncOutcome::Updated { update },
+        })
+        .collect();
+    repos.push(RepoSync {
+        slug: "personal/x".to_owned(),
+        result: SyncOutcome::Planned {
+            policy: RepoUpdatePolicy::Ff,
+            actions: vec![
+                PlannedAction::Fetch,
+                PlannedAction::Skip {
+                    reason: SkipReason::Detached,
+                },
+                PlannedAction::DecideAfterFetch,
+            ],
+        },
+    });
+    errors.extend(violations(&SyncResult { repos }).unwrap());
+    errors.extend(violations(&SyncRequest::default()).unwrap());
+    errors.extend(
+        violations(&SyncRequest {
+            repos: vec!["personal/loom".to_owned()],
+            dry_run: true,
+        })
+        .unwrap(),
+    );
+    assert!(errors.is_empty(), "schema violations: {errors:?}");
+
+    let schema = serde_json::to_value(schema_for!(SyncRequest)).unwrap();
+    assert!(jsonschema::is_valid(&schema, &json!({})));
+    assert!(!jsonschema::is_valid(&schema, &json!({ "dryrun": true })));
 }
 
 #[test]
@@ -604,6 +744,7 @@ fn repo_summary_inlines_the_identity() {
         registered: true,
         last_used: None,
         state: None,
+        last_update: None,
     };
     let value = serde_json::to_value(&summary).unwrap();
     assert_eq!(value["slug"], "unassigned/loom");
@@ -612,6 +753,7 @@ fn repo_summary_inlines_the_identity() {
     // Not refreshed yet: `null`, present.
     assert_eq!(value["state"], Value::Null);
     assert!(value.get("state").is_some());
+    assert_eq!(value["last_update"], Value::Null);
     // A client reading only the identity reads a summary.
     let identity: RepoIdentity = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(identity, summary.identity);
