@@ -28,6 +28,15 @@ pub struct RepoQuery {
     pub query: Option<String>,
 }
 
+/// Query parameters of `GET /v1/repos/{context}/{name}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoGetQuery {
+    /// `true`: read the repository's state now, then return it.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
 /// The filter of `query`: `(context, text)`, each `None` when absent or empty.
 ///
 /// # Errors

@@ -1,25 +1,35 @@
 //! The repository index of loomd (ADR-0012): a store thread owns the only connection that
-//! writes `index.db` and runs the scans, registrations and removals one at a time; the API
-//! handlers read through their own connections.
+//! writes `index.db` and runs the scans, registrations, removals and state writes one at a
+//! time; the API handlers read through their own connections.
+//!
+//! Repository states are read by a small pool of state threads, off the store thread and off
+//! the API, then written through the store thread. A state is refreshed after a scan (added
+//! and updated repositories), for every repository after the scan on start and then every
+//! `[repos] fetch_interval`, on registration, and on `GET /v1/repos/{context}/{name}?refresh=true`
+//! (read on a blocking thread of the API, then written through the store thread).
 //!
 //! Decisions are in `loom_repo` and `loom_store`; this module does the I/O.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Read as _;
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::StatusCode;
-use loom_api::{ApiError, RepoSummary, ScanIssue, ScanResult, Timestamp};
+use loom_api::{ApiError, RepoState, RepoSummary, ScanIssue, ScanResult, Timestamp};
 use loom_config::config::Config;
 use loom_config::repos::{ForgeConfig, ForgeHost};
 use loom_repo::scan::Exclusions;
+use loom_repo::state::unreadable;
 use loom_repo::{
-    ContextRules, ScanOptions, diff, find_root, read_repos, scan_roots, scan_with_registered,
+    ContextRules, ScanOptions, StateOptions, diff, find_root, git_dirs, read_repos, scan_roots,
+    scan_with_registered, state,
 };
 use loom_store::{Reader, RepoFilter, Store, StoreError};
 use loomd::api::{internal, invalid_request, repo_not_found, timestamp, unavailable};
@@ -39,11 +49,22 @@ pub type Failure = (StatusCode, ApiError);
 
 type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 
+/// Most state threads: each may walk a large working tree for its whole budget.
+const MAX_STATE_THREADS: usize = 4;
+
 /// A request to the store thread, with the span of the API request that sent it.
 enum Command {
+    /// `initial`: the scan on start, after which every state is refreshed.
     Scan {
         reply: Option<Reply<ScanResult>>,
+        initial: bool,
         parent: Span,
+    },
+    /// Writes the state of the repository at `path`, then answers with the repository.
+    SaveState {
+        path: PathBuf,
+        state: Box<RepoState>,
+        reply: Option<Reply<RepoSummary>>,
     },
     Register {
         path: PathBuf,
@@ -58,17 +79,20 @@ enum Command {
     Stop,
 }
 
-/// The running store thread.
+/// The running store thread and state threads.
 pub struct RepoIndex {
     commands: mpsc::Sender<Command>,
     thread: JoinHandle<()>,
+    states: StatePool,
 }
 
-/// What the API handlers use: the command channel and the database path for reads.
+/// What the API handlers use: the command channel, the database path for reads, and how
+/// states are read.
 #[derive(Clone)]
 pub struct RepoHandle {
     commands: mpsc::Sender<Command>,
     db: PathBuf,
+    state_options: StateOptions,
 }
 
 /// How scans walk and identify repositories, from the configuration read at start.
@@ -98,34 +122,162 @@ pub fn start(db: &Path, config: &Config, home: &Path) -> Result<(RepoIndex, Repo
         .iter()
         .map(|root| root.display().to_string())
         .collect();
-    info!(?roots, "repository index started");
     let (commands, received) = mpsc::channel();
+    let state_options = StateOptions::default();
+    let threads = thread::available_parallelism()
+        .map_or(1, NonZero::get)
+        .min(MAX_STATE_THREADS);
+    let (refresher, states) = StatePool::start(threads, &commands, state_options)
+        .into_diagnostic()
+        .wrap_err("cannot start the repository state threads")?;
+    let state_interval = config.repos.fetch_interval.get();
+    info!(
+        ?roots,
+        state_threads = threads,
+        state_interval_secs = state_interval.as_secs(),
+        "repository index started"
+    );
     // The scan on start, queued before any request.
     let _ = commands.send(Command::Scan {
         reply: None,
+        initial: true,
         parent: Span::none(),
     });
     let thread = thread::Builder::new()
         .name("repo-index".to_owned())
-        .spawn(move || Worker { store, discovery }.run(&received))
+        .spawn(move || {
+            Worker {
+                store,
+                discovery,
+                refresher,
+                state_interval,
+            }
+            .run(&received);
+        })
         .into_diagnostic()
         .wrap_err("cannot start the repository index thread")?;
     let handle = RepoHandle {
         commands: commands.clone(),
         db: db.to_path_buf(),
+        state_options,
     };
-    Ok((RepoIndex { commands, thread }, handle))
+    Ok((
+        RepoIndex {
+            commands,
+            thread,
+            states,
+        },
+        handle,
+    ))
 }
 
 impl RepoIndex {
     /// Stops the store thread after the command it is running; queued commands are dropped and
-    /// their requests answered `unavailable`.
+    /// their requests answered `unavailable`. The state threads finish the state they are
+    /// reading (at most its budget) and drop the queued ones.
     pub fn stop(self) {
+        self.states.stopping.store(true, Ordering::Release);
         let _ = self.commands.send(Command::Stop);
         if self.thread.join().is_err() {
             warn!("the repository index thread panicked");
         }
+        // The store thread dropped the job queue: the state threads see it closed.
+        for thread in self.states.threads {
+            if thread.join().is_err() {
+                warn!("a repository state thread panicked");
+            }
+        }
     }
+}
+
+/// Queues repositories for the state threads, each path at most once at a time.
+struct Refresher {
+    jobs: mpsc::Sender<PathBuf>,
+    queued: Arc<Mutex<HashSet<PathBuf>>>,
+}
+
+impl Refresher {
+    fn enqueue(&self, path: PathBuf) {
+        if lock(&self.queued).insert(path.clone()) {
+            let _ = self.jobs.send(path);
+        }
+    }
+}
+
+/// The state threads.
+struct StatePool {
+    threads: Vec<JoinHandle<()>>,
+    stopping: Arc<AtomicBool>,
+}
+
+impl StatePool {
+    /// Starts `size` threads reading the states of the queued repositories and sending them to
+    /// the store thread through `commands`.
+    fn start(
+        size: usize,
+        commands: &mpsc::Sender<Command>,
+        options: StateOptions,
+    ) -> std::io::Result<(Refresher, Self)> {
+        let (jobs, received) = mpsc::channel::<PathBuf>();
+        let received = Arc::new(Mutex::new(received));
+        let queued = Arc::new(Mutex::new(HashSet::new()));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let mut threads = Vec::with_capacity(size);
+        for index in 0..size {
+            let received = Arc::clone(&received);
+            let queued = Arc::clone(&queued);
+            let stopping = Arc::clone(&stopping);
+            let commands = commands.clone();
+            threads.push(
+                thread::Builder::new()
+                    .name(format!("repo-state-{index}"))
+                    .spawn(move || {
+                        loop {
+                            // Released before reading: the other threads take the next jobs.
+                            let next = lock(&received).recv();
+                            let Ok(path) = next else { return };
+                            if stopping.load(Ordering::Acquire) {
+                                return;
+                            }
+                            // Removed first: a change during the read queues it again.
+                            lock(&queued).remove(&path);
+                            let state = read_state(&path, &options);
+                            let command = Command::SaveState {
+                                path,
+                                state: Box::new(state),
+                                reply: None,
+                            };
+                            if commands.send(command).is_err() {
+                                return;
+                            }
+                        }
+                    })?,
+            );
+        }
+        Ok((Refresher { jobs, queued }, Self { threads, stopping }))
+    }
+}
+
+/// `mutex` locked; a thread that panicked holding it left consistent data (a set, a queue).
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The state of the repository at `path` (its root), now.
+fn read_state(path: &Path, options: &StateOptions) -> RepoState {
+    let started = Instant::now();
+    let now = timestamp(SystemTime::now()).unwrap_or(Timestamp::EPOCH);
+    let state = match git_dirs(path) {
+        Ok((git_dir, common_dir)) => state(&git_dir, &common_dir, path, now, options),
+        Err(error) => unreadable(now, error.to_string()),
+    };
+    debug!(
+        path = %path.display(),
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        error = state.error.as_deref().unwrap_or_default(),
+        "repository state read"
+    );
+    state
 }
 
 impl RepoHandle {
@@ -134,9 +286,42 @@ impl RepoHandle {
     pub async fn scan(&self) -> Result<ScanResult, Failure> {
         self.send(|reply| Command::Scan {
             reply: Some(reply),
+            initial: false,
             parent: Span::current(),
         })
         .await
+    }
+
+    /// Reads the state of the repository with `slug` now, on a blocking thread (bounded by the
+    /// state budget), writes it through the store thread, and returns the repository.
+    pub async fn refresh(&self, slug: String) -> Result<RepoSummary, Failure> {
+        let repo = self.get(slug).await?;
+        let path = repo.identity.path;
+        let options = self.state_options;
+        let read_path = path.clone();
+        let state = tokio::task::spawn_blocking(move || read_state(&read_path, &options))
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    internal(format!("state read failed: {error}")),
+                )
+            })?;
+        let slug = repo.identity.slug;
+        self.send(|reply| Command::SaveState {
+            path,
+            state: Box::new(state),
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|(status, error)| {
+            // Removed while its state was read.
+            if status == StatusCode::NOT_FOUND {
+                (status, repo_not_found(&slug))
+            } else {
+                (status, error)
+            }
+        })
     }
 
     /// Registers the repository holding `path` (absolute, normalized).
@@ -215,36 +400,65 @@ fn store_failure(error: &StoreError) -> Failure {
 struct Worker {
     store: Store,
     discovery: Discovery,
+    refresher: Refresher,
+    /// Time between two refreshes of every state.
+    state_interval: Duration,
 }
 
 impl Worker {
-    /// Runs the commands in order until `Stop` or until every sender is gone.
+    /// Runs the commands in order until `Stop` or until every sender is gone, and refreshes
+    /// every state each `state_interval`.
     fn run(mut self, received: &mpsc::Receiver<Command>) {
         let mut pending = VecDeque::new();
+        let mut next_refresh = Instant::now() + self.state_interval;
         loop {
-            let command = match pending.pop_front() {
-                Some(command) => command,
-                None => match received.recv() {
+            let command = if let Some(command) = pending.pop_front() {
+                command
+            } else {
+                let wait = next_refresh.saturating_duration_since(Instant::now());
+                match received.recv_timeout(wait) {
                     Ok(command) => command,
-                    Err(_) => return,
-                },
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        self.refresh_all();
+                        next_refresh = Instant::now() + self.state_interval;
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
             };
             match command {
-                Command::Scan { reply, parent } => {
+                Command::Scan {
+                    reply,
+                    mut initial,
+                    parent,
+                } => {
                     let result = self.scan(&parent);
                     let mut replies: Vec<_> = reply.into_iter().collect();
                     // Scans asked for while this one ran get its result.
                     while let Ok(command) = received.try_recv() {
                         match command {
                             Command::Scan {
-                                reply: Some(reply), ..
-                            } => replies.push(reply),
-                            Command::Scan { reply: None, .. } => {}
+                                reply,
+                                initial: also_initial,
+                                ..
+                            } => {
+                                replies.extend(reply);
+                                initial |= also_initial;
+                            }
                             other => pending.push_back(other),
                         }
                     }
                     for reply in replies {
                         let _ = reply.send(result.clone());
+                    }
+                    if initial {
+                        self.refresh_all();
+                    }
+                }
+                Command::SaveState { path, state, reply } => {
+                    let saved = self.save_state(&path, &state);
+                    if let Some(reply) = reply {
+                        let _ = reply.send(saved);
                     }
                 }
                 Command::Register {
@@ -264,6 +478,42 @@ impl Worker {
                 Command::Stop => return,
             }
         }
+    }
+
+    /// Queues every repository of the index for a state refresh.
+    fn refresh_all(&self) {
+        match self.store.repos() {
+            Ok(repos) => {
+                debug!(repos = repos.len(), "refreshing every repository state");
+                for repo in repos {
+                    self.refresher.enqueue(repo.identity.path);
+                }
+            }
+            Err(error) => warn!(%error, "cannot list the repositories to refresh their states"),
+        }
+    }
+
+    /// Writes the state of the repository at `path`; the repository, or `not_found` when it
+    /// was removed since its state was read.
+    fn save_state(&mut self, path: &Path, state: &RepoState) -> Result<RepoSummary, Failure> {
+        let saved = self
+            .store
+            .save_state(path, state)
+            .map_err(|error| store_failure(&error))?;
+        let repo = if saved {
+            self.store
+                .get_by_path(path)
+                .map_err(|error| store_failure(&error))?
+        } else {
+            None
+        };
+        repo.ok_or_else(|| {
+            debug!(path = %path.display(), "state of a removed repository dropped");
+            (
+                StatusCode::NOT_FOUND,
+                repo_not_found(&path.display().to_string()),
+            )
+        })
     }
 
     fn options(&self) -> ScanOptions<'_> {
@@ -329,6 +579,9 @@ impl Worker {
         self.store
             .apply_scan(&changes, now)
             .map_err(|error| store_failure(&error))?;
+        for repo in changes.added.iter().chain(&changes.updated) {
+            self.refresher.enqueue(repo.path.clone());
+        }
         let result = ScanResult {
             added: count(changes.added.len()),
             updated: count(changes.updated.len()),
@@ -383,6 +636,7 @@ impl Worker {
             .map_err(|error| store_failure(&error))?;
         span.record("slug", summary.identity.slug.as_str());
         info!(slug = %summary.identity.slug, path = %summary.identity.path.display(), "repository registered");
+        self.refresher.enqueue(summary.identity.path.clone());
         Ok(summary)
     }
 

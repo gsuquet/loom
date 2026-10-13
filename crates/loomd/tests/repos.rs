@@ -16,7 +16,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{ApiError, ErrorCode, RepoList, RepoSummary, ScanResult};
+use loom_api::{
+    ApiError, ErrorCode, MaybeKnown, RepoHead, RepoList, RepoSummary, ScanResult, Untracked,
+};
 use schemars::schema_for;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -435,4 +437,221 @@ fn index_written_by_a_newer_loom_stops_the_daemon() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("schema version 99"), "{stderr}");
     assert!(!sandbox.socket().exists());
+}
+
+/// `git <args>` in `dir`, hermetic: the sandbox `HOME`, no global or system configuration, no
+/// signing. Its standard output; it must succeed.
+fn git(sandbox: &Sandbox, dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .env("HOME", sandbox.user_home())
+        .env("XDG_CONFIG_HOME", sandbox.user_home().join(".config"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .args([
+            "-c",
+            "user.name=Loom Test",
+            "-c",
+            "user.email=loom@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// A repository at `dir` with `files` committed: `f<n>.txt` spread over directories of 100.
+fn git_repo(sandbox: &Sandbox, dir: &Path, files: usize) {
+    fs::create_dir_all(dir).unwrap();
+    git(sandbox, dir, &["init", "-q"]);
+    for n in 0..files {
+        let sub = dir.join(format!("d{}", n / 100));
+        if n % 100 == 0 {
+            fs::create_dir_all(&sub).unwrap();
+        }
+        // One content: one blob to write, whatever the number of files.
+        fs::write(sub.join(format!("f{n}.txt")), "file\n").unwrap();
+    }
+    git(sandbox, dir, &["add", "-A"]);
+    git(
+        sandbox,
+        dir,
+        &["commit", "-q", "--allow-empty", "-m", "files"],
+    );
+}
+
+/// Polls `GET path` until the repository has a state.
+fn wait_for_state(sandbox: &Sandbox, path: &str) -> RepoSummary {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let response = sandbox.request("GET", path, None);
+        // Not found until the scan on start indexes it.
+        if response.status != 404 {
+            let repo: RepoSummary = ok(&response);
+            if repo.state.is_some() {
+                return repo;
+            }
+        }
+        assert!(Instant::now() < deadline, "no state for {path}");
+        thread::sleep(POLL);
+    }
+}
+
+#[test]
+fn states_are_read_after_the_scan_on_registration_and_on_demand() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.user_home().join("perso/a");
+    git_repo(&sandbox, &repo, 3);
+    let _daemon = sandbox.start();
+
+    let summary = wait_for_state(&sandbox, "/v1/repos/personal/a");
+    let state = summary.state.unwrap();
+    assert_eq!(state.error, None, "{state:?}");
+    assert_eq!(
+        state.head,
+        MaybeKnown::Known(RepoHead::Branch {
+            name: "main".to_owned()
+        })
+    );
+    assert_eq!(state.dirty, MaybeKnown::Known(0));
+    assert_eq!(state.operation, MaybeKnown::Known(None));
+    assert_eq!(state.upstream, MaybeKnown::Known(None));
+    assert_eq!(
+        state.default_branch,
+        MaybeKnown::Known(Some("main".to_owned()))
+    );
+    assert!(matches!(state.last_commit, MaybeKnown::Known(Some(_))));
+    // The list carries the states too.
+    let list: RepoList = sandbox.get("/v1/repos");
+    assert_eq!(list.repos[0].state.as_ref(), Some(&state));
+
+    // A change is seen on demand; the stored state follows.
+    fs::write(repo.join("d0/f0.txt"), "changed\n").unwrap();
+    fs::write(repo.join("new.txt"), "new\n").unwrap();
+    let refreshed: RepoSummary = sandbox.get("/v1/repos/personal/a?refresh=true");
+    let refreshed = refreshed.state.unwrap();
+    assert_eq!(refreshed.dirty, MaybeKnown::Known(1));
+    assert_eq!(
+        refreshed.untracked,
+        MaybeKnown::Known(Untracked {
+            count: 1,
+            capped: false
+        })
+    );
+    assert!(refreshed.refreshed_at >= state.refreshed_at);
+    let stored: RepoSummary = sandbox.get("/v1/repos/personal/a?refresh=false");
+    assert_eq!(stored.state, Some(refreshed));
+
+    for path in [
+        "/v1/repos/personal/a?refresh=maybe",
+        "/v1/repos/personal/a?other=1",
+    ] {
+        assert_api_error(
+            &sandbox.request("GET", path, None),
+            400,
+            ErrorCode::InvalidRequest,
+        );
+    }
+    assert_api_error(
+        &sandbox.request("GET", "/v1/repos/personal/nope?refresh=true", None),
+        404,
+        ErrorCode::NotFound,
+    );
+
+    // A registered repository gets its state.
+    let elsewhere = sandbox.user_home().join("elsewhere/b");
+    git_repo(&sandbox, &elsewhere, 1);
+    git(&sandbox, &elsewhere, &["checkout", "-q", "-b", "topic"]);
+    let body = json!({ "path": elsewhere });
+    ok::<RepoSummary>(&sandbox.request("POST", "/v1/repos/register", Some(&body)));
+    let registered = wait_for_state(&sandbox, "/v1/repos/unassigned/b");
+    assert_eq!(
+        registered.state.unwrap().head,
+        MaybeKnown::Known(RepoHead::Branch {
+            name: "topic".to_owned()
+        })
+    );
+
+    // A repository that cannot be read has a state made of unknown fields and an error.
+    let broken = sandbox.user_home().join("perso/broken");
+    fake_repo(&broken, &[]);
+    fs::write(broken.join(".git/HEAD"), "garbage\n").unwrap();
+    sandbox.scan();
+    let broken = sandbox.get::<RepoSummary>("/v1/repos/personal/broken?refresh=true");
+    let broken = broken.state.unwrap();
+    assert_eq!(broken.head, MaybeKnown::Unknown);
+    assert!(broken.error.is_some());
+}
+
+/// The state of a repository of 20,000 files is read off the API: listing the index while it
+/// is read takes no longer than without it.
+#[test]
+fn refreshing_a_large_repository_does_not_block_the_api() {
+    const FILES: usize = 20_000;
+    let sandbox = Sandbox::new();
+    let large = sandbox.user_home().join("perso/large");
+    let setup = Instant::now();
+    git_repo(&sandbox, &large, FILES);
+    // Untracked files beyond the cap: the count stops at 1,000.
+    fs::create_dir_all(large.join("out")).unwrap();
+    for n in 0..1_500 {
+        fs::write(large.join(format!("out/u{n}")), "u").unwrap();
+    }
+    for n in 0..20 {
+        fake_repo(&sandbox.user_home().join(format!("perso/small/s{n}")), &[]);
+    }
+    eprintln!("fixture: {FILES} files in {:?}", setup.elapsed());
+    let _daemon = sandbox.start();
+    wait_for_state(&sandbox, "/v1/repos/personal/large");
+
+    let socket = sandbox.socket();
+    let started = Instant::now();
+    let refresh = thread::spawn(move || {
+        let response = request(
+            &socket,
+            "GET",
+            "/v1/repos/personal/large?refresh=true",
+            None,
+        );
+        (response, started.elapsed())
+    });
+    let mut slowest = Duration::ZERO;
+    let mut lists = 0;
+    while !refresh.is_finished() {
+        let listed = Instant::now();
+        assert_eq!(sandbox.get::<RepoList>("/v1/repos").repos.len(), 21);
+        slowest = slowest.max(listed.elapsed());
+        lists += 1;
+    }
+    let (response, refresh_time) = refresh.join().unwrap();
+    let large: RepoSummary = ok(&response);
+    let state = large.state.unwrap();
+    eprintln!(
+        "refresh of {FILES} files: {refresh_time:?}; {lists} lists meanwhile, slowest {slowest:?}"
+    );
+    assert_eq!(state.dirty, MaybeKnown::Known(0), "{state:?}");
+    assert_eq!(
+        state.untracked,
+        MaybeKnown::Known(Untracked {
+            count: 1_000,
+            capped: true
+        })
+    );
+    assert!(lists > 0);
+    assert!(
+        slowest < Duration::from_secs(1),
+        "a list took {slowest:?} while the state was read"
+    );
 }

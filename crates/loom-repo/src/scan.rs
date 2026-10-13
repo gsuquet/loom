@@ -4,7 +4,7 @@
 //! each repository (`.git` file, `commondir`, `config`, `HEAD`), never starting git
 //! (ADR-0008).
 
-mod git;
+pub(crate) mod git;
 
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
@@ -438,29 +438,46 @@ fn list(dir: &Path) -> io::Result<Listing> {
     Ok(listing)
 }
 
+/// Git directory and common directory of the repository whose root is `path`.
+///
+/// `path` is the directory holding the `.git` entry, resolved like [`scan()`] does: a `.git`
+/// directory, symbolic link or `gitdir:` file, then `commondir` for a linked worktree.
+///
+/// # Errors
+///
+/// [`ScanError::GitDir`] when `path` has no `.git` entry or it cannot be followed.
+pub fn git_dirs(path: &Path) -> Result<(PathBuf, PathBuf), ScanError> {
+    let dot_git = fs::symlink_metadata(path.join(".git")).map_err(|error| ScanError::GitDir {
+        path: path.to_path_buf(),
+        reason: error.to_string(),
+    })?;
+    resolve_dirs(path, dot_git.file_type())
+}
+
+/// Git directory and common directory of the repository at `path` whose `.git` entry has the
+/// type `dot_git`.
+fn resolve_dirs(path: &Path, dot_git: FileType) -> Result<(PathBuf, PathBuf), ScanError> {
+    let invalid = |reason| ScanError::GitDir {
+        path: path.to_path_buf(),
+        reason,
+    };
+    let git_dir = git_dir(path, dot_git).map_err(invalid)?;
+    let commondir_file = git::read_optional(&git_dir.join("commondir"))
+        .map_err(|error| invalid(format!("cannot read commondir: {error}")))?
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let common_dir = git::common_dir(&git_dir, commondir_file.as_deref());
+    Ok((git_dir, common_dir))
+}
+
 /// Reads the repository at `path` and adds it, or the error that hides it, to `report`.
 fn read_repo(path: &Path, dot_git: FileType, options: &ScanOptions<'_>, report: &mut ScanReport) {
-    let git_dir = match git_dir(path, dot_git) {
-        Ok(git_dir) => git_dir,
-        Err(reason) => {
-            report.errors.push(ScanError::GitDir {
-                path: path.to_path_buf(),
-                reason,
-            });
-            return;
-        }
-    };
-    let commondir_file = match git::read_optional(&git_dir.join("commondir")) {
-        Ok(content) => content.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+    let (git_dir, common_dir) = match resolve_dirs(path, dot_git) {
+        Ok(dirs) => dirs,
         Err(error) => {
-            report.errors.push(ScanError::GitDir {
-                path: path.to_path_buf(),
-                reason: format!("cannot read commondir: {error}"),
-            });
+            report.errors.push(error);
             return;
         }
     };
-    let common_dir = git::common_dir(&git_dir, commondir_file.as_deref());
     let config = common_dir.join("config");
     // A git directory without config is valid for git: no remote.
     let remotes = git::read_optional(&config)

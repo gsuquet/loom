@@ -14,6 +14,8 @@ loom-api.workspace = true
 loom-config.workspace = true
 # Reads `[remote] url` from git config files without starting git (ADR-0008).
 gix-config.workspace = true
+# Repository state (HEAD, status, ahead/behind) read without starting git (ADR-0008).
+gix.workspace = true
 # `[repos] exclude` globs.
 globset.workspace = true
 thiserror.workspace = true

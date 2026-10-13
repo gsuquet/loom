@@ -1,4 +1,5 @@
-//! Repositories: identity, remotes, forge and update policy.
+//! Repositories: identity, remotes, forge and update policy. Their state is in
+//! [`crate::RepoState`].
 
 use std::fmt;
 use std::path::PathBuf;
@@ -6,7 +7,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContextAssignment, Timestamp};
+use crate::{ContextAssignment, RepoState, Timestamp};
 
 /// Forge hosting a remote (`[forges."<host>"] kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -134,6 +135,9 @@ pub struct RepoSummary {
     /// Last time the repository was used, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used: Option<Timestamp>,
+    /// State (the repo card), `null` until it is read for the first time.
+    #[serde(default)]
+    pub state: Option<RepoState>,
 }
 
 /// Repositories of the index, sorted by slug.

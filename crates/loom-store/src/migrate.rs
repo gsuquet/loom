@@ -8,7 +8,10 @@ use crate::StoreError;
 
 /// Migration `n` (1-based) brings the schema from version `n - 1` to `n`. Append only: a
 /// released migration never changes.
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_repos.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_repos.sql"),
+    include_str!("migrations/0002_repo_state.sql"),
+];
 
 /// Schema version this code reads and writes: the number of migrations.
 #[expect(
@@ -20,6 +23,12 @@ pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 /// Brings the database to [`SCHEMA_VERSION`].
 pub fn migrate(conn: &mut Connection, path: &Path) -> Result<(), StoreError> {
     migrate_with(conn, path, MIGRATIONS)
+}
+
+/// The first `version` migrations, to build an older database in tests.
+#[cfg(test)]
+pub fn migrations_up_to(version: usize) -> &'static [&'static str] {
+    &MIGRATIONS[..version]
 }
 
 /// Applies the `migrations` the database has not seen, all in one immediate transaction: a

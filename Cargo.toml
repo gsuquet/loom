@@ -18,6 +18,10 @@ bytes = "1"
 clap = { version = "4.5", features = ["derive"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 globset = { version = "0.4", default-features = false }
+# `status` (index, dirwalk, attributes and excludes come with it) is the only feature needed:
+# HEAD, refs, revision walks and the in-progress operation are in the core. No `parallel`: one
+# repository is read per state thread, and the walks stay interruptible without it.
+gix = { version = "0.89", default-features = false, features = ["sha1", "status"] }
 gix-config = { version = "0.62", default-features = false, features = ["sha1"] }
 http = "1"
 http-body-util = "0.1"

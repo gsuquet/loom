@@ -1,3 +1,5 @@
 [default.extend-words]
 Ratatui = "Ratatui"
 ratatui = "ratatui"
+# `gix` API: `rela_path()` (path relative to the working tree).
+rela = "rela"

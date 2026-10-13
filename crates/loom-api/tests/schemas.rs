@@ -10,11 +10,12 @@ use std::path::PathBuf;
 
 use loom_api::{
     ApiError, ApiVersion, Channel, ChannelSource, ChosenChannel, ContextAssignment, ContextName,
-    DaemonRestart, ErrorCode, ForgeKind, InstallReport, PendingUpgrade, Profile, RegisterRequest,
-    Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary, RollbackReport, ScanIssue, ScanResult,
-    ServicePlatform, ServiceStatus, StatusResponse, Timestamp, UpdateChannel, UpdatePolicyMode,
-    UpdateResult, UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport, UpgradeSkipReason,
-    UpgradeSource, VersionInfo,
+    DaemonRestart, ErrorCode, ForgeKind, InstallReport, MaybeKnown, PendingUpgrade, Profile,
+    RegisterRequest, Remote, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState,
+    RepoSummary, RollbackReport, ScanIssue, ScanResult, ServicePlatform, ServiceStatus,
+    StatusResponse, Timestamp, Untracked, UpdateChannel, UpdatePolicyMode, UpdateResult,
+    UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource,
+    Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -30,6 +31,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("register_request", schema_for!(RegisterRequest)),
         ("repo_identity", schema_for!(RepoIdentity)),
         ("repo_list", schema_for!(RepoList)),
+        ("repo_state", schema_for!(RepoState)),
         ("repo_summary", schema_for!(RepoSummary)),
         ("rollback_report", schema_for!(RollbackReport)),
         ("scan_result", schema_for!(ScanResult)),
@@ -386,6 +388,74 @@ fn repo_identity(context: ContextAssignment) -> RepoIdentity {
     }
 }
 
+/// A state with every field known, one with known `null`s, one with every field unknown.
+fn repo_states(at: Timestamp) -> Vec<RepoState> {
+    vec![
+        RepoState {
+            refreshed_at: at,
+            head: MaybeKnown::Known(RepoHead::Branch {
+                name: "main".to_owned(),
+            }),
+            dirty: MaybeKnown::Known(2),
+            untracked: MaybeKnown::Known(Untracked {
+                count: 1000,
+                capped: true,
+            }),
+            operation: MaybeKnown::Known(Some(RepoOperation::CherryPick)),
+            upstream: MaybeKnown::Known(Some(Upstream {
+                name: "origin/main".to_owned(),
+                ahead: MaybeKnown::Known(1),
+                behind: MaybeKnown::Unknown,
+            })),
+            default_branch: MaybeKnown::Known(Some("main".to_owned())),
+            last_commit: MaybeKnown::Known(Some(at)),
+            last_fetch: MaybeKnown::Known(Some(at)),
+            error: Some("ahead/behind: time budget of 2s exceeded".to_owned()),
+        },
+        RepoState {
+            refreshed_at: at,
+            head: MaybeKnown::Known(RepoHead::Detached {
+                commit: "abc1234".to_owned(),
+            }),
+            dirty: MaybeKnown::Known(0),
+            untracked: MaybeKnown::Known(Untracked {
+                count: 0,
+                capped: false,
+            }),
+            operation: MaybeKnown::Known(None),
+            upstream: MaybeKnown::Known(None),
+            default_branch: MaybeKnown::Known(None),
+            last_commit: MaybeKnown::Known(None),
+            last_fetch: MaybeKnown::Known(None),
+            error: None,
+        },
+        RepoState {
+            refreshed_at: at,
+            head: MaybeKnown::Unknown,
+            dirty: MaybeKnown::Unknown,
+            untracked: MaybeKnown::Unknown,
+            operation: MaybeKnown::Unknown,
+            upstream: MaybeKnown::Unknown,
+            default_branch: MaybeKnown::Unknown,
+            last_commit: MaybeKnown::Unknown,
+            last_fetch: MaybeKnown::Unknown,
+            error: Some("cannot open the repository".to_owned()),
+        },
+    ]
+}
+
+#[test]
+fn repo_state_unknown_fields_are_rejected_unless_tagged() {
+    let schema = serde_json::to_value(schema_for!(RepoState)).unwrap();
+    let mut value = serde_json::to_value(&repo_states(Timestamp::EPOCH)[1]).unwrap();
+    assert!(jsonschema::is_valid(&schema, &value));
+    assert_eq!(value["upstream"], json!({ "known": null }));
+    value["dirty"] = json!(3);
+    assert!(!jsonschema::is_valid(&schema, &value), "{value}");
+    value["dirty"] = json!("unknown");
+    assert!(jsonschema::is_valid(&schema, &value), "{value}");
+}
+
 #[test]
 fn repo_samples_validate_against_their_schema() {
     let mut errors = Vec::new();
@@ -415,6 +485,7 @@ fn repo_samples_validate_against_their_schema() {
             identity: repo_identity(ContextAssignment::Unassigned),
             registered: false,
             last_used: None,
+            state: None,
         },
         RepoSummary {
             identity: repo_identity(ContextAssignment::Default {
@@ -422,8 +493,12 @@ fn repo_samples_validate_against_their_schema() {
             }),
             registered: true,
             last_used: Some(used),
+            state: Some(repo_states(used).remove(0)),
         },
     ];
+    for state in repo_states(used) {
+        errors.extend(violations(&state).unwrap());
+    }
     for summary in &summaries {
         errors.extend(violations(summary).unwrap());
     }
@@ -457,11 +532,15 @@ fn repo_summary_inlines_the_identity() {
         identity: repo_identity(ContextAssignment::Unassigned),
         registered: true,
         last_used: None,
+        state: None,
     };
     let value = serde_json::to_value(&summary).unwrap();
     assert_eq!(value["slug"], "unassigned/loom");
     assert_eq!(value["registered"], true);
     assert!(value.get("last_used").is_none());
+    // Not refreshed yet: `null`, present.
+    assert_eq!(value["state"], Value::Null);
+    assert!(value.get("state").is_some());
     // A client reading only the identity reads a summary.
     let identity: RepoIdentity = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(identity, summary.identity);

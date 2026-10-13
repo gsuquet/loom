@@ -51,18 +51,18 @@ The same rules are the only source of truth for every tool: scripts ask `loom re
 
 ## State (repo card)
 
-Read with `gix`, no git process (ADR-0008), refreshed after a scan, after a fetch, on registration, and when `loom repo show` asks for it.
+Read with `gix`, no git process (ADR-0008), refreshed after a scan, after a fetch, on registration, periodically, and when `loom repo show` asks for it. The status walk, the untracked count and the ahead/behind counts share a time budget per repository; a field not computed in budget is reported unknown, never a failure of the whole state. Filter drivers (git-lfs…) are never run: a changed file that needs one to be compared makes `dirty` unknown, which blocks a fast-forward.
 
 | Field | Content |
 | --- | --- |
-| `head` | Branch name, or short SHA when detached |
-| `dirty` | Modified, staged or conflicted tracked files (untracked files reported separately) |
-| `untracked` | Count of untracked files, capped |
-| `operation` | `rebase`, `merge`, `cherry-pick`, `revert`, `bisect` in progress, or none |
-| `upstream` | Upstream of `head`, ahead and behind counts |
-| `default_branch` | `refs/remotes/<primary>/HEAD`, otherwise `main`, otherwise `master` |
+| `head` | Branch name (unborn or not), or short SHA when detached |
+| `dirty` | Number of modified, staged or conflicted tracked paths (untracked files reported separately) |
+| `untracked` | Count of untracked files, each file counted, capped at 1,000 |
+| `operation` | `rebase`, `merge`, `cherry-pick`, `revert`, `bisect`, `am` in progress, or none (`am` blocks a fast-forward like the others) |
+| `upstream` | Upstream of `head`, ahead and behind counts; none when its ref is missing |
+| `default_branch` | `refs/remotes/<primary>/HEAD`, otherwise `main`, otherwise `master` (local or on the primary remote) |
 | `last_commit` | Date of `HEAD`'s commit |
-| `last_fetch` | Modification time of `FETCH_HEAD` |
+| `last_fetch` | Modification time of `FETCH_HEAD` (the latest of a linked worktree's and the main one's) |
 | `last_update` | Result of the last automatic update (see below) |
 
 Editable metadata lives in `config.toml` (`[repos."<path>"]`: `context`, `update`); repo card files in the context stores come with v0.3.

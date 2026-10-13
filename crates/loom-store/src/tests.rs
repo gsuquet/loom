@@ -2,12 +2,15 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use loom_api::{ContextAssignment, Remote, RepoIdentity, Timestamp};
+use loom_api::{
+    ContextAssignment, MaybeKnown, Remote, RepoHead, RepoIdentity, RepoState, Timestamp, Untracked,
+    Upstream,
+};
 use loom_repo::ScanDiff;
 use rusqlite::Connection;
 use tempfile::TempDir;
 
-use crate::migrate::{migrate_with, user_version};
+use crate::migrate::{migrate_with, migrations_up_to, user_version};
 use crate::{Reader, RepoFilter, SCHEMA_VERSION, Store, StoreError};
 
 fn at(secs: u64) -> Timestamp {
@@ -571,4 +574,178 @@ fn non_utf8_paths_are_refused() {
     bad.path = PathBuf::from(OsStr::from_bytes(b"/w/\xff"));
     let error = store.apply_scan(&added(vec![bad]), at(1)).unwrap_err();
     assert!(matches!(error, StoreError::NonUtf8Path(_)), "{error}");
+}
+
+/// A state with every field known but `behind`, on `branch`.
+fn state_on(branch: &str, refreshed_at: u64) -> RepoState {
+    RepoState {
+        refreshed_at: at(refreshed_at),
+        head: MaybeKnown::Known(RepoHead::Branch {
+            name: branch.to_owned(),
+        }),
+        dirty: MaybeKnown::Known(2),
+        untracked: MaybeKnown::Known(Untracked {
+            count: 1000,
+            capped: true,
+        }),
+        operation: MaybeKnown::Known(None),
+        upstream: MaybeKnown::Known(Some(Upstream {
+            name: format!("origin/{branch}"),
+            ahead: MaybeKnown::Known(1),
+            behind: MaybeKnown::Unknown,
+        })),
+        default_branch: MaybeKnown::Known(Some("main".to_owned())),
+        last_commit: MaybeKnown::Known(Some(at(50))),
+        last_fetch: MaybeKnown::Known(None),
+        error: Some("ahead/behind: time budget of 2s exceeded".to_owned()),
+    }
+}
+
+#[test]
+fn states_are_saved_read_back_and_searched_by_branch() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut store = Store::open(&path).unwrap();
+    store
+        .apply_scan(
+            &added(vec![
+                repo("/w/a", "p", "p/a", &[]),
+                repo("/w/b", "p", "p/b", &[]),
+            ]),
+            at(100),
+        )
+        .unwrap();
+    // Not refreshed yet.
+    assert_eq!(store.get("p/a").unwrap().unwrap().state, None);
+
+    let state = state_on("feat/x", 150);
+    assert!(store.save_state(Path::new("/w/a"), &state).unwrap());
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(
+        reader.get("p/a").unwrap().unwrap().state,
+        Some(state.clone())
+    );
+    assert_eq!(
+        store
+            .get_by_path(Path::new("/w/a"))
+            .unwrap()
+            .unwrap()
+            .identity
+            .slug,
+        "p/a"
+    );
+    assert_eq!(store.get_by_path(Path::new("/w/none")).unwrap(), None);
+    assert_eq!(fts_rows(&path), ["a|p/a|/w/a||p|feat/x", "b|p/b|/w/b||p|"]);
+
+    // Replaced; an unknown head leaves an empty branch.
+    let unknown = RepoState {
+        refreshed_at: at(160),
+        head: MaybeKnown::Unknown,
+        dirty: MaybeKnown::Unknown,
+        untracked: MaybeKnown::Unknown,
+        operation: MaybeKnown::Unknown,
+        upstream: MaybeKnown::Unknown,
+        default_branch: MaybeKnown::Unknown,
+        last_commit: MaybeKnown::Unknown,
+        last_fetch: MaybeKnown::Unknown,
+        error: Some("cannot open the repository".to_owned()),
+    };
+    assert!(store.save_state(Path::new("/w/b"), &unknown).unwrap());
+    assert_eq!(reader.get("p/b").unwrap().unwrap().state, Some(unknown));
+    let detached = RepoState {
+        head: MaybeKnown::Known(RepoHead::Detached {
+            commit: "abc1234".to_owned(),
+        }),
+        ..state_on("x", 170)
+    };
+    assert!(store.save_state(Path::new("/w/a"), &detached).unwrap());
+    assert_eq!(fts_rows(&path), ["a|p/a|/w/a||p|", "b|p/b|/w/b||p|"]);
+    assert!(
+        store
+            .save_state(Path::new("/w/a"), &state_on("main", 180))
+            .unwrap()
+    );
+
+    // A scan update keeps the state and its branch in the search table.
+    store
+        .apply_scan(
+            &ScanDiff {
+                updated: vec![repo("/w/a", "w", "w/a", &["https://x.example/a.git"])],
+                ..ScanDiff::default()
+            },
+            at(200),
+        )
+        .unwrap();
+    assert_eq!(
+        store.get("w/a").unwrap().unwrap().state,
+        Some(state_on("main", 180))
+    );
+    assert_eq!(
+        fts_rows(&path),
+        [
+            "b|p/b|/w/b||p|",
+            "a|w/a|/w/a|https://x.example/a.git|w|main"
+        ]
+    );
+    assert!(
+        reader
+            .list(&RepoFilter::default())
+            .unwrap()
+            .iter()
+            .all(|repo| repo.state.is_some())
+    );
+
+    // A state read for a repository removed since is dropped.
+    assert!(!store.save_state(Path::new("/w/gone"), &state).unwrap());
+    // Removing a repository removes its state.
+    store.forget("w/a").unwrap();
+    let conn = Connection::open(&path).unwrap();
+    let states: i64 = conn
+        .query_row("SELECT count(*) FROM repo_state", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(states, 1);
+    assert_eq!(fts_orphans(&path), (0, 0));
+}
+
+#[test]
+fn version_1_database_migrates_to_2_with_its_repositories() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut conn = Connection::open(&path).unwrap();
+    migrate_with(&mut conn, &path, migrations_up_to(1)).unwrap();
+    assert_eq!(user_version(&conn).unwrap(), 1);
+    // A row as the version-1 store writes it.
+    conn.execute(
+        "INSERT INTO repos (path, name, slug, context, assignment, remotes, registered, \
+                            first_seen, updated_at) \
+         VALUES ('/w/a', 'a', 'unassigned/a', 'unassigned', '{\"rule\":\"unassigned\"}', \
+                 '[{\"name\":\"origin\",\"url\":\"git@github.com:me/a.git\"}]', 1, 10, 10)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(user_version(&store.conn).unwrap(), 2);
+    let repo = store.get("unassigned/a").unwrap().unwrap();
+    assert!(repo.registered);
+    assert_eq!(repo.state, None);
+    assert_eq!(
+        fts_rows(&path),
+        ["a|unassigned/a|/w/a|git@github.com:me/a.git|unassigned|"]
+    );
+    assert!(
+        store
+            .save_state(Path::new("/w/a"), &state_on("dev", 20))
+            .unwrap()
+    );
+    assert_eq!(
+        fts_rows(&path),
+        ["a|unassigned/a|/w/a|git@github.com:me/a.git|unassigned|dev"]
+    );
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(
+        reader.get("unassigned/a").unwrap().unwrap().state,
+        Some(state_on("dev", 20))
+    );
 }

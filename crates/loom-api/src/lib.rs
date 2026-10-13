@@ -8,6 +8,7 @@ mod auto_update;
 mod context;
 mod error;
 mod repo;
+mod repo_state;
 mod service;
 mod status;
 mod timestamp;
@@ -27,6 +28,7 @@ pub use repo::{
     ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,
     RepoUpdatePolicy, ScanIssue, ScanResult,
 };
+pub use repo_state::{MaybeKnown, RepoHead, RepoOperation, RepoState, Untracked, Upstream};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;

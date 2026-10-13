@@ -29,9 +29,9 @@ use loom_config::layout::{
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, RepoQuery, STATUS_PATH,
-    clock_error, invalid_request, method_not_allowed, not_found, register_path, repo_filter, slug,
-    status_at, timestamp,
+    REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, RepoGetQuery, RepoQuery,
+    STATUS_PATH, clock_error, invalid_request, method_not_allowed, not_found, register_path,
+    repo_filter, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
@@ -382,13 +382,23 @@ async fn list_repos(
 async fn get_repo(
     State(app): State<Arc<App>>,
     path: Result<UrlPath<(String, String)>, PathRejection>,
+    query: Result<Query<RepoGetQuery>, QueryRejection>,
 ) -> Response {
-    match path {
-        Ok(UrlPath((context, name))) => respond(app.repos.get(slug(&context, &name)).await),
-        Err(rejection) => error_response(
+    let query = query.map_err(|rejection| invalid_request(rejection.body_text()));
+    match (path, query) {
+        (Ok(UrlPath((context, name))), Ok(Query(query))) => {
+            let slug = slug(&context, &name);
+            if query.refresh {
+                respond(app.repos.refresh(slug).await)
+            } else {
+                respond(app.repos.get(slug).await)
+            }
+        }
+        (Err(rejection), _) => error_response(
             StatusCode::BAD_REQUEST,
             invalid_request(rejection.body_text()),
         ),
+        (_, Err(error)) => error_response(StatusCode::BAD_REQUEST, error),
     }
 }
 
