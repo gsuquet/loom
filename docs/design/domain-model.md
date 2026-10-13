@@ -25,13 +25,14 @@ Kind = nature of the work. It drives the body template, the done condition and t
 | Investigation | Datadog alert, Freshservice incident, Slack | Cause identified + disposition (spawned task, noise, upstream) |
 | Review | MR/PR assigned to me | Verdict posted for the current head SHA; a new push reopens it |
 | Support | Freshservice request, Slack | Requester has an answer |
-| Presentation | Me | Delivered at a date |
-| Admin | Me, cron (timesheets, expenses, staffing, interviews) | Done |
+| Content | Me | Delivered or published (optional `format`: talk, article, training, workshop) |
+| Admin | Me, cron (timesheets, expenses, staffing) | Done |
+| Interview | Me, staffing | Feedback written |
+| Learning | Me | Course or certification completed |
 
 - No Incident kind: an incident is an Investigation with high severity and a due date.
-- Epic / project = `parent` relation, not a kind.
+- Epic / project = `parent` relation, not a kind nor an entity. Children see the parent's `files/` (design docs, ADRs).
 - Meetings are events (from the calendar), not tasks. Preparation is a task; action items are tasks with `spawned_from: <event>`.
-- Open: Presentation may become Content (talks, articles, trainings) with a subtype.
 
 ### Sources
 
@@ -63,8 +64,13 @@ A new task is created whenever the done condition differs.
 Inputs are stored, the score is computed:
 
 - `importance` p0–p3 (default per kind/source), `due` (or source SLA), `pinned`, number of tasks blocked, age.
-- `waiting` tasks with a future `until` are hidden from the list.
-- `loom ls --why` explains the ranking.
+- Order is lexicographic, no weights ([ADR-0013](../adr/0013-task-store.md)): pinned, then overdue or due today (earliest first), then importance, then due date (none last), then age (oldest first).
+- The list holds `ready` and `active` tasks; `inbox` has its own view; `waiting` tasks with a future `until` are hidden.
+- `loom ls --why` names the rule that ordered each task after its predecessor.
+
+### Focus
+
+One focus task per context, machine-local (two terminals in two contexts each have theirs). `loom go <id>` makes it the focus of its context, sets it `active`, puts the previous focus of that context back to `ready`, and changes directory to its `repo` link. `loom log` without an ID attaches to the focus of the current context.
 
 ### Context
 
@@ -77,6 +83,7 @@ Git identity stays managed by the dotfiles.
 match.hosts = ["gitlab.com/company-a"]
 match.paths = ["~/work/company-a"]
 store.path = "~/.loom/contexts/company-a"
+machines = ["laptop"]                       # absent: every machine
 store.backup = { remote = "git@…", encrypt = false }
 secrets.gitlab_token_cmd = "op read op://…"
 secrets.datadog_token_cmd = "op read op://…"
