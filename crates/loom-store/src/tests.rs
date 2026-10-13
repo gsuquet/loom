@@ -801,6 +801,6 @@ fn replace_all_drops_everything_else() {
     assert_eq!(x.last_used, None);
     assert_eq!(x.state, None);
     assert!(!x.registered);
-    assert!(store.registered_paths().unwrap().is_empty());
+    assert_eq!(store.registered_paths().unwrap(), Vec::<PathBuf>::new());
     assert_eq!(fts_orphans(&db(&dir)), (0, 0));
 }

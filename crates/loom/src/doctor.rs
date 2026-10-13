@@ -125,10 +125,11 @@ pub fn roots_checks(
     missing
 }
 
-/// `match.paths` of different contexts that are the same directory once `~` is expanded
-/// (`fail`: loomd refuses the configuration), and `[repos."<path>"]` keys naming the same
-/// repository. Nested entries are valid (the longest prefix wins) and are listed in the `ok`
-/// detail.
+/// The `contexts` check: entries that loomd would refuse.
+///
+/// `match.paths` of different contexts that are the same directory once `~` is expanded, and
+/// `[repos."<path>"]` keys naming the same repository, fail. Nested entries are valid (the
+/// longest prefix wins) and are listed in the `ok` detail.
 #[must_use]
 pub fn contexts_check(config: &Config, home: &Path, config_path: &Path) -> DoctorCheck {
     let entries: Vec<(&ContextName, &str, PathBuf)> =
@@ -363,10 +364,11 @@ impl SshTarget {
     }
 }
 
-/// The SSH endpoint of a remote URL: `ssh://[user@]host[:port]/path` (also `git+ssh://`,
-/// `ssh+git://`) or the scp-like `[user@]host:path`. `None` for any other URL, and for a
-/// user or host that could pass an option to `ssh` (leading `-`, spaces, control
-/// characters).
+/// The SSH endpoint of a remote URL.
+///
+/// Read from `ssh://[user@]host[:port]/path` (also `git+ssh://`, `ssh+git://`) or the
+/// scp-like `[user@]host:path`. `None` for any other URL, and for a user or host that could
+/// pass an option to `ssh` (leading `-`, spaces, control characters).
 #[must_use]
 pub fn ssh_target(url: &str) -> Option<SshTarget> {
     let (authority, explicit) = if let Some((scheme, rest)) = url.split_once("://") {
@@ -716,12 +718,12 @@ mod tests {
         assert_eq!(home_check(None, Some(home)).status, CheckStatus::Warn);
     }
 
-    fn target(user: &str, host: &str, port: Option<u16>) -> Option<SshTarget> {
-        Some(SshTarget {
+    fn target(user: &str, host: &str, port: Option<u16>) -> SshTarget {
+        SshTarget {
             user: user.to_owned(),
             host: host.to_owned(),
             port,
-        })
+        }
     }
 
     #[test]
@@ -729,21 +731,24 @@ mod tests {
         let cases = [
             (
                 "git@github.com:gsuquet/loom.git",
-                target("git", "github.com", None),
+                Some(target("git", "github.com", None)),
             ),
-            ("gh-work:org/repo.git", target("git", "gh-work", None)),
-            ("me@host.example:repo", target("me", "host.example", None)),
+            ("gh-work:org/repo.git", Some(target("git", "gh-work", None))),
+            (
+                "me@host.example:repo",
+                Some(target("me", "host.example", None)),
+            ),
             (
                 "ssh://git@gitlab.example:2222/g/r.git",
-                target("git", "gitlab.example", Some(2222)),
+                Some(target("git", "gitlab.example", Some(2222))),
             ),
             (
                 "ssh://gitlab.example/g/r",
-                target("git", "gitlab.example", None),
+                Some(target("git", "gitlab.example", None)),
             ),
-            ("git+ssh://u@h/r", target("u", "h", None)),
-            ("ssh://git@[::1]:22/r", target("git", "::1", Some(22))),
-            ("ssh://git@[::1]/r", target("git", "::1", None)),
+            ("git+ssh://u@h/r", Some(target("u", "h", None))),
+            ("ssh://git@[::1]:22/r", Some(target("git", "::1", Some(22)))),
+            ("ssh://git@[::1]/r", Some(target("git", "::1", None))),
             ("https://github.com/gsuquet/loom.git", None),
             ("file:///srv/r.git", None),
             ("/srv/backup/loom", None),
@@ -774,7 +779,7 @@ mod tests {
             .collect();
         assert_eq!(targets, ["git@github.com", "git@gitlab.example:2222"]);
         assert_eq!(
-            target("git", "h", Some(2222)).unwrap().ssh_args(),
+            target("git", "h", Some(2222)).ssh_args(),
             [
                 "-o",
                 "BatchMode=yes",
@@ -790,7 +795,7 @@ mod tests {
 
     #[test]
     fn ssh_outcomes() {
-        let target = target("git", "github.com", None).unwrap();
+        let target = target("git", "github.com", None);
         let run = |code: Option<i32>, output: &str| {
             ssh_check(
                 &target,

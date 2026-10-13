@@ -234,8 +234,10 @@ fn ls_starts_loomd_and_lists_in_every_format() {
         "perso/clients/loom",
     ]
     .iter()
-    .map(|path| format!("{}\n", home.join(path).display()))
-    .collect();
+    .fold(String::new(), |mut text, path| {
+        writeln!(text, "{}", home.join(path).display()).unwrap();
+        text
+    });
     assert_eq!(paths, expected);
 
     // Sorted by context, then name.

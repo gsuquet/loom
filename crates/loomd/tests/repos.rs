@@ -480,17 +480,10 @@ fn diagnostics_report_the_agent_socket_and_home() {
     let plain = sandbox.dir.path().join("plain");
     fs::write(&plain, "").unwrap();
     for (value, expected) in [
-        (
-            Some(agent.clone()),
-            SshAgentSocket::Socket {
-                path: agent.clone(),
-            },
-        ),
+        (Some(agent.clone()), SshAgentSocket::Socket { path: agent }),
         (
             Some(plain.clone()),
-            SshAgentSocket::NotASocket {
-                path: plain.clone(),
-            },
+            SshAgentSocket::NotASocket { path: plain },
         ),
         (
             Some(sandbox.dir.path().join("gone")),

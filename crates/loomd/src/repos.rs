@@ -580,7 +580,7 @@ impl Worker {
         let mut changes = if mode.rebuild {
             // Every repository found is new; every repository known is dropped.
             ScanDiff {
-                removed: previous.clone(),
+                removed: previous,
                 ..diff(&[], &scanned, &report)
             }
         } else {

@@ -197,9 +197,10 @@ fn ambiguous<'a>(name: &str, repos: impl Iterator<Item = &'a RepoSummary>) -> Re
     }
 }
 
-/// Contexts that disambiguate a name, in order: `-c`, then the context of the current
-/// directory, that is the context of its repository when the index has it, otherwise the
-/// context its path gets from `match.paths`. Pure.
+/// Contexts that disambiguate a name, in order.
+///
+/// `-c`, then the context of the current directory: the context of its repository when the
+/// index has it, otherwise the context its path gets from `match.paths`. Pure.
 #[must_use]
 pub fn disambiguation_contexts(
     flag: Option<&str>,
@@ -229,9 +230,11 @@ pub fn disambiguation_contexts(
     contexts
 }
 
-/// The repository of the index at `root`: the one with this path, otherwise one with the same
-/// directory name whose `canonical` path is the canonical path of `root` (the same directory
-/// reached through other symbolic links). `canonical` resolves symbolic links. Pure.
+/// The repository of the index at `root`.
+///
+/// The one with this path, otherwise one with the same directory name whose `canonical` path
+/// is the canonical path of `root` (the same directory reached through other symbolic links).
+/// `canonical` resolves symbolic links. Pure.
 pub fn find_by_path<'a>(
     repos: &'a [RepoSummary],
     root: &Path,
@@ -280,9 +283,10 @@ pub fn render_paths(repos: &[RepoSummary]) -> String {
     })
 }
 
-/// `loom repo ls`: a header, then one row per repository: a `!` marking an unassigned
-/// repository, slug, `HEAD`, a summary of the state, path. Columns are aligned; the path is
-/// last. Nothing when there is no repository.
+/// `loom repo ls`: a header, then one row per repository.
+///
+/// Columns: a `!` marking an unassigned repository, slug, `HEAD`, a summary of the state,
+/// path. Columns are aligned; the path is last. Nothing when there is no repository.
 #[must_use]
 pub fn render_table(repos: &[RepoSummary]) -> String {
     if repos.is_empty() {
@@ -344,10 +348,11 @@ pub fn head_text(head: &MaybeKnown<RepoHead>) -> String {
     }
 }
 
-/// The state in a few words: operation in progress, changed and untracked files, ahead and
-/// behind the upstream; `clean` when there is nothing to report, `not read yet` without a
-/// state, `unknown` when none of them is known. An unknown field is reported as unknown,
-/// never as clean.
+/// The state in a few words.
+///
+/// Operation in progress, changed and untracked files, ahead and behind the upstream; `clean`
+/// when there is nothing to report, `not read yet` without a state, `unknown` when none of
+/// them is known. An unknown field is reported as unknown, never as clean.
 #[must_use]
 pub fn state_summary(state: Option<&RepoState>) -> String {
     let Some(state) = state else {
@@ -838,8 +843,14 @@ mod tests {
         let default = ContextAssignment::Default {
             context: "personal".parse().unwrap(),
         };
-        assert!(disambiguation_contexts(None, None, Some(&default)).is_empty());
-        assert!(disambiguation_contexts(None, None, None).is_empty());
+        assert_eq!(
+            disambiguation_contexts(None, None, Some(&default)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            disambiguation_contexts(None, None, None),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

@@ -94,7 +94,7 @@ impl Client {
     pub async fn post<T: DeserializeOwned>(
         &self,
         path: &str,
-        body: Option<&impl Serialize>,
+        body: Option<&(impl Serialize + Sync)>,
     ) -> Result<T, ClientError> {
         let body = body.map(serde_json::to_vec).transpose().map_err(|error| {
             ClientError::Protocol(format!("cannot encode the request: {error}"))

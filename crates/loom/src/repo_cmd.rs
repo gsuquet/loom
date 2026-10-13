@@ -113,7 +113,7 @@ fn json(value: &impl Serialize) -> Result<String> {
     Ok(serde_json::to_string_pretty(value).into_diagnostic()? + "\n")
 }
 
-fn api_error(error: ClientError) -> miette::Report {
+fn api_error(error: &ClientError) -> miette::Report {
     miette!("{error}")
 }
 
@@ -136,14 +136,14 @@ async fn connect(layout: &Layout, start: bool) -> Result<Client> {
                 .with_timeout(SCAN_TIMEOUT)
                 .post(SCAN_PATH, None::<&()>)
                 .await
-                .map_err(api_error)?;
+                .map_err(|error| api_error(&error))?;
             Ok(client)
         }
         Err(ClientError::Unreachable { socket, source }) => Err(miette!(
             "loomd is not running: cannot connect to {}: {source}; run `loom status` to start it",
             socket.display()
         )),
-        Err(error) => Err(api_error(error)),
+        Err(error) => Err(api_error(&error)),
     }
 }
 
@@ -152,7 +152,7 @@ async fn list(client: &Client, context: Option<&ContextName>) -> Result<Vec<Repo
         || REPOS_PATH.to_owned(),
         |context| format!("{REPOS_PATH}?context={context}"),
     );
-    let list: RepoList = client.get(&path).await.map_err(api_error)?;
+    let list: RepoList = client.get(&path).await.map_err(|error| api_error(&error))?;
     Ok(list.repos)
 }
 
@@ -182,7 +182,7 @@ async fn ls(env: &Env<'_>, args: &RepoLsArgs) -> Result<()> {
 /// What a `<repo>` argument resolved to.
 enum Resolved {
     /// A repository of the index.
-    Indexed(RepoSummary),
+    Indexed(Box<RepoSummary>),
     /// The root of a repository the index does not have.
     Unindexed(PathBuf),
 }
@@ -222,11 +222,11 @@ async fn resolve(env: &Env<'_>, client: &Client, arg: Option<&str>) -> Result<Re
     };
     let by_root = |root: PathBuf| {
         find_by_path(&repos, &root, canonical).map_or(Resolved::Unindexed(root), |repo| {
-            Resolved::Indexed(repo.clone())
+            Resolved::Indexed(Box::new(repo.clone()))
         })
     };
     match select(&parsed, &repos, &contexts).into_diagnostic()? {
-        Selection::Repo(repo) => Ok(Resolved::Indexed(repo.clone())),
+        Selection::Repo(repo) => Ok(Resolved::Indexed(Box::new(repo.clone()))),
         Selection::Here => {
             let root = cwd_root.ok_or_else(|| {
                 miette!(
@@ -270,14 +270,14 @@ async fn show(env: &Env<'_>, args: &RepoShowArgs) -> Result<()> {
     let mut repo: RepoSummary = client
         .post(REGISTER_PATH, Some(&request))
         .await
-        .map_err(api_error)?;
+        .map_err(|error| api_error(&error))?;
     if args.refresh || repo.state.is_none() {
         let path = format!("{}?refresh=true", repo_api_path(&repo.identity.slug));
         repo = client
             .with_timeout(REFRESH_TIMEOUT)
             .get(&path)
             .await
-            .map_err(api_error)?;
+            .map_err(|error| api_error(&error))?;
     }
     print(&if args.json {
         json(&repo)?
@@ -301,7 +301,7 @@ async fn scan(env: &Env<'_>, args: &RepoScanArgs) -> Result<()> {
         .with_timeout(SCAN_TIMEOUT)
         .post(&format!("{SCAN_PATH}{query}"), None::<&()>)
         .await
-        .map_err(api_error)?;
+        .map_err(|error| api_error(&error))?;
     print(&if args.json {
         json(&result)?
     } else {
@@ -383,7 +383,7 @@ async fn register(env: &Env<'_>, args: &RepoRegisterArgs) -> Result<()> {
     let repo: RepoSummary = client
         .post(REGISTER_PATH, Some(&request))
         .await
-        .map_err(api_error)?;
+        .map_err(|error| api_error(&error))?;
     print(&if args.json {
         json(&repo)?
     } else {
@@ -398,7 +398,7 @@ async fn register(env: &Env<'_>, args: &RepoRegisterArgs) -> Result<()> {
 async fn forget(env: &Env<'_>, args: &RepoForgetArgs) -> Result<()> {
     let client = connect(&env.layout, true).await?;
     let repo = match resolve(env, &client, Some(&args.repo)).await? {
-        Resolved::Indexed(repo) => repo,
+        Resolved::Indexed(repo) => *repo,
         Resolved::Unindexed(root) => {
             return Err(miette!("{} is not in the index", root.display()));
         }
@@ -413,7 +413,7 @@ async fn forget(env: &Env<'_>, args: &RepoForgetArgs) -> Result<()> {
     let removed: RepoSummary = client
         .delete(&repo_api_path(&repo.identity.slug))
         .await
-        .map_err(api_error)?;
+        .map_err(|error| api_error(&error))?;
     print(&if args.json {
         json(&removed)?
     } else {
