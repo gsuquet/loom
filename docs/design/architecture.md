@@ -39,12 +39,12 @@ Crates are added when a version needs them, never ahead of time.
 | --- | --- | --- | --- |
 | `loom` | bin | v0.1 | CLI (clap), later the TUI |
 | `loomd` | bin | v0.1 | Daemon: API server, scheduler, updater |
-| `loom-api` | lib | v0.1 | Types shared by the API, the CLI `--json` output and the MCP tools. No I/O. |
+| `loom-api` | lib | v0.1 | Types shared by the API, the CLI `--json` output and the MCP tools. No I/O. Builds on `loom-core` and re-exports its primitives (`Timestamp`, `ContextName`) |
 | `loom-config` | lib | v0.1 | Loom home resolution, files under it, `config.toml` parsing. No I/O. Shared by `loom` and `loomd` |
 | `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback, auto-upgrade decisions (pure), update state, pre-flight and health check (ADR-0011). Shared by `loom` and `loomd` |
 | `loom-telemetry` | lib | v0.1 | `tracing` subscriber of both binaries: logs on stderr, OTLP/HTTP trace export when enabled (decisions pure), W3C trace context propagation. Shared by `loom` and `loomd` |
 | `loom-repo` | lib | v0.2 | Repo identity, context matching, scan diff, update decisions (pure); discovery scan (`scan` module: directory listing and git files read with `gix-config`) and state (`state` module: read with `gix`, bounded by a time budget), the only modules with I/O, no git process |
-| `loom-core` | lib | v0.3 | Domain: tasks, events, notes, priority, contexts. No I/O. |
+| `loom-core` | lib | v0.3 | Task domain (pure): kinds, statuses and transitions, IDs and prefix resolution, commands, events and undo; priority order next. No I/O, clock, randomness source or async runtime: time and randomness are injected. Owns the primitives the API shares: `Timestamp`, `ContextName`; dates are `jiff` civil dates |
 | `loom-store` | lib | v0.2 | SQLite index (`index.db`): repos and search in v0.2; `StorePort`, local files + git adapter, tasks in v0.3 |
 
 Rules:

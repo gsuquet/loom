@@ -8,6 +8,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# `Timestamp` and `ContextName`, defined with the task domain.
+loom-core.workspace = true
 schemars.workspace = true
 serde.workspace = true
 # `ApiError.details` carries endpoint-specific JSON.

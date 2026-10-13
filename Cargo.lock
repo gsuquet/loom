@@ -2023,6 +2023,7 @@ name = "loom-api"
 version = "0.3.0"
 dependencies = [
  "jsonschema",
+ "loom-core",
  "schemars",
  "serde",
  "serde_json",
@@ -2038,6 +2039,16 @@ dependencies = [
  "serde",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "loom-core"
+version = "0.3.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
