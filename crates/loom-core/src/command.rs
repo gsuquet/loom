@@ -316,6 +316,98 @@ pub fn undo(task: &Task, events: &[EventRecord]) -> Result<Command, DomainError>
     })
 }
 
+/// Why an event log does not replay into a task.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReplayError {
+    /// The log does not start with the creation of the task.
+    #[error("the log does not start with the creation of the task")]
+    NoCreation,
+    /// The log creates the task more than once.
+    #[error("the log creates the task more than once")]
+    CreatedTwice,
+    /// A change expects a value the field no longer has: the log is not consistent.
+    #[error("a change of `{0}` does not follow from the events before it")]
+    Conflict(&'static str),
+}
+
+/// The task as its log `events` describes it: the created task, every field change applied in
+/// order, last updated at the last event. Notes change no field.
+///
+/// # Errors
+///
+/// [`ReplayError`] when the log does not start with the creation, creates twice, or holds a
+/// change whose `from` value is not the field's value at that point.
+pub fn replay(events: &[EventRecord]) -> Result<Task, ReplayError> {
+    let (first, rest) = events.split_first().ok_or(ReplayError::NoCreation)?;
+    let Event::Created { task } = &first.event else {
+        return Err(ReplayError::NoCreation);
+    };
+    let mut task = Task {
+        updated: first.at,
+        ..(**task).clone()
+    };
+    for record in rest {
+        match &record.event {
+            Event::Created { .. } => return Err(ReplayError::CreatedTwice),
+            Event::Edited { changes } | Event::Undone { changes, .. } => {
+                for change in changes {
+                    replay_change(&mut task, change.clone())?;
+                }
+            }
+            Event::StatusChanged(change) => {
+                replay_change(&mut task, FieldChange::Status(change.clone()))?;
+            }
+            Event::NoteLogged { .. } => {}
+        }
+        task.updated = record.at;
+    }
+    Ok(task)
+}
+
+fn replay_change(task: &mut Task, change: FieldChange) -> Result<(), ReplayError> {
+    write(task, change).map_err(|error| match error {
+        DomainError::Conflict(field) => ReplayError::Conflict(field),
+        // `write` refuses nothing else.
+        DomainError::ReadOnly(_)
+        | DomainError::IllegalTransition { .. }
+        | DomainError::UnknownValue(_)
+        | DomainError::EmptyTitle
+        | DomainError::EmptyNote
+        | DomainError::NothingToUndo
+        | DomainError::Id(_) => ReplayError::Conflict("task"),
+    })
+}
+
+/// The changes a hand edit made, from `before` (the task its log describes) to `after`.
+///
+/// `after` is the task its file holds. One change per field that differs, in field order;
+/// `id`, `context`, `created` and `updated` are not fields a change records.
+///
+/// No transition rule applies: the file is the truth, and an unknown kind or status is recorded
+/// as written.
+#[must_use]
+pub fn hand_edit_changes(before: &Task, after: &Task) -> Vec<FieldChange> {
+    fn change<T: PartialEq + Clone>(from: &T, to: &T) -> Option<Change<T>> {
+        (from != to).then(|| Change {
+            from: from.clone(),
+            to: to.clone(),
+        })
+    }
+    [
+        change(&before.title, &after.title).map(FieldChange::Title),
+        change(&before.kind, &after.kind).map(FieldChange::Kind),
+        change(&before.status, &after.status).map(FieldChange::Status),
+        change(&before.importance, &after.importance).map(FieldChange::Importance),
+        change(&before.due, &after.due).map(FieldChange::Due),
+        change(&before.pinned, &after.pinned).map(FieldChange::Pinned),
+        change(&before.links, &after.links).map(FieldChange::Links),
+        change(&before.relations, &after.relations).map(FieldChange::Relations),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 fn valid_title(title: String) -> Result<String, DomainError> {
     if title.trim().is_empty() {
         Err(DomainError::EmptyTitle)

@@ -276,7 +276,7 @@ Error: cannot start the repository index
 
 `loom repo scan --rebuild` rebuilds the index from a scan of the roots while `loomd` runs (see [`loom repo scan`](cli/conventions.md#loom-repo-scan)). It can also be rebuilt by hand: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, slugs are assigned again, states are read again, and the results of the last updates are lost (every repository is then updated at once).
 
-The index also holds the tasks of the [context stores](#context-stores), read from their files: `loomd` indexes them when it starts, and `loom reindex` ([`POST /v1/tasks/reindex`](api.md#tasks)) rebuilds them from the files while it runs, without touching the repositories. A deleted `index.db` gets the same task rows back at the next start.
+The index also holds the tasks of the [context stores](#context-stores), read from their files: `loomd` reconciles them when it starts and as their files change, and `loom reindex` ([`POST /v1/tasks/reindex`](api.md#tasks)) rebuilds them from the files while it runs, without touching the repositories. A deleted `index.db` gets the same task rows back at the next start.
 
 ## Context stores
 
@@ -288,6 +288,19 @@ Each context of `config.toml` has a task store: `[contexts.<name>] store.path`, 
 | `tasks/<id>/task.md` | `0600` | The task: TOML frontmatter between `+++` lines, then free notes ([format](task-file.md)). Replaced atomically: written to `.task.md.tmp` beside it, synced, renamed over it, and the directory synced. |
 | `tasks/<id>/events.jsonl` | `0600` | The task's events, one JSON object per line, appended and synced, never rewritten. A last line cut by a crash is closed by a line ending before the next append. |
 | `tasks/.<id>.tmp/` | `0700` | A task being created: written whole, then renamed to `tasks/<id>/`. A leftover of a crash is ignored, and replaced when the same ID is created again. |
+
+`loomd` watches `tasks/` of every store (FSEvents on macOS, inotify on Linux) and reconciles each task whose files change, and every task when it starts:
+
+| Change | Result |
+| --- | --- |
+| `task.md` as `loomd` last read or wrote it (same SHA-256) | Nothing. |
+| A field of the frontmatter differs from the task its `events.jsonl` describes | An `edited` event with the actor `{"type":"file"}` is appended, with each changed field (`title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`); the task is indexed. `task.md` is not written. |
+| Only the notes changed, or `events.jsonl` has no `created` event, a line of a newer version, or changes that do not follow from each other | The task is indexed, no event. |
+| `task.md` is invalid | The task is indexed read-only with the error and its line; no event; the file is never rewritten. |
+| The task directory or its `task.md` is gone | The task leaves the index. |
+| A file cannot be read (permissions, I/O), or `tasks/` cannot be listed | Logged with its path; the task keeps its index entry; the other tasks are reconciled. |
+
+When the watcher cannot start, `loomd` logs a warning and picks the hand edits up at its next start. When it reports lost events, every task is reconciled.
 
 ## `run/`
 

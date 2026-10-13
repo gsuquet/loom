@@ -106,8 +106,10 @@ pub enum Command {
     /// Rebuild the tasks index from the task files of every context store.
     ///
     /// The files are the source of truth: rows of tasks whose directory is gone are dropped,
-    /// an invalid `task.md` is indexed read-only and listed, never rewritten. The repositories
-    /// of the index are left as they are. Starts loomd when it is not running.
+    /// an invalid `task.md` is indexed read-only and listed, never rewritten. A task that cannot
+    /// be read is listed and keeps its previous entry; the others are indexed. Hand edits not
+    /// recorded yet are recorded first, so a reindex may append `edited` events. The
+    /// repositories of the index are left as they are. Starts loomd when it is not running.
     Reindex(ReindexArgs),
     /// Print the shell integration to evaluate in the shell's startup file:
     /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in

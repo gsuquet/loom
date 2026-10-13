@@ -44,8 +44,8 @@ Crates are added when a version needs them, never ahead of time.
 | `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback, auto-upgrade decisions (pure), update state, pre-flight and health check (ADR-0011). Shared by `loom` and `loomd` |
 | `loom-telemetry` | lib | v0.1 | `tracing` subscriber of both binaries: logs on stderr, OTLP/HTTP trace export when enabled (decisions pure), W3C trace context propagation. Shared by `loom` and `loomd` |
 | `loom-repo` | lib | v0.2 | Repo identity, context matching, scan diff, update decisions (pure); discovery scan (`scan` module: directory listing and git files read with `gix-config`) and state (`state` module: read with `gix`, bounded by a time budget), the only modules with I/O, no git process |
-| `loom-core` | lib | v0.3 | Task domain (pure): kinds, statuses and transitions, IDs and prefix resolution, commands, events and undo; priority order next. No I/O, clock, randomness source or async runtime: time and randomness are injected. Owns the primitives the API shares: `Timestamp`, `ContextName`; dates are `jiff` civil dates |
-| `loom-store` | lib | v0.2 | SQLite index (`index.db`): repos and search in v0.2; `StorePort`, local files + git adapter, tasks in v0.3 |
+| `loom-core` | lib | v0.3 | Task domain (pure): kinds, statuses and transitions, IDs and prefix resolution, commands, events, undo, replay of a log and the changes of a hand edit, priority order, file formats. No I/O, clock, randomness source or async runtime: time and randomness are injected. Owns the primitives the API shares: `Timestamp`, `ContextName`; dates are `jiff` civil dates |
+| `loom-store` | lib | v0.2 | SQLite index (`index.db`): repos and search in v0.2; `StorePort`, its local files adapter, the tasks index and the hand-edit decision in v0.3 (git backup next) |
 
 Rules:
 

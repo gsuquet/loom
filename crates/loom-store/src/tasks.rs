@@ -5,18 +5,19 @@
 //! The files are the source of truth: [`Tasks::reindex`] rebuilds every row from them, and two
 //! reindexes of the same files give the same rows.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use loom_core::{
-    Command, ContextName, DomainError, Importance, Link, NewTask, Origin, RandomSource, Status,
-    Task, TaskDocument, TaskId, Timestamp, apply, create,
+    Command, ContextName, DomainError, Event, EventId, EventRecord, FieldChange, Importance, Link,
+    NewTask, Origin, RandomSource, Status, Task, TaskDocument, TaskId, Timestamp, apply, create,
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
 use tracing::debug_span;
 
 use crate::port::{ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskWrite};
+use crate::reconcile::{Reconciliation, decide};
 use crate::search::{expressions, terms};
 use crate::{StoreError, open_writer};
 
@@ -367,6 +368,141 @@ impl<P: StorePort> Tasks<P> {
             .replace_all(&rows, |context, id| keeps(&failed, context, id))?;
         Ok(Reindexed { rows, failed })
     }
+
+    /// Brings the index in line with the files of task `id` in the store of `context` after a
+    /// change loomd may not have made (see [`decide`]). A hand edit of the task's fields is
+    /// appended to its log as an `edited` event of `origin` (the actor `file`) at `now`, its ID
+    /// drawn from `random`; `task.md` itself is never written.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::UnknownContext`], or the read, write or index error.
+    pub fn reconcile(
+        &mut self,
+        context: &ContextName,
+        id: &TaskId,
+        now: Timestamp,
+        origin: &Origin,
+        random: &mut impl RandomSource,
+    ) -> Result<Reconciled, TaskError> {
+        let store = self
+            .stores
+            .get(context)
+            .ok_or_else(|| TaskError::UnknownContext(context.clone()))?;
+        let indexed = self.index.get(id)?;
+        let hash = indexed
+            .as_ref()
+            .filter(|row| row.context == *context)
+            .map(|row| row.hash.clone());
+        let result = store.update(id, |mut stored| match decide(hash.as_ref(), &stored) {
+            Reconciliation::Unchanged => Ok((TaskWrite::default(), (Reconciled::Unchanged, None))),
+            Reconciliation::Index => {
+                Ok((TaskWrite::default(), (Reconciled::Indexed, Some(stored))))
+            }
+            Reconciliation::Record(changes) => {
+                let taken: Vec<EventId> = stored
+                    .events
+                    .events
+                    .iter()
+                    .map(|event| event.id.clone())
+                    .collect();
+                let event_id = EventId::generate(random, &taken).map_err(DomainError::from)?;
+                let event = Event::Edited {
+                    changes: changes.clone(),
+                };
+                let record = EventRecord::new(event_id, event, now, origin);
+                stored.events.events.push(record.clone());
+                let write = TaskWrite {
+                    document: None,
+                    events: vec![record],
+                };
+                Ok::<_, TaskError>((write, (Reconciled::Edited(changes), Some(stored))))
+            }
+        });
+        match result {
+            Ok((reconciled, stored)) => {
+                if let Some(stored) = stored {
+                    self.index.upsert(&IndexedTask::from_stored(&stored))?;
+                }
+                Ok(reconciled)
+            }
+            Err(TaskError::Files(PortError::NotFound { .. })) => {
+                if indexed.is_some() && self.index.remove(id)? {
+                    Ok(Reconciled::Removed)
+                } else {
+                    Ok(Reconciled::Unchanged)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// [`Tasks::reconcile`] of every task of every store, then removes the rows of the tasks
+    /// that are in no store any more.
+    ///
+    /// A task that cannot be reconciled, or a store that cannot be listed, is reported in
+    /// [`ReconciledAll::failed`] and keeps its rows; the other tasks are reconciled.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::Index`] when the rows left to remove cannot be read or removed.
+    pub fn reconcile_all(
+        &mut self,
+        now: Timestamp,
+        origin: &Origin,
+        random: &mut impl RandomSource,
+    ) -> Result<ReconciledAll, TaskError> {
+        let _span = debug_span!("tasks.reconcile_all").entered();
+        let mut listed = Vec::new();
+        let mut failed = Vec::new();
+        for (context, store) in &self.stores {
+            match store.list() {
+                Ok(ids) => listed.extend(ids.into_iter().map(|id| (context.clone(), id))),
+                Err(error) => failed.push(TaskFailure::new(context, None, &error.into())),
+            }
+        }
+        let mut results = Vec::with_capacity(listed.len());
+        let mut seen = HashSet::with_capacity(listed.len());
+        for (context, id) in listed {
+            match self.reconcile(&context, &id, now, origin, random) {
+                Ok(reconciled) => results.push((id.clone(), reconciled)),
+                Err(error) => failed.push(TaskFailure::new(&context, Some(&id), &error)),
+            }
+            seen.insert(id);
+        }
+        for row in list(&self.index.conn, None)? {
+            if !seen.contains(&row.id)
+                && !keeps(&failed, &row.context, &row.id)
+                && self.index.remove(&row.id)?
+            {
+                results.push((row.id, Reconciled::Removed));
+            }
+        }
+        Ok(ReconciledAll { results, failed })
+    }
+}
+
+/// What [`Tasks::reconcile_all`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconciledAll {
+    /// What happened to each task, in store order, then the removed rows.
+    pub results: Vec<(TaskId, Reconciled)>,
+    /// The tasks, or stores, that could not be reconciled: their rows are kept as they were.
+    pub failed: Vec<TaskFailure>,
+}
+
+/// What [`Tasks::reconcile`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reconciled {
+    /// The file is the one last indexed: nothing done.
+    Unchanged,
+    /// The file was indexed (new, notes changed, invalid, or a log that cannot be replayed),
+    /// without an event.
+    Indexed,
+    /// A hand edit of these fields was recorded, and the file indexed.
+    Edited(Vec<FieldChange>),
+    /// The task is gone from its store: its row was removed.
+    Removed,
 }
 
 /// What [`Tasks::reindex`] did.
