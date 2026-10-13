@@ -69,23 +69,23 @@ Each task is a GitHub issue in the `v0.3` milestone, written with the [agent tas
 
 | # | Issue | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- | --- |
-| 1 | – | ADR-0013 (task store, kinds, priority, focus, backup) and design docs | Research | – | Me + agent |
-| 2 | ISSUE_2 | `loom-core` (pure): task, kind, status, importance, links and relations, IDs, shortest unique prefix, transitions and available actions, events, undo | Story | 1 | Agent |
-| 3 | ISSUE_3 | Priority (pure): lexicographic order, hidden `waiting` tasks, `--why` | Story | 2 | Agent |
-| 4 | ISSUE_4 | Task file format (pure): `task.md` TOML frontmatter round trip with unknown keys kept, `events.jsonl`, body template per kind | Story | 2 | Agent |
-| 5 | ISSUE_5 | `loom-store`: `StorePort`, files adapter per context, atomic writes, tasks index and FTS (migration 0005), `loom reindex`, hand-edit detection | Story | 4 | Agent |
-| 6 | ISSUE_6 | loomd tasks API: create, read, edit, transitions, ranked list, events, undo | Story | 3, 5 | Agent |
-| 7 | ISSUE_7 | `loom add\|ls\|show\|edit\|set\|done\|cancel\|snooze\|undo`, `--json`, context from the working directory | Story | 6 | Agent |
-| 8 | ISSUE_8 | `loom go`, focus per context, `repo` link, `cd` through `shell-init`, `loom log` | Story | 7 | Agent |
-| 9 | ISSUE_9 | Recurring tasks: RRULE schedules, dedup per occurrence, `skip\|stack\|replace`, latest missed occurrence | Story | 6 | Agent |
-| 10 | ISSUE_10 | Archive after N days, read-only, readable and searchable | Story | 6 | Agent |
-| 11 | ISSUE_11 | Backup: git repository per context store, unsigned commit per change, push and fast-forward pull, `loom sync`, `machine.toml`, doctor | Story | 5 | Agent |
-| 12 | ISSUE_12 | `loom search` over tasks (title, body, links), < 100 ms | Story | 5 | Agent |
-| 13 | ISSUE_13 | TUI skeleton: ratatui, API client, context colors, keymap, `?` help, `/` search | Story | 6 | Agent |
-| 14 | ISSUE_14 | TUI Today and Inbox, triage (`a`, `z`, `x`, `c`, `g`), group by parent | Story | 3, 13 | Agent |
-| 15 | ISSUE_15 | TUI task detail: Overview, Relations, Events, Files; field pickers; `$EDITOR` for the body | Story | 13 | Agent |
-| 16 | ISSUE_16 | Store safety suite: crash during a write, invalid hand edit, reindex equal to the files, version skew | Chore | 5, 11 | Agent |
+| 1 | [#68](https://github.com/gsuquet/loom/pull/68) | ADR-0013 (task store, kinds, priority, focus, backup) and design docs | Research | – | Me + agent |
+| 2 | [#69](https://github.com/gsuquet/loom/issues/69) | `loom-core` (pure): task, kind, status, importance, links and relations, IDs, shortest unique prefix, transitions and available actions, events, undo | Story | 1 | Agent |
+| 3 | [#70](https://github.com/gsuquet/loom/issues/70) | Priority (pure): lexicographic order, hidden `waiting` tasks, `--why` | Story | 2 | Agent |
+| 4 | [#71](https://github.com/gsuquet/loom/issues/71) | Task file format (pure): `task.md` TOML frontmatter round trip with unknown keys kept, `events.jsonl`, body template per kind | Story | 2 | Agent |
+| 5 | [#72](https://github.com/gsuquet/loom/issues/72) | `loom-store`: `StorePort`, files adapter per context, atomic writes, tasks index and FTS (migration 0005), `loom reindex`, hand-edit detection | Story | 4 | Agent |
+| 6 | [#73](https://github.com/gsuquet/loom/issues/73) | loomd tasks API: create, read, edit, transitions, ranked list, events, undo | Story | 3, 5 | Agent |
+| 7 | [#74](https://github.com/gsuquet/loom/issues/74) | `loom add\|ls\|show\|edit\|set\|done\|cancel\|snooze\|undo`, `--json`, context from the working directory | Story | 6 | Agent |
+| 8 | [#75](https://github.com/gsuquet/loom/issues/75) | `loom go`, focus per context, `repo` link, `cd` through `shell-init`, `loom log` | Story | 7 | Agent |
+| 9 | [#76](https://github.com/gsuquet/loom/issues/76) | Recurring tasks: RRULE schedules, dedup per occurrence, `skip\|stack\|replace`, latest missed occurrence | Story | 6 | Agent |
+| 10 | [#77](https://github.com/gsuquet/loom/issues/77) | Archive after N days, read-only, readable and searchable | Story | 6 | Agent |
+| 11 | [#78](https://github.com/gsuquet/loom/issues/78) | Backup: git repository per context store, unsigned commit per change, push and fast-forward pull, `loom sync`, `machine.toml`, doctor | Story | 5 | Agent |
+| 12 | [#79](https://github.com/gsuquet/loom/issues/79) | `loom search` over tasks (title, body, links), < 100 ms | Story | 5 | Agent |
+| 13 | [#80](https://github.com/gsuquet/loom/issues/80) | TUI skeleton: ratatui, API client, context colors, keymap, `?` help, `/` search | Story | 6 | Agent |
+| 14 | [#81](https://github.com/gsuquet/loom/issues/81) | TUI Today and Inbox, triage (`a`, `z`, `x`, `c`, `g`), group by parent | Story | 3, 13 | Agent |
+| 15 | [#82](https://github.com/gsuquet/loom/issues/82) | TUI task detail: Overview, Relations, Events, Files; field pickers; `$EDITOR` for the body | Story | 13 | Agent |
+| 16 | [#83](https://github.com/gsuquet/loom/issues/83) | Store safety suite: crash during a write, invalid hand edit, reindex equal to the files, version skew | Chore | 5, 11 | Agent |
 | 17 | – | Enter my tasks, a week of starting the day with `loom` | Chore | 14, 15 | Me |
-| 18 | ISSUE_18 | Disk usage of the loom home in `loom status` and `--json`, doctor checks (kept versions, WAL, free space) | Story | – | Agent |
+| 18 | [#84](https://github.com/gsuquet/loom/issues/84) | Disk usage of the loom home in `loom status` and `--json`, doctor checks (kept versions, WAL, free space) | Story | – | Agent |
 
 Parallel tracks: 18 from the start; after 2, {3} and {4, 5}; after 5, {11, 12, 16}; after 6, {7, 8}, {9, 10}, {13, 14, 15}.
