@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use loom_api::{
     ContextAssignment, LastUpdate, MaybeKnown, Remote, RepoHead, RepoIdentity, RepoState,
-    RepoUpdatePolicy, SkipReason, Timestamp, Untracked, UpdateOutcome, Upstream,
+    RepoUpdatePolicy, SearchField, SearchKind, SkipReason, Timestamp, Untracked, UpdateOutcome,
+    Upstream,
 };
 use loom_repo::ScanDiff;
 use rusqlite::Connection;
@@ -427,7 +428,7 @@ fn register_keeps_the_flag_across_scans_until_forget() {
 
     // A new registered repository with the same base slug gets a suffix.
     let summary = store
-        .register(repo("/elsewhere/x", "p", "p/x", &[]), at(2))
+        .register(repo("/elsewhere/x", "p", "p/x", &[]), at(2), false)
         .unwrap();
     assert_eq!(summary.identity.slug, "p/x-2");
     assert!(summary.registered);
@@ -438,7 +439,7 @@ fn register_keeps_the_flag_across_scans_until_forget() {
 
     // Registering a scanned repository flags it and keeps its slug.
     let summary = store
-        .register(repo("/w/x", "p", "p/x", &[]), at(3))
+        .register(repo("/w/x", "p", "p/x", &[]), at(3), false)
         .unwrap();
     assert_eq!(summary.identity.slug, "p/x");
     assert!(summary.registered);
@@ -708,7 +709,7 @@ fn states_are_saved_read_back_and_searched_by_branch() {
 }
 
 #[test]
-fn version_1_database_migrates_to_2_with_its_repositories() {
+fn version_1_database_migrates_to_the_latest_with_its_repositories() {
     let dir = TempDir::new().unwrap();
     let path = db(&dir);
     let mut conn = Connection::open(&path).unwrap();
@@ -907,7 +908,7 @@ fn replace_all_drops_everything_else() {
         .apply_scan(&added(vec![repo("/w/x", "p", "p/x", &[])]), at(1))
         .unwrap();
     store
-        .register(repo("/elsewhere/y", "p", "p/y", &[]), at(2))
+        .register(repo("/elsewhere/y", "p", "p/y", &[]), at(2), false)
         .unwrap();
     store.set_last_used(Path::new("/w/x"), at(3)).unwrap();
     store
@@ -935,4 +936,249 @@ fn replace_all_drops_everything_else() {
     assert!(!x.registered);
     assert_eq!(store.registered_paths().unwrap(), Vec::<PathBuf>::new());
     assert_eq!(fts_orphans(&db(&dir)), (0, 0));
+}
+
+/// Slugs found by `query`, in context `context`, best first.
+fn found(reader: &Reader, query: &str, context: Option<&str>) -> Vec<String> {
+    reader
+        .search(query, context, 100)
+        .unwrap()
+        .into_iter()
+        .map(|result| result.slug)
+        .collect()
+}
+
+/// A store and a reader on it, with:
+///
+/// - `p/loom` (`/w/loom`): its name is `loom`;
+/// - `p/loom-api` (`/w/loom-api`): its name starts with `loom`;
+/// - `loom/tool` (`/w/tool`): `loom` is its context, so in its slug;
+/// - `p/inner` (`/src/loom/inner`): `loom` is in its path only;
+/// - `p/widget` (`/w/widget`), with a GitHub remote;
+/// - `p/cafe` (`/w/Café-Crème`).
+fn search_index(dir: &TempDir) -> (Store, Reader) {
+    let path = db(dir);
+    let mut store = Store::open(&path).unwrap();
+    store
+        .apply_scan(
+            &added(vec![
+                repo("/w/loom", "p", "p/loom", &[]),
+                repo("/w/loom-api", "p", "p/loom-api", &[]),
+                repo("/w/tool", "loom", "loom/tool", &[]),
+                repo("/src/loom/inner", "p", "p/inner", &[]),
+                repo(
+                    "/w/widget",
+                    "p",
+                    "p/widget",
+                    &["https://github.com/me/gadget.git"],
+                ),
+                repo("/w/Café-Crème", "p", "p/cafe", &[]),
+            ]),
+            at(1),
+        )
+        .unwrap();
+    let reader = Reader::open(&path).unwrap();
+    (store, reader)
+}
+
+#[test]
+fn search_ranks_exact_name_then_name_prefix_then_slug_then_other_fields() {
+    let dir = TempDir::new().unwrap();
+    let (mut store, reader) = search_index(&dir);
+    // Recency never beats a better tier.
+    store
+        .set_last_used(Path::new("/src/loom/inner"), at(9))
+        .unwrap();
+    store.set_last_used(Path::new("/w/tool"), at(8)).unwrap();
+    assert_eq!(
+        found(&reader, "loom", None),
+        ["p/loom", "p/loom-api", "loom/tool", "p/inner"]
+    );
+
+    let results = reader.search("loom", None, 100).unwrap();
+    let fields: Vec<Vec<SearchField>> = results
+        .iter()
+        .map(|result| result.matched_fields.clone())
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            vec![SearchField::Name, SearchField::Slug, SearchField::Path],
+            vec![SearchField::Name, SearchField::Slug, SearchField::Path],
+            vec![SearchField::Slug, SearchField::Context],
+            vec![SearchField::Path],
+        ]
+    );
+    assert!(results.iter().all(|result| result.kind == SearchKind::Repo));
+    assert!(results.iter().all(|result| result.score.is_finite()));
+    assert_eq!(results[3].name, "inner");
+    assert_eq!(results[3].context, "p");
+    assert_eq!(results[3].path, PathBuf::from("/src/loom/inner"));
+
+    // `loom-api` names `p/loom-api` exactly, whatever its case and separators.
+    assert_eq!(found(&reader, "LOOM api", None)[0], "p/loom-api");
+    assert_eq!(found(&reader, "loom-api", None)[0], "p/loom-api");
+}
+
+#[test]
+fn search_orders_a_tier_by_last_used_then_relevance_then_slug() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut store = Store::open(&path).unwrap();
+    store
+        .apply_scan(
+            &added(vec![
+                repo("/w/app-a", "p", "p/app-a", &[]),
+                repo("/w/app-b", "p", "p/app-b", &[]),
+                repo("/w/app-c", "p", "p/app-c", &[]),
+            ]),
+            at(1),
+        )
+        .unwrap();
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(
+        found(&reader, "app", None),
+        ["p/app-a", "p/app-b", "p/app-c"]
+    );
+    store.set_last_used(Path::new("/w/app-c"), at(5)).unwrap();
+    store.set_last_used(Path::new("/w/app-b"), at(7)).unwrap();
+    assert_eq!(
+        found(&reader, "app", None),
+        ["p/app-b", "p/app-c", "p/app-a"]
+    );
+}
+
+#[test]
+fn search_terms_are_prefixes_that_must_all_match() {
+    let dir = TempDir::new().unwrap();
+    let (_store, reader) = search_index(&dir);
+    assert_eq!(found(&reader, "lo ap", None), ["p/loom-api"]);
+    assert_eq!(found(&reader, "loom zzz", None), Vec::<String>::new());
+    assert_eq!(found(&reader, "wid", None), ["p/widget"]);
+    // Remote URLs are searched.
+    let results = reader.search("gadget", None, 100).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].slug, "p/widget");
+    assert_eq!(results[0].matched_fields, [SearchField::Remotes]);
+    assert_eq!(found(&reader, "github me", None), ["p/widget"]);
+    // Nothing to search.
+    assert_eq!(found(&reader, "", None), Vec::<String>::new());
+    assert_eq!(found(&reader, " - * ", None), Vec::<String>::new());
+}
+
+#[test]
+fn search_folds_case_and_diacritics() {
+    let dir = TempDir::new().unwrap();
+    let (mut store, reader) = search_index(&dir);
+    for query in ["cafe creme", "CAFÉ", "Crème", "café-crè", "cafe"] {
+        assert_eq!(found(&reader, query, None), ["p/cafe"], "{query}");
+    }
+    let results = reader.search("cafe creme", None, 1).unwrap();
+    assert_eq!(results[0].name, "Café-Crème");
+    // Several diacritics on one letter (`remove_diacritics 2`).
+    store
+        .apply_scan(&added(vec![repo("/w/Việt", "p", "p/viet", &[])]), at(2))
+        .unwrap();
+    assert_eq!(found(&reader, "viet", None), ["p/viet"]);
+}
+
+#[test]
+fn search_treats_fts5_syntax_as_text() {
+    let dir = TempDir::new().unwrap();
+    let (_store, reader) = search_index(&dir);
+    for query in [
+        "{loom}", "loom\"", "\"loom", "-loom", "+loom", "^loom", "loom*", "(loom)", "loom:",
+    ] {
+        assert_eq!(found(&reader, query, None)[0], "p/loom", "{query}");
+    }
+    // Operators are words to find, not operators.
+    for query in [
+        "loom OR zzz",
+        "loom AND",
+        "NOT loom",
+        "NEAR(loom api)",
+        "{name} : x",
+    ] {
+        assert_eq!(found(&reader, query, None), Vec::<String>::new(), "{query}");
+    }
+    // `slug:widget` is the words `slug` and `widget`, not a column filter.
+    assert_eq!(found(&reader, "slug:widget", None), Vec::<String>::new());
+}
+
+#[test]
+fn search_keeps_one_context_and_the_limit() {
+    let dir = TempDir::new().unwrap();
+    let (_store, reader) = search_index(&dir);
+    assert_eq!(found(&reader, "loom", Some("loom")), ["loom/tool"]);
+    assert_eq!(found(&reader, "loom", Some("nope")), Vec::<String>::new());
+    let first: Vec<String> = reader
+        .search("loom", None, 2)
+        .unwrap()
+        .into_iter()
+        .map(|result| result.slug)
+        .collect();
+    assert_eq!(first, ["p/loom", "p/loom-api"]);
+    assert_eq!(reader.search("loom", None, 0).unwrap(), []);
+}
+
+#[test]
+fn search_finds_the_branch() {
+    let dir = TempDir::new().unwrap();
+    let (mut store, reader) = search_index(&dir);
+    assert!(
+        store
+            .save_state(Path::new("/w/tool"), &state_on("feature-ünïcode", 3))
+            .unwrap()
+    );
+    let results = reader.search("feature unicode", None, 10).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].slug, "loom/tool");
+    assert_eq!(results[0].matched_fields, [SearchField::Branch]);
+}
+
+#[test]
+fn version_2_database_migrates_its_search_table() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut conn = Connection::open(&path).unwrap();
+    migrate_with(&mut conn, &path, migrations_up_to(2)).unwrap();
+    conn.execute(
+        "INSERT INTO repos (path, name, slug, context, assignment, remotes, registered, \
+                            first_seen, updated_at) \
+         VALUES ('/w/Việt', 'Việt', 'p/viet', 'p', '{\"rule\":\"unassigned\"}', \
+                 '[{\"name\":\"origin\",\"url\":\"git@github.com:me/v.git\"}]', 1, 10, 10)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO repo_state (repo_id, refreshed_at, head) \
+         SELECT id, 20, '{\"kind\":\"branch\",\"name\":\"dev\"}' FROM repos",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let store = Store::open(&path).unwrap();
+    assert_eq!(user_version(&store.conn).unwrap(), SCHEMA_VERSION);
+    assert_eq!(
+        fts_rows(&path),
+        ["Việt|p/viet|/w/Việt|git@github.com:me/v.git|p|dev"]
+    );
+    assert_eq!(fts_orphans(&path), (0, 0));
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(found(&reader, "viet dev", None), ["p/viet"]);
+}
+
+#[test]
+fn registration_on_use_sets_last_used_in_the_same_write() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&db(&dir)).unwrap();
+    let summary = store
+        .register(repo("/elsewhere/z", "p", "p/z", &[]), at(7), true)
+        .unwrap();
+    assert_eq!(summary.last_used, Some(at(7)));
+    let plain = store
+        .register(repo("/elsewhere/w", "p", "p/w", &[]), at(8), false)
+        .unwrap();
+    assert_eq!(plain.last_used, None);
 }

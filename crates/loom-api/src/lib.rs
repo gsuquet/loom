@@ -11,6 +11,7 @@ mod error;
 mod repo;
 mod repo_state;
 mod repo_update;
+mod search;
 mod service;
 mod status;
 mod timestamp;
@@ -36,6 +37,7 @@ pub use repo_update::{
     LastUpdate, PlannedAction, RepoSync, SkipReason, StateField, SyncOutcome, SyncRequest,
     SyncResult, UpdateOutcome, UpdateStep,
 };
+pub use search::{DEFAULT_SEARCH_LIMIT, SearchField, SearchKind, SearchResult, SearchResults};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;

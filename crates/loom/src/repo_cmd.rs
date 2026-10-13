@@ -118,13 +118,13 @@ fn json(value: &impl Serialize) -> Result<String> {
     Ok(serde_json::to_string_pretty(value).into_diagnostic()? + "\n")
 }
 
-fn api_error(error: &ClientError) -> miette::Report {
+pub fn api_error(error: &ClientError) -> miette::Report {
     miette!("{error}")
 }
 
 /// A client of the running loomd; when none runs and `start`, loomd is started and its scan
 /// on start awaited, so that the index is complete.
-async fn connect(layout: &Layout, start: bool) -> Result<Client> {
+pub async fn connect(layout: &Layout, start: bool) -> Result<Client> {
     check_socket_path(&layout.socket, MAX_SOCKET_PATH_BYTES).into_diagnostic()?;
     let client = Client::new(layout.socket.clone());
     match client.status().await {
