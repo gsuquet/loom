@@ -1,6 +1,6 @@
 # ADR-0014: TUI architecture
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-13
 
 ## Context
