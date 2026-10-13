@@ -27,6 +27,8 @@ use loomd::repo_update::{FetchStatus, GitRunner, Report, Target, update};
 use loomd::schedule::{Candidate, Schedule};
 use tempfile::TempDir;
 
+mod common;
+
 const NOW: u64 = 1_791_792_000;
 
 struct Fixture {
@@ -89,38 +91,7 @@ impl Fixture {
     }
 
     fn run(&self, dir: &Path, args: &[&str]) -> Output {
-        let mut command = Command::new("git");
-        command.current_dir(dir);
-        for (name, value) in self.env() {
-            match value {
-                Some(value) => command.env(name, value),
-                None => command.env_remove(name),
-            };
-        }
-        command
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_MERGE_AUTOEDIT", "no")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .args([
-                "-c",
-                "user.name=Loom Test",
-                "-c",
-                "user.email=loom@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "tag.gpgsign=false",
-                "-c",
-                "init.defaultBranch=main",
-                "-c",
-                "advice.detachedHead=false",
-            ])
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
+        common::git_run(&self.home(), dir, args)
     }
 
     /// `git <args>` in `dir`, which must succeed; its standard output, trimmed.

@@ -8,11 +8,9 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,13 +19,13 @@ use loom_api::{
     RepoSummary, RepoUpdatePolicy, ScanResult, SkipReason, SshAgentSocket, SyncOutcome, SyncResult,
     Untracked, UpdateOutcome,
 };
-use schemars::schema_for;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-const TIMEOUT: Duration = Duration::from_secs(20);
-const POLL: Duration = Duration::from_millis(20);
+mod common;
+
+use common::{Daemon, HttpResponse, POLL, TIMEOUT, ok, request};
 
 const CONFIG: &str = r#"
 [repos]
@@ -131,97 +129,6 @@ fn fake_repo(dir: &Path, remotes: &[(&str, &str)]) {
         writeln!(config, "[remote \"{name}\"]\n\turl = {url}").unwrap();
     }
     fs::write(git_dir.join("config"), config).unwrap();
-}
-
-/// A running daemon, killed when dropped.
-struct Daemon {
-    child: Child,
-}
-
-impl Daemon {
-    fn start(command: &mut Command, socket: &Path) -> Self {
-        let mut daemon = Self {
-            child: command.spawn().unwrap(),
-        };
-        let deadline = Instant::now() + TIMEOUT;
-        while UnixStream::connect(socket).is_err() {
-            if let Some(status) = daemon.child.try_wait().unwrap() {
-                panic!("loomd exited with {status}");
-            }
-            assert!(Instant::now() < deadline, "socket never appeared");
-            thread::sleep(POLL);
-        }
-        daemon
-    }
-
-    /// Stops the daemon with `SIGTERM` and waits for it.
-    fn stop(mut self) {
-        let status = Command::new("kill")
-            .args(["-TERM", &self.child.id().to_string()])
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let deadline = Instant::now() + TIMEOUT;
-        while self.child.try_wait().unwrap().is_none() {
-            assert!(Instant::now() < deadline, "loomd did not stop");
-            thread::sleep(POLL);
-        }
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-struct HttpResponse {
-    status: u16,
-    body: String,
-}
-
-/// Minimal HTTP/1.1 client: one request, `Connection: close`, body read to the end.
-fn request(socket: &Path, method: &str, path: &str, body: Option<&Value>) -> HttpResponse {
-    let body = body.map(Value::to_string).unwrap_or_default();
-    let mut stream = UnixStream::connect(socket).unwrap();
-    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
-    let content_type = if body.is_empty() {
-        ""
-    } else {
-        "Content-Type: application/json\r\n"
-    };
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: loomd\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .unwrap();
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).unwrap();
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
-    let status = head
-        .lines()
-        .next()
-        .unwrap()
-        .split(' ')
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    HttpResponse {
-        status,
-        body: body.to_owned(),
-    }
-}
-
-/// The body of a `200` response, checked against the schema of `T`.
-fn ok<T: DeserializeOwned + schemars::JsonSchema>(response: &HttpResponse) -> T {
-    assert_eq!(response.status, 200, "{}", response.body);
-    let value: Value = serde_json::from_str(&response.body).unwrap();
-    let schema = serde_json::to_value(schema_for!(T)).unwrap();
-    assert!(jsonschema::is_valid(&schema, &value), "{value}");
-    serde_json::from_value(value).unwrap()
 }
 
 fn assert_api_error(response: &HttpResponse, status: u16, code: ErrorCode) {
@@ -582,37 +489,10 @@ fn index_written_by_a_newer_loom_stops_the_daemon() {
     assert!(!sandbox.socket().exists());
 }
 
-/// `git <args>` in `dir`, hermetic: the sandbox `HOME`, no global or system configuration, no
-/// signing. Its standard output; it must succeed.
+/// `git <args>` in `dir`, hermetic (see [`common::git_command`]), with the sandbox `HOME`. Its
+/// standard output; it must succeed.
 fn git(sandbox: &Sandbox, dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .current_dir(dir)
-        .env("HOME", sandbox.user_home())
-        .env("XDG_CONFIG_HOME", sandbox.user_home().join(".config"))
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .args([
-            "-c",
-            "user.name=Loom Test",
-            "-c",
-            "user.email=loom@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
+    common::git(&sandbox.user_home(), dir, args)
 }
 
 /// A repository at `dir` with `files` committed: `f<n>.txt` spread over directories of 100.
