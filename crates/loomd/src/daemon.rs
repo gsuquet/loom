@@ -20,8 +20,8 @@ use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use loom_api::{
-    ApiError, ApiVersion, DaemonDiagnostics, RegisterRequest, RepoList, StatusResponse, Timestamp,
-    UpdateState,
+    ApiError, ApiVersion, DaemonDiagnostics, RegisterRequest, RepoList, SearchResults,
+    StatusResponse, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -33,8 +33,9 @@ use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, RepoGetQuery,
-    RepoQuery, STATUS_PATH, ScanQuery, agent_socket, clock_error, home_value, invalid_request,
-    method_not_allowed, not_found, register_path, repo_filter, slug, status_at, timestamp,
+    RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, agent_socket, clock_error,
+    home_value, invalid_request, method_not_allowed, not_found, register_path, repo_filter,
+    search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
@@ -336,6 +337,7 @@ fn router(app: App) -> Router {
         .route(REPOS_SCAN_PATH, post(scan_repos))
         .route(REPOS_REGISTER_PATH, post(register_repo))
         .route(REPO_PATH, get(get_repo).delete(forget_repo))
+        .route(SEARCH_PATH, get(search))
         .route(DIAGNOSTICS_PATH, get(diagnostics))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
@@ -381,6 +383,24 @@ async fn list_repos(
             .await
             .map(|repos| RepoList { repos }),
     )
+}
+
+async fn search(
+    State(app): State<Arc<App>>,
+    query: Result<Query<SearchQuery>, QueryRejection>,
+) -> Response {
+    let request = query
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|Query(query)| search_request(query));
+    match request {
+        Ok(request) => respond(
+            app.repos
+                .search(request)
+                .await
+                .map(|results| SearchResults { results }),
+        ),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
 }
 
 async fn get_repo(

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use loom_api::{
     ApiError, DaemonDiagnostics, ErrorCode, MaybeKnown, RepoHead, RepoList, RepoSummary,
-    ScanResult, SshAgentSocket, Untracked,
+    ScanResult, SearchField, SearchKind, SearchResults, SshAgentSocket, Untracked,
 };
 use schemars::schema_for;
 use serde::de::DeserializeOwned;
@@ -305,6 +305,60 @@ fn scan_on_start_indexes_the_fixture_repositories() {
     }
     let _daemon = sandbox.start();
     assert_eq!(wait_for_repos(&sandbox, 2), ["personal/a", "work/b"]);
+}
+
+#[test]
+fn search_ranks_and_filters_over_the_api() {
+    let sandbox = Sandbox::new();
+    let perso = sandbox.user_home().join("perso");
+    fake_repo(&perso.join("loom"), &[]);
+    fake_repo(&perso.join("loom-api"), &[]);
+    fake_repo(
+        &perso.join("clients/tool"),
+        &[("origin", "git@gitlab.com:company/loom-tool.git")],
+    );
+    let _daemon = sandbox.start();
+    wait_for_repos(&sandbox, 3);
+
+    let search = |path: &str| -> Vec<String> {
+        sandbox
+            .get::<SearchResults>(path)
+            .results
+            .into_iter()
+            .map(|result| result.slug)
+            .collect()
+    };
+    assert_eq!(
+        search("/v1/search?q=loom"),
+        ["personal/loom", "personal/loom-api", "work/tool"]
+    );
+    assert_eq!(search("/v1/search?q=loom&limit=1"), ["personal/loom"]);
+    assert_eq!(search("/v1/search?q=loom&context=work"), ["work/tool"]);
+    assert_eq!(search("/v1/search?q=LO%20AP"), ["personal/loom-api"]);
+    assert_eq!(search("/v1/search?q=%22loom%22%20OR"), Vec::<String>::new());
+    assert_eq!(search("/v1/search?q="), Vec::<String>::new());
+
+    let results = sandbox.get::<SearchResults>("/v1/search?q=company").results;
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].kind, SearchKind::Repo);
+    assert_eq!(results[0].name, "tool");
+    assert_eq!(results[0].context, "work");
+    assert_eq!(results[0].path, perso.join("clients/tool"));
+    assert_eq!(results[0].matched_fields, [SearchField::Remotes]);
+
+    for path in [
+        "/v1/search",
+        "/v1/search?q=x&limit=0",
+        "/v1/search?q=x&limit=-1",
+        "/v1/search?q=x&context=Not/A/Context",
+        "/v1/search?q=x&sort=name",
+    ] {
+        assert_api_error(
+            &sandbox.request("GET", path, None),
+            400,
+            ErrorCode::InvalidRequest,
+        );
+    }
 }
 
 #[test]

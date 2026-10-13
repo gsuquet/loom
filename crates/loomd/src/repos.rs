@@ -23,7 +23,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::StatusCode;
-use loom_api::{ApiError, RepoState, RepoSummary, ScanIssue, ScanResult, Timestamp};
+use loom_api::{ApiError, RepoState, RepoSummary, ScanIssue, ScanResult, SearchResult, Timestamp};
 use loom_config::config::Config;
 use loom_config::repos::{ForgeConfig, ForgeHost};
 use loom_repo::scan::Exclusions;
@@ -33,7 +33,9 @@ use loom_repo::{
     scan_roots, scan_with_registered, state,
 };
 use loom_store::{Reader, RepoFilter, Store, StoreError};
-use loomd::api::{ScanQuery, internal, invalid_request, repo_not_found, timestamp, unavailable};
+use loomd::api::{
+    ScanQuery, SearchRequest, internal, invalid_request, repo_not_found, timestamp, unavailable,
+};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::field::Empty;
@@ -355,6 +357,15 @@ impl RepoHandle {
     /// Repositories matching `filter`, read on a blocking thread through a read connection.
     pub async fn list(&self, filter: RepoFilter) -> Result<Vec<RepoSummary>, Failure> {
         self.read(move |reader| reader.list(&filter)).await
+    }
+
+    /// The repositories matching `request`, best first, read on a blocking thread through a
+    /// read connection.
+    pub async fn search(&self, request: SearchRequest) -> Result<Vec<SearchResult>, Failure> {
+        self.read(move |reader| {
+            reader.search(&request.q, request.context.as_deref(), request.limit)
+        })
+        .await
     }
 
     /// The repository with `slug`.

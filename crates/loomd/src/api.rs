@@ -4,7 +4,10 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use loom_api::{ApiError, ContextName, ErrorCode, SshAgentSocket, StatusResponse, Timestamp};
+use loom_api::{
+    ApiError, ContextName, DEFAULT_SEARCH_LIMIT, ErrorCode, SshAgentSocket, StatusResponse,
+    Timestamp,
+};
 use serde::Deserialize;
 
 /// Path of the status endpoint.
@@ -17,6 +20,8 @@ pub const REPOS_SCAN_PATH: &str = "/v1/repos/scan";
 pub const REPOS_REGISTER_PATH: &str = "/v1/repos/register";
 /// Route of one repository: its slug `<context>/<name>`, as two path segments.
 pub const REPO_PATH: &str = "/v1/repos/{context}/{name}";
+/// Path of the search endpoint.
+pub const SEARCH_PATH: &str = "/v1/search";
 /// Path of the diagnostics endpoint: the environment of the daemon.
 pub const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
 
@@ -91,6 +96,51 @@ pub fn repo_filter(query: RepoQuery) -> Result<(Option<String>, Option<String>),
         ),
     };
     Ok((context, query.query.filter(|text| !text.is_empty())))
+}
+
+/// Query parameters of `GET /v1/search`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchQuery {
+    /// The query: whitespace-separated terms.
+    pub q: String,
+    /// Only the repositories of this context (`unassigned` included); ignored when empty.
+    pub context: Option<String>,
+    /// Most results returned, at least 1; default [`DEFAULT_SEARCH_LIMIT`].
+    pub limit: Option<usize>,
+}
+
+/// A search request, checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRequest {
+    /// The query.
+    pub q: String,
+    /// The context to search in.
+    pub context: Option<String>,
+    /// Most results returned.
+    pub limit: usize,
+}
+
+/// The request of `query`.
+///
+/// # Errors
+///
+/// `invalid_request` when `context` is not a context name or `limit` is 0.
+pub fn search_request(query: SearchQuery) -> Result<SearchRequest, ApiError> {
+    let (context, _) = repo_filter(RepoQuery {
+        context: query.context,
+        query: None,
+    })?;
+    let limit = match query.limit {
+        None => DEFAULT_SEARCH_LIMIT,
+        Some(0) => return Err(invalid_request("limit must be at least 1")),
+        Some(limit) => limit,
+    };
+    Ok(SearchRequest {
+        q: query.q,
+        context,
+        limit,
+    })
 }
 
 /// The slug addressed by `/v1/repos/{context}/{name}`.
@@ -191,10 +241,14 @@ pub fn clock_error() -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        RepoQuery, ScanQuery, agent_socket, home_value, method_not_allowed, not_found,
-        register_path, repo_filter, repo_not_found, slug, status_at, timestamp,
+        RepoQuery, ScanQuery, SearchQuery, SearchRequest, agent_socket, home_value,
+        method_not_allowed, not_found, register_path, repo_filter, repo_not_found, search_request,
+        slug, status_at, timestamp,
     };
-    use loom_api::{ApiVersion, ErrorCode, SshAgentSocket, StatusResponse, Timestamp, VersionInfo};
+    use loom_api::{
+        ApiVersion, DEFAULT_SEARCH_LIMIT, ErrorCode, SshAgentSocket, StatusResponse, Timestamp,
+        VersionInfo,
+    };
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, UNIX_EPOCH};
@@ -216,6 +270,47 @@ mod tests {
         );
         let error = repo_filter(query(Some("Bad/ctx"), None)).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidRequest);
+    }
+
+    #[test]
+    fn search_request_defaults_and_checks() {
+        let query = |context: Option<&str>, limit: Option<usize>| SearchQuery {
+            q: "lo om".to_owned(),
+            context: context.map(str::to_owned),
+            limit,
+        };
+        assert_eq!(
+            search_request(query(None, None)).unwrap(),
+            SearchRequest {
+                q: "lo om".to_owned(),
+                context: None,
+                limit: DEFAULT_SEARCH_LIMIT,
+            }
+        );
+        assert_eq!(
+            search_request(query(Some(""), Some(3))).unwrap(),
+            SearchRequest {
+                q: "lo om".to_owned(),
+                context: None,
+                limit: 3,
+            }
+        );
+        assert_eq!(
+            search_request(query(Some("work"), Some(1)))
+                .unwrap()
+                .context
+                .as_deref(),
+            Some("work")
+        );
+        for bad in [query(Some("Bad/ctx"), None), query(None, Some(0))] {
+            assert_eq!(
+                search_request(bad).unwrap_err().code,
+                ErrorCode::InvalidRequest
+            );
+        }
+        let parse = |text: &str| serde_json::from_str::<SearchQuery>(text);
+        assert!(parse("{}").is_err(), "q is required");
+        assert!(parse(r#"{"q": "x", "sort": "name"}"#).is_err());
     }
 
     #[test]
