@@ -21,8 +21,9 @@
 | `GET` | `/v1/repos` | `200` | [`RepoList`](#repolist) |
 | `GET` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary); with `?refresh=true`, after reading its state |
 | `DELETE` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary) of the removed repository |
-| `POST` | `/v1/repos/scan` | `200` | [`ScanResult`](#scanresult) |
+| `POST` | `/v1/repos/scan` | `200` | [`ScanResult`](#scanresult); with `?rebuild=true`, of a rebuild; with `?dry_run=true`, nothing applied |
 | `POST` | `/v1/repos/register` | `200` | [`RepoSummary`](#reposummary) |
+| `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state.
 
@@ -54,9 +55,18 @@ Repositories are sorted by slug.
 - a registered repository is kept while its `.git` exists, even deeper than `max_depth`, excluded, or outside the roots, and removed once its `.git` is gone;
 - contexts are recomputed for every repository, so slugs follow a rule change.
 
-Scans run one at a time. A scan request made while a scan runs waits for that scan and receives its result. Registration and removal requests wait for a running scan.
+`POST /v1/repos/scan` query parameters, both optional, `true` or `false` (default); any other parameter is an `invalid_request`:
+
+| Parameter | Content |
+| --- | --- |
+| `rebuild` | `true`: the index is replaced, in one transaction, by the repositories the roots hold. Registered repositories are not read; every repository, its state, `registered` flag and `last_used` is dropped. The result counts every repository of the index as removed and every repository found as added (`updated` is `0`). |
+| `dry_run` | `true`: the changes are computed and returned, nothing is applied, no state is read. |
+
+Scans run one at a time. A plain scan request (neither parameter `true`) made while a plain scan runs waits for that scan and receives its result; a rebuild or a dry run runs after it, on its own. Registration and removal requests wait for a running scan.
 
 `POST /v1/repos/register` takes a [`RegisterRequest`](#registerrequest). The repository is the path itself or its nearest ancestor with a `.git` entry (directory, file or symbolic link); symbolic links in the path are kept. It is identified like a scanned repository, added or updated, and marked `registered`. A repository already indexed keeps its slug while its context and name do not change; otherwise it gets `<context>/<name>`, or the lowest free `<context>/<name>-N` (N ≥ 2).
+
+With `on_use: true` (registration on use, sent by `loom`), a repository already in the index is left as it is: not read again, not marked `registered`; only its `last_used` is set to now. It is found by its path, otherwise among the repositories with the same directory name by canonical path (the same directory through other symbolic links). A repository not in the index is registered as above, then gets its `last_used`.
 
 `DELETE /v1/repos/{context}/{name}` removes the repository from the index, registered or not. A scan adds a repository found under a root again.
 
@@ -80,7 +90,7 @@ Every error response has an [`ApiError`](#apierror) body.
 | No endpoint at the path | `404` | `not_found` |
 | Endpoint exists, method not accepted | `405` (with an `allow` header) | `invalid_request` |
 | No repository with the slug of `/v1/repos/{context}/{name}` | `404` | `not_found` |
-| Invalid query parameter, unknown parameter, invalid `context`, or `refresh` neither `true` nor `false` | `400` | `invalid_request` |
+| Invalid query parameter, unknown parameter, invalid `context`, or `refresh`, `rebuild` or `dry_run` neither `true` nor `false` | `400` | `invalid_request` |
 | Register: body not a valid `RegisterRequest`, path not absolute or with a `..` component, no repository at or above the path, or a repository whose `.git` or config cannot be read | `400` | `invalid_request` |
 | The index cannot be read or written | `500` | `internal` |
 | The daemon cannot read its clock as a timestamp | `500` | `internal` |
@@ -94,6 +104,8 @@ curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/repos/scan
 curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
   -d '{"path": "/home/me/src/tool"}' http://loomd/v1/repos/register
 curl --unix-socket ~/.loom/run/loomd.sock -X DELETE http://loomd/v1/repos/unassigned/tool
+curl --unix-socket ~/.loom/run/loomd.sock -X POST 'http://loomd/v1/repos/scan?dry_run=true'
+curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/diagnostics
 ```
 
 ## Types
@@ -104,7 +116,9 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | --- | --- |
 | `ApiError` | [`schemas/api_error.json`](schemas/api_error.json) |
 | `ApiVersion` | [`schemas/api_version.json`](schemas/api_version.json) |
-| `ContextAssignment` | [`schemas/context_assignment.json`](schemas/context_assignment.json) (not returned by any endpoint or command yet) |
+| `ContextAssignment` | [`schemas/context_assignment.json`](schemas/context_assignment.json) (in `RepoSummary`) |
+| `DaemonDiagnostics` | [`schemas/daemon_diagnostics.json`](schemas/daemon_diagnostics.json) |
+| `DoctorReport` | [`schemas/doctor_report.json`](schemas/doctor_report.json) (`loom repo doctor --json`, no endpoint) |
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
@@ -130,10 +144,10 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 
 | Message | Unknown fields |
 | --- | --- |
-| Request | Rejected (`#[serde(deny_unknown_fields)]`): `RegisterRequest`, and the query parameters of `GET /v1/repos` and `GET /v1/repos/{context}/{name}`. |
+| Request | Rejected (`#[serde(deny_unknown_fields)]`): `RegisterRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}` and `POST /v1/repos/scan`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`) are rejected.
+Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`) are rejected.
 
 ### Scalar encodings
 
@@ -215,7 +229,7 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
 | Field | Type | Content |
 | --- | --- | --- |
 | `registered` | boolean | Added by `POST /v1/repos/register`: scans keep it while its `.git` exists. |
-| `last_used` | `Timestamp` or absent | Last time the repository was used. Never set by this version. |
+| `last_used` | `Timestamp` or absent | Last time the repository was used: a registration on use (`on_use`), sent by `loom` run inside it and by `loom repo show`. Kept by scans, dropped by a rebuild. |
 | `state` | [`RepoState`](#repostate) \| `null` | State of the repository, `null` until it is read for the first time (see [state refresh](#state-refresh)). |
 
 ```json
@@ -287,6 +301,7 @@ The status walk (`dirty`), the untracked count and the ahead/behind counts share
 | Field | Type | Content |
 | --- | --- | --- |
 | `path` | path | Absolute path of the repository or of a directory inside it. `.` components and a trailing `/` are ignored; `..` is rejected. |
+| `on_use` | boolean, optional | `true`: registration on use (see [repositories](#repositories)). Default `false`, and omitted when `false`, so that a daemon older than this field still reads the request. |
 
 ### `ScanResult`
 
@@ -297,6 +312,30 @@ The status walk (`dirty`), the untracked count and the ahead/behind counts share
 | `removed` | integer (u64) | Repositories removed from the index. |
 | `errors` | list of objects | Paths that could not be read: `path`, `message`. The repositories they hide are kept unchanged. A repository whose path is not valid UTF-8 is reported here and not indexed. |
 | `duration_ms` | integer (u64) | Duration of the scan, in whole milliseconds. |
+
+### `DaemonDiagnostics`
+
+The environment of `loomd` its git operations depend on, read at each request. No secret value is returned.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `ssh_auth_sock` | object | `SSH_AUTH_SOCK` of `loomd`, tagged by `state`: `{"state": "unset"}` (unset or empty), `{"state": "missing", "path": …}` (nothing can be examined at the path), `{"state": "not_a_socket", "path": …}`, `{"state": "socket", "path": …}`. |
+| `home` | path \| `null` | `HOME` of `loomd`, which expands `~` in the configuration; `null` when unset or empty. |
+
+```json
+{
+  "ssh_auth_sock": { "state": "socket", "path": "/run/user/1000/ssh-agent.socket" },
+  "home": "/home/me"
+}
+```
+
+### `DoctorReport`
+
+Output of `loom repo doctor --json`; checks and their order: [CLI conventions](cli/conventions.md#loom-repo-doctor).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `checks` | list of objects | `check` (string: `config`, `roots`, `contexts`, `loomd`, `index`, `unassigned`, `ssh-agent`, `home`, `ssh <user>@<host>[:<port>]`), `status` (`ok`, `warn`, `fail`), `detail` (string), `fix` (string, absent when there is nothing to fix; may hold several lines). |
 
 ### `ApiError`
 
