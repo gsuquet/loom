@@ -519,6 +519,117 @@ fn any_command_registers_the_repository_it_runs_in() {
 }
 
 #[test]
+fn register_on_use_in_the_background_is_silent_and_never_fails() {
+    let sandbox = Sandbox::new(CONFIG);
+    let home = sandbox.home();
+    let ext = home.join("elsewhere/ext");
+    let background = ["repo", "register", "--on-use", "--background"];
+
+    // No loomd: nothing printed, exit 0, loomd not started.
+    let output = sandbox.loom_in(&ext, &background);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    assert!(!sandbox.socket().exists());
+    // `--on-use` alone fails without loomd, and does not start it either.
+    let output = sandbox.loom_in(&ext, &["repo", "register", "--on-use"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("loomd is not running"));
+    assert!(!sandbox.socket().exists());
+    // Outside a repository, with `-v`: still nothing.
+    let output = sandbox.loom_in(
+        &home.join("work"),
+        &[
+            "-v",
+            background[0],
+            background[1],
+            background[2],
+            background[3],
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+
+    sandbox.ok(&home, &["repo", "scan"]);
+    let output = sandbox.loom_in(&ext.join("src"), &background);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    let repo = wait_for_path(&sandbox, &ext);
+    assert!(repo.registered && repo.last_used.is_some());
+
+    // `--on-use` alone: an indexed repository is only marked used.
+    let used = sandbox.ok(&home, &["repo", "register", "--on-use", "perso/b"]);
+    assert_eq!(
+        used,
+        format!("used personal/b: {}\n", home.join("perso/b").display())
+    );
+    let b = wait_for_path(&sandbox, &home.join("perso/b"));
+    assert!(!b.registered && b.last_used.is_some());
+}
+
+/// The executable `name` in `PATH`; `None`, with a message, when there is none.
+fn find_shell(name: &str) -> Option<PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    });
+    if found.is_none() {
+        eprintln!("SKIPPED: {name} is not installed on this runner");
+    }
+    found
+}
+
+#[test]
+fn entering_a_repository_in_the_shell_registers_it() {
+    let sandbox = Sandbox::new(CONFIG);
+    let home = sandbox.home();
+    sandbox.ok(&home, &["repo", "scan"]);
+    let bin = loom_bin().parent().unwrap().to_path_buf();
+    let shells: [(&str, &[&str], &str); 2] = [
+        ("zsh", &["-f"], ":"),
+        // bash runs `PROMPT_COMMAND` at each prompt, which a script has none of.
+        (
+            "bash",
+            &["--norc", "--noprofile"],
+            "eval \"$PROMPT_COMMAND\"",
+        ),
+    ];
+    for (name, no_rc, prompt) in shells {
+        let Some(shell) = find_shell(name) else {
+            continue;
+        };
+        let repo = home.join("elsewhere").join(name);
+        fake_repo(&repo, &[]);
+        fs::create_dir_all(repo.join("src")).unwrap();
+        let script = format!(
+            "eval \"$(loom shell-init {name})\"\n{prompt}\ncd '{}'\n{prompt}\n",
+            repo.join("src").display()
+        );
+        let output = Command::new(shell)
+            .env_clear()
+            .envs(isolation::isolated_env(&home))
+            .env("LOOM_HOME", sandbox.loom_home())
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("PWD", &home)
+            .current_dir(&home)
+            .args(no_rc)
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{name}: {output:?}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{name}: {output:?}"
+        );
+        let registered = wait_for_path(&sandbox, &repo);
+        assert!(registered.registered, "{name}");
+        assert!(registered.last_used.is_some(), "{name}");
+    }
+}
+
+#[test]
 fn registration_on_use_never_starts_loomd() {
     let sandbox = Sandbox::new(CONFIG);
     let output = sandbox.loom_in(&sandbox.home().join("perso/a"), &["version"]);

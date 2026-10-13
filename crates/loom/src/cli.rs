@@ -95,6 +95,14 @@ pub enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
+    /// Print the shell integration to evaluate in the shell's startup file:
+    /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in
+    /// `~/.bashrc`.
+    ///
+    /// The directory the shell starts in, then each directory it enters, once per shell
+    /// session, runs `loom repo register --on-use --background` detached, so that loomd
+    /// registers the repository it is in. Does nothing when `loom` is not on `PATH`.
+    ShellInit(ShellInitArgs),
     /// Internal: started by loomd from the saved previous version after an auto-upgrade;
     /// waits for the new loomd and rolls back when it does not answer (ADR-0011).
     #[command(name = "__upgrade-watchdog", hide = true)]
@@ -271,6 +279,10 @@ pub struct RepoScanArgs {
 
 /// Options of `loom repo register`.
 #[derive(Debug, clap::Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "command-line flags; clap enforces their combinations"
+)]
 pub struct RepoRegisterArgs {
     /// A directory inside the repository. Default: the current directory.
     #[arg(value_name = "PATH")]
@@ -281,6 +293,31 @@ pub struct RepoRegisterArgs {
     /// Print the registered repository as JSON (`RepoSummary` schema).
     #[arg(long)]
     pub json: bool,
+    /// Register as a use, like any `loom` command run inside the repository: sets its
+    /// `last_used`, leaves an indexed repository as it is, and never starts loomd.
+    #[arg(long)]
+    pub on_use: bool,
+    /// With `--on-use`: wait for loomd at most 50 ms, print nothing, and exit with 0 whatever
+    /// happens (run by the shell integration).
+    #[arg(long, requires = "on_use", conflicts_with_all = ["dry_run", "json"])]
+    pub background: bool,
+}
+
+/// Options of `loom shell-init`.
+#[derive(Debug, clap::Args)]
+pub struct ShellInitArgs {
+    /// Shell to integrate with.
+    #[arg(value_name = "SHELL", value_enum)]
+    pub shell: Shell,
+}
+
+/// Shell supported by `loom shell-init`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Shell {
+    /// zsh: a `chpwd` hook.
+    Zsh,
+    /// bash 3.2 or later: a `PROMPT_COMMAND` entry, run when the directory changed.
+    Bash,
 }
 
 /// Options of `loom repo forget`.
@@ -417,6 +454,7 @@ mod tests {
             | Command::Upgrade(_)
             | Command::Rollback(_)
             | Command::Repo { .. }
+            | Command::ShellInit(_)
             | Command::UpgradeWatchdog(_) => {
                 panic!("not a service command: {args:?}")
             }
@@ -524,6 +562,48 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn register_on_use_in_the_background() {
+        use super::RepoCommand;
+        let RepoCommand::Register(register) = repo(&["register", "--on-use", "--background"])
+        else {
+            panic!("register")
+        };
+        assert!(register.on_use && register.background);
+        assert!(!register.dry_run && !register.json);
+        let RepoCommand::Register(register) = repo(&["register", "--on-use", "dir"]) else {
+            panic!("register")
+        };
+        assert!(register.on_use && !register.background);
+        for args in [
+            &["loom", "repo", "register", "--background"][..],
+            &["loom", "repo", "register", "--on-use", "--background", "-n"],
+            &[
+                "loom",
+                "repo",
+                "register",
+                "--on-use",
+                "--background",
+                "--json",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn shell_init_takes_a_supported_shell() {
+        use super::Shell;
+        for (name, expected) in [("zsh", Shell::Zsh), ("bash", Shell::Bash)] {
+            let cli = Cli::try_parse_from(["loom", "shell-init", name]).unwrap();
+            assert!(matches!(cli.command, Command::ShellInit(args) if args.shell == expected));
+        }
+        let error = Cli::try_parse_from(["loom", "shell-init", "fish"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+        let error = Cli::try_parse_from(["loom", "shell-init"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
