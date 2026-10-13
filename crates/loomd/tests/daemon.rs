@@ -39,10 +39,12 @@ fn lock(home: &Path) -> PathBuf {
 }
 
 /// `loomd` with `LOOM_HOME` set to `home`, without color and with a clean environment.
+/// `HOME` is `home` too, so that the repository scan never walks the real home directory.
 fn loomd(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_loomd"));
     command
         .env("LOOM_HOME", home)
+        .env("HOME", home)
         .env_remove("NO_COLOR")
         .arg("--color=never")
         .stdin(Stdio::null())

@@ -12,6 +12,10 @@ axum.workspace = true
 clap.workspace = true
 loom-api.workspace = true
 loom-config.workspace = true
+# Repository discovery, identity, contexts and scan changes (ADR-0012).
+loom-repo.workspace = true
+# The repository index `index.db` (ADR-0012).
+loom-store.workspace = true
 loom-telemetry.workspace = true
 # Auto-upgrade: discovery, decision, download, pre-flight, swap, update state (ADR-0011).
 loom-update.workspace = true

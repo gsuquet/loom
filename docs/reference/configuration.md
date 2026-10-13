@@ -84,7 +84,9 @@ Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m
 
 ### Contexts and repositories
 
-`default_context`, `[contexts]`, `[repos]` and `[forges]` are read and validated with the rest of `config.toml`: an invalid value stops `loomd` and is reported by `loom` like any other error in the file. No command uses them yet.
+`default_context`, `[contexts]`, `[repos]` and `[forges]` are read and validated with the rest of `config.toml`: an invalid value stops `loomd` and is reported by `loom` like any other error in the file. `loomd` uses them for the [repository index](#indexdb): it reads them once, when it starts, so a change takes effect after a restart; the scan on start then reassigns the contexts (and the slugs) of every repository. `~` is the user's home directory (`HOME`); `loomd` exits with code 1 when it is unknown.
+
+`fetch_interval`, `fetch_concurrency` and `update` are not used yet.
 
 ```toml
 default_context = "personal"
@@ -240,6 +242,26 @@ Spans:
 | `loom` | `update.watchdog`: the watchdog, child of the `loom __upgrade-watchdog` command span. | internal | `update.from`, `update.to`, `update.outcome`: `upgraded`, `rolled_back`, `rollback_failed`. Error status unless `upgraded`. |
 
 `loom` sends the [W3C trace context](https://www.w3.org/TR/trace-context/) (`traceparent`, `tracestate` headers) with each request; the request span of `loomd` is a child of the client span, in the same trace. Spans at `info` level are exported; `-v` and `-vv` add `debug` and `trace` spans. `-q` does not reduce what is exported.
+
+## `index.db`
+
+Index of the git repositories, in `<loom home>/index.db`: SQLite, machine-local, written by `loomd` only and read through the [API](api.md#repositories).
+
+| Path | Mode | Content |
+| --- | --- | --- |
+| `index.db` | `0600` | SQLite database in WAL mode. Created when `loomd` starts if missing; an existing file is set to `0600` at each start. |
+| `index.db-wal`, `index.db-shm` | `0600` | Write-ahead log and its shared-memory index, created by SQLite while `loomd` runs. |
+
+When it starts, `loomd` upgrades the schema of `index.db` in one transaction (the version is `PRAGMA user_version`). A database written by a newer loom is never downgraded: `loomd` exits with code 1:
+
+```text
+Error: cannot start the repository index
+  caused by: the index /home/me/.loom/index.db has schema version 2, this loom supports up to 1: upgrade loom, or stop loomd and delete the file to rebuild it
+```
+
+`loomd` then scans the repositories (see [`POST /v1/repos/scan`](api.md#repositories)) and serves the API during that scan.
+
+The index can be rebuilt from a scan: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, and slugs are assigned again.
 
 ## `run/`
 
