@@ -4,8 +4,12 @@ use assert_cmd::Command;
 use loom_api::VersionInfo;
 use serde_json::Value;
 
+mod isolation;
+
 fn loom() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("loom"))
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("loom"));
+    command.envs(isolation::isolated_env(&isolation::shared_home()));
+    command
 }
 
 #[test]

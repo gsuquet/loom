@@ -19,6 +19,7 @@ use opentelemetry_proto::tonic::trace::v1::Span;
 use tempfile::TempDir;
 
 mod common;
+mod isolation;
 
 use common::{Collector, string_attribute};
 
@@ -71,6 +72,7 @@ fn loom(home: &Path, args: &[&str], env: &[(&str, String)]) -> Output {
     }
     command
         .env("LOOM_HOME", home)
+        .envs(isolation::isolated_env(home))
         .env_remove("NO_COLOR")
         .envs(env.iter().map(|(name, value)| (name, value)))
         .arg("--color=never")

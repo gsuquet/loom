@@ -52,6 +52,10 @@ pub async fn start(layout: &Layout, client: &Client) -> Result<StatusResponse> {
         if let Some(status) =
             exited.filter(|status| status.code() != Some(LOOMD_FAILURE) || !lock_held(&layout.lock))
         {
+            debug!(
+                code = status.code(),
+                "loomd exited and nobody holds the lock: failing without waiting for the start window"
+            );
             return Err(start_failed(layout, log_start, &exited_reason(status)));
         }
         match client.status().await {

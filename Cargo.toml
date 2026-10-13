@@ -13,7 +13,7 @@ publish = false
 [workspace.dependencies]
 assert_cmd = "2.2"
 async-trait = "0.1"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio"] }
 bytes = "1"
 clap = { version = "4.5", features = ["derive"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
@@ -27,6 +27,7 @@ jsonschema = { version = "0.58", default-features = false }
 loom-api = { path = "crates/loom-api" }
 loom-config = { path = "crates/loom-config" }
 loom-repo = { path = "crates/loom-repo" }
+loom-store = { path = "crates/loom-store" }
 loom-telemetry = { path = "crates/loom-telemetry" }
 loom-update = { path = "crates/loom-update" }
 loomd = { path = "crates/loomd" }
@@ -38,6 +39,7 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "trace"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
 prost = { version = "0.14", default-features = false, features = ["std"] }
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }

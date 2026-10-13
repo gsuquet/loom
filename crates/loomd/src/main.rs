@@ -1,6 +1,7 @@
 //! `loomd`: the daemon. Runs in the foreground until `SIGTERM` or `SIGINT`.
 
 mod daemon;
+mod repos;
 mod updater;
 
 use std::env;

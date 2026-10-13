@@ -22,7 +22,7 @@ Every outcome lands in `last_result` of `state/update.json`, which `loom status`
 
 1. `loomd` records the upgrade as `pending` (from, to, start time). While it is there, `loom upgrade` and `loom rollback` refuse to run, and another `loomd` skips its checks.
 2. It checks that the directory of its own binary can be written, then downloads the release and verifies it exactly as `loom upgrade` does: minisign signature of `SHA256SUMS`, checksum of the archive, both binaries reporting the release version.
-3. **Pre-flight check.** It starts the downloaded `loomd` with a throwaway loom home under `/tmp`, waits up to 15 s for it to answer `GET /v1/status` with the release version, then kills it. A release that cannot start at all (wrong architecture, missing library, crash at start) is caught here, before anything installed is touched. It goes into `failed_versions`, and the running `loomd` carries on.
+3. **Pre-flight check.** It starts the downloaded `loomd` with a throwaway loom home under `/tmp`, waits up to 15 s for it to answer `GET /v1/status` with the release version, then kills it. Its `HOME` is the throwaway directory as well, so the repository scan it runs at start never walks your real home. A release that cannot start at all (wrong architecture, missing library, crash at start) is caught here, before anything installed is touched. It goes into `failed_versions`, and the running `loomd` carries on.
 4. It saves the installed `loom` and `loomd` in `~/.loom/versions/<running version>/` and replaces them, like `loom upgrade`.
 5. It starts the **watchdog** from the saved copy: `~/.loom/versions/<running version>/loom __upgrade-watchdog …`, detached, its output appended to `~/.loom/log/loomd.log`.
 6. It stops itself (exit code 0).

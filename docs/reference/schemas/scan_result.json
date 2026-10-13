@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScanResult",
+  "description": "Outcome of a scan of the repository roots.",
+  "type": "object",
+  "properties": {
+    "added": {
+      "description": "Repositories added to the index.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "duration_ms": {
+      "description": "Duration of the scan, in whole milliseconds.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "errors": {
+      "description": "Paths that could not be read; the repositories below them are kept as they were.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ScanIssue"
+      }
+    },
+    "removed": {
+      "description": "Repositories removed from the index: no longer on disk.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "updated": {
+      "description": "Repositories whose identity changed (remotes, context, forge or slug).",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "added",
+    "updated",
+    "removed",
+    "errors",
+    "duration_ms"
+  ],
+  "$defs": {
+    "ScanIssue": {
+      "description": "A path a scan could not read.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "What went wrong, in English.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The root, directory or repository.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "message"
+      ]
+    }
+  }
+}
