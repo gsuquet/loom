@@ -41,6 +41,8 @@ loom's own decision is the first guard: it reads the state with `gix` and refuse
 
 When git refuses, the update reports it as skipped (`git refused the fast-forward: …`), and does not retry before the next interval. The typical case is an untracked file with the same name as a file the remote added.
 
+An automated suite in CI, on Linux and macOS, covers both guards end to end: it runs `loomd` on repositories left in every risky state (changes tracked, staged, conflicted or untracked, ahead, diverged, detached, without upstream, rebase, merge, cherry-pick, bisect or `git am` in progress, the default branch checked out in a linked worktree, a dirty submodule, a filter driver, a failing `post-merge` hook, a moved local tag, a stash, policies `fetch` and `off`) and fails on any change to refs, index, files, stash, operation or configuration other than a fetch and the fast-forward of a clean branch.
+
 ## Hooks and configuration
 
 The commands run through the `git` CLI, in the repository's working tree, with the user's git configuration, credential helpers and hooks, exactly like a manual `git pull --ff-only`. In particular, a `post-merge` hook runs after each automatic fast-forward. A hook that takes long counts in the 10 min timeout of the fast-forward.
