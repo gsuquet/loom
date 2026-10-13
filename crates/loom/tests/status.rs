@@ -21,6 +21,8 @@ use tempfile::TempDir;
 mod isolation;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// `START_TIMEOUT` of `loom`: how long it waits for a started loomd to answer.
+const START_WINDOW: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
 
 fn loom_bin() -> PathBuf {
@@ -257,12 +259,16 @@ fn start_failure_names_the_log_and_shows_its_end() {
     fs::write(&config, "# loom\n\nunknown_key = 1\n").unwrap();
 
     let started = Instant::now();
-    let output = loom(home.path(), &["status"]);
+    let output = loom(home.path(), &["status", "-v"]);
     let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(1));
-    // Nobody holds the lock: no wait for the 5 s start window.
-    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
     let text = stderr(&output);
+    // Nobody holds the lock: `loom` fails as soon as loomd exits, without waiting for the
+    // start window. The time bound is only a backstop against a wait for the whole window
+    // plus slack: the first exec of freshly built binaries (macOS scans them) can alone take
+    // seconds before the window even starts.
+    assert!(text.contains("nobody holds the lock"), "{text}");
+    assert!(elapsed < START_WINDOW * 2, "took {elapsed:?}");
     assert!(text.contains("cannot start loomd"), "{text}");
     assert!(
         text.contains(&*log(home.path()).to_string_lossy()),
