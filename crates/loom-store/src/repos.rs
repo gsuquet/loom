@@ -173,6 +173,7 @@ pub fn register(
     conn: &mut Connection,
     mut identity: RepoIdentity,
     now: Timestamp,
+    used: bool,
 ) -> Result<RepoSummary, StoreError> {
     let now = unix(now)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -192,6 +193,13 @@ pub fn register(
         identity.slug.clone_from(&assigned.slug);
     }
     upsert(&tx, &identity, true, now)?;
+    if used {
+        // In the same transaction: a reader never sees the repository without `last_used`.
+        tx.execute(
+            "UPDATE repos SET last_used = ?2 WHERE path = ?1",
+            params![text(&identity.path)?, now],
+        )?;
+    }
     let summary = get(&tx, &identity.slug)?
         .ok_or_else(|| StoreError::Corrupt(format!("{} vanished", identity.slug)))?;
     tx.commit()?;

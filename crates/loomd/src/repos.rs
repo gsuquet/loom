@@ -24,8 +24,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ApiError, LastUpdate, RepoState, RepoSummary, RepoSync, ScanIssue, ScanResult, SyncOutcome,
-    SyncRequest, SyncResult, Timestamp,
+    ApiError, LastUpdate, RepoState, RepoSummary, RepoSync, ScanIssue, ScanResult, SearchResult,
+    SyncOutcome, SyncRequest, SyncResult, Timestamp,
 };
 use loom_config::config::Config;
 use loom_config::repos::{ForgeConfig, ForgeHost};
@@ -36,7 +36,9 @@ use loom_repo::{
     plan, read_repos, scan_roots, scan_with_registered, state,
 };
 use loom_store::{Reader, RepoFilter, Store, StoreError};
-use loomd::api::{ScanQuery, internal, invalid_request, repo_not_found, timestamp, unavailable};
+use loomd::api::{
+    ScanQuery, SearchRequest, internal, invalid_request, repo_not_found, timestamp, unavailable,
+};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::field::Empty;
@@ -431,6 +433,15 @@ impl RepoHandle {
         self.read(move |reader| reader.list(&filter)).await
     }
 
+    /// The repositories matching `request`, best first, read on a blocking thread through a
+    /// read connection.
+    pub async fn search(&self, request: SearchRequest) -> Result<Vec<SearchResult>, Failure> {
+        self.read(move |reader| {
+            reader.search(&request.q, request.context.as_deref(), request.limit)
+        })
+        .await
+    }
+
     /// The repository with `slug`.
     pub async fn get(&self, slug: String) -> Result<RepoSummary, Failure> {
         match self
@@ -810,14 +821,11 @@ impl Worker {
         // The path came from JSON: valid UTF-8, as the store requires.
         let summary = self
             .store
-            .register(repo.identity, now()?)
+            .register(repo.identity, now()?, on_use)
             .map_err(|error| store_failure(&error))?;
         span.record("slug", summary.identity.slug.as_str());
         info!(slug = %summary.identity.slug, path = %summary.identity.path.display(), "repository registered");
         self.refresher.enqueue(summary.identity.path.clone());
-        if on_use {
-            return self.mark_used(&summary.identity.path);
-        }
         Ok(summary)
     }
 

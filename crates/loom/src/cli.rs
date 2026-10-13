@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use clap::builder::RangedU64ValueParser;
 use clap::{ArgAction, ArgGroup, ArgMatches, ColorChoice, Parser, Subcommand, ValueEnum};
-use loom_api::{ContextName, TEST_BUILD_VERSION_ENV, VersionInfo};
+use loom_api::{ContextName, DEFAULT_SEARCH_LIMIT, TEST_BUILD_VERSION_ENV, VersionInfo};
 use semver::Version;
 
 /// Build information, computed once for `--version` and `loom version`;
@@ -95,6 +96,13 @@ pub enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
+    /// Search the indexed repositories by name, slug, path, remote URL, context or branch.
+    ///
+    /// Every word of the query must start a word of the repository (case and diacritics
+    /// ignored). Results are ranked: exact name, then name prefix, then slug, then the other
+    /// fields; then most recently used first. `-c` keeps one context. Starts loomd when it is
+    /// not running.
+    Search(SearchArgs),
     /// Print the shell integration to evaluate in the shell's startup file:
     /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in
     /// `~/.bashrc`.
@@ -180,6 +188,25 @@ pub enum ReleaseChannel {
 fn parse_release_version(text: &str) -> Result<Version, String> {
     loom_update::release::tag_version(&format!("v{text}"))
         .ok_or_else(|| format!("expected X.Y.Z or X.Y.Z-dev.N, got `{text}`"))
+}
+
+/// Options of `loom search`.
+#[derive(Debug, clap::Args)]
+pub struct SearchArgs {
+    /// Words to search for, joined with spaces (quoting the query is optional).
+    #[arg(value_name = "QUERY", required = true, num_args = 1..)]
+    pub query: Vec<String>,
+    /// Most results to print.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = DEFAULT_SEARCH_LIMIT,
+        value_parser = RangedU64ValueParser::<usize>::new().range(1..),
+    )]
+    pub limit: usize,
+    /// Print the results as JSON (`SearchResults` schema).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `loom repo` commands.
@@ -426,6 +453,34 @@ mod tests {
     }
 
     #[test]
+    fn search_joins_its_words_and_checks_the_limit() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).map(|cli| cli.command) {
+            Ok(Command::Search(args)) => Ok(args),
+            Ok(other) => panic!("not a search: {other:?}"),
+            Err(error) => Err(error.kind()),
+        };
+        let args = parse(&["loom", "search", "lo", "api"]).unwrap();
+        assert_eq!(args.query, ["lo", "api"]);
+        assert_eq!(args.limit, 20);
+        assert!(!args.json);
+        let args = parse(&[
+            "loom", "-c", "work", "search", "x", "--json", "--limit", "3",
+        ])
+        .unwrap();
+        assert_eq!(args.query, ["x"]);
+        assert_eq!(args.limit, 3);
+        assert!(args.json);
+        assert_eq!(
+            parse(&["loom", "search"]).unwrap_err(),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse(&["loom", "search", "x", "--limit", "0"]).unwrap_err(),
+            ErrorKind::ValueValidation
+        );
+    }
+
+    #[test]
     fn status_flags() {
         let cli = Cli::try_parse_from(["loom", "status"]).unwrap();
         assert!(matches!(
@@ -454,6 +509,7 @@ mod tests {
             | Command::Upgrade(_)
             | Command::Rollback(_)
             | Command::Repo { .. }
+            | Command::Search(_)
             | Command::ShellInit(_)
             | Command::UpgradeWatchdog(_) => {
                 panic!("not a service command: {args:?}")

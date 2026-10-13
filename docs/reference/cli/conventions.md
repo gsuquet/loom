@@ -564,6 +564,38 @@ work/legacy  skip: update policy is off
 | `1` | loomd cannot be started or reached, a slug names no repository (`not_found`), or the request fails. |
 | `2` | Usage error. |
 
+## `loom search`
+
+`loom search <QUERY>...` searches the repositories of the index through `GET /v1/search` (see [search](../api.md#search)), starting loomd when it is not running, like `loom repo ls`. The words given are joined with spaces: `loom search lo api` and `loom search "lo api"` are the same query. `-c <NAME>` keeps the repositories of one context; `--limit <N>` (default `20`, at least `1`) caps the results.
+
+Matching: every word of the query must start a word of the repository's name, slug, path, remote URLs, context or branch; words are split on every character that is not a letter or a digit; case and diacritics are ignored. Characters such as `"`, `*`, `(`, `:` and words such as `OR` or `NOT` are searched as text, never as operators.
+
+Ranking, best first:
+
+1. the name is the query (`loom-api` for `loom api`);
+2. every query word starts a word of the name;
+3. every query word starts a word of the slug;
+4. the other matches (path, remotes, context, branch, or words spread over several fields);
+
+then, within each rank, the most recently used repository first (`last_used`, set by registration on use and `loom repo show`; never used last), then full-text relevance, then slug.
+
+Human output: a header, then one row per result, best first, columns aligned, the path last. `MATCHED` lists the fields holding at least one query word (`name`, `slug`, `path`, `remotes`, `context`, `branch`). Nothing is printed when nothing matches; the exit code is still `0`.
+
+```text
+SLUG               MATCHED         PATH
+personal/loom      name,slug,path  /home/me/perso/loom
+personal/loom-api  name,slug,path  /home/me/perso/loom-api
+work/tool          remotes         /home/me/work/tool
+```
+
+`--json`: [`SearchResults`](../schemas/search_results.json): `results`, in the same order, each with `kind` (`repo`), `slug`, `name`, `context`, `path`, `score` and `matched_fields`.
+
+| Code | Cases |
+| --- | --- |
+| `0` | Success, including no result. |
+| `1` | loomd cannot be started or answers with an error. |
+| `2` | Usage error: no query, `--limit` below `1` or not a number. |
+
 ## `loom shell-init`
 
 `loom shell-init <SHELL>` prints, on stdout, a script to evaluate in the shell's startup file (`eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`). The script is fixed text embedded in the binary; the command reads no configuration, never contacts loomd, and sends no [registration on use](#registration-on-use). Setup: [shell integration](../../how-to-guides/shell-integration.md).

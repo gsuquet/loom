@@ -24,6 +24,7 @@
 | `POST` | `/v1/repos/scan` | `200` | [`ScanResult`](#scanresult); with `?rebuild=true`, of a rebuild; with `?dry_run=true`, nothing applied |
 | `POST` | `/v1/repos/register` | `200` | [`RepoSummary`](#reposummary) |
 | `POST` | `/v1/repos/sync` | `200` | [`SyncResult`](#syncresult) |
+| `GET` | `/v1/search` | `200` | [`SearchResults`](#searchresults) |
 | `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state.
@@ -99,6 +100,32 @@ Except on `?refresh=true`, states are read in the background by at most 4 thread
 
 `POST /v1/repos/sync` takes a [`SyncRequest`](#syncrequest) and updates the repositories it names (every repository of the index when it names none) now, regardless of their schedule and of the backoff, then answers with a [`SyncResult`](#syncresult), sorted by slug, after every result is stored. A repository already being updated is updated again once that update ends. The answer may take as long as the updates (each command has its timeout). With `dry_run: true`, nothing runs: each state is read now and the result says what an update would do.
 
+### Search
+
+`GET /v1/search` searches the repositories of the index. Query parameters; an empty `context` is ignored, any other parameter is an `invalid_request`:
+
+| Parameter | Content |
+| --- | --- |
+| `q` | Required. The query: words separated by whitespace. |
+| `context` | Only the repositories of this context. A context name (the rule of `-c`), or `unassigned`. |
+| `limit` | Most results returned, at least `1`. Default `20`. |
+
+Matching:
+
+- The searched fields are the repository's name, slug, path, remote URLs, context name and branch (the branch `HEAD` is on in its stored [state](#repostate), unborn included; empty when detached or not read yet).
+- Each field is split into words on every character that is not a letter or a digit (`loom-api` is `loom` and `api`). Case and diacritics are ignored: `cafe` finds `Café`, `viet` finds `Việt`.
+- A repository matches when every word of the query starts a word of one of its fields, not necessarily the same field. A query word made of punctuation only is ignored; a query without words returns no result.
+- Query words are text only: `"`, `*`, `:`, `(`, `)`, `^`, `-`, `+`, `{`, `}` act as word separators, and `AND`, `OR`, `NOT`, `NEAR` are words to find.
+
+Results are ranked by these keys, in order:
+
+1. How the repository matches: its name is the query (the same words, in order, such as `loom-api` for `loom api`), then every query word starts a word of its name, then every query word starts a word of its slug, then the other cases.
+2. `last_used`, most recent first; never used last.
+3. Full-text relevance (SQLite FTS5 `bm25`), most relevant first.
+4. Slug.
+
+The ranking is computed on every match, then cut to `limit`.
+
 ### Errors
 
 Every error response has an [`ApiError`](#apierror) body.
@@ -148,6 +175,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `RepoState` | [`schemas/repo_state.json`](schemas/repo_state.json) (in `RepoSummary`) |
 | `RepoSummary` | [`schemas/repo_summary.json`](schemas/repo_summary.json) |
 | `ScanResult` | [`schemas/scan_result.json`](schemas/scan_result.json) |
+| `SearchResults` | [`schemas/search_results.json`](schemas/search_results.json) (`SearchResult` inside) |
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
 | `SyncRequest` | [`schemas/sync_request.json`](schemas/sync_request.json) |
 | `SyncResult` | [`schemas/sync_result.json`](schemas/sync_result.json) |
@@ -391,6 +419,24 @@ Unknown fields are rejected.
 | Field | Type | Content |
 | --- | --- | --- |
 | `repos` | list of [`RepoSummary`](#reposummary) | The repositories, sorted by slug. |
+
+### `SearchResults`
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `results` | list of `SearchResult` | The results, best first (see [search](#search)), at most `limit`. |
+
+`SearchResult`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `kind` | string | What matched: `repo`. |
+| `slug` | string | Slug of the repository. |
+| `name` | string | Directory name of the repository. |
+| `context` | string | Context name, `unassigned` for a repository without context. |
+| `path` | string | Absolute path of the repository. |
+| `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. One of the ranking keys only: the order of `results` is the ranking. |
+| `matched_fields` | list of strings | Fields holding at least one query word: `name`, `slug`, `path`, `remotes`, `context`, `branch`, in this order. |
 
 ### `RegisterRequest`
 
