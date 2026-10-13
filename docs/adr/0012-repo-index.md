@@ -25,7 +25,7 @@ The design docs placed contexts and SQLite in v0.3 and left the repo card undefi
 
 ## Clarifications
 
-- 2026-10-13 (#42): an `unassigned` repository is fetched but never fast-forwarded. No rule says it belongs to a context whose policy was chosen, so `ff` (the default, or set on the repository) applies to it as `fetch`; `off` still applies.
+- 2026-10-13 (#42): the default policy of an `unassigned` repository is `fetch`, not `ff`: no rule says it belongs to a context whose policy was chosen. An explicit `[repos."<path>"] update` is the user's intent for that path and wins, `ff` included.
 
 ## Consequences
 

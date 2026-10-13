@@ -28,8 +28,10 @@ use tracing::{Span, debug, info, info_span, warn};
 
 /// Longest wait for `git fetch`.
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
-/// Longest wait for `git merge --ff-only`, hooks included.
-pub const MERGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest wait for `git merge --ff-only`, hooks included. Local, bounded work: interrupting
+/// it during the checkout would leave a half-updated working tree, so only a hung hook should
+/// ever reach it.
+pub const MERGE_TIMEOUT: Duration = Duration::from_mins(10);
 /// Longest wait for `git config --get`.
 pub const CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
 /// Time a process group has to exit after `SIGTERM`, before `SIGKILL`.
@@ -328,7 +330,9 @@ impl<'a> Git<'a> {
         }
     }
 
-    /// `git fetch --no-prune --tags <remote>`: no ref is ever deleted.
+    /// `git fetch --no-prune <remote>`: no ref is ever deleted. Tags follow git's automatic
+    /// tag following and `remote.<name>.tagOpt`, which never overwrite an existing local tag
+    /// (an explicit `--tags` fails the whole fetch on a tag that differs from the remote's).
     fn fetch(&self, remote: &str) -> Result<(), Failure> {
         let span = info_span!("repo.fetch", remote, outcome = Empty);
         let _entered = span.enter();
@@ -336,7 +340,6 @@ impl<'a> Git<'a> {
             &[
                 OsStr::new("fetch"),
                 OsStr::new("--no-prune"),
-                OsStr::new("--tags"),
                 OsStr::new(remote),
             ],
             self.runner.fetch_timeout,

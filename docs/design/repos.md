@@ -77,8 +77,8 @@ Editable metadata lives in `config.toml` (`[repos."<path>"]`: `context`, `update
 
 `loomd` keeps repos up to date without ever risking local work.
 
-- **Policy** per context and per repo (`update = "ff" | "fetch" | "off"`), repo override first, then context, default `ff`. An `unassigned` repo is fetched, never fast-forwarded (`ff` applies as `fetch`; ADR-0012 clarification).
-- **Fetch**: `git fetch --no-prune --tags` of the primary remote, on a schedule (`[repos] fetch_interval`, default 1 h, jittered ±10 %), at most `[repos] fetch_concurrency` (default 4) at a time, each with a timeout (fetch 120 s, fast-forward 30 s; the process group is stopped on timeout). The state is read again after the fetch, right before deciding.
+- **Policy** per context and per repo (`update = "ff" | "fetch" | "off"`), repo override first, then context, default `ff`. An `unassigned` repo defaults to `fetch`; an explicit repo override wins (ADR-0012 clarification).
+- **Fetch**: `git fetch --no-prune` of the primary remote (tags by git's automatic tag following, never clobbering a local tag), on a schedule (`[repos] fetch_interval`, default 1 h, jittered ±10 %), at most `[repos] fetch_concurrency` (default 4) at a time, each with a timeout (fetch 120 s, fast-forward 10 min so that a checkout is never interrupted; the process group is stopped on timeout). The state is read again after the fetch, right before deciding.
 - **Fast-forward**, only when every condition holds (pure decision, exhaustively tested):
   - policy `ff`;
   - no operation in progress, no conflicted file, no tracked change (staged or not);

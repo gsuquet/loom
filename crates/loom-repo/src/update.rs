@@ -21,6 +21,9 @@ use crate::state::{RefTip, UpdateRefs};
 
 /// Policy when neither the repository nor its context sets one.
 pub const DEFAULT_POLICY: RepoUpdatePolicy = RepoUpdatePolicy::Ff;
+/// Policy of an unassigned repository without `[repos."<path>"] update`: fetched, never
+/// fast-forwarded, since no rule says it is the user's to move.
+pub const UNASSIGNED_POLICY: RepoUpdatePolicy = RepoUpdatePolicy::Fetch;
 
 /// The `update` keys of a configuration, with `~` expanded, ready to resolve policies.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,25 +58,16 @@ impl UpdatePolicies {
 
     /// Policy of the repository at `path` (absolute, as found) assigned to `context`:
     /// `[repos."<path>"] update`, otherwise the context's `update`, otherwise
-    /// [`DEFAULT_POLICY`]. An unassigned repository is never fast-forwarded: `ff` becomes
-    /// `fetch` (`off` stays `off`). Pure.
+    /// [`DEFAULT_POLICY`]; [`UNASSIGNED_POLICY`] for an unassigned repository. An explicit
+    /// `[repos."<path>"] update` always wins, unassigned or not. Pure.
     #[must_use]
     pub fn policy(&self, path: &Path, context: &ContextAssignment) -> RepoUpdatePolicy {
-        let configured = self
-            .repos
-            .iter()
-            .find(|(repo, _)| repo == path)
-            .map(|(_, policy)| *policy)
-            .or_else(|| {
-                context
-                    .context()
-                    .and_then(|name| self.contexts.get(name).copied())
-            })
-            .unwrap_or(DEFAULT_POLICY);
-        match (context, configured) {
-            (ContextAssignment::Unassigned, RepoUpdatePolicy::Ff) => RepoUpdatePolicy::Fetch,
-            (_, policy) => policy,
+        if let Some((_, policy)) = self.repos.iter().find(|(repo, _)| repo == path) {
+            return *policy;
         }
+        context.context().map_or(UNASSIGNED_POLICY, |name| {
+            self.contexts.get(name).copied().unwrap_or(DEFAULT_POLICY)
+        })
     }
 }
 

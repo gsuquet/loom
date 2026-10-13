@@ -86,7 +86,7 @@ Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m
 
 `default_context`, `[contexts]`, `[repos]` and `[forges]` are read and validated with the rest of `config.toml`: an invalid value stops `loomd` and is reported by `loom` like any other error in the file. `loomd` uses them for the [repository index](#indexdb): it reads them once, when it starts, so a change takes effect after a restart; the scan on start then reassigns the contexts (and the slugs) of every repository. `~` is the user's home directory (`HOME`); `loomd` exits with code 1 when it is unknown.
 
-`update`, `fetch_interval` and `fetch_concurrency` drive the automatic updates of `loomd`: a fetch of each repository's primary remote, then fast-forwards only when no local work can be affected ([updates](api.md#updates), [how updates work](../explanation/repo-updates.md)). The update policy of a repository is its `[repos."<path>"] update`, otherwise the `update` of its context, otherwise `ff`. A repository without a context (`unassigned`) is never fast-forwarded: `ff` applies to it as `fetch`; `off` still applies.
+`update`, `fetch_interval` and `fetch_concurrency` drive the automatic updates of `loomd`: a fetch of each repository's primary remote, then fast-forwards only when no local work can be affected ([updates](api.md#updates), [how updates work](../explanation/repo-updates.md)). The update policy of a repository is its `[repos."<path>"] update`, otherwise the `update` of its context, otherwise `ff`. A repository without a context (`unassigned`) and without `[repos."<path>"] update` gets `fetch`: fetched, never fast-forwarded. An explicit `[repos."<path>"] update` always applies, `ff` included.
 
 ```toml
 default_context = "personal"
@@ -129,7 +129,7 @@ kind = "gitlab"
 | `[repos] fetch_concurrency` | integer | `4` | 1 to 4294967295. Updates running at the same time; above 64, 64. |
 | `[repos."<path>"]` | table | none | `<path>`: same path rules as `match.paths`. Two keys naming the same path (`"~/a"` and `"~/a/"`) are rejected. |
 | `[repos."<path>"] context` | string | none | Names a defined context. |
-| `[repos."<path>"] update` | string: `"ff"`, `"fetch"`, `"off"` | none | Update policy of this repository, over its context's. `ff` on an `unassigned` repository applies as `fetch`. |
+| `[repos."<path>"] update` | string: `"ff"`, `"fetch"`, `"off"` | none | Update policy of this repository, over its context's, and over the `fetch` default of an `unassigned` repository. |
 | `[forges."<host>"]` | table | none | `<host>`: a lowercase host name (ASCII letters, digits, `-`, `.`), without port or path. |
 | `[forges."<host>"] kind` | string: `"github"`, `"gitlab"` | required | Forge of the host. |
 

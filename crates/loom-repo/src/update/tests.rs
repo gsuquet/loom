@@ -596,7 +596,7 @@ update = "off"
         ),
         ("/home/me/work/b", path("work"), RepoUpdatePolicy::Fetch),
         ("/home/me/work/mine", path("work"), RepoUpdatePolicy::Ff),
-        // Unassigned: never fast-forwarded, even when the repository asks for it.
+        // Unassigned: fetched only by default; an explicit repository policy wins.
         (
             "/home/me/other",
             ContextAssignment::Unassigned,
@@ -605,7 +605,7 @@ update = "off"
         (
             "/home/me/elsewhere/loose",
             ContextAssignment::Unassigned,
-            RepoUpdatePolicy::Fetch,
+            RepoUpdatePolicy::Ff,
         ),
         (
             "/home/me/elsewhere/quiet",

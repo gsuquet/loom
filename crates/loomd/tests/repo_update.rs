@@ -370,6 +370,45 @@ fn a_clean_branch_is_fast_forwarded_and_its_post_merge_hook_runs() {
 }
 
 #[test]
+fn a_local_tag_that_differs_from_the_remote_one_does_not_fail_the_update() {
+    let fixture = Fixture::new();
+    let tagged = fixture.advance("main", "f.txt", "tagged\n");
+    let seed = fixture.seed();
+    fixture.git(&seed, &["tag", "v1", &tagged]);
+    fixture.git(&seed, &["push", "-q", "origin", "v1"]);
+    let repo = fixture.clone("work");
+    // Moved locally: an explicit `git fetch --tags` would refuse to clobber it and fail.
+    fixture.git(&repo, &["tag", "-f", "v1", "HEAD~1"]);
+    let local_tag = fixture.rev(&repo, "v1");
+    assert_ne!(local_tag, tagged);
+    let to = fixture.advance("main", "f.txt", "after the tag\n");
+    let rejected = fixture.run(&repo, &["fetch", "--tags", "origin"]);
+    assert!(
+        !rejected.status.success(),
+        "git fetch --tags clobbers no tag"
+    );
+
+    let report = fixture.update(&repo, RepoUpdatePolicy::Ff);
+
+    assert_eq!(
+        report.fetch,
+        FetchStatus::Succeeded,
+        "{:?}",
+        outcomes(&report)
+    );
+    assert!(
+        matches!(
+            outcomes(&report),
+            [UpdateOutcome::FastForwarded { to: head, .. }] if *head == to
+        ),
+        "{:?}",
+        outcomes(&report)
+    );
+    // The local tag is kept.
+    assert_eq!(fixture.rev(&repo, "v1"), local_tag);
+}
+
+#[test]
 fn local_changes_block_the_fast_forward() {
     for (name, change) in [
         ("modified", "modified" as &str),

@@ -17,8 +17,8 @@ A repository left alone for a week is a week behind: `git pull` before every pie
 
 ## What an update does
 
-1. **Policy.** `update = "ff"` (the default), `"fetch"` or `"off"`, from `[repos."<path>"]`, otherwise from the repository's context. `off`: nothing runs. A repository without a context (`unassigned`) is fetched but never fast-forwarded: `ff` becomes `fetch` for it, since no rule says it is yours to move.
-2. **Fetch.** `git fetch --no-prune --tags <primary remote>`. No ref is ever deleted, even when the user's configuration asks for pruning. A repository without a remote, or one that cannot be opened, is skipped without running git.
+1. **Policy.** `update = "ff"` (the default), `"fetch"` or `"off"`, from `[repos."<path>"]`, otherwise from the repository's context. `off`: nothing runs. A repository without a context (`unassigned`) gets `fetch` by default, since no rule says it is yours to move; `[repos."<path>"] update` still sets its policy, `ff` included.
+2. **Fetch.** `git fetch --no-prune <primary remote>`. No ref is ever deleted, even when the user's configuration asks for pruning. Tags come with git's automatic tag following (and `remote.<name>.tagOpt`): a local tag that differs from the remote one is kept, and does not fail the fetch as an explicit `--tags` would. A repository without a remote, or one that cannot be opened, is skipped without running git.
 3. **State.** The state is read again, after the fetch and right before deciding: the working tree may have changed since the update started.
 4. **Branch `HEAD` is on.** It is fast-forwarded with `git merge --ff-only --no-autostash <commit of its upstream>` only when every condition holds; the first that fails is the reason of the skip:
    - no operation in progress (rebase, merge, cherry-pick, revert, bisect, am);
@@ -43,11 +43,11 @@ When git refuses, the update reports it as skipped (`git refused the fast-forwar
 
 ## Hooks and configuration
 
-The commands run through the `git` CLI, in the repository's working tree, with the user's git configuration, credential helpers and hooks, exactly like a manual `git pull --ff-only`. In particular, a `post-merge` hook runs after each automatic fast-forward. A hook that takes long counts in the 30 s timeout of the fast-forward.
+The commands run through the `git` CLI, in the repository's working tree, with the user's git configuration, credential helpers and hooks, exactly like a manual `git pull --ff-only`. In particular, a `post-merge` hook runs after each automatic fast-forward. A hook that takes long counts in the 10 min timeout of the fast-forward.
 
 git never asks anything: `GIT_TERMINAL_PROMPT=0` turns off password prompts, and SSH runs with `BatchMode=yes` (no passphrase or host key question) unless the user configured an SSH command (`core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`). git is pinned to the repository: variables such as `GIT_DIR` inherited by `loomd` are removed, and git never looks above the working tree for another repository.
 
-Each command has a timeout: 120 s for a fetch, 30 s for a fast-forward. On timeout, the whole process group of the command (git, ssh, hooks, credential helpers) receives `SIGTERM`, which lets git remove its lock files, then `SIGKILL` 5 s later. A fast-forward interrupted this way may leave files of the working tree half updated; `git status` shows them, and `git merge --ff-only @{upstream}` finishes the job.
+Each command has a timeout: 120 s for a fetch, 10 min for a fast-forward. On timeout, the whole process group of the command (git, ssh, hooks, credential helpers) receives `SIGTERM`, which lets git remove its lock files, then `SIGKILL` 5 s later. A fast-forward is local, bounded work, and interrupting its checkout would leave a half-updated working tree: its long timeout means it is never interrupted before its checkout completes unless the whole command exceeds 10 min, which in practice only a hung `post-merge` hook does. If that happens, `git status` shows the state, and `git merge --ff-only @{upstream}` finishes the job.
 
 When `loomd` stops, an update already running is not interrupted: its git command finishes on its own, and its result is not recorded.
 
