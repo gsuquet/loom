@@ -3,7 +3,9 @@
 use std::env;
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions, TryLockError};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{
+    DirBuilderExt as _, FileTypeExt as _, OpenOptionsExt as _, PermissionsExt as _,
+};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, OnceLock};
@@ -18,8 +20,8 @@ use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use loom_api::{
-    ApiError, ApiVersion, RegisterRequest, RepoList, StatusResponse, SyncRequest, Timestamp,
-    UpdateState,
+    ApiError, ApiVersion, DaemonDiagnostics, RegisterRequest, RepoList, StatusResponse,
+    SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -30,9 +32,10 @@ use loom_config::layout::{
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery,
-    RepoQuery, STATUS_PATH, clock_error, invalid_request, method_not_allowed, not_found,
-    register_path, repo_filter, slug, status_at, timestamp,
+    DIAGNOSTICS_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH,
+    RepoGetQuery, RepoQuery, STATUS_PATH, ScanQuery, agent_socket, clock_error, home_value,
+    invalid_request, method_not_allowed, not_found, register_path, repo_filter, slug, status_at,
+    timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
@@ -335,6 +338,7 @@ fn router(app: App) -> Router {
         .route(REPOS_REGISTER_PATH, post(register_repo))
         .route(REPOS_SYNC_PATH, post(sync_repos))
         .route(REPO_PATH, get(get_repo).delete(forget_repo))
+        .route(DIAGNOSTICS_PATH, get(diagnostics))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -417,8 +421,31 @@ async fn forget_repo(
     }
 }
 
-async fn scan_repos(State(app): State<Arc<App>>) -> Response {
-    respond(app.repos.scan().await)
+async fn scan_repos(
+    State(app): State<Arc<App>>,
+    query: Result<Query<ScanQuery>, QueryRejection>,
+) -> Response {
+    match query {
+        Ok(Query(mode)) => respond(app.repos.scan(mode).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+/// The environment of the daemon its git operations depend on, read at each request.
+async fn diagnostics() -> Response {
+    let ssh_auth_sock = agent_socket(env::var_os("SSH_AUTH_SOCK").as_deref(), |path| {
+        fs::metadata(path)
+            .ok()
+            .map(|metadata| metadata.file_type().is_socket())
+    });
+    Json(DaemonDiagnostics {
+        ssh_auth_sock,
+        home: home_value(env::var_os("HOME").as_deref()),
+    })
+    .into_response()
 }
 
 async fn register_repo(
@@ -427,9 +454,9 @@ async fn register_repo(
 ) -> Response {
     let path = body
         .map_err(|rejection| invalid_request(rejection.body_text()))
-        .and_then(|Json(request)| register_path(&request.path));
+        .and_then(|Json(request)| Ok((register_path(&request.path)?, request.on_use)));
     match path {
-        Ok(path) => respond(app.repos.register(path).await),
+        Ok((path, on_use)) => respond(app.repos.register(path, on_use).await),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }
 }

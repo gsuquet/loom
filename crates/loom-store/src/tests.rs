@@ -873,3 +873,66 @@ fn version_2_database_migrates_to_3_with_its_states() {
         Some(update)
     );
 }
+
+#[test]
+fn last_used_is_set_by_path_and_kept_across_scans() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&db(&dir)).unwrap();
+    store
+        .apply_scan(&added(vec![repo("/w/x", "p", "p/x", &[])]), at(1))
+        .unwrap();
+    assert!(store.set_last_used(Path::new("/w/x"), at(5)).unwrap());
+    assert!(!store.set_last_used(Path::new("/w/nope"), at(5)).unwrap());
+    let get = |store: &Store| store.get("p/x").unwrap().unwrap();
+    assert_eq!(get(&store).last_used, Some(at(5)));
+    assert!(!get(&store).registered);
+
+    store
+        .apply_scan(
+            &ScanDiff {
+                updated: vec![repo("/w/x", "p", "p/x", &["ssh://h/a/x"])],
+                ..ScanDiff::default()
+            },
+            at(6),
+        )
+        .unwrap();
+    assert_eq!(get(&store).last_used, Some(at(5)));
+}
+
+#[test]
+fn replace_all_drops_everything_else() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&db(&dir)).unwrap();
+    store
+        .apply_scan(&added(vec![repo("/w/x", "p", "p/x", &[])]), at(1))
+        .unwrap();
+    store
+        .register(repo("/elsewhere/y", "p", "p/y", &[]), at(2))
+        .unwrap();
+    store.set_last_used(Path::new("/w/x"), at(3)).unwrap();
+    store
+        .save_state(Path::new("/w/x"), &state_on("main", 3))
+        .unwrap();
+    store
+        .save_update(
+            Path::new("/w/x"),
+            &update_at(3, vec![UpdateOutcome::Fetched]),
+            None,
+        )
+        .unwrap();
+
+    store
+        .replace_all(
+            &[repo("/w/x", "p", "p/x", &[]), repo("/w/z", "p", "p/z", &[])],
+            at(4),
+        )
+        .unwrap();
+    assert_eq!(slugs(&store), ["p/x", "p/z"]);
+    let x = store.get("p/x").unwrap().unwrap();
+    assert_eq!(x.last_used, None);
+    assert_eq!(x.state, None);
+    assert_eq!(x.last_update, None);
+    assert!(!x.registered);
+    assert_eq!(store.registered_paths().unwrap(), Vec::<PathBuf>::new());
+    assert_eq!(fts_orphans(&db(&dir)), (0, 0));
+}

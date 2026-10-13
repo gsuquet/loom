@@ -66,11 +66,12 @@ impl Client {
         }
     }
 
-    /// The same client, with `timeout` for each request.
-    #[must_use]
-    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
+    /// The same client, each request taking at most `timeout`, connection included.
+    pub fn with_timeout(&self, timeout: Duration) -> Self {
+        Self {
+            socket: self.socket.clone(),
+            timeout,
+        }
     }
 
     /// Path of the socket.
@@ -86,23 +87,27 @@ impl Client {
     /// `GET path`, with the JSON body of a successful response decoded as `T`. Traced as a
     /// client span whose context is sent to loomd.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        self.send(Method::GET, path, None).await
+        self.call(Method::GET, path, None).await
     }
 
-    /// `POST path` with `body` as JSON, with the JSON body of a successful response decoded as
-    /// `T`. Traced like [`Client::get`].
-    pub async fn post<B: Serialize + Sync, T: DeserializeOwned>(
+    /// `POST path` with `body` as JSON (an empty body when `None`).
+    pub async fn post<T: DeserializeOwned>(
         &self,
         path: &str,
-        body: &B,
+        body: Option<&(impl Serialize + Sync)>,
     ) -> Result<T, ClientError> {
-        let body = serde_json::to_vec(body).map_err(|error| {
+        let body = body.map(serde_json::to_vec).transpose().map_err(|error| {
             ClientError::Protocol(format!("cannot encode the request: {error}"))
         })?;
-        self.send(Method::POST, path, Some(body)).await
+        self.call(Method::POST, path, body).await
     }
 
-    async fn send<T: DeserializeOwned>(
+    /// `DELETE path`.
+    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
+        self.call(Method::DELETE, path, None).await
+    }
+
+    async fn call<T: DeserializeOwned>(
         &self,
         method: Method,
         path: &str,
@@ -139,8 +144,8 @@ impl Client {
             .await
             .map_err(|_| {
                 ClientError::Protocol(format!(
-                    "no answer to {method} {path} within {} s",
-                    self.timeout.as_secs()
+                    "no answer to {method} {path} within {} ms",
+                    self.timeout.as_millis()
                 ))
             })??;
         if status.is_success() {
@@ -162,7 +167,7 @@ impl Client {
         Err(error)
     }
 
-    /// Connects, sends `method path` with `body` (JSON) and reads the whole response.
+    /// Connects, sends the request and reads the whole response.
     async fn exchange(
         &self,
         method: &Method,
@@ -184,7 +189,7 @@ impl Client {
         drop(tokio::spawn(connection));
 
         let mut builder = Request::builder()
-            .method(method)
+            .method(method.clone())
             .uri(path)
             .header(header::HOST, HOST);
         if body.is_some() {

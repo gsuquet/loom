@@ -179,7 +179,9 @@ Global options apply.
 
 ### `loom repo`
 
-Work with the repositories of the index
+List, show, scan, register and check the repositories loomd indexes.
+
+Starts loomd when it is not running (except `doctor`). Run inside a repository the index does not know, any `loom` command registers it.
 
 ```text
 loom repo [OPTIONS] <COMMAND>
@@ -189,6 +191,132 @@ loom repo [OPTIONS] <COMMAND>
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom repo ls`
+
+List the indexed repositories, sorted by context then name (`-c` keeps one context)
+
+```text
+loom repo ls [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the list as JSON (`RepoList` schema) |
+| `--format <FORMAT>` | `table`, `paths` | `table` | Output format |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom repo show`
+
+Show a repository: identity, context and the rule that chose it, state
+
+```text
+loom repo show [OPTIONS] [REPO]
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<REPO>` |  |  | Repository: path, `<context>/<name>` or name. Default: the repository of the current directory. A path the index does not know is registered |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--refresh` |  |  | Read the repository's state now instead of showing the stored one |
+| `--json` |  |  | Print the repository as JSON (`RepoSummary` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom repo scan`
+
+Scan the roots and the registered repositories now
+
+```text
+loom repo scan [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--rebuild` |  |  | Drop the whole index and rebuild it from the roots: registered repositories outside the roots, `last_used`, states and the results of the last updates are lost. Asks for confirmation |
+| `-n`, `--dry-run` |  |  | Print what would change, change nothing |
+| `--json` |  |  | Print the result as JSON (`ScanResult` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom repo register`
+
+Add a repository outside the roots to the index; scans keep it while it exists
+
+```text
+loom repo register [OPTIONS] [PATH]
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<PATH>` |  |  | A directory inside the repository. Default: the current directory |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--dry-run` |  |  | Print the repository that would be registered, change nothing |
+| `--json` |  |  | Print the registered repository as JSON (`RepoSummary` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom repo forget`
+
+Remove a repository from the index (registering it again undoes it)
+
+```text
+loom repo forget [OPTIONS] <REPO>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<REPO>` |  |  | Repository: path, `<context>/<name>` or name |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--dry-run` |  |  | Print the repository that would be removed, change nothing |
+| `--json` |  |  | Print the removed repository as JSON (`RepoSummary` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom repo doctor`
+
+Check roots, contexts, unassigned repositories, loomd's SSH agent and SSH access to each host; print the fixes. Exits with 1 when a check fails
+
+```text
+loom repo doctor [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the report as JSON (`DoctorReport` schema) |
 | `-h`, `--help` |  |  | Print help |
 
 Global options apply.
@@ -207,7 +335,7 @@ loom repo sync [OPTIONS] [REPO]...
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `<REPO>` |  |  | Slugs of the repositories to update (`<context>/<name>`, as `loom repo ls` shows them); every repository of the index when none is given |
+| `<REPO>` |  |  | Repositories to update: path, `<context>/<name>` or name; every repository of the index when none is given |
 
 #### Options
 

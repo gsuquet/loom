@@ -12,6 +12,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::fs;
 use std::io::Read as _;
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
@@ -31,11 +32,11 @@ use loom_config::repos::{ForgeConfig, ForgeHost};
 use loom_repo::scan::Exclusions;
 use loom_repo::state::unreadable;
 use loom_repo::{
-    ContextRules, ScanOptions, StateOptions, UpdatePolicies, diff, find_root, git_dirs, plan,
-    read_repos, scan_roots, scan_with_registered, state,
+    ContextRules, ScanDiff, ScanOptions, StateOptions, UpdatePolicies, diff, find_root, git_dirs,
+    plan, read_repos, scan_roots, scan_with_registered, state,
 };
 use loom_store::{Reader, RepoFilter, Store, StoreError};
-use loomd::api::{internal, invalid_request, repo_not_found, timestamp, unavailable};
+use loomd::api::{ScanQuery, internal, invalid_request, repo_not_found, timestamp, unavailable};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::field::Empty;
@@ -63,6 +64,7 @@ pub enum Command {
     Scan {
         reply: Option<Reply<ScanResult>>,
         initial: bool,
+        mode: ScanQuery,
         parent: Span,
     },
     /// Writes the state of the repository at `path`, then answers with the repository.
@@ -81,6 +83,7 @@ pub enum Command {
     },
     Register {
         path: PathBuf,
+        on_use: bool,
         reply: Reply<RepoSummary>,
         parent: Span,
     },
@@ -156,6 +159,7 @@ pub fn start(db: &Path, config: &Config, home: &Path) -> Result<(RepoIndex, Repo
     let _ = commands.send(Command::Scan {
         reply: None,
         initial: true,
+        mode: ScanQuery::default(),
         parent: Span::none(),
     });
     let thread = thread::Builder::new()
@@ -313,12 +317,14 @@ fn read_state(path: &Path, options: &StateOptions) -> RepoState {
 }
 
 impl RepoHandle {
-    /// Scans the roots and the registered repositories. A request made while a scan runs
-    /// waits for that scan and returns its result.
-    pub async fn scan(&self) -> Result<ScanResult, Failure> {
+    /// Scans the roots and the registered repositories. A plain scan requested while a plain
+    /// scan runs waits for that scan and returns its result; a rebuild or a dry run runs on
+    /// its own.
+    pub async fn scan(&self, mode: ScanQuery) -> Result<ScanResult, Failure> {
         self.send(|reply| Command::Scan {
             reply: Some(reply),
             initial: false,
+            mode,
             parent: Span::current(),
         })
         .await
@@ -398,10 +404,12 @@ impl RepoHandle {
         Ok(SyncResult { repos })
     }
 
-    /// Registers the repository holding `path` (absolute, normalized).
-    pub async fn register(&self, path: PathBuf) -> Result<RepoSummary, Failure> {
+    /// Registers the repository holding `path` (absolute, normalized). `on_use`: registration
+    /// on use, see [`loom_api::RegisterRequest::on_use`].
+    pub async fn register(&self, path: PathBuf, on_use: bool) -> Result<RepoSummary, Failure> {
         self.send(|reply| Command::Register {
             path,
+            on_use,
             reply,
             parent: Span::current(),
         })
@@ -518,16 +526,24 @@ impl Worker {
                 Command::Scan {
                     reply,
                     mut initial,
+                    mode,
                     parent,
                 } => {
-                    let result = self.scan(&parent);
+                    let result = self.scan(mode, &parent);
                     let mut replies: Vec<_> = reply.into_iter().collect();
-                    // Scans asked for while this one ran get its result.
-                    while let Ok(command) = received.try_recv() {
+                    // Plain scans asked for while this plain one ran get its result.
+                    while mode == ScanQuery::default()
+                        && let Ok(command) = received.try_recv()
+                    {
                         match command {
                             Command::Scan {
                                 reply,
                                 initial: also_initial,
+                                mode:
+                                    ScanQuery {
+                                        rebuild: false,
+                                        dry_run: false,
+                                    },
                                 ..
                             } => {
                                 replies.extend(reply);
@@ -559,10 +575,11 @@ impl Worker {
                 }
                 Command::Register {
                     path,
+                    on_use,
                     reply,
                     parent,
                 } => {
-                    let _ = reply.send(self.register(&path, &parent));
+                    let _ = reply.send(self.register(&path, on_use, &parent));
                 }
                 Command::Forget {
                     slug,
@@ -650,12 +667,15 @@ impl Worker {
     }
 
     /// Scans the roots and the registered repositories, and applies the changes in one
-    /// transaction.
-    fn scan(&mut self, parent: &Span) -> Result<ScanResult, Failure> {
+    /// transaction. A rebuild ignores the index: it replaces it with what the roots hold. A dry
+    /// run applies nothing.
+    fn scan(&mut self, mode: ScanQuery, parent: &Span) -> Result<ScanResult, Failure> {
         let span = info_span!(
             parent: parent,
             "repo.scan",
             roots = self.discovery.roots.len(),
+            rebuild = mode.rebuild,
+            dry_run = mode.dry_run,
             added = Empty,
             updated = Empty,
             removed = Empty,
@@ -664,10 +684,13 @@ impl Worker {
         );
         let _entered = span.enter();
         let started = Instant::now();
-        let registered = self
-            .store
-            .registered_paths()
-            .map_err(|error| store_failure(&error))?;
+        let registered = if mode.rebuild {
+            Vec::new()
+        } else {
+            self.store
+                .registered_paths()
+                .map_err(|error| store_failure(&error))?
+        };
         let previous: Vec<_> = self
             .store
             .repos()
@@ -677,7 +700,15 @@ impl Worker {
             .collect();
         let options = self.options();
         let (report, scanned) = scan_with_registered(&self.discovery.roots, &registered, &options);
-        let mut changes = diff(&previous, &scanned, &report);
+        let mut changes = if mode.rebuild {
+            // Every repository found is new; every repository known is dropped.
+            ScanDiff {
+                removed: previous,
+                ..diff(&[], &scanned, &report)
+            }
+        } else {
+            diff(&previous, &scanned, &report)
+        };
         let mut errors: Vec<ScanIssue> = report
             .errors
             .iter()
@@ -699,11 +730,16 @@ impl Worker {
             });
         }
         let now = now()?;
-        self.store
-            .apply_scan(&changes, now)
-            .map_err(|error| store_failure(&error))?;
-        for repo in changes.added.iter().chain(&changes.updated) {
-            self.refresher.enqueue(repo.path.clone());
+        if !mode.dry_run {
+            let applied = if mode.rebuild {
+                self.store.replace_all(&changes.added, now)
+            } else {
+                self.store.apply_scan(&changes, now)
+            };
+            applied.map_err(|error| store_failure(&error))?;
+            for repo in changes.added.iter().chain(&changes.updated) {
+                self.refresher.enqueue(repo.path.clone());
+            }
         }
         let result = ScanResult {
             added: count(changes.added.len()),
@@ -726,20 +762,39 @@ impl Worker {
             removed = result.removed,
             errors = result.errors.len(),
             duration_ms = result.duration_ms,
+            rebuild = mode.rebuild,
+            dry_run = mode.dry_run,
             "repositories scanned"
         );
         Ok(result)
     }
 
-    /// Registers the repository holding `path`.
-    fn register(&mut self, path: &Path, parent: &Span) -> Result<RepoSummary, Failure> {
-        let span =
-            info_span!(parent: parent, "repo.register", path = %path.display(), slug = Empty);
+    /// Registers the repository holding `path`. On use, a repository already in the index is
+    /// only marked used.
+    fn register(
+        &mut self,
+        path: &Path,
+        on_use: bool,
+        parent: &Span,
+    ) -> Result<RepoSummary, Failure> {
+        let span = info_span!(
+            parent: parent,
+            "repo.register",
+            path = %path.display(),
+            on_use,
+            slug = Empty
+        );
         let _entered = span.enter();
         let bad = |message: String| (StatusCode::BAD_REQUEST, invalid_request(message));
         let root = find_root(path)
             .map_err(|error| bad(format!("cannot examine {}: {error}", path.display())))?
             .ok_or_else(|| bad(format!("no git repository at or above {}", path.display())))?;
+        if on_use && let Some(known) = self.indexed_path(&root)? {
+            let repo = self.mark_used(&known)?;
+            span.record("slug", repo.identity.slug.as_str());
+            debug!(slug = %repo.identity.slug, "repository used");
+            return Ok(repo);
+        }
         let options = self.options();
         let mut report = read_repos(std::slice::from_ref(&root), &options);
         let Some(repo) = report.repos.pop() else {
@@ -760,7 +815,50 @@ impl Worker {
         span.record("slug", summary.identity.slug.as_str());
         info!(slug = %summary.identity.slug, path = %summary.identity.path.display(), "repository registered");
         self.refresher.enqueue(summary.identity.path.clone());
+        if on_use {
+            return self.mark_used(&summary.identity.path);
+        }
         Ok(summary)
+    }
+
+    /// The path under which the index knows the repository at `root`: `root` itself, or the
+    /// path of a repository with the same name and the same canonical path (`root` reached
+    /// through other symbolic links, such as the physical working directory of a shell).
+    fn indexed_path(&self, root: &Path) -> Result<Option<PathBuf>, Failure> {
+        if self
+            .store
+            .get_by_path(root)
+            .map_err(|error| store_failure(&error))?
+            .is_some()
+        {
+            return Ok(Some(root.to_path_buf()));
+        }
+        let (Some(name), Ok(canonical)) = (root.file_name(), fs::canonicalize(root)) else {
+            return Ok(None);
+        };
+        let repos = self.store.repos().map_err(|error| store_failure(&error))?;
+        Ok(repos
+            .into_iter()
+            .map(|repo| repo.identity.path)
+            .filter(|path| path.file_name() == Some(name))
+            .find(|path| fs::canonicalize(path).is_ok_and(|other| other == canonical)))
+    }
+
+    /// Sets `last_used` of the repository at `path` to now; the repository.
+    fn mark_used(&mut self, path: &Path) -> Result<RepoSummary, Failure> {
+        let now = now()?;
+        self.store
+            .set_last_used(path, now)
+            .map_err(|error| store_failure(&error))?;
+        self.store
+            .get_by_path(path)
+            .map_err(|error| store_failure(&error))?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    repo_not_found(&path.display().to_string()),
+                )
+            })
     }
 
     fn forget(&mut self, slug: &str, parent: &Span) -> Result<RepoSummary, Failure> {

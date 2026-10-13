@@ -30,11 +30,11 @@
 | absent | yes | Asks on the terminal. |
 | absent | no | Fails with exit code 1: `confirmation required but stdin is not a terminal; pass -y/--yes to confirm`. |
 
-No shipped command asks for confirmation yet.
+Shipped on `loom repo scan --rebuild`.
 
 ## Dry run
 
-Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install`, `loom service uninstall`, `loom upgrade`, `loom rollback` and `loom repo sync`.
+Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install`, `loom service uninstall`, `loom upgrade`, `loom rollback`, `loom repo scan`, `loom repo register`, `loom repo forget` and `loom repo sync`.
 
 ## Streams
 
@@ -59,7 +59,8 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | --- | --- |
 | `NO_COLOR` | Non-empty: no color with `--color auto`. |
 | `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given, and of `loom`. See [configuration](../configuration.md). |
-| `PATH` | Searched for `loomd` by `loom status` and `loom service install` when no `loomd` is next to the `loom` executable. |
+| `PATH` | Searched for `loomd` by `loom status`, `loom service install` and the `loom repo` commands when no `loomd` is next to the `loom` executable, and for `ssh` by `loom repo doctor`. |
+| `PWD` | The current directory of `loom repo` and of the registration on use, when it names the same directory as the working directory (symbolic links kept). See [`loom repo`](#repository-argument). |
 | `XDG_CONFIG_HOME` | Absolute path: `loom service` on Linux writes the systemd unit under `$XDG_CONFIG_HOME/systemd/user/` instead of `~/.config/systemd/user/`. |
 | `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN` | Optional GitHub token for `loom upgrade`, first non-empty one wins. Raises the API rate limit. Never printed. |
 | `LOOM_RELEASES_URL` | Replaces `https://api.github.com` in `loom upgrade` (test hook). Plain `http://` is then allowed. |
@@ -368,13 +369,153 @@ JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `cu
 | `1` | Auto-upgrade of loomd in progress; `nothing to roll back to: no saved version other than <version> in <dir>`; install directory not writable; saved binaries not reporting their version; I/O error. |
 | `2` | Usage error. |
 
-## `loom repo sync`
+## `loom repo`
 
-`loom repo sync [<REPO>...] [-n] [--json]` asks loomd to update repositories now ([`POST /v1/repos/sync`](../api.md#updates)), as it does on its schedule ([how updates work](../../explanation/repo-updates.md)): fetch of the primary remote, fast-forward of the branch `HEAD` is on and of the default branch only under the conditions of the update policy. It ignores the schedule and the backoff of unreachable hosts. `REPO` is a slug (`<context>/<name>`); without any, every repository of the index is updated. loomd is started first when it is not running, as by `loom status`.
+`loom repo` reads and changes the repository index of loomd through the [API](../api.md#repositories). `ls`, `show`, `scan`, `register` (without `-n`), `forget` and `sync` start loomd as [`loom status`](#starting-loomd) does when it is not running, then wait for its scan on start, so that the index they read is complete. `doctor` and `register -n` never start it.
+
+### Repository argument
+
+`<REPO>` of `show` and `forget` is resolved in this order:
+
+| Argument | Resolution |
+| --- | --- |
+| None (`show` only) | The repository of the current directory. |
+| Starts with `/`, `.` or `~` | A path: absolute, relative to the current directory, or under `HOME` (`~`, `~/…`). `.` and `..` components are applied lexically. |
+| Contains `/` | The repository with this exact slug (`<context>/<name>`); when none has it, a path relative to the current directory. |
+| Anything else | The repositories with this name (directory name). One: that repository. Several: narrowed by the first context, in this order, that holds at least one of them: `-c`, then the context of the current directory (the context of its repository when the index has it, otherwise the context its path gets from `match.paths`). When that context holds one, it is the answer; otherwise, or when no context holds any, the command fails with the candidates. None: a path relative to the current directory. |
+
+A path must exist. It is walked up to the nearest directory with a `.git` entry (the repository root), symbolic links kept. That root is looked up in the index by path, then, for repositories with the same directory name, by canonical path (the same directory reached through other symbolic links). The current directory is `PWD` when it names the same directory as the process's working directory and has no `.` or `..` component, otherwise the working directory.
+
+`show` registers a root the index does not have; `forget` fails on it.
+
+Ambiguous name, exit code `1`:
+
+```text
+Error: `loom` names several repositories; give one of:
+  personal/loom (/home/me/perso/loom)
+  work/loom (/home/me/work/loom)
+```
+
+### Registration on use
+
+Every `loom` command run inside a git repository, except `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync` and the internal watchdog, sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory, on a thread of its own: loomd registers it when the index does not have it, and sets its `last_used`. The command waits for it at most 50 ms after it started, and never fails because of it. Nothing is sent when the socket file does not exist; loomd is never started for it. `loom repo show` sets `last_used` the same way.
+
+### `loom repo ls`
+
+Repositories sorted by context name, then name, then slug. `-c <NAME>` keeps the repositories of one context (`-c unassigned` keeps those without one).
+
+`--format table` (default): a header, then one row per repository, columns aligned, the path last. The first column is `!` for a repository without context. When there is one, a warning on stderr names their count and `loom repo doctor`. Nothing is printed for an empty index.
+
+```text
+  SLUG             HEAD     STATE                PATH
+  personal/loom    main     2 changed, ahead 1   /home/me/perso/loom
+! unassigned/tool  main     clean                /home/me/src/tool
+  work/api         feat/x   rebase, behind 3     /home/me/work/api
+```
+
+| Column | Content |
+| --- | --- |
+| `HEAD` | Branch; `<branch> (unborn)`; `detached <commit>`; `unknown`; `?` before the state is first read. |
+| `STATE` | Comma-separated: operation in progress, `<n> changed`, `<n> untracked` (`1000+` when capped), `ahead <n>`, `behind <n>`; each unknown field as `operation unknown`, `changes unknown`, `untracked unknown`, `upstream unknown`, `ahead unknown`, `behind unknown`. `clean` when nothing applies, `unknown` when operation, changes, untracked files and upstream are all unknown, `not read yet` before the state is first read. |
+
+`--format paths`: one absolute path per line, nothing else.
+
+`--json`: [`RepoList`](../schemas/repo_list.json), in the same order. `--json` and `--format` cannot be combined (exit code `2`).
+
+### `loom repo show`
+
+Marks the repository used (registering it when the index does not have it), reads its state when it has none yet, or when `--refresh` is given (`GET /v1/repos/{context}/{name}?refresh=true`), then prints one `field: value` line per field, named as in the JSON output:
+
+```text
+slug:           personal/loom
+path:           /home/me/perso/loom
+context:        personal (match.paths "~/perso")
+remotes:        origin git@github.com:gsuquet/loom.git (primary)
+forge:          github
+registered:     no
+last_used:      2026-10-13T08:00:00Z
+head:           main
+dirty:          2
+untracked:      unknown
+operation:      none
+upstream:       origin/main, ahead 1, behind 0
+default_branch: main
+last_commit:    2026-10-12T17:42:10Z
+last_fetch:     never
+refreshed_at:   2026-10-13T08:00:00Z
+error:          untracked: time budget of 2s exceeded
+```
+
+| Field | Content |
+| --- | --- |
+| `context` | Context, then the rule that chose it: `[repos."<path>"] context`, `match.hosts "<entry>"`, `match.paths "<entry>"`, `default_context`, or `unassigned (no rule matches)`. |
+| `remotes` | One line per remote: name, URL as configured, `(primary)` for the primary remote; `none` without remote. |
+| `forge`, `last_used` | `none`, `never` when absent. |
+| State fields | `unknown` when not computed. `operation`, `upstream`, `default_branch`, `last_commit`: `none` when known to be absent; `last_fetch`: `never`. `error` only when set. Before a state exists: a single `state: not read yet` line. |
+
+`--json`: [`RepoSummary`](../schemas/repo_summary.json).
+
+### `loom repo scan`
+
+`POST /v1/repos/scan`. Human output: `<added> added, <updated> updated, <removed> removed in <ms> ms`, then one `cannot read <path>: <message>` line per path the scan could not read. `-n`/`--dry-run`: `would add <n>, update <n>, remove <n>`, nothing changed. `--json`: [`ScanResult`](../schemas/scan_result.json).
+
+`--rebuild` drops the whole index (states, results of the last updates, `last_used`, registrations) and scans the roots again: registered repositories outside the roots are lost. Before asking, it warns on stderr, naming the registered repositories outside the roots. It then follows the [confirmations](#confirmations) rules; on the terminal it asks `Rebuild the repository index (<n> registered repositories outside the roots lost)? [y/N]`, and any answer other than `y` or `yes` fails with `rebuild cancelled: nothing changed`. With `-n`, it neither asks nor changes anything, and reports the counts of a rebuild: every repository of the index removed, every repository found added.
+
+### `loom repo register` and `forget`
+
+`register [<PATH>]` (default: the current directory) finds the repository root at or above the path and registers it: `registered <slug>: <path>`. `-n`: `would register <root>`, without contacting loomd. `--json`: [`RepoSummary`](../schemas/repo_summary.json).
+
+`forget <REPO>` removes the repository from the index without confirmation: `forgot <slug>: <path>`. `-n`: `would forget <slug>: <path>`. `--json`: the removed [`RepoSummary`](../schemas/repo_summary.json). A scan adds a repository under a root back; `register` adds any repository back.
+
+### `loom repo doctor`
+
+Runs the checks below, in this order, and prints one line per check, its fix indented below it:
+
+```text
+ok    config: /home/me/.loom/config.toml is valid
+ok    roots: 3 roots exist
+ok    contexts: 2 contexts, no overlapping match.paths
+ok    loomd: loomd 0.2.0 running, pid 4242
+warn  unassigned: 1 repository has no context: /home/me/src/tool
+      fix: add a context that matches them to /home/me/.loom/config.toml, then restart loomd:
+             [contexts.<name>]
+             match.paths = ["~/src"]
+           or match their remotes with `match.hosts`, or set `default_context = "<name>"`
+ok    ssh-agent: loomd sees an agent socket at /run/user/1000/ssh-agent.socket
+ok    home: loomd expands `~` to /home/me
+ok    ssh git@github.com: authenticated: Hi me! You've successfully authenticated, but GitHub does not provide shell access.
+fail  ssh git@gitlab.example: git@gitlab.example: Permission denied (publickey).
+      fix: run `ssh -T git@gitlab.example` in a terminal: load the key in the agent (`ssh-add`), accept the host key, or check the network (VPN)
+```
+
+| Check | Status |
+| --- | --- |
+| `config` | `fail` when `config.toml` cannot be read or is invalid; the checks of the roots and contexts are then skipped. |
+| `roots` | One `warn` per scan root (`[repos] roots`, then each `match.paths`, `~` expanded) that is not a directory, naming where it comes from; otherwise one `ok`. |
+| `contexts` | `fail` when `match.paths` entries of two contexts are the same directory once `~` is expanded, or two `[repos."<path>"]` keys name the same repository: loomd refuses such a configuration. Nested entries of different contexts are valid (the longest prefix wins) and are listed in the `ok` line. |
+| `loomd` | `warn` when loomd is not running: the checks below are skipped, and loomd is not started. `fail` when it answers with an error. |
+| `unassigned` | `warn` with the count, one example and the configuration that would assign it. |
+| `ssh-agent` | `SSH_AUTH_SOCK` in loomd's environment ([`GET /v1/diagnostics`](../api.md#daemondiagnostics)): `ok` when it is a socket; otherwise `fail` when an indexed remote uses SSH, `warn` when none does. The fix depends on the platform (systemd: `systemctl --user import-environment SSH_AUTH_SOCK`, then restart; launchd: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`). `warn` when loomd is older than this endpoint. |
+| `home` | `warn` when loomd's `HOME` differs from the one of `loom`: `~` in the configuration then expands elsewhere. |
+| `ssh <user>@<host>[:<port>]` | One per distinct SSH endpoint of the indexed remotes (`ssh://…`, `git+ssh://…`, `ssh+git://…` and scp-like `[user@]host:path` URLs; user `git` when the URL has none; the host as written, so that SSH aliases apply; a user or host starting with `-` or holding spaces is skipped). Runs `ssh -o BatchMode=yes -o ConnectTimeout=5 -T [-p <port>] <user>@<host>` with the environment of `loom`, all endpoints at once, each killed after 15 s. `ok` when the output holds a forge greeting (`successfully authenticated`, `Welcome to GitLab`, `authenticated via`, `You can use git to connect`, ASCII case ignored), whatever the exit code (GitHub exits with `1`), or on exit code `0`; `fail` on exit code `255` (the last output line as detail), on a timeout, or when `ssh` cannot run; `warn` on any other exit code. |
+
+`--json`: [`DoctorReport`](../schemas/doctor_report.json): `checks`, each with `check`, `status` (`ok`, `warn`, `fail`), `detail` and `fix` (absent when there is nothing to fix).
+
+### Exit behavior
+
+| Code | Cases |
+| --- | --- |
+| `0` | Success, including `-n`; `doctor` without any `fail`. |
+| `1` | loomd cannot be started or answers with an error; `<REPO>` not found, ambiguous, not inside a git repository, or (for `forget`) not in the index; `register` outside a git repository; `--rebuild` refused or cancelled; `doctor` with at least one `fail` (after printing the report: `Error: 1 check failed`, `Error: <n> checks failed`). |
+| `2` | Usage error: missing subcommand or `forget` argument, `--json` with `--format`, unknown `--format`. |
+
+### `loom repo sync`
+
+`loom repo sync [<REPO>...] [-n] [--json]` asks loomd to update repositories now ([`POST /v1/repos/sync`](../api.md#updates)), as it does on its schedule ([how updates work](../../explanation/repo-updates.md)): fetch of the primary remote, fast-forward of the branch `HEAD` is on and of the default branch only under the conditions of the update policy. It ignores the schedule and the backoff of unreachable hosts. Each `<REPO>` is resolved as described in [repository argument](#repository-argument) and must be in the index; without any, every repository of the index is updated. Like `ls`, it starts loomd when needed and waits for its scan on start. It never registers the repository of the current directory on use.
 
 The command waits for every update to end (at most one hour); updates run `fetch_concurrency` at a time.
 
-### Human output
+#### Human output
 
 One line per repository, sorted by slug: the slug, two spaces, then what happened. Several outcomes of one update are separated by `; `.
 
@@ -407,11 +548,11 @@ work/docs  would fetch
 work/legacy  skip: update policy is off
 ```
 
-### JSON output
+#### JSON output
 
 `loom repo sync --json`: [`SyncResult`](../schemas/sync_result.json), as returned by the API.
 
-### Exit status
+#### Exit status
 
 | Code | Cases |
 | --- | --- |

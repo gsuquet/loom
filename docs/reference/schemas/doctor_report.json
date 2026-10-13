@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DoctorReport",
+  "description": "Report of `loom repo doctor`: every check, in the order they ran.",
+  "type": "object",
+  "properties": {
+    "checks": {
+      "description": "The checks.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DoctorCheck"
+      }
+    }
+  },
+  "required": [
+    "checks"
+  ],
+  "$defs": {
+    "CheckStatus": {
+      "description": "Outcome of one check of `loom repo doctor`.",
+      "oneOf": [
+        {
+          "description": "Nothing to fix.",
+          "type": "string",
+          "const": "ok"
+        },
+        {
+          "description": "Something to look at; loom still works.",
+          "type": "string",
+          "const": "warn"
+        },
+        {
+          "description": "Something loom needs is broken.",
+          "type": "string",
+          "const": "fail"
+        }
+      ]
+    },
+    "DoctorCheck": {
+      "description": "One check of `loom repo doctor`.",
+      "type": "object",
+      "properties": {
+        "check": {
+          "description": "What was checked, such as `roots`, `contexts` or `ssh git@github.com`.",
+          "type": "string"
+        },
+        "detail": {
+          "description": "What was found, in English.",
+          "type": "string"
+        },
+        "fix": {
+          "description": "How to fix it, in English; absent when there is nothing to fix.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Outcome.",
+          "$ref": "#/$defs/CheckStatus"
+        }
+      },
+      "required": [
+        "check",
+        "status",
+        "detail"
+      ]
+    }
+  }
+}

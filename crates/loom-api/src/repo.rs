@@ -132,7 +132,8 @@ pub struct RepoSummary {
     pub identity: RepoIdentity,
     /// Added by `POST /v1/repos/register`: a scan never removes it while it exists on disk.
     pub registered: bool,
-    /// Last time the repository was used, when known.
+    /// Last time the repository was used (`loom repo show`, or a `loom` command run inside
+    /// it), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used: Option<Timestamp>,
     /// State (the repo card), `null` until it is read for the first time.
@@ -156,6 +157,11 @@ pub struct RepoList {
 pub struct RegisterRequest {
     /// Absolute path of the repository or of a directory inside it.
     pub path: PathBuf,
+    /// Registration on use (a `loom` command run inside the repository): a repository already
+    /// in the index is left as it is, only its `last_used` is set; one not in the index is
+    /// registered. `last_used` is set to now in both cases.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_use: bool,
 }
 
 /// Outcome of a scan of the repository roots.

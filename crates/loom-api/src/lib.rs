@@ -6,6 +6,7 @@
 mod api_version;
 mod auto_update;
 mod context;
+mod doctor;
 mod error;
 mod repo;
 mod repo_state;
@@ -24,6 +25,7 @@ pub use auto_update::{
 pub use context::{
     CONTEXT_NAME_MAX_LEN, ContextAssignment, ContextName, ContextNameError, UNASSIGNED,
 };
+pub use doctor::{CheckStatus, DaemonDiagnostics, DoctorCheck, DoctorReport, SshAgentSocket};
 pub use error::{ApiError, ErrorCode};
 pub use repo::{
     ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,

@@ -273,7 +273,7 @@ Error: cannot start the repository index
 
 `loomd` then scans the repositories (see [`POST /v1/repos/scan`](api.md#repositories)) and serves the API during that scan. After the scan, it reads the state of every repository in the background, then again every `[repos] fetch_interval` (see [state refresh](api.md#state-refresh)), and updates the repositories on their schedule (see [updates](api.md#updates)). The result of the last update of each repository is kept in the index, across restarts.
 
-The index can be rebuilt from a scan: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, slugs are assigned again, states are read again, and the results of the last updates are lost (every repository is then updated at once).
+`loom repo scan --rebuild` rebuilds the index from a scan of the roots while `loomd` runs (see [`loom repo scan`](cli/conventions.md#loom-repo-scan)). It can also be rebuilt by hand: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, slugs are assigned again, states are read again, and the results of the last updates are lost (every repository is then updated at once).
 
 ## `run/`
 

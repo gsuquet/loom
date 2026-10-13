@@ -58,6 +58,8 @@ fn log(home: &Path) -> PathBuf {
 /// Runs `loom --color=never <args>` with `LOOM_HOME` and `HOME` set to `home`.
 fn loom(home: &Path, args: &[&str]) -> Output {
     Command::new(loom_bin())
+        // Outside any repository: no registration on use talks to the (fake) loomd.
+        .current_dir(home)
         .env("LOOM_HOME", home)
         .envs(isolation::isolated_env(home))
         .env_remove("NO_COLOR")

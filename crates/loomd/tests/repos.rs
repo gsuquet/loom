@@ -17,8 +17,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use loom_api::{
-    ApiError, ErrorCode, MaybeKnown, PlannedAction, RepoHead, RepoList, RepoSummary,
-    RepoUpdatePolicy, ScanResult, SkipReason, SyncOutcome, SyncResult, Untracked, UpdateOutcome,
+    ApiError, DaemonDiagnostics, ErrorCode, MaybeKnown, PlannedAction, RepoHead, RepoList,
+    RepoSummary, RepoUpdatePolicy, ScanResult, SkipReason, SshAgentSocket, SyncOutcome, SyncResult,
+    Untracked, UpdateOutcome,
 };
 use schemars::schema_for;
 use serde::de::DeserializeOwned;
@@ -74,7 +75,7 @@ impl Sandbox {
         self.loom_home().join("index.db")
     }
 
-    fn start(&self) -> Daemon {
+    fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_loomd"));
         command
             .env("LOOM_HOME", self.loom_home())
@@ -91,7 +92,11 @@ impl Sandbox {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        Daemon::start(&mut command, &self.socket())
+        command
+    }
+
+    fn start(&self) -> Daemon {
+        Daemon::start(&mut self.command(), &self.socket())
     }
 
     fn request(&self, method: &str, path: &str, body: Option<&Value>) -> HttpResponse {
@@ -377,6 +382,136 @@ fn register_outside_the_roots_then_forget() {
     let result = sandbox.scan();
     assert_eq!(result.removed, 1);
     assert_eq!(sandbox.slugs("/v1/repos"), ["personal/r"]);
+}
+
+#[test]
+fn registration_on_use_marks_known_repositories_used_and_registers_unknown_ones() {
+    let sandbox = Sandbox::new();
+    let known = sandbox.user_home().join("perso/known");
+    fake_repo(&known, &[]);
+    let outside = sandbox.user_home().join("elsewhere/tool");
+    fake_repo(&outside, &[]);
+    fs::create_dir_all(outside.join("src")).unwrap();
+    // The same repository reached through a symbolic link.
+    std::os::unix::fs::symlink(
+        sandbox.user_home().join("perso"),
+        sandbox.user_home().join("p"),
+    )
+    .unwrap();
+    let _daemon = sandbox.start();
+    sandbox.scan();
+
+    let used: RepoSummary = ok(&sandbox.request(
+        "POST",
+        "/v1/repos/register",
+        Some(&json!({ "path": known.join("."), "on_use": true })),
+    ));
+    assert_eq!(used.identity.slug, "personal/known");
+    assert!(
+        !used.registered,
+        "an indexed repository is not marked registered"
+    );
+    let first_use = used.last_used.unwrap();
+
+    let through_link: RepoSummary = ok(&sandbox.request(
+        "POST",
+        "/v1/repos/register",
+        Some(&json!({ "path": sandbox.user_home().join("p/known"), "on_use": true })),
+    ));
+    assert_eq!(through_link.identity.path, known);
+    assert!(through_link.last_used.unwrap() >= first_use);
+    assert_eq!(sandbox.slugs("/v1/repos"), ["personal/known"]);
+
+    let registered: RepoSummary = ok(&sandbox.request(
+        "POST",
+        "/v1/repos/register",
+        Some(&json!({ "path": outside.join("src"), "on_use": true })),
+    ));
+    assert_eq!(registered.identity.path, outside);
+    assert!(registered.registered);
+    assert!(registered.last_used.is_some());
+}
+
+#[test]
+fn scan_dry_run_and_rebuild() {
+    let sandbox = Sandbox::new();
+    let perso = sandbox.user_home().join("perso");
+    fake_repo(&perso.join("a"), &[]);
+    let outside = sandbox.user_home().join("elsewhere/tool");
+    fake_repo(&outside, &[]);
+    let _daemon = sandbox.start();
+    sandbox.scan();
+    ok::<RepoSummary>(&sandbox.request(
+        "POST",
+        "/v1/repos/register",
+        Some(&json!({ "path": outside })),
+    ));
+    fake_repo(&perso.join("b"), &[]);
+
+    let dry: ScanResult = ok(&sandbox.request("POST", "/v1/repos/scan?dry_run=true", None));
+    assert_eq!((dry.added, dry.updated, dry.removed), (1, 0, 0));
+    assert_eq!(
+        sandbox.slugs("/v1/repos"),
+        ["personal/a", "unassigned/tool"]
+    );
+
+    let dry: ScanResult =
+        ok(&sandbox.request("POST", "/v1/repos/scan?rebuild=true&dry_run=true", None));
+    assert_eq!((dry.added, dry.updated, dry.removed), (2, 0, 2));
+    assert_eq!(
+        sandbox.slugs("/v1/repos"),
+        ["personal/a", "unassigned/tool"]
+    );
+
+    let rebuilt: ScanResult = ok(&sandbox.request("POST", "/v1/repos/scan?rebuild=true", None));
+    assert_eq!((rebuilt.added, rebuilt.updated, rebuilt.removed), (2, 0, 2));
+    // The registered repository outside the roots is gone.
+    assert_eq!(sandbox.slugs("/v1/repos"), ["personal/a", "personal/b"]);
+
+    assert_api_error(
+        &sandbox.request("POST", "/v1/repos/scan?force=true", None),
+        400,
+        ErrorCode::InvalidRequest,
+    );
+    assert_api_error(
+        &sandbox.request("POST", "/v1/repos/scan?rebuild=maybe", None),
+        400,
+        ErrorCode::InvalidRequest,
+    );
+}
+
+#[test]
+fn diagnostics_report_the_agent_socket_and_home() {
+    let sandbox = Sandbox::new();
+    let agent = sandbox.dir.path().join("agent.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&agent).unwrap();
+    let plain = sandbox.dir.path().join("plain");
+    fs::write(&plain, "").unwrap();
+    for (value, expected) in [
+        (Some(agent.clone()), SshAgentSocket::Socket { path: agent }),
+        (
+            Some(plain.clone()),
+            SshAgentSocket::NotASocket { path: plain },
+        ),
+        (
+            Some(sandbox.dir.path().join("gone")),
+            SshAgentSocket::Missing {
+                path: sandbox.dir.path().join("gone"),
+            },
+        ),
+        (None, SshAgentSocket::Unset),
+    ] {
+        let mut command = sandbox.command();
+        match &value {
+            Some(path) => command.env("SSH_AUTH_SOCK", path),
+            None => command.env_remove("SSH_AUTH_SOCK"),
+        };
+        let daemon = Daemon::start(&mut command, &sandbox.socket());
+        let diagnostics: DaemonDiagnostics = sandbox.get("/v1/diagnostics");
+        assert_eq!(diagnostics.ssh_auth_sock, expected);
+        assert_eq!(diagnostics.home, Some(sandbox.user_home()));
+        daemon.stop();
+    }
 }
 
 #[test]
