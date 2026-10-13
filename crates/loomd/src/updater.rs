@@ -16,10 +16,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
-use loom_api::{Timestamp, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState};
+use loom_api::{
+    Channel as BuildChannel, Timestamp, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState,
+};
 use loom_config::home::LOOM_HOME_ENV;
 use loom_config::layout::{LOG_DIR_MODE, LOG_FILE_MODE, Layout};
-use loom_update::auto::{self, CheckAction};
+use loom_update::auto::{self, CheckAction, EffectiveChannel};
 use loom_update::github::{self, Client};
 use loom_update::{Discovery, Lookup, Paths, state};
 use loomd::api::timestamp;
@@ -37,12 +39,27 @@ const MAX_SLEEP: Duration = Duration::from_secs(60);
 pub struct Settings {
     /// Effective policy.
     pub policy: UpdatePolicyMode,
-    /// Effective channel; `None`: nothing is checked.
-    pub channel: Option<UpdateChannel>,
+    /// `[update] channel`.
+    pub configured_channel: Option<UpdateChannel>,
+    /// Channel of this build.
+    pub build_channel: BuildChannel,
     /// Interval between checks, before jitter.
     pub interval: Duration,
     /// Watchdog deadline.
     pub deadline: Duration,
+}
+
+impl Settings {
+    /// Effective channel with `state`, which may hold a channel chosen with
+    /// `loom upgrade --channel`. `None`: nothing is checked.
+    #[must_use]
+    pub fn channel(&self, state: &UpdateState) -> Option<EffectiveChannel> {
+        auto::effective_channel(
+            self.configured_channel,
+            auto::chosen_channel(state),
+            self.build_channel,
+        )
+    }
 }
 
 /// The running updater thread.
@@ -169,13 +186,15 @@ impl Worker {
     /// Checks on schedule until stopped. Returns `true` when the daemon must stop for an
     /// upgrade.
     fn run(&self, started_at: u64, stopped: &mpsc::Receiver<()>) -> bool {
-        let Settings {
-            policy, channel, ..
-        } = self.settings;
-        let Some(channel) = channel.filter(|_| auto::checks(policy, channel)) else {
+        let policy = self.settings.policy;
+        if policy == UpdatePolicyMode::Off {
             info!(%policy, "update checks are off");
             return false;
-        };
+        }
+        // Resolved again before each check: `loom upgrade --channel` may choose one meanwhile.
+        if self.settings.channel(&self.read_state()).is_none() {
+            info!(%policy, "no update channel: nothing is checked until `[update] channel` is set or `loom upgrade --channel` chooses one");
+        }
         let Ok(current) = Version::parse(&VERSION_INFO.version) else {
             warn!(version = %VERSION_INFO.version, "update checks are off: this build's version is not semver");
             return false;
@@ -197,6 +216,14 @@ impl Worker {
                 return false;
             }
             last_attempt = Some(unix_now());
+            let Some(channel) = self
+                .settings
+                .channel(&self.read_state())
+                .map(|effective| effective.channel)
+            else {
+                debug!("no update channel, skipping this check");
+                continue;
+            };
             match self.check(&current, channel) {
                 Next::Continue => {}
                 Next::Upgraded => return true,

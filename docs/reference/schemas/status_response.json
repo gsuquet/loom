@@ -94,6 +94,26 @@
         }
       ]
     },
+    "ChannelSource": {
+      "description": "Where the effective release channel comes from.",
+      "oneOf": [
+        {
+          "description": "`[update] channel` of `config.toml`.",
+          "type": "string",
+          "const": "config"
+        },
+        {
+          "description": "Chosen explicitly with `loom upgrade --channel` (or `install.sh --channel`), kept in\n`state/update.json`.",
+          "type": "string",
+          "const": "chosen"
+        },
+        {
+          "description": "The channel of the running build.",
+          "type": "string",
+          "const": "build"
+        }
+      ]
+    },
     "PendingUpgrade": {
       "description": "An upgrade in progress.",
       "type": "object",
@@ -394,7 +414,7 @@
           ]
         },
         "channel": {
-          "description": "Effective channel: `[update] channel`, or the build channel. Absent for a local build\nwithout `channel`: nothing is checked.",
+          "description": "Effective channel: `[update] channel`, otherwise the channel chosen with\n`loom upgrade --channel`, otherwise the build channel. Absent for a local build without\neither: nothing is checked.",
           "anyOf": [
             {
               "$ref": "#/$defs/UpdateChannel"
@@ -403,6 +423,18 @@
               "type": "null"
             }
           ]
+        },
+        "channel_source": {
+          "description": "Where `channel` comes from; absent when `channel` is. Optional when reading, so that a\nclient reads a daemon older than this field.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChannelSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "check_interval_secs": {
           "description": "Interval between two checks, in whole seconds, before jitter.",

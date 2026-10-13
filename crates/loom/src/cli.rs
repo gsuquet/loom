@@ -113,8 +113,10 @@ pub struct WatchdogArgs {
 #[derive(Debug, clap::Args)]
 #[command(group(ArgGroup::new("source").args(["channel", "version", "from"])))]
 pub struct UpgradeArgs {
-    /// Release channel to upgrade on. Default: the channel of this build (required for a local
-    /// build, unless `--version` or `--from` is given).
+    /// Release channel to upgrade on, remembered in `state/update.json` for loomd and the next
+    /// `loom upgrade` (not with `--dry-run`). Default: `[update] channel`, otherwise the channel
+    /// last given here, otherwise the channel of this build (required for a local build, unless
+    /// `--version` or `--from` is given).
     #[arg(long, value_name = "CHANNEL", value_enum)]
     pub channel: Option<ReleaseChannel>,
     /// Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version
@@ -125,7 +127,8 @@ pub struct UpgradeArgs {
     /// `loomd`. Not verified; installed even when its version is not newer.
     #[arg(long, value_name = "PATH")]
     pub from: Option<PathBuf>,
-    /// Print the decision only: no download, nothing changed.
+    /// Print the decision only: no download, nothing installed (a `--channel` is still
+    /// remembered).
     #[arg(long, conflicts_with_all = ["from", "dry_run"])]
     pub check: bool,
     /// Download and verify, print what would be replaced, change nothing.

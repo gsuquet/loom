@@ -2,14 +2,17 @@
 
 use std::env;
 use std::fmt::Write as _;
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::process::Command as Process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loom_api::{
-    Channel as BuildChannel, DaemonRestart, InstallReport, RollbackReport, UpdateState,
-    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
+    Channel as BuildChannel, DaemonRestart, InstallReport, RollbackReport, UpdateChannel,
+    UpdateState, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
 };
+use loom_config::config::parse_config;
 use loom_config::layout::Layout;
 use loom_update::auto;
 use loom_update::github::{self, Client};
@@ -24,7 +27,36 @@ use tracing::{info, warn};
 use loom::cli::{ReleaseChannel, RollbackArgs, UpgradeArgs};
 
 /// Runs `loom upgrade`. Returns the text to print on stdout.
+///
+/// With `--channel`, the channel is remembered in `state/update.json` once the command
+/// succeeded (not with `--dry-run`), for loomd and the next `loom upgrade`.
 pub fn upgrade(info: &VersionInfo, args: &UpgradeArgs, layout: &Layout) -> Result<String> {
+    let configured = configured_channel(&layout.config);
+    let text = upgrade_release(info, args, layout, configured)?;
+    if let Some(channel) = args.channel.filter(|_| !args.dry_run) {
+        let channel = update_channel(channel);
+        if let Some(configured) = configured.filter(|&configured| configured != channel) {
+            warn!(
+                "`[update] channel = \"{configured}\"` in {} takes precedence over the chosen channel {channel}",
+                layout.config.display()
+            );
+        }
+        match remember_channel(layout, channel) {
+            Ok(()) => {}
+            // With `--check`, recording the channel is all the command changes.
+            Err(error) if args.check => return Err(error),
+            Err(error) => warn!("{error}"),
+        }
+    }
+    Ok(text)
+}
+
+fn upgrade_release(
+    info: &VersionInfo,
+    args: &UpgradeArgs,
+    layout: &Layout,
+    configured: Option<UpdateChannel>,
+) -> Result<String> {
     let current = running_version(info)?;
     let paths = paths(layout)?;
     let state = read_state(layout);
@@ -35,7 +67,9 @@ pub fn upgrade(info: &VersionInfo, args: &UpgradeArgs, layout: &Layout) -> Resul
         return upgrade_from(&current, from, &paths, args);
     }
 
-    let (lookup, channel) = lookup(info.channel, args)?;
+    let default = auto::effective_channel(configured, auto::chosen_channel(&state), info.channel)
+        .map(|effective| auto::decision_channel(effective.channel));
+    let (lookup, channel) = lookup(default, args)?;
     let policy = UpdatePolicy {
         mode: UpdateMode::Auto,
         pinned: args.version.clone(),
@@ -213,13 +247,14 @@ fn running_version(info: &VersionInfo) -> Result<Version> {
         .wrap_err_with(|| format!("this build's version `{}` is not semver", info.version))
 }
 
-/// What to look up and the channel to decide on. A local build has no channel of its own.
-fn lookup(build: BuildChannel, args: &UpgradeArgs) -> Result<(Lookup, Channel)> {
-    let channel = match (args.channel, build) {
-        (Some(ReleaseChannel::Stable), _) | (None, BuildChannel::Stable) => Some(Channel::Stable),
-        (Some(ReleaseChannel::Dev), _) | (None, BuildChannel::Dev) => Some(Channel::Dev),
-        (None, BuildChannel::Local) => None,
-    };
+/// What to look up and the channel to decide on: `--channel`, otherwise `default` (the
+/// effective channel: configured, chosen, or the build's). A local build has no channel of its
+/// own.
+fn lookup(default: Option<Channel>, args: &UpgradeArgs) -> Result<(Lookup, Channel)> {
+    let channel = args
+        .channel
+        .map(|channel| auto::decision_channel(update_channel(channel)))
+        .or(default);
     match (&args.version, channel) {
         // The channel does not matter for a pinned version.
         (Some(version), channel) => Ok((
@@ -231,6 +266,49 @@ fn lookup(build: BuildChannel, args: &UpgradeArgs) -> Result<(Lookup, Channel)> 
             "this is a local build (channel local): pass --channel, --version or --from"
         )),
     }
+}
+
+const fn update_channel(channel: ReleaseChannel) -> UpdateChannel {
+    match channel {
+        ReleaseChannel::Stable => UpdateChannel::Stable,
+        ReleaseChannel::Dev => UpdateChannel::Dev,
+    }
+}
+
+/// `[update] channel` of `config.toml`. A missing file or key is `None`; so is a file that
+/// cannot be read or parsed, with a warning: `loom upgrade` must work to repair an install.
+fn configured_channel(path: &Path) -> Option<UpdateChannel> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!(
+                "cannot read the configuration {}, ignoring [update] channel: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    parse_config(&text, path).map_or_else(
+        |error| {
+            warn!("ignoring [update] channel: {error}");
+            None
+        },
+        |config| config.update.channel,
+    )
+}
+
+/// Records `channel` as chosen in `state/update.json`.
+fn remember_channel(layout: &Layout, channel: UpdateChannel) -> Result<()> {
+    let at = loom_api::Timestamp::from_unix_secs(unix_now())
+        .ok_or_else(|| miette!("the system clock is outside the range of timestamps"))?;
+    loom_update::state::modify(
+        layout,
+        |error| warn!("replacing an invalid update state: {error}"),
+        |state| auto::with_chosen_channel(state, channel, at),
+    )
+    .map(drop)
+    .map_err(|error| miette!("cannot remember the channel {channel}: {error}"))
 }
 
 /// Paths from the running binary and the loom home.
@@ -532,21 +610,26 @@ mod tests {
             dry_run: false,
             json: false,
         };
-        assert!(lookup(BuildChannel::Local, &args(None, None)).is_err());
+        // `None`: no effective channel (a local build, nothing configured or chosen).
+        assert!(lookup(None, &args(None, None)).is_err());
         assert_eq!(
-            lookup(BuildChannel::Local, &args(Some(ReleaseChannel::Dev), None)).unwrap(),
+            lookup(None, &args(Some(ReleaseChannel::Dev), None)).unwrap(),
             (Lookup::Channel(Channel::Dev), Channel::Dev)
         );
         assert_eq!(
-            lookup(BuildChannel::Dev, &args(None, None)).unwrap(),
+            lookup(Some(Channel::Dev), &args(None, None)).unwrap(),
             (Lookup::Channel(Channel::Dev), Channel::Dev)
         );
         assert_eq!(
-            lookup(BuildChannel::Dev, &args(Some(ReleaseChannel::Stable), None)).unwrap(),
+            lookup(
+                Some(Channel::Dev),
+                &args(Some(ReleaseChannel::Stable), None)
+            )
+            .unwrap(),
             (Lookup::Channel(Channel::Stable), Channel::Stable)
         );
         assert!(matches!(
-            lookup(BuildChannel::Local, &args(None, Some("1.0.0"))).unwrap(),
+            lookup(None, &args(None, Some("1.0.0"))).unwrap(),
             (Lookup::Version(_), _)
         ));
     }

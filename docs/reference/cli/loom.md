@@ -149,10 +149,10 @@ loom upgrade [OPTIONS]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--channel <CHANNEL>` | `stable`, `dev` |  | Release channel to upgrade on. Default: the channel of this build (required for a local build, unless `--version` or `--from` is given) |
+| `--channel <CHANNEL>` | `stable`, `dev` |  | Release channel to upgrade on, remembered in `state/update.json` for loomd and the next `loom upgrade` (not with `--dry-run`). Default: `[update] channel`, otherwise the channel last given here, otherwise the channel of this build (required for a local build, unless `--version` or `--from` is given) |
 | `--version <VERSION>` |  |  | Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version (use `loom rollback`) |
 | `--from <PATH>` |  |  | Install a local build: a release archive (`.tar.gz`) or a directory holding `loom` and `loomd`. Not verified; installed even when its version is not newer |
-| `--check` |  |  | Print the decision only: no download, nothing changed |
+| `--check` |  |  | Print the decision only: no download, nothing installed (a `--channel` is still remembered) |
 | `-n`, `--dry-run` |  |  | Download and verify, print what would be replaced, change nothing |
 | `--json` |  |  | Print the result as JSON (`UpgradeReport` schema) |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |

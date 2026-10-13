@@ -134,7 +134,7 @@ channel:     dev
 loom_home:   /home/me/.loom
 socket_path: /home/me/.loom/run/loomd.sock
 config_path: /home/me/.loom/config.toml
-updates:     auto, channel stable, every 6h
+updates:     auto, channel dev (chosen), every 6h
 last_check:  2026-10-12T08:05:00Z
 available:   none
 failed:      0.1.1
@@ -145,7 +145,7 @@ The update lines come from the `update` object of the status ([API reference](..
 
 | Line | Content |
 | --- | --- |
-| `updates` | `off`; `<policy>, no channel: not checked` for a local build without `[update] channel`; otherwise `<policy>, channel <channel>, every <check_interval>`. |
+| `updates` | `off`; `<policy>, no channel: not checked` for a local build without a configured or chosen channel; otherwise `<policy>, channel <channel> (<source>), every <check_interval>`. `<source>` says where the channel comes from: `config` (`[update] channel`), `chosen` (last `loom upgrade --channel`, or `install.sh --channel`), `build` (the build channel); see [channel resolution](../configuration.md#channel-resolution). A daemon that does not report the source prints no parenthesis. |
 | `last_check` | Instant of the last check, `never` before the first. |
 | `available` | Newer version recorded under `notify`, `none` otherwise or once that version runs. |
 | `pending` | `<from> -> <to> since <instant>`, only while an upgrade is in progress. |
@@ -280,16 +280,18 @@ A failing manager command:
 
    | Options | Request | Release considered |
    | --- | --- | --- |
-   | `--channel stable`, or none on a stable build | `GET /repos/gsuquet/loom/releases/latest` | The latest stable release. |
-   | `--channel dev`, or none on a dev build | `GET /repos/gsuquet/loom/releases?per_page=30` | Every non-draft release tagged `vX.Y.Z` or `vX.Y.Z-dev.N` in the 30 most recent; other tags are skipped. The highest by semver precedence wins, so a stable release above every dev build is installed. |
+   | `--channel stable`, or none with the effective channel `stable` | `GET /repos/gsuquet/loom/releases/latest` | The latest stable release. |
+   | `--channel dev`, or none with the effective channel `dev` | `GET /repos/gsuquet/loom/releases?per_page=30` | Every non-draft release tagged `vX.Y.Z` or `vX.Y.Z-dev.N` in the 30 most recent; other tags are skipped. The highest by semver precedence wins, so a stable release above every dev build is installed. |
    | `--version X.Y.Z` | `GET /repos/gsuquet/loom/releases/tags/vX.Y.Z` | That release; a 404 means not released. |
    | `--from PATH` | none | The local build. |
 
-   A local build (channel `local`) has no default channel: without `--channel`, `--version` or `--from`, `loom upgrade` fails.
+   Without `--channel`, `--version` or `--from`, the effective channel is `[update] channel`, otherwise the channel last given to `--channel`, otherwise the build channel ([channel resolution](../configuration.md#channel-resolution)). A local build (channel `local`) has no channel of its own: without any of them, `loom upgrade` fails.
+
+   `--channel` is remembered: once the command succeeds (`--check` and up to date included, `--dry-run` excluded), the channel is written to `channel` of `<loom home>/state/update.json`, for the auto-upgrade of loomd and the next `loom upgrade`. When `[update] channel` names another channel, a warning says that it takes precedence. A failure to write the state fails `--check` (exit code `1`) and is a warning otherwise. `--version` and `--from` leave the remembered channel unchanged.
 
    Before the lookup, except with `--check`, `loom upgrade` reads `<loom home>/state/update.json` and fails while loomd's auto-upgrade is in progress (a `pending` upgrade started less than one hour ago): `loomd is upgrading from <from> to <to> (started <instant>): retry when it is done, in a minute or two`.
 
-2. Decides by semver precedence: a newer release is installed, the same version is up to date, and a `--version` lower than the running version is refused (use `loom rollback`). `--from` always installs, whatever its version. With `--channel` or the build channel, versions in `failed_versions` of `state/update.json` are skipped, as by the auto-upgrade (decision `skipped`, reason `failed`, when every newer version failed); `--version` installs a failed version anyway, so it can be retried on purpose.
+2. Decides by semver precedence: a newer release is installed, the same version is up to date, and a `--version` lower than the running version is refused (use `loom rollback`). `--from` always installs, whatever its version. With `--channel` or the effective channel, versions in `failed_versions` of `state/update.json` are skipped, as by the auto-upgrade (decision `skipped`, reason `failed`, when every newer version failed); `--version` installs a failed version anyway, so it can be retried on purpose.
 3. Checks that the install directory is writable, before any download.
 4. Downloads `SHA256SUMS` and `SHA256SUMS.minisig`, verifies the signature with the public key embedded at build time ([releases](../releases.md#signature)), then downloads `loom-<version>-<target>.tar.gz` and checks its SHA-256 against `SHA256SUMS`. A `*-linux-gnu` build takes the `*-linux-musl` archive. Any failure stops here: nothing installed has changed.
 5. Extracts the archive into `<loom home>/staging/`. Only the regular files `loom`, `loomd`, `LICENSE` and `README.md` at the archive root are accepted; any other entry (directory, link, path) rejects the archive. Then runs `loom version --json` and `loomd -V` from the staging directory: both must report the release version.
