@@ -8,7 +8,7 @@ A personal work engine: a prioritized list of everything I have to do across con
 
 ## Status
 
-Rewrite from scratch, pre-v0.1. `crates/` holds the v0.1 crates (`loom`, `loomd`, `loom-api`, `loom-config`, `loom-update`), listed in `docs/design/architecture.md`. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
+v0.1.0 is released; v0.2 (repo index) is in progress. The crates are listed in `docs/design/architecture.md`. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
 
 ## Read only what your task needs
 
@@ -33,7 +33,7 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 
 Pinned with [mise](https://mise.jdx.dev) in `.mise/config.toml`. Run `mise install` once.
 
-The quality gate is `mise run check`: it runs the `fmt-check`, `clippy` (`-D warnings`), `test`, `typos`, `deny` and `gitleaks` tasks, and CI runs it on Linux and macOS. `mise run fmt` formats the workspace; `mise tasks` lists every task.
+The quality gate is `mise run check` (`mise tasks` lists what it runs); CI runs it on Linux and macOS. Pull requests that only touch docs (`docs/`, top-level `*.md`, `LICENSE`, except the generated references) run spelling and the secret scan only. The required check is `ci`; pull requests must be up to date with `main` before merging. `mise run fmt` formats the workspace; `mise tasks` lists every task.
 
 ## Working on a task
 
@@ -68,6 +68,7 @@ The quality gate is `mise run check`: it runs the `fmt-check`, `clippy` (`-D war
 - Never force-push, never rewrite published history.
 - Every commit is signed (`commit.gpgsign=true`). Never use `--no-gpg-sign`; if signing fails, stop and report.
 - PRs are merged by squash only (rebase merge is disabled), so `main` only receives commits signed by GitHub.
+- To bring a branch up to date, merge `main` into it with a signed merge commit (or GitHub's "Update with merge commit"). Never use GitHub's "Update with rebase": it replays the commits unsigned and the ruleset then blocks the merge.
 - Reviews use [Conventional Comments](https://conventionalcomments.org).
 
 ## Docs

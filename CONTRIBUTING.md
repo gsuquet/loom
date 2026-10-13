@@ -51,3 +51,4 @@ mise run check
    mise run check
    ```
 4. **Submit a Draft PR:** Open a Pull Request marked as **Draft** for human review and CI verification.
+5. **Stay up to date:** `main` only accepts pull requests that are up to date with it and whose commits are all signed. Update a branch by merging `main` into it (signed merge commit, or GitHub's **Update with merge commit**); GitHub's **Update with rebase** replays commits unsigned and blocks the merge.
