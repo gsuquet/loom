@@ -2,9 +2,9 @@
 
 > Formats of `task.md` and `events.jsonl`, the two files of a task directory, as implemented in `loom-core`.
 
-No command reads or writes these files yet: the formats are implemented as pure functions (`parse_task_md`, `render_task_md`, `parse_events`, `render_event`) for the task store.
+`loomd` reads these files to index the tasks (`loom reindex`); no command creates or changes a task yet.
 
-Path of both files: `<loom home>/contexts/<context>/tasks/<id>/`.
+Path of both files: `<store>/tasks/<id>/`, where `<store>` is the context's `store.path`, `<loom home>/contexts/<context>` by default (see [context stores](configuration.md#context-stores)).
 
 ## `task.md`
 

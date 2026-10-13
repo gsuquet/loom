@@ -27,6 +27,7 @@
 | `GET` | `/v1/search` | `200` | [`SearchResults`](#searchresults) |
 | `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
 | `POST` | `/v1/diagnostics/remote-check` | `200` | [`RemoteCheckResult`](#remotecheckresult) |
+| `POST` | `/v1/tasks/reindex` | `200` | [`ReindexResult`](#reindexresult) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state. `disk` is the last measure of the loom home while it is fresh, otherwise a new one ([cache](#diskusage)).
 
@@ -139,6 +140,12 @@ Results are ranked by these keys, in order:
 
 The ranking is computed on every match, then cut to `limit`.
 
+### Tasks
+
+The tasks are files in the context stores (see [configuration](configuration.md#context-stores)), indexed in `<loom home>/index.db`. `loomd` indexes them when it starts.
+
+`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction, and answers with a [`ReindexResult`](#reindexresult) once it is written. Rows of tasks whose directory is gone are dropped; an invalid `task.md` is indexed read-only and listed, never rewritten. The repositories of the index are left as they are. A task whose files cannot be read (permissions, I/O), or a store whose `tasks/` cannot be listed, is listed in `failed` and keeps the row it had; the other tasks are indexed. Only a failure to write the index answers `500 internal`, the index then unchanged.
+
 ### Errors
 
 Every error response has an [`ApiError`](#apierror) body.
@@ -184,6 +191,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
 | `LastUpdate` | [`schemas/last_update.json`](schemas/last_update.json) (in `RepoSummary` and `SyncResult`) |
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
+| `ReindexResult` | [`schemas/reindex_result.json`](schemas/reindex_result.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
 | `RepoList` | [`schemas/repo_list.json`](schemas/repo_list.json) |
@@ -496,6 +504,31 @@ Unknown fields are rejected.
 | `path` | string | Absolute path of the repository. |
 | `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. One of the ranking keys only: the order of `results` is the ranking. |
 | `matched_fields` | list of strings | Fields holding at least one query word: `name`, `slug`, `path`, `remotes`, `context`, `branch`, in this order. |
+
+### `ReindexResult`
+
+Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json`.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `tasks` | integer (u64) | Tasks indexed, invalid ones included. |
+| `invalid` | list of `InvalidTaskFile` | Tasks whose `task.md` is invalid, sorted by context and ID. |
+| `failed` | list of `FailedTaskFile` | Task directories, or `tasks/` directories of stores, that could not be read, sorted by path. Their rows are kept as they were. Empty when absent. |
+
+`InvalidTaskFile`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string | Context of the store holding the task. |
+| `id` | string | Task ID, the name of its directory. |
+| `error` | string | Why the file cannot be read, starting with `line <n>: ` when the line is known: not UTF-8, no `+++` frontmatter, invalid TOML, a missing or invalid key, an `id` that is not the directory name, a `context` that is not the store's. |
+
+`FailedTaskFile`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `path` | path | The task directory, or the `tasks/` directory of a store that could not be listed. |
+| `error` | string | What failed, with the file when it is an I/O error. |
 
 ### `RegisterRequest`
 

@@ -28,6 +28,8 @@ pub const SEARCH_PATH: &str = "/v1/search";
 pub const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
 /// Path of the remote check: `git ls-remote` of each remote endpoint of the index.
 pub const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
+/// Path of the tasks reindex: the tasks index rebuilt from the files of every context store.
+pub const TASKS_REINDEX_PATH: &str = "/v1/tasks/reindex";
 
 /// Query parameters of `POST /v1/repos/scan`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

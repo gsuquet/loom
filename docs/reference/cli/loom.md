@@ -383,6 +383,25 @@ loom search [OPTIONS] <QUERY>...
 
 Global options apply.
 
+### `loom reindex`
+
+Rebuild the tasks index from the task files of every context store.
+
+The files are the source of truth: rows of tasks whose directory is gone are dropped, an invalid `task.md` is indexed read-only and listed, never rewritten. The repositories of the index are left as they are. Starts loomd when it is not running.
+
+```text
+loom reindex [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the result as JSON (`ReindexResult` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
 ### `loom shell-init`
 
 Print the shell integration to evaluate in the shell's startup file: `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`.

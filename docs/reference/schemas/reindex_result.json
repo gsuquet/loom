@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReindexResult",
+  "description": "What a reindex wrote: the tasks index rebuilt from the files of every context store.",
+  "type": "object",
+  "properties": {
+    "failed": {
+      "description": "Tasks, or stores, that could not be read (permissions, I/O): they keep the row they had,\nthe other tasks are indexed. Sorted by path.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FailedTaskFile"
+      }
+    },
+    "invalid": {
+      "description": "Tasks whose `task.md` cannot be read: indexed read-only, the file left as it is. Sorted\nby context and ID.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/InvalidTaskFile"
+      }
+    },
+    "tasks": {
+      "description": "Tasks indexed, invalid ones included.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "tasks",
+    "invalid"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "FailedTaskFile": {
+      "description": "A task directory, or the `tasks/` directory of a store, that could not be read.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "What failed.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The task directory, or `tasks/` when the store could not be listed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "error"
+      ]
+    },
+    "InvalidTaskFile": {
+      "description": "A task whose `task.md` cannot be read.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of its store.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "error": {
+          "description": "Why, with the line when known.",
+          "type": "string"
+        },
+        "id": {
+          "description": "ID, the name of its directory.",
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "context",
+        "id",
+        "error"
+      ]
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    }
+  }
+}

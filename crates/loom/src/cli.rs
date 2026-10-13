@@ -103,6 +103,12 @@ pub enum Command {
     /// fields; then most recently used first. `-c` keeps one context. Starts loomd when it is
     /// not running.
     Search(SearchArgs),
+    /// Rebuild the tasks index from the task files of every context store.
+    ///
+    /// The files are the source of truth: rows of tasks whose directory is gone are dropped,
+    /// an invalid `task.md` is indexed read-only and listed, never rewritten. The repositories
+    /// of the index are left as they are. Starts loomd when it is not running.
+    Reindex(ReindexArgs),
     /// Print the shell integration to evaluate in the shell's startup file:
     /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in
     /// `~/.bashrc`.
@@ -188,6 +194,14 @@ pub enum ReleaseChannel {
 fn parse_release_version(text: &str) -> Result<Version, String> {
     loom_update::release::tag_version(&format!("v{text}"))
         .ok_or_else(|| format!("expected X.Y.Z or X.Y.Z-dev.N, got `{text}`"))
+}
+
+/// Options of `loom reindex`.
+#[derive(Debug, clap::Args)]
+pub struct ReindexArgs {
+    /// Print the result as JSON (`ReindexResult` schema).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `loom search`.
@@ -511,6 +525,7 @@ mod tests {
             | Command::Rollback(_)
             | Command::Repo { .. }
             | Command::Search(_)
+            | Command::Reindex(_)
             | Command::ShellInit(_)
             | Command::UpgradeWatchdog(_) => {
                 panic!("not a service command: {args:?}")

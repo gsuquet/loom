@@ -2,6 +2,7 @@
 
 mod client;
 mod on_use;
+mod reindex_cmd;
 mod repo_cmd;
 mod search_cmd;
 mod service_cmd;
@@ -178,6 +179,7 @@ const fn registers_on_use(command: &Command) -> bool {
         // Run by every new shell: no delay for it, and the hook it installs registers.
         Command::ShellInit(_) | Command::UpgradeWatchdog(_) => false,
         Command::Search(_)
+        | Command::Reindex(_)
         | Command::Version { .. }
         | Command::Status { .. }
         | Command::Service { .. }
@@ -209,6 +211,7 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Service { command } => run_service(command),
         Command::Repo { command } => repo_cmd::run(command, &cli.global, layout()?),
         Command::Search(args) => search_cmd::run(args, &cli.global, &layout()?),
+        Command::Reindex(args) => reindex_cmd::run(args, &layout()?),
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;
             let supervisor = watchdog_supervisor(&layout);

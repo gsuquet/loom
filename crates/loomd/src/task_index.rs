@@ -1,0 +1,177 @@
+//! Responses of the tasks index, decided without I/O.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use loom_api::{ContextName, FailedTaskFile, InvalidTaskFile, ReindexResult};
+use loom_store::files::TASKS_DIR;
+use loom_store::tasks::{IndexedState, Reindexed, TaskFailure};
+
+/// What a reindex reports: every row counted, the invalid ones listed by context and ID, the
+/// failures with their path under `stores` (root of each context store).
+#[must_use]
+pub fn reindex_result(
+    reindexed: &Reindexed,
+    stores: &BTreeMap<ContextName, PathBuf>,
+) -> ReindexResult {
+    let mut invalid: Vec<InvalidTaskFile> = reindexed
+        .rows
+        .iter()
+        .filter_map(|row| match &row.state {
+            IndexedState::Invalid { error, .. } => Some(InvalidTaskFile {
+                context: row.context.clone(),
+                id: row.id.clone(),
+                error: error.clone(),
+            }),
+            IndexedState::Valid { .. } => None,
+        })
+        .collect();
+    invalid.sort_by(|a, b| (&a.context, &a.id).cmp(&(&b.context, &b.id)));
+    ReindexResult {
+        tasks: reindexed.rows.len(),
+        invalid,
+        failed: failed_files(&reindexed.failed, stores),
+    }
+}
+
+/// `failures` with their path: the task directory, or `tasks/` of a store that could not be
+/// listed. Sorted by path, each path once (its first error).
+#[must_use]
+pub fn failed_files(
+    failures: &[TaskFailure],
+    stores: &BTreeMap<ContextName, PathBuf>,
+) -> Vec<FailedTaskFile> {
+    let mut files: Vec<FailedTaskFile> = failures
+        .iter()
+        .map(|failure| {
+            let tasks = stores
+                .get(&failure.context)
+                .map_or_else(|| PathBuf::from(TASKS_DIR), |root| root.join(TASKS_DIR));
+            FailedTaskFile {
+                path: failure
+                    .id
+                    .as_ref()
+                    .map_or_else(|| tasks.clone(), |id| tasks.join(id.as_str())),
+                error: failure.error.clone(),
+            }
+        })
+        .collect();
+    // Stable: the first error of a path stays.
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|later, first| later.path == first.path);
+    files
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    use loom_api::{ContextName, ReindexResult};
+    use loom_store::port::ContentHash;
+    use loom_store::tasks::{IndexedState, IndexedTask, Reindexed, TaskFailure};
+
+    use super::{failed_files, reindex_result};
+
+    fn context(name: &str) -> ContextName {
+        name.parse().unwrap()
+    }
+
+    fn invalid(context_name: &str, id: &str, error: &str) -> IndexedTask {
+        IndexedTask {
+            id: id.parse().unwrap(),
+            context: context(context_name),
+            hash: ContentHash::of(b""),
+            state: IndexedState::Invalid {
+                error: error.to_owned(),
+                text: String::new(),
+            },
+        }
+    }
+
+    fn stores() -> BTreeMap<ContextName, PathBuf> {
+        BTreeMap::from([
+            (context("work"), PathBuf::from("/l/contexts/work")),
+            (context("home"), PathBuf::from("/u/stores/home")),
+        ])
+    }
+
+    fn failure(context_name: &str, id: Option<&str>, error: &str) -> TaskFailure {
+        TaskFailure {
+            context: context(context_name),
+            id: id.map(|id| id.parse().unwrap()),
+            error: error.to_owned(),
+        }
+    }
+
+    #[test]
+    fn invalid_files_are_listed_by_context_then_id() {
+        let reindexed = Reindexed {
+            rows: vec![
+                invalid("work", "bbbbbbbb", "line 2: invalid TOML"),
+                invalid("home", "cccccccc", "the file is not valid UTF-8"),
+                invalid(
+                    "work",
+                    "aaaaaaaa",
+                    "line 1: a task file starts with a `+++` line",
+                ),
+            ],
+            failed: Vec::new(),
+        };
+        let result = reindex_result(&reindexed, &stores());
+        assert_eq!(result.tasks, 3);
+        let listed: Vec<(String, String)> = result
+            .invalid
+            .iter()
+            .map(|file| (file.context.to_string(), file.id.to_string()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("home".to_owned(), "cccccccc".to_owned()),
+                ("work".to_owned(), "aaaaaaaa".to_owned()),
+                ("work".to_owned(), "bbbbbbbb".to_owned()),
+            ]
+        );
+        assert_eq!(
+            result.invalid[1].error,
+            "line 1: a task file starts with a `+++` line"
+        );
+        assert_eq!(result.failed, []);
+    }
+
+    #[test]
+    fn failures_get_the_path_of_their_task_or_store() {
+        let failures = [
+            failure("work", Some("k3q7zm2a"), "permission denied"),
+            failure("home", None, "cannot list"),
+            failure("work", Some("k3q7zm2a"), "a second error of the same task"),
+        ];
+        let files: Vec<(PathBuf, String)> = failed_files(&failures, &stores())
+            .into_iter()
+            .map(|file| (file.path, file.error))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                (
+                    PathBuf::from("/l/contexts/work/tasks/k3q7zm2a"),
+                    "permission denied".to_owned()
+                ),
+                (
+                    PathBuf::from("/u/stores/home/tasks"),
+                    "cannot list".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_indexed_reports_nothing() {
+        let empty = Reindexed {
+            rows: Vec::new(),
+            failed: Vec::new(),
+        };
+        assert_eq!(reindex_result(&empty, &stores()), ReindexResult::default());
+    }
+}
