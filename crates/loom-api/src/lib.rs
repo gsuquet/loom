@@ -15,7 +15,6 @@ mod repo_update;
 mod search;
 mod service;
 mod status;
-mod timestamp;
 mod update;
 mod version;
 
@@ -24,15 +23,15 @@ pub use auto_update::{
     ChannelSource, ChosenChannel, PendingUpgrade, UpdateChannel, UpdatePolicyMode, UpdateResult,
     UpdateState, UpdateStatus,
 };
-pub use context::{
-    CONTEXT_NAME_MAX_LEN, ContextAssignment, ContextName, ContextNameError, UNASSIGNED,
-};
+pub use context::ContextAssignment;
 pub use disk::{ContextDiskUsage, DiskUsage};
 pub use doctor::{
     CheckStatus, DaemonDiagnostics, DoctorCheck, DoctorReport, RemoteCheck, RemoteCheckOutcome,
     RemoteCheckResult, RemoteProblem, RemoteScheme, SshAgentSocket,
 };
 pub use error::{ApiError, ErrorCode};
+// Moved to loom-core, which loom-api builds on; re-exported so that clients keep their paths.
+pub use loom_core::{CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, Timestamp, UNASSIGNED};
 pub use repo::{
     ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,
     RepoUpdatePolicy, ScanIssue, ScanResult,
@@ -45,7 +44,6 @@ pub use repo_update::{
 pub use search::{DEFAULT_SEARCH_LIMIT, SearchField, SearchKind, SearchResult, SearchResults};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
-pub use timestamp::Timestamp;
 pub use update::{
     DaemonRestart, InstallReport, RollbackReport, UpgradeDecision, UpgradeReport,
     UpgradeSkipReason, UpgradeSource,
