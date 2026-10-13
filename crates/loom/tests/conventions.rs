@@ -5,8 +5,12 @@ use std::process::Stdio;
 
 use assert_cmd::Command;
 
+mod isolation;
+
 fn loom() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("loom"))
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("loom"));
+    command.envs(isolation::isolated_env(&isolation::shared_home()));
+    command
 }
 
 #[test]
@@ -16,6 +20,7 @@ fn closed_stdout_is_a_success() {
     let (reader, writer) = io::pipe().unwrap();
     drop(reader);
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("loom"))
+        .envs(isolation::isolated_env(&isolation::shared_home()))
         .arg("version")
         .stdout(Stdio::from(writer))
         .stderr(Stdio::piped())

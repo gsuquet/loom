@@ -222,6 +222,38 @@ fn status_returns_the_daemon_state() {
     assert_eq!(status.config_path, home.path().join("config.toml"));
 }
 
+/// Guard: a test-started loomd scans under the test's home, never under the real one.
+#[test]
+fn scan_roots_are_under_the_test_home() {
+    let home = short_home();
+    let mut daemon = Daemon::start(&mut loomd(home.path()), &socket(home.path()));
+    daemon.signal("TERM");
+    daemon.wait();
+    let stderr = daemon.stderr();
+    let line = stderr
+        .lines()
+        .find(|line| line.contains("repository index started"))
+        .unwrap_or_else(|| panic!("{stderr}"));
+    let (_, rest) = line.split_once("roots=[").unwrap();
+    let (list, _) = rest.split_once(']').unwrap();
+    let roots: Vec<PathBuf> = list
+        .split(", ")
+        .map(|item| PathBuf::from(item.trim_matches('"')))
+        .collect();
+    assert!(!roots.is_empty(), "{line}");
+    let real_home = std::env::var_os("HOME").map(PathBuf::from);
+    for root in &roots {
+        assert!(root.starts_with(home.path()), "{}", root.display());
+        if let Some(real_home) = &real_home {
+            assert!(
+                !root.starts_with(real_home) || home.path().starts_with(real_home),
+                "scan root {} is under the real home",
+                root.display()
+            );
+        }
+    }
+}
+
 #[test]
 fn loom_home_flag_overrides_the_environment() {
     let home = short_home();

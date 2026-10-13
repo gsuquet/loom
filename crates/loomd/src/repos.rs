@@ -93,6 +93,12 @@ pub fn start(db: &Path, config: &Config, home: &Path) -> Result<(RepoIndex, Repo
         forges: config.forges.clone(),
         ssh: ssh_resolver(),
     };
+    let roots: Vec<String> = discovery
+        .roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
+    info!(?roots, "repository index started");
     let (commands, received) = mpsc::channel();
     // The scan on start, queued before any request.
     let _ = commands.send(Command::Scan {

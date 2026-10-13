@@ -18,6 +18,8 @@ use loom_api::{ApiError, ApiVersion, ErrorCode, StatusResponse, Timestamp, Versi
 use serde_json::Value;
 use tempfile::TempDir;
 
+mod isolation;
+
 const TIMEOUT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(20);
 
@@ -51,10 +53,11 @@ fn log(home: &Path) -> PathBuf {
     home.join("log/loomd.log")
 }
 
-/// Runs `loom --color=never <args>` with `LOOM_HOME` set to `home`.
+/// Runs `loom --color=never <args>` with `LOOM_HOME` and `HOME` set to `home`.
 fn loom(home: &Path, args: &[&str]) -> Output {
     Command::new(loom_bin())
         .env("LOOM_HOME", home)
+        .envs(isolation::isolated_env(home))
         .env_remove("NO_COLOR")
         .arg("--color=never")
         .args(args)
@@ -191,6 +194,18 @@ fn starts_loomd_when_absent_then_reuses_it() {
 
     assert_eq!(mode(&home.path().join("log")), 0o700);
     assert_eq!(mode(&log(home.path())), 0o600);
+}
+
+/// Guard: the `loomd` a test starts through `loom` scans under the test's home, never under
+/// the real one.
+#[test]
+fn started_loomd_scans_only_the_test_home() {
+    let home = short_home();
+    let _guard = DaemonGuard { home: home.path() };
+    let output = loom(home.path(), &["status"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let roots = isolation::logged_scan_roots(&fs::read_to_string(log(home.path())).unwrap());
+    isolation::assert_isolated(&roots, home.path());
 }
 
 #[test]
