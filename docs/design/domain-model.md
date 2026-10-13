@@ -65,7 +65,7 @@ Inputs are stored, the score is computed:
 
 - `importance` p0–p3 (default per kind/source), `due` (or source SLA), `pinned`, number of tasks blocked, age.
 - Order is lexicographic, no weights ([ADR-0013](../adr/0013-task-store.md)): pinned, then overdue or due today (earliest first), then importance, then due date (none last), then age (oldest first).
-- The list holds `ready` and `active` tasks; `inbox` has its own view; `waiting` tasks with a future `until` are hidden.
+- The list holds `ready` and `active` tasks; `inbox` has its own view; `waiting` tasks are hidden while their `until` is in the future or unset, and listed again from the `until` date.
 - `loom ls --why` names the rule that ordered each task after its predecessor.
 
 ### Focus

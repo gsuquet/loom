@@ -10,6 +10,7 @@ mod context;
 mod event;
 mod event_log;
 mod id;
+mod priority;
 mod task;
 mod timestamp;
 
@@ -29,6 +30,7 @@ pub use id::{
 };
 /// A calendar date, written `YYYY-MM-DD` (due dates, waits).
 pub use jiff::civil::Date;
+pub use priority::{RankReason, Ranked, rank};
 pub use task::{
     ContentFormat, ExternalRef, Importance, Kind, Link, ReadOnlyReason, Relations, Status,
     StatusName, Task, is_legal_transition,
