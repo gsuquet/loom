@@ -86,7 +86,7 @@ Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m
 
 `default_context`, `[contexts]`, `[repos]` and `[forges]` are read and validated with the rest of `config.toml`: an invalid value stops `loomd` and is reported by `loom` like any other error in the file. `loomd` uses them for the [repository index](#indexdb): it reads them once, when it starts, so a change takes effect after a restart; the scan on start then reassigns the contexts (and the slugs) of every repository. `~` is the user's home directory (`HOME`); `loomd` exits with code 1 when it is unknown.
 
-`fetch_interval`, `fetch_concurrency` and `update` are not used yet.
+`fetch_concurrency` and `update` are not used yet. `fetch_interval` is, for now, only the time between two refreshes of every repository's [state](api.md#state-refresh); no fetch runs.
 
 ```toml
 default_context = "personal"
@@ -125,7 +125,7 @@ kind = "gitlab"
 | `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
 | `[repos] max_depth` | integer | `4` | 0 to 4294967295. Deepest directory level examined below each root, the root being level 0. |
 | `[repos] exclude` | array of strings: glob patterns | `[]` | Each pattern is not empty and is a valid glob (`*`, `?`, `**`, `[…]`, `{a,b}`). A pattern without `/` matches a directory name at any depth (`archive`, `*-old`); a pattern with `/` matches the whole directory path relative to its root, with `/` separators (`clients/old`, `**/fixtures`). A matching directory is not walked. Hidden directories and `node_modules`, `vendor`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__` are always excluded. |
-| `[repos] fetch_interval` | string: duration | `"1h"` | Duration syntax of `[update] check_interval`. At least `"1m"`. |
+| `[repos] fetch_interval` | string: duration | `"1h"` | Duration syntax of `[update] check_interval`. At least `"1m"`. Time between two refreshes of every repository state. |
 | `[repos] fetch_concurrency` | integer | `4` | 1 to 4294967295. |
 | `[repos."<path>"]` | table | none | `<path>`: same path rules as `match.paths`. Two keys naming the same path (`"~/a"` and `"~/a/"`) are rejected. |
 | `[repos."<path>"] context` | string | none | Names a defined context. |
@@ -259,9 +259,9 @@ Error: cannot start the repository index
   caused by: the index /home/me/.loom/index.db has schema version 2, this loom supports up to 1: upgrade loom, or stop loomd and delete the file to rebuild it
 ```
 
-`loomd` then scans the repositories (see [`POST /v1/repos/scan`](api.md#repositories)) and serves the API during that scan.
+`loomd` then scans the repositories (see [`POST /v1/repos/scan`](api.md#repositories)) and serves the API during that scan. After the scan, it reads the state of every repository in the background, then again every `[repos] fetch_interval` (see [state refresh](api.md#state-refresh)).
 
-The index can be rebuilt from a scan: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, and slugs are assigned again.
+The index can be rebuilt from a scan: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, slugs are assigned again, and states are read again.
 
 ## `run/`
 

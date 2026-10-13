@@ -19,7 +19,7 @@
 | --- | --- | --- | --- |
 | `GET` | `/v1/status` | `200` | [`StatusResponse`](#statusresponse) |
 | `GET` | `/v1/repos` | `200` | [`RepoList`](#repolist) |
-| `GET` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary) |
+| `GET` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary); with `?refresh=true`, after reading its state |
 | `DELETE` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary) of the removed repository |
 | `POST` | `/v1/repos/scan` | `200` | [`ScanResult`](#scanresult) |
 | `POST` | `/v1/repos/register` | `200` | [`RepoSummary`](#reposummary) |
@@ -41,6 +41,12 @@ Repositories are sorted by slug.
 
 `/v1/repos/{context}/{name}` addresses a repository by its slug `<context>/<name>`, the two parts as two path segments (`/v1/repos/personal/loom-2` for the slug `personal/loom-2`). Characters outside the URL path syntax are percent-encoded.
 
+`GET /v1/repos/{context}/{name}` query parameter, optional; any other parameter is an `invalid_request`:
+
+| Parameter | Content |
+| --- | --- |
+| `refresh` | `true`: read the repository's [state](#repostate) now (within its time budget, on a thread of its own), store it, and return the repository with it. `false` (default): return the stored state. |
+
 `POST /v1/repos/scan` walks the roots (`[repos] roots`, then every `match.paths`, `~` expanded with `HOME`) and reads every registered repository in place, then applies the changes to the index in one transaction:
 
 - a repository found is added, or updated when its identity changed (remotes, context, forge or slug);
@@ -54,6 +60,17 @@ Scans run one at a time. A scan request made while a scan runs waits for that sc
 
 `DELETE /v1/repos/{context}/{name}` removes the repository from the index, registered or not. A scan adds a repository found under a root again.
 
+#### State refresh
+
+`loomd` reads the [state](#repostate) of a repository with `gix`, never starting git, and stores it in the index. It reads it:
+
+- after each scan, for the repositories added or updated by the scan;
+- after the scan on start, then every `[repos] fetch_interval` (default 1 hour), for every repository;
+- after a registration, for the registered repository;
+- on `GET /v1/repos/{context}/{name}?refresh=true`, for that repository, before answering.
+
+Except on `?refresh=true`, states are read in the background by at most 4 threads (fewer on a machine with fewer cores), one repository each, and each repository is queued at most once at a time. Reads of the index never wait for them. A repository without a state yet has `state: null`.
+
 ### Errors
 
 Every error response has an [`ApiError`](#apierror) body.
@@ -63,15 +80,16 @@ Every error response has an [`ApiError`](#apierror) body.
 | No endpoint at the path | `404` | `not_found` |
 | Endpoint exists, method not accepted | `405` (with an `allow` header) | `invalid_request` |
 | No repository with the slug of `/v1/repos/{context}/{name}` | `404` | `not_found` |
-| Invalid query parameter, unknown parameter or invalid `context` | `400` | `invalid_request` |
+| Invalid query parameter, unknown parameter, invalid `context`, or `refresh` neither `true` nor `false` | `400` | `invalid_request` |
 | Register: body not a valid `RegisterRequest`, path not absolute or with a `..` component, no repository at or above the path, or a repository whose `.git` or config cannot be read | `400` | `invalid_request` |
 | The index cannot be read or written | `500` | `internal` |
 | The daemon cannot read its clock as a timestamp | `500` | `internal` |
-| The daemon stops before answering a scan, register or remove request | `503` | `unavailable` |
+| The daemon stops before answering a scan, register, remove or refresh request | `503` | `unavailable` |
 
 ```bash
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/status
 curl --unix-socket ~/.loom/run/loomd.sock 'http://loomd/v1/repos?context=personal&query=loom'
+curl --unix-socket ~/.loom/run/loomd.sock 'http://loomd/v1/repos/personal/loom?refresh=true'
 curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/repos/scan
 curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
   -d '{"path": "/home/me/src/tool"}' http://loomd/v1/repos/register
@@ -91,6 +109,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
 | `RepoList` | [`schemas/repo_list.json`](schemas/repo_list.json) |
+| `RepoState` | [`schemas/repo_state.json`](schemas/repo_state.json) (in `RepoSummary`) |
 | `RepoSummary` | [`schemas/repo_summary.json`](schemas/repo_summary.json) |
 | `ScanResult` | [`schemas/scan_result.json`](schemas/scan_result.json) |
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
@@ -111,10 +130,10 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 
 | Message | Unknown fields |
 | --- | --- |
-| Request | Rejected (`#[serde(deny_unknown_fields)]`): `RegisterRequest`, and the query parameters of `GET /v1/repos`. |
+| Request | Rejected (`#[serde(deny_unknown_fields)]`): `RegisterRequest`, and the query parameters of `GET /v1/repos` and `GET /v1/repos/{context}/{name}`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown enum values (`api_version`, `code`, `channel`, `profile`, `policy`, `kind`) are rejected.
+Unknown enum values (`api_version`, `code`, `channel`, `profile`, `policy`, `kind`, `operation`) are rejected.
 
 ### Scalar encodings
 
@@ -195,6 +214,7 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
 | --- | --- | --- |
 | `registered` | boolean | Added by `POST /v1/repos/register`: scans keep it while its `.git` exists. |
 | `last_used` | `Timestamp` or absent | Last time the repository was used. Never set by this version. |
+| `state` | [`RepoState`](#repostate) \| `null` | State of the repository, `null` until it is read for the first time (see [state refresh](#state-refresh)). |
 
 ```json
 {
@@ -211,7 +231,46 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
   ],
   "primary_remote": "origin",
   "forge": "github",
-  "registered": false
+  "registered": false,
+  "state": null
+}
+```
+
+### `RepoState`
+
+The state of a repository (its card), read with `gix` without starting git, and without writing to the repository.
+
+Every field but `refreshed_at` and `error` is either `{"known": <value>}` or the string `"unknown"`. A field is unknown when its time budget ran out or it could not be read; `error` then says why. A known `null` (`{"known": null}`) is a value: no operation, no upstream, and so on.
+
+The status walk (`dirty`), the untracked count and the ahead/behind counts share a time budget of 2 seconds per repository, counted from the start of the read; what is not computed in time is unknown, the other fields are still read. The git configuration of the user (`HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_*`) and of the system applies (`core.excludesFile`, `status.renames`, `core.abbrev`…); the configuration of the git installation, which only git itself can locate, does not.
+
+| Field | Known value | Content |
+| --- | --- | --- |
+| `refreshed_at` | `Timestamp` | When the state was read. |
+| `head` | object | What `HEAD` points to, tagged by `kind`: `{"kind": "branch", "name": "main"}`, `{"kind": "unborn", "name": "main"}` (a branch without commits) or `{"kind": "detached", "commit": "abc1234"}` (commit id abbreviated per `core.abbrev`, at least 7 digits). A rebase in progress detaches `HEAD`. |
+| `dirty` | integer (u64) | Tracked paths with a change between `HEAD`, the index and the working tree: modified, added, deleted, renamed (one path), type-changed or conflicted, staged or not, each path once. A submodule follows its `ignore` configuration. Untracked files are not counted. |
+| `untracked` | object | `count`: untracked files, each counted (an untracked directory counts its files, an untracked nested repository counts as one), `.gitignore`, `.git/info/exclude` and `core.excludesFile` applied, empty directories ignored; at most 1,000. `capped`: `true` when the count stopped at 1,000. |
+| `operation` | string \| `null` | Operation in progress, from the markers of the git directory of the working tree: `rebase` (either backend), `merge`, `cherry-pick`, `revert`, `bisect`, `am`. When several markers exist, the first in this order wins: `am`, `rebase`, `cherry-pick`, `merge`, `bisect`, `revert`. |
+| `upstream` | object \| `null` | Upstream of the `HEAD` branch: `name` (short ref name, such as `origin/main`), `ahead` and `behind` (commits of `HEAD` not in the upstream and the reverse, each a known integer or `"unknown"`). `null` when `HEAD` is detached, the branch has no upstream configured, or the upstream ref does not exist (never fetched, or pruned). |
+| `default_branch` | string \| `null` | The branch `refs/remotes/<primary remote>/HEAD` points to; otherwise `main`, then `master`, when the branch exists locally or on the primary remote; otherwise `null`. |
+| `last_commit` | `Timestamp` \| `null` | Committer date of `HEAD`'s commit; `null` on an unborn branch. |
+| `last_fetch` | `Timestamp` \| `null` | Modification time of `FETCH_HEAD`, the latest of the working tree's git directory and of the main one (a linked worktree has its own); `null` when neither exists. |
+| `error` | string \| `null` | Why fields are unknown, one reason per field, joined with `; `, such as `dirty: time budget of 2s exceeded`. A repository that cannot be opened has every field unknown but `last_fetch`, and `cannot open the repository: …`. |
+
+```json
+{
+  "refreshed_at": "2026-10-13T08:00:00Z",
+  "head": { "known": { "kind": "branch", "name": "main" } },
+  "dirty": { "known": 2 },
+  "untracked": { "known": { "count": 1, "capped": false } },
+  "operation": { "known": null },
+  "upstream": {
+    "known": { "name": "origin/main", "ahead": { "known": 1 }, "behind": { "known": 0 } }
+  },
+  "default_branch": { "known": "main" },
+  "last_commit": { "known": "2026-10-12T17:42:10Z" },
+  "last_fetch": { "known": null },
+  "error": null
 }
 ```
 
