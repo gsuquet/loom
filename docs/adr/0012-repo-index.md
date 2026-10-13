@@ -23,6 +23,10 @@ The design docs placed contexts and SQLite in v0.3 and left the repo card undefi
 5. **No compatibility files**: `~/.cache/git/*.json` are not written. Scripts and agent instructions use `loom repo ls --json` / `loom repo show --json`.
 6. **Registration on use** through any `loom` command run inside a repo and a shell hook (`loom shell-init`), brought forward from v0.3.
 
+## Clarifications
+
+- 2026-10-13 (#42): an `unassigned` repository is fetched but never fast-forwarded. No rule says it belongs to a context whose policy was chosen, so `ff` (the default, or set on the repository) applies to it as `fetch`; `off` still applies.
+
 ## Consequences
 
 - One definition of contexts for repos now and tasks later; the v0.3 domain work reuses it.

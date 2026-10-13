@@ -77,8 +77,8 @@ Editable metadata lives in `config.toml` (`[repos."<path>"]`: `context`, `update
 
 `loomd` keeps repos up to date without ever risking local work.
 
-- **Policy** per context and per repo (`update = "ff" | "fetch" | "off"`), repo override first, then context, default `ff`.
-- **Fetch**: `git fetch` of the primary remote (and its tags), on a schedule (`[repos] fetch_interval`, default 1 h, jittered), at most `[repos] fetch_concurrency` (default 4) at a time, each with a timeout.
+- **Policy** per context and per repo (`update = "ff" | "fetch" | "off"`), repo override first, then context, default `ff`. An `unassigned` repo is fetched, never fast-forwarded (`ff` applies as `fetch`; ADR-0012 clarification).
+- **Fetch**: `git fetch --no-prune --tags` of the primary remote, on a schedule (`[repos] fetch_interval`, default 1 h, jittered ±10 %), at most `[repos] fetch_concurrency` (default 4) at a time, each with a timeout (fetch 120 s, fast-forward 30 s; the process group is stopped on timeout). The state is read again after the fetch, right before deciding.
 - **Fast-forward**, only when every condition holds (pure decision, exhaustively tested):
   - policy `ff`;
   - no operation in progress, no conflicted file, no tracked change (staged or not);
@@ -88,8 +88,8 @@ Editable metadata lives in `config.toml` (`[repos."<path>"]`: `context`, `update
   - No other branch is touched; nothing is ever rebased, reset, stashed or deleted.
 - **Non-interactive git**: `GIT_TERMINAL_PROMPT=0`; when the user has no `core.sshCommand` / `GIT_SSH_COMMAND`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`; the user's git config, credential helpers and hooks are honoured (ADR-0008), so `post-merge` hooks run.
 - **SSH from a service**: on macOS the launchd user agent inherits `SSH_AUTH_SOCK` from the user session (system `ssh-agent`, keychain passphrases). On Linux the systemd user unit must see the agent socket; `loom repo doctor` checks it and prints the fix.
-- **Failures**: a failing host (VPN down, auth) backs off per host (doubling, up to the fetch interval × 8) without blocking other hosts. Each repo keeps its `last_update` (`fetched`, `fast-forwarded`, `skipped: <reason>`, `failed: <reason>`, with time).
-- **Manual**: `loom repo sync [<repo>…] [-n]` runs the same logic now; `-n` prints the decisions.
+- **Failures**: a failing host (VPN down, auth) backs off per host (doubling, up to the fetch interval × 8) without blocking other hosts; a failure while another fetch of the same host succeeds backs off only its repo. Each repo keeps its `last_update` (time, policy, outcomes: `fetched`, `fast_forwarded`, `default_branch_moved`, `skipped` with a reason, `failed` with the step and git's stderr tail), stored apart from the state.
+- **Manual**: `loom repo sync [<repo>…] [-n]` runs the same logic now (`POST /v1/repos/sync`), ignoring the schedule and the backoff; `-n` prints the decisions from the current state (`would fetch, then decide` when they depend on the fetch).
 
 ## Out of scope for v0.2
 

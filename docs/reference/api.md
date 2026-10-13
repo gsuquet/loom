@@ -23,6 +23,7 @@
 | `DELETE` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary) of the removed repository |
 | `POST` | `/v1/repos/scan` | `200` | [`ScanResult`](#scanresult) |
 | `POST` | `/v1/repos/register` | `200` | [`RepoSummary`](#reposummary) |
+| `POST` | `/v1/repos/sync` | `200` | [`SyncResult`](#syncresult) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state.
 
@@ -67,9 +68,26 @@ Scans run one at a time. A scan request made while a scan runs waits for that sc
 - after each scan, for the repositories added or updated by the scan;
 - after the scan on start, then every `[repos] fetch_interval` (default 1 hour), for every repository;
 - after a registration, for the registered repository;
+- after each [update](#updates) that ran git, for that repository, stored with its result;
 - on `GET /v1/repos/{context}/{name}?refresh=true`, for that repository, before answering.
 
 Except on `?refresh=true`, states are read in the background by at most 4 threads (fewer on a machine with fewer cores), one repository each, and each repository is queued at most once at a time. Reads of the index never wait for them. A repository without a state yet has `state: null`.
+
+#### Updates
+
+`loomd` updates every repository of the index on a schedule: fetch of the primary remote, then fast-forwards under the conditions of its update policy ([how updates work](../explanation/repo-updates.md)). Each update stores its result as the repository's [`last_update`](#lastupdate), and the state read after it.
+
+| Property | Value |
+| --- | --- |
+| First update | At once for a repository never updated (within a second of the scan that indexed it); otherwise one interval after its `last_update`. |
+| Interval | `[repos] fetch_interval` (default 1 hour) after the end of the previous update, ±10 % at random. The index is read again every 10 seconds for new repositories. |
+| Concurrency | At most `[repos] fetch_concurrency` updates at once (default 4, at most 64). |
+| Backoff | After a failed fetch, the repository's next update waits 2, 4, then 8 times the interval (never more), counting consecutive failures. Every repository of the same host (`host[:port]` of the primary remote, or its URL for a local path) waits as long, unless a fetch of that host that started earlier succeeded in the meantime. A successful fetch clears the host's backoff. Other hosts are not affected. |
+| Policy | `[repos."<path>"] update`, otherwise the context's `update`, otherwise `ff`. An `unassigned` repository gets `fetch` instead of `ff`. |
+| git commands | `git fetch --no-prune --tags <primary>` (timeout 120 s); `git merge --ff-only --no-autostash <commit>` (30 s); `git fetch --no-prune <primary> <merge ref>:refs/heads/<default branch>` (120 s). On timeout, the command's process group gets `SIGTERM`, then `SIGKILL` 5 s later. |
+| git environment | `loomd`'s environment and the user's git configuration and hooks, plus `GIT_TERMINAL_PROMPT=0`, `GIT_CEILING_DIRECTORIES=<parent of the working tree>`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` unless `core.sshCommand` (read with `git config --get`), `GIT_SSH_COMMAND` or `GIT_SSH` is set; `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE` and `GIT_PREFIX` removed. |
+
+`POST /v1/repos/sync` takes a [`SyncRequest`](#syncrequest) and updates the repositories it names (every repository of the index when it names none) now, regardless of their schedule and of the backoff, then answers with a [`SyncResult`](#syncresult), sorted by slug, after every result is stored. A repository already being updated is updated again once that update ends. The answer may take as long as the updates (each command has its timeout). With `dry_run: true`, nothing runs: each state is read now and the result says what an update would do.
 
 ### Errors
 
@@ -79,12 +97,13 @@ Every error response has an [`ApiError`](#apierror) body.
 | --- | --- | --- |
 | No endpoint at the path | `404` | `not_found` |
 | Endpoint exists, method not accepted | `405` (with an `allow` header) | `invalid_request` |
-| No repository with the slug of `/v1/repos/{context}/{name}` | `404` | `not_found` |
+| No repository with the slug of `/v1/repos/{context}/{name}`, or with a slug of a `SyncRequest` | `404` | `not_found` |
+| Sync: body not a valid `SyncRequest` | `400` | `invalid_request` |
 | Invalid query parameter, unknown parameter, invalid `context`, or `refresh` neither `true` nor `false` | `400` | `invalid_request` |
 | Register: body not a valid `RegisterRequest`, path not absolute or with a `..` component, no repository at or above the path, or a repository whose `.git` or config cannot be read | `400` | `invalid_request` |
 | The index cannot be read or written | `500` | `internal` |
 | The daemon cannot read its clock as a timestamp | `500` | `internal` |
-| The daemon stops before answering a scan, register, remove or refresh request | `503` | `unavailable` |
+| The daemon stops before answering a scan, register, remove, refresh or sync request | `503` | `unavailable` |
 
 ```bash
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/status
@@ -94,6 +113,8 @@ curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/repos/scan
 curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
   -d '{"path": "/home/me/src/tool"}' http://loomd/v1/repos/register
 curl --unix-socket ~/.loom/run/loomd.sock -X DELETE http://loomd/v1/repos/unassigned/tool
+curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
+  -d '{"repos": ["personal/loom"], "dry_run": true}' http://loomd/v1/repos/sync
 ```
 
 ## Types
@@ -106,6 +127,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `ApiVersion` | [`schemas/api_version.json`](schemas/api_version.json) |
 | `ContextAssignment` | [`schemas/context_assignment.json`](schemas/context_assignment.json) (not returned by any endpoint or command yet) |
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
+| `LastUpdate` | [`schemas/last_update.json`](schemas/last_update.json) (in `RepoSummary` and `SyncResult`) |
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
 | `RepoList` | [`schemas/repo_list.json`](schemas/repo_list.json) |
@@ -113,6 +135,8 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `RepoSummary` | [`schemas/repo_summary.json`](schemas/repo_summary.json) |
 | `ScanResult` | [`schemas/scan_result.json`](schemas/scan_result.json) |
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
+| `SyncRequest` | [`schemas/sync_request.json`](schemas/sync_request.json) |
+| `SyncResult` | [`schemas/sync_result.json`](schemas/sync_result.json) |
 | `UpdateState` | [`schemas/update_state.json`](schemas/update_state.json) (file `state/update.json`, see [configuration](configuration.md#state)) |
 | `VersionInfo` | [`schemas/version_info.json`](schemas/version_info.json) |
 
@@ -217,6 +241,7 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
 | `registered` | boolean | Added by `POST /v1/repos/register`: scans keep it while its `.git` exists. |
 | `last_used` | `Timestamp` or absent | Last time the repository was used. Never set by this version. |
 | `state` | [`RepoState`](#repostate) \| `null` | State of the repository, `null` until it is read for the first time (see [state refresh](#state-refresh)). |
+| `last_update` | [`LastUpdate`](#lastupdate) \| `null` | Result of the last [update](#updates), `null` until the first one. Kept across state refreshes and scans. |
 
 ```json
 {
@@ -234,7 +259,8 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
   "primary_remote": "origin",
   "forge": "github",
   "registered": false,
-  "state": null
+  "state": null,
+  "last_update": null
 }
 ```
 
@@ -275,6 +301,76 @@ The status walk (`dirty`), the untracked count and the ahead/behind counts share
   "error": null
 }
 ```
+
+### `LastUpdate`
+
+The result of the last update of a repository, scheduled or requested.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `time` | `Timestamp` | When the update ended. |
+| `policy` | string | Update policy applied: `ff`, `fetch` or `off`. |
+| `outcomes` | list of objects | What happened, in order, never empty: the fetch or why there was none, the branch `HEAD` is on, then the default branch when it was moved or could not be. Each is tagged by `kind`. |
+
+| `kind` | Other fields | Meaning |
+| --- | --- | --- |
+| `fetched` | | The primary remote was fetched; the branch `HEAD` is on had nothing to bring in, or the policy is `fetch`. |
+| `fast_forwarded` | `branch`, `from`, `to` (full commit ids) | The branch `HEAD` is on was fast-forwarded. |
+| `default_branch_moved` | `branch`, `from`, `to` | The local default branch, checked out in no working tree, was fast-forwarded. |
+| `skipped` | `reason` | A step was not done (below). |
+| `failed` | `step` (`fetch`, `fast_forward`, `move_default_branch`), `error` (exit status, `timed out after <n>s`, or `cannot run git: …`), `stderr_tail` (the last 2,000 bytes at most of git's standard error, from a line start) | A git command failed. A failed fetch counts for the [backoff](#updates). |
+
+`reason` is tagged by `code`:
+
+| `code` | Other fields | Meaning |
+| --- | --- | --- |
+| `policy_off` | | Policy `off`: no git command. |
+| `no_remote` | | No remote to fetch: no git command. |
+| `unreadable` | `error` | The repository cannot be opened: no git command. |
+| `unknown` | `field`: `head`, `dirty`, `operation`, `upstream`, `ahead`, `behind`, `commits`, `default_branch` | A field the decision needs could not be read (time budget, filter driver, read error). |
+| `operation` | `operation` | An operation is in progress (`rebase`, `merge`, `cherry-pick`, `revert`, `bisect`, `am`). |
+| `dirty` | `paths` | Tracked paths are modified, staged or conflicted. |
+| `detached` | | `HEAD` is not on a branch. |
+| `unborn` | `branch` | The branch has no commit. |
+| `no_upstream` | `branch` | The branch has no upstream, or its ref does not exist. |
+| `diverged` | `branch`, `ahead`, `behind` | The branch and its upstream both have commits the other lacks. |
+| `merge_refused` | `stderr_tail` | `git merge --ff-only` refused (an untracked file in the way, a change made since the decision). Not retried before the next update. |
+| `default_branch_diverged` | `branch`, `ahead`, `behind` | The local default branch and its upstream both have commits the other lacks. |
+
+```json
+{
+  "time": "2026-10-13T08:00:00Z",
+  "policy": "ff",
+  "outcomes": [
+    {
+      "kind": "fast_forwarded",
+      "branch": "main",
+      "from": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+      "to": "5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80"
+    }
+  ]
+}
+```
+
+### `SyncRequest`
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `repos` | list of strings, optional | Slugs of the repositories to update; empty or absent: every repository of the index. |
+| `dry_run` | boolean, optional | `true`: run nothing, say what an update would do. Default `false`. |
+
+Unknown fields are rejected.
+
+### `SyncResult`
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `repos` | list of objects | One per repository, sorted by slug: `slug`, and `result`, tagged by `kind`. |
+
+| `kind` | Other fields | Content |
+| --- | --- | --- |
+| `updated` | `update`: [`LastUpdate`](#lastupdate) | The update ran; also stored as the repository's `last_update`. |
+| `planned` | `policy`, `actions` | Dry run. `actions`, in order, each tagged by `kind`: `skip` (with a `reason`, as in `LastUpdate`), `fetch`, `decide_after_fetch` (whether a branch moves depends on what the fetch brings). With policy `ff`, `decide_after_fetch` is replaced by a `skip` when the working tree already rules out a fast-forward of the branch `HEAD` is on (operation, tracked change, detached or unborn `HEAD`, or one of these unknown). The default branch is never predicted. |
 
 ### `RepoList`
 

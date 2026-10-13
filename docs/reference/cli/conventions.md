@@ -34,7 +34,7 @@ No shipped command asks for confirmation yet.
 
 ## Dry run
 
-Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install` and `loom service uninstall`.
+Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install`, `loom service uninstall`, `loom upgrade`, `loom rollback` and `loom repo sync`.
 
 ## Streams
 
@@ -366,6 +366,57 @@ JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `cu
 | --- | --- |
 | `0` | Restored, or would be with `--dry-run`. |
 | `1` | Auto-upgrade of loomd in progress; `nothing to roll back to: no saved version other than <version> in <dir>`; install directory not writable; saved binaries not reporting their version; I/O error. |
+| `2` | Usage error. |
+
+## `loom repo sync`
+
+`loom repo sync [<REPO>...] [-n] [--json]` asks loomd to update repositories now ([`POST /v1/repos/sync`](../api.md#updates)), as it does on its schedule ([how updates work](../../explanation/repo-updates.md)): fetch of the primary remote, fast-forward of the branch `HEAD` is on and of the default branch only under the conditions of the update policy. It ignores the schedule and the backoff of unreachable hosts. `REPO` is a slug (`<context>/<name>`); without any, every repository of the index is updated. loomd is started first when it is not running, as by `loom status`.
+
+The command waits for every update to end (at most one hour); updates run `fetch_concurrency` at a time.
+
+### Human output
+
+One line per repository, sorted by slug: the slug, two spaces, then what happened. Several outcomes of one update are separated by `; `.
+
+```text
+$ loom repo sync
+personal/dotfiles  fetched
+personal/loom  fast-forwarded main 1a2b3c4..5d6e7f8
+personal/notes  skipped: 2 changed tracked paths
+personal/site  fetched; moved default branch main 0a1b2c3..4d5e6f7
+unassigned/scratch  skipped: no remote
+work/api  failed: fetch: timed out after 120s
+work/legacy  skipped: update policy is off
+```
+
+| Outcome | Meaning |
+| --- | --- |
+| `fetched` | The primary remote was fetched; no branch had to move. |
+| `fast-forwarded <branch> <from>..<to>` | The branch `HEAD` is on was fast-forwarded (commit ids abbreviated to 7 digits). |
+| `moved default branch <branch> <from>..<to>` | The local default branch, checked out nowhere, was fast-forwarded. |
+| `skipped: <reason>` | A step was not done; the reasons are listed in [`SkipReason`](../api.md#lastupdate). |
+| `failed: <step>: <error>[: <last line of git's stderr>]` | A git command failed or timed out; `step` is `fetch`, `fast_forward` or `move_default_branch`. |
+
+With `-n`/`--dry-run`, nothing is fetched or merged: each line says what an update would do, decided from the state read now. Whether a branch moves depends on what the fetch brings, so it is not predicted (`then decide`), unless the working tree already rules out a fast-forward of the branch `HEAD` is on. The default branch is never predicted.
+
+```text
+$ loom repo sync -n
+personal/loom  would fetch, then decide
+personal/notes  would fetch, skip: 2 changed tracked paths
+work/docs  would fetch
+work/legacy  skip: update policy is off
+```
+
+### JSON output
+
+`loom repo sync --json`: [`SyncResult`](../schemas/sync_result.json), as returned by the API.
+
+### Exit status
+
+| Code | Cases |
+| --- | --- |
+| `0` | Every repository was handled, whatever its outcome (skipped and failed updates included). |
+| `1` | loomd cannot be started or reached, a slug names no repository (`not_found`), or the request fails. |
 | `2` | Usage error. |
 
 ## Build-time variables
