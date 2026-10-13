@@ -45,6 +45,8 @@ Usage: install.sh [--channel stable|dev] [--version X.Y.Z] [--prefix DIR]
 Options:
   --channel <CHANNEL>  stable (default): latest stable release.
                        dev: latest development prerelease.
+                       When given, recorded for the auto-upgrade of loomd
+                       and for loom upgrade.
   --version <VERSION>  Exact version to install: X.Y.Z or X.Y.Z-dev.N.
                        Cannot be combined with --channel.
   --prefix <DIR>       Directory for the binaries (default: $HOME/.local/bin).
@@ -194,8 +196,23 @@ installed_is() {
     [ "$("$prefix/loomd" -V 2>/dev/null || true)" = "loomd $1" ] || return 1
 }
 
+# Records an explicit --channel with the installed loom's own code, in the
+# state of its loom home (LOOM_HOME, otherwise ~/.loom): loomd and
+# `loom upgrade` keep following it after an upgrade to another channel's build.
+# A failure is a warning: the binaries are installed.
+remember_channel() {
+    [ -n "$channel" ] || return 0
+    # stdin closed: under `curl ... | sh` it is the rest of this script.
+    if "$prefix/loom" upgrade --channel "$channel" --check --quiet </dev/null >/dev/null; then
+        say "loomd and loom upgrade will follow the $channel channel"
+    else
+        warn "could not record the $channel channel; run: $prefix/loom upgrade --channel $channel --check"
+    fi
+}
+
 already_installed() {
     say "loom $1 is already installed in $prefix"
+    remember_channel
     exit 0
 }
 
@@ -440,6 +457,7 @@ mv -f "$tmp_loomd" "$prefix/loomd" || die "cannot replace $prefix/loomd"
 tmp_loomd=""
 
 say "installed loom and loomd $release_version into $prefix"
+remember_channel
 
 case ":${PATH:-}:" in
     *":$prefix:"* | *":$prefix/:"*) ;;

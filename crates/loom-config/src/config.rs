@@ -111,7 +111,8 @@ pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_hours(6);
 pub struct Update {
     /// `policy`: `auto`, `notify` or `off`. `None`: the default of the build channel.
     pub policy: Option<UpdatePolicyMode>,
-    /// `channel`: `stable` or `dev`. `None`: the build channel.
+    /// `channel`: `stable` or `dev`. `None`: the channel chosen with `loom upgrade --channel`,
+    /// otherwise the build channel.
     pub channel: Option<UpdateChannel>,
     /// `check_interval`: time between two checks, before jitter.
     pub check_interval: CheckInterval,

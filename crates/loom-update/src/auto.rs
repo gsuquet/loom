@@ -8,8 +8,8 @@ use std::cmp::Ordering;
 use std::time::Duration;
 
 use loom_api::{
-    Channel as BuildChannel, PendingUpgrade, Timestamp, UpdateChannel, UpdatePolicyMode,
-    UpdateResult, UpdateState, UpdateStatus,
+    Channel as BuildChannel, ChannelSource, ChosenChannel, PendingUpgrade, Timestamp,
+    UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
 };
 use semver::Version;
 
@@ -42,19 +42,54 @@ pub const fn effective_policy(
     }
 }
 
-/// Effective channel: the configured one, otherwise the build channel. A local build has none:
-/// nothing is checked.
+/// The channel followed, and where it comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveChannel {
+    /// The channel.
+    pub channel: UpdateChannel,
+    /// Where it comes from.
+    pub source: ChannelSource,
+}
+
+/// Effective channel, and where it comes from.
+///
+/// `[update] channel` (`configured`), otherwise the channel chosen with `loom upgrade --channel`
+/// (`chosen`, from `state/update.json`), otherwise the build channel. A local build has no
+/// channel of its own: without the other two, nothing is checked.
 #[must_use]
 pub const fn effective_channel(
     configured: Option<UpdateChannel>,
+    chosen: Option<UpdateChannel>,
     build: BuildChannel,
-) -> Option<UpdateChannel> {
-    match (configured, build) {
-        (Some(channel), _) => Some(channel),
-        (None, BuildChannel::Stable) => Some(UpdateChannel::Stable),
-        (None, BuildChannel::Dev) => Some(UpdateChannel::Dev),
-        (None, BuildChannel::Local) => None,
-    }
+) -> Option<EffectiveChannel> {
+    let (channel, source) = match (configured, chosen, build) {
+        (Some(channel), _, _) => (channel, ChannelSource::Config),
+        (None, Some(channel), _) => (channel, ChannelSource::Chosen),
+        (None, None, BuildChannel::Stable) => (UpdateChannel::Stable, ChannelSource::Build),
+        (None, None, BuildChannel::Dev) => (UpdateChannel::Dev, ChannelSource::Build),
+        (None, None, BuildChannel::Local) => return None,
+    };
+    Some(EffectiveChannel { channel, source })
+}
+
+/// The channel chosen with `loom upgrade --channel`, recorded in `state`.
+#[must_use]
+pub fn chosen_channel(state: &UpdateState) -> Option<UpdateChannel> {
+    state.channel.map(|chosen| chosen.name)
+}
+
+/// `state` with `channel` recorded as chosen at `at`.
+#[must_use]
+pub const fn with_chosen_channel(
+    mut state: UpdateState,
+    channel: UpdateChannel,
+    at: Timestamp,
+) -> UpdateState {
+    state.channel = Some(ChosenChannel {
+        name: channel,
+        chosen_at: at,
+    });
+    state
 }
 
 /// Whether loomd checks for updates at all: a policy other than `off` and a channel.
@@ -310,13 +345,14 @@ pub fn clear_stale(mut state: UpdateState, at: Timestamp) -> UpdateState {
     state
 }
 
-/// The `update` object of the status response. `available` is dropped when it is not newer
-/// than `running` (installed since, by hand).
+/// The `update` object of the status response. `channel` is the effective channel for this
+/// `state` ([`effective_channel`]). `available` is dropped when it is not newer than `running`
+/// (installed since, by hand).
 #[must_use]
 pub fn status(
     state: UpdateState,
     policy: UpdatePolicyMode,
-    channel: Option<UpdateChannel>,
+    channel: Option<EffectiveChannel>,
     interval: Duration,
     running: Option<&Version>,
 ) -> UpdateStatus {
@@ -326,7 +362,8 @@ pub fn status(
     };
     UpdateStatus {
         policy,
-        channel,
+        channel: channel.map(|effective| effective.channel),
+        channel_source: channel.map(|effective| effective.source),
         check_interval_secs: interval.as_secs(),
         last_check: state.last_check,
         available: state.available.filter(newer),
@@ -364,21 +401,62 @@ mod tests {
         }
     }
 
+    /// Configuration > chosen channel > build channel; a local build has none of its own.
     #[test]
-    fn default_channel_is_the_build_channel_and_local_has_none() {
+    fn channel_resolution_table() {
+        use BuildChannel::{Dev as BuildDev, Local, Stable as BuildStable};
+        use ChannelSource::{Build, Chosen, Config};
+        use UpdateChannel::{Dev, Stable};
+        let rows = [
+            // (configured, chosen, build) => effective
+            ((None, None, BuildStable), Some((Stable, Build))),
+            ((None, None, BuildDev), Some((Dev, Build))),
+            ((None, None, Local), None),
+            // The bug: installed on dev, auto-upgraded to a stable build, still on dev.
+            ((None, Some(Dev), BuildStable), Some((Dev, Chosen))),
+            ((None, Some(Stable), BuildDev), Some((Stable, Chosen))),
+            ((None, Some(Dev), Local), Some((Dev, Chosen))),
+            ((None, Some(Stable), Local), Some((Stable, Chosen))),
+            ((Some(Stable), None, BuildDev), Some((Stable, Config))),
+            ((Some(Dev), None, Local), Some((Dev, Config))),
+            ((Some(Stable), Some(Dev), BuildDev), Some((Stable, Config))),
+            ((Some(Dev), Some(Stable), BuildStable), Some((Dev, Config))),
+            ((Some(Stable), Some(Dev), Local), Some((Stable, Config))),
+        ];
+        for ((configured, chosen, build), expected) in rows {
+            let expected = expected.map(|(channel, source)| EffectiveChannel { channel, source });
+            assert_eq!(
+                effective_channel(configured, chosen, build),
+                expected,
+                "configured {configured:?}, chosen {chosen:?}, build {build:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chosen_channel_is_recorded_and_read_back() {
+        let state = UpdateState {
+            failed_versions: vec!["1.1.0".to_owned()],
+            ..UpdateState::default()
+        };
+        assert_eq!(chosen_channel(&state), None);
+        let state = with_chosen_channel(state, UpdateChannel::Dev, at(7));
+        assert_eq!(chosen_channel(&state), Some(UpdateChannel::Dev));
         assert_eq!(
-            effective_channel(None, BuildChannel::Stable),
-            Some(UpdateChannel::Stable)
+            state.channel,
+            Some(ChosenChannel {
+                name: UpdateChannel::Dev,
+                chosen_at: at(7)
+            })
         );
-        assert_eq!(
-            effective_channel(None, BuildChannel::Dev),
-            Some(UpdateChannel::Dev)
-        );
-        assert_eq!(effective_channel(None, BuildChannel::Local), None);
-        assert_eq!(
-            effective_channel(Some(UpdateChannel::Dev), BuildChannel::Local),
-            Some(UpdateChannel::Dev)
-        );
+        assert_eq!(state.failed_versions, ["1.1.0"], "the rest is kept");
+        // Choosing again replaces it.
+        let state = with_chosen_channel(state, UpdateChannel::Stable, at(8));
+        assert_eq!(chosen_channel(&state), Some(UpdateChannel::Stable));
+        // The check transitions keep it.
+        let (state, _) = after_check(state, &v("1.0.0"), &UpdateDecision::UpToDate, at(9));
+        let state = after_upgraded(state, &v("1.0.0"), &v("1.1.0"), at(10));
+        assert_eq!(chosen_channel(&state), Some(UpdateChannel::Stable));
     }
 
     #[test]
@@ -622,7 +700,10 @@ mod tests {
             status(
                 state.clone(),
                 UpdatePolicyMode::Notify,
-                Some(UpdateChannel::Stable),
+                Some(EffectiveChannel {
+                    channel: UpdateChannel::Stable,
+                    source: ChannelSource::Chosen,
+                }),
                 interval,
                 Some(&v(running)),
             )
@@ -630,6 +711,8 @@ mod tests {
         assert_eq!(shown("1.0.0").available.as_deref(), Some("1.1.0"));
         assert_eq!(shown("1.1.0").available, None);
         let status = shown("1.0.0");
+        assert_eq!(status.channel, Some(UpdateChannel::Stable));
+        assert_eq!(status.channel_source, Some(ChannelSource::Chosen));
         assert_eq!(status.check_interval_secs, 6 * HOUR);
         assert_eq!(status.failed_versions, ["1.2.0"]);
         assert_eq!(status.policy, UpdatePolicyMode::Notify);

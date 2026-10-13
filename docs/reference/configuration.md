@@ -44,7 +44,7 @@ Error: invalid configuration <path>:<line>:<column>: <message>
 Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected one of `contexts`, `daemon`, `default_context`, `forges`, `repos`, `telemetry`, `update`
 ```
 
-`loom` reads `config.toml` at each command for `[telemetry]`. A file it cannot read or parse does not stop a command for that reason: `loom` exports no traces, prints this warning on stderr (hidden by `-q`) and runs the command. Commands that need the file for something else, such as `loom service install`, still fail on it.
+`loom` reads `config.toml` at each command for `[telemetry]`. A file it cannot read or parse does not stop a command for that reason: `loom` exports no traces, prints this warning on stderr (hidden by `-q`) and runs the command. Commands that need the file for something else, such as `loom service install`, still fail on it. `loom upgrade` reads `[update] channel` the same way: a file it cannot read or parse leaves the key unset, with a warning, so that an install can still be repaired.
 
 ```text
  WARN traces are not exported: invalid configuration <path>:<line>:<column>: <message>
@@ -63,7 +63,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | `[telemetry] enabled` | boolean | `false` | Export traces. See [`[telemetry]`](#telemetry). |
 | `[telemetry] otlp_endpoint` | string | none | OTLP/HTTP traces endpoint. See [`[telemetry]`](#telemetry). |
 | `[update] policy` | string: `"auto"`, `"notify"`, `"off"` | `"auto"` for a `stable` or `dev` build, `"notify"` for a `local` build | What `loomd` does when a newer release exists. `auto`: installs it (see [auto-upgrade](../explanation/auto-upgrade.md)). `notify`: records it in `state/update.json`, shown by `loom status`. `off`: never checks, no network access. |
-| `[update] channel` | string: `"stable"`, `"dev"` | The build channel (`loom version`); none for a `local` build | Releases `loomd` checks. `stable`: the latest stable release. `dev`: dev prereleases and stable releases, the highest wins (as `loom upgrade --channel dev`). A `local` build without `channel` never checks. |
+| `[update] channel` | string: `"stable"`, `"dev"` | The channel last given to `loom upgrade --channel` (or `install.sh --channel`), otherwise the build channel (`loom version`); none for a `local` build | Releases `loomd` and `loom upgrade` without `--channel` check. `stable`: the latest stable release. `dev`: dev prereleases and stable releases, the highest wins (as `loom upgrade --channel dev`). See [channel resolution](#channel-resolution). |
 | `[update] check_interval` | string: duration | `"6h"` | Time between two checks, before a random ±10 %. One or more `<integer><unit>` parts, units `d`, `h`, `m`, `s`, no spaces: `"6h"`, `"1h30m"`, `"90m"`. At least `"10m"`: a shorter value is rejected like an unknown key. |
 
 ```toml
@@ -141,12 +141,24 @@ Error: invalid configuration /home/me/.loom/config.toml:5:16: match.paths `~/wor
 
 Errors in an array element (`roots`, `exclude`, `match.paths`, `match.hosts`) are located at the start of the array.
 
+### Channel resolution
+
+The effective channel of `loomd` and of `loom upgrade` without `--channel` is the first of:
+
+| Order | Source | `loom status` shows |
+| --- | --- | --- |
+| 1 | `[update] channel` in `config.toml`. | `config` |
+| 2 | `channel` of `state/update.json`: the channel last given to `loom upgrade --channel`. `install.sh --channel` runs `loom upgrade --channel <channel> --check`, which records it. | `chosen` |
+| 3 | The build channel (`loom version`): `stable` or `dev`. A `local` build has none: nothing is checked. | `build` |
+
+`loomd` reads `config.toml` at start and `state/update.json` before each check, so a channel chosen while it runs applies from its next check. No command writes `config.toml`.
+
 ### Update checks
 
 | `policy` | Effective `channel` | Network |
 | --- | --- | --- |
 | `off` | any | None. |
-| `auto`, `notify` | none (`local` build without `channel`) | None. |
+| `auto`, `notify` | none (`local` build, no `channel` configured or chosen) | None. |
 | `auto`, `notify` | `stable` or `dev` | One check per interval, through the GitHub REST API (`LOOM_RELEASES_URL` replaces `https://api.github.com`). |
 
 Schedule: the first check runs `min(5 min, check_interval)` ± 10 % after `loomd` starts, never at once; each next one `check_interval` ± 10 % after the last check (`last_check` of `state/update.json`), but never before that first delay. A failed check is retried at the next interval.
@@ -314,10 +326,11 @@ State kept across restarts of `loomd`, in `<loom home>/state/`.
 | `state/update.json` | `0600` | Auto-upgrade state, JSON, schema [`update_state.json`](schemas/update_state.json). |
 | `state/update.lock` | `0600` | Empty. Locked (`flock`) while `update.json` is read, changed and written. |
 
-`update.json` is written to a temporary file in `state/`, synced, then renamed over the previous one. A missing file is an empty state. An invalid file is logged and replaced by an empty state at the next write.
+`update.json` is written to a temporary file in `state/`, synced, then renamed over the previous one. A missing file is an empty state. An invalid file is logged and replaced by an empty state at the next write. Fields this version does not know (written by another version) are accepted and kept when the file is rewritten.
 
 | Field | Type | Content |
 | --- | --- | --- |
+| `channel` | object or absent | Channel chosen explicitly: `name` (`stable` or `dev`) and `chosen_at` (`Timestamp`). Written by `loom upgrade --channel` when it succeeds, `--check` included, `--dry-run` excluded; `--version` and `--from` leave it unchanged. Used when `[update] channel` is not set (see [channel resolution](#channel-resolution)). |
 | `last_check` | `Timestamp` or absent | Instant of the last check, successful or not. |
 | `available` | version or absent | Newer version found by the last check under `notify`. |
 | `pending` | object or absent | Upgrade in progress: `from`, `to` (versions), `started_at` (`Timestamp`). Set when `loomd` starts downloading, cleared by every outcome. Older than one hour: stale, cleared at the next check and recorded as `interrupted`. |
@@ -337,4 +350,4 @@ State kept across restarts of `loomd`, in `<loom home>/state/`.
 | `interrupted` | `from`, `to` | A stale `pending` was cleared. |
 | `failed` | `message` | The check or the upgrade failed before replacing anything (network, verification, install directory not writable, I/O). Retried at the next interval. |
 
-Delete `state/update.json` to forget the failed versions.
+Delete `state/update.json` to forget the failed versions and the chosen channel.

@@ -65,10 +65,56 @@ impl fmt::Display for UpdateChannel {
     }
 }
 
-/// Content of `<loom home>/state/update.json`. Every field may be missing (an empty state),
-/// and unknown fields are ignored, so binaries of different versions share the file.
+/// Where the effective release channel comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelSource {
+    /// `[update] channel` of `config.toml`.
+    Config,
+    /// Chosen explicitly with `loom upgrade --channel` (or `install.sh --channel`), kept in
+    /// `state/update.json`.
+    Chosen,
+    /// The channel of the running build.
+    Build,
+}
+
+impl ChannelSource {
+    /// Name used in the outputs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Config => "config",
+            Self::Chosen => "chosen",
+            Self::Build => "build",
+        }
+    }
+}
+
+impl fmt::Display for ChannelSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A release channel chosen explicitly, and when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChosenChannel {
+    /// The channel.
+    pub name: UpdateChannel,
+    /// Instant it was chosen.
+    pub chosen_at: Timestamp,
+}
+
+/// Content of `<loom home>/state/update.json`.
+///
+/// Every field may be missing (an empty state). Unknown fields are accepted and kept when the
+/// file is rewritten, so binaries of different versions share the file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateState {
+    /// Release channel chosen explicitly with `loom upgrade --channel`: used when
+    /// `[update] channel` is not set, instead of the build channel.
+    #[serde(default)]
+    pub channel: Option<ChosenChannel>,
     /// Instant of the last check, successful or not.
     #[serde(default)]
     pub last_check: Option<Timestamp>,
@@ -85,6 +131,10 @@ pub struct UpdateState {
     /// Outcome of the last check or upgrade.
     #[serde(default)]
     pub last_result: Option<UpdateResult>,
+    /// Fields this version does not know, written by another version: kept as they are when
+    /// the file is rewritten.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 /// An upgrade in progress.
@@ -174,9 +224,14 @@ pub enum UpdateResult {
 pub struct UpdateStatus {
     /// Effective policy: `[update] policy`, or the default of the build channel.
     pub policy: UpdatePolicyMode,
-    /// Effective channel: `[update] channel`, or the build channel. Absent for a local build
-    /// without `channel`: nothing is checked.
+    /// Effective channel: `[update] channel`, otherwise the channel chosen with
+    /// `loom upgrade --channel`, otherwise the build channel. Absent for a local build without
+    /// either: nothing is checked.
     pub channel: Option<UpdateChannel>,
+    /// Where `channel` comes from; absent when `channel` is. Optional when reading, so that a
+    /// client reads a daemon older than this field.
+    #[serde(default)]
+    pub channel_source: Option<ChannelSource>,
     /// Interval between two checks, in whole seconds, before jitter.
     pub check_interval_secs: u64,
     /// Instant of the last check.
@@ -193,7 +248,9 @@ pub struct UpdateStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{PendingUpgrade, UpdatePolicyMode, UpdateResult, UpdateState};
+    use super::{
+        ChosenChannel, PendingUpgrade, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState,
+    };
     use crate::Timestamp;
     use serde_json::json;
 
@@ -210,11 +267,46 @@ mod tests {
         let state: UpdateState =
             serde_json::from_value(json!({ "failed_versions": ["0.2.0"], "later": 1 })).unwrap();
         assert_eq!(state.failed_versions, ["0.2.0"]);
+        assert_eq!(state.channel, None, "a state older than the field");
+    }
+
+    /// A version that does not know a field keeps it when it rewrites the file: a rollback to
+    /// it does not lose what a newer version recorded.
+    #[test]
+    fn unknown_fields_survive_a_rewrite() {
+        let written = json!({
+            "failed_versions": [],
+            "later": { "nested": [1, 2] },
+            "other_later": "x",
+        });
+        let state: UpdateState = serde_json::from_value(written).unwrap();
+        let rewritten = serde_json::to_value(&state).unwrap();
+        assert_eq!(rewritten["later"], json!({ "nested": [1, 2] }));
+        assert_eq!(rewritten["other_later"], json!("x"));
+    }
+
+    #[test]
+    fn chosen_channel_round_trips() {
+        let state = UpdateState {
+            channel: Some(ChosenChannel {
+                name: UpdateChannel::Dev,
+                chosen_at: at(),
+            }),
+            ..UpdateState::default()
+        };
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            value["channel"],
+            json!({ "name": "dev", "chosen_at": "2026-10-12T08:00:00Z" })
+        );
+        assert_eq!(serde_json::from_value::<UpdateState>(value).unwrap(), state);
     }
 
     #[test]
     fn serializes_tagged_results() {
         let state = UpdateState {
+            channel: None,
+            other: serde_json::Map::new(),
             last_check: Some(at()),
             available: None,
             pending: Some(PendingUpgrade {

@@ -18,6 +18,10 @@ An upgrade replaces the binary of a daemon that runs all the time. If the new re
 
 Every outcome lands in `last_result` of `state/update.json`, which `loom status` prints.
 
+### Which channel
+
+The build channel alone is not enough to know what a machine should follow. A `dev` install moves to a stable release as soon as one is higher than its dev build (the dev channel includes stable releases); the new binary is a `stable` build, and if its channel were the default, the machine would never see a dev build again. So the channel chosen explicitly, with `loom upgrade --channel` or `install.sh --channel` (which runs it), is written to `state/update.json`, which every version of the binaries shares. `[update] channel` in `config.toml` still wins, so a configured machine never changes behind its owner's back, and no command ever writes `config.toml`; the build channel only applies when neither exists. `loomd` reads the chosen channel before each check, and `loom status` says where its channel comes from (`config`, `chosen` or `build`).
+
 ## The upgrade
 
 1. `loomd` records the upgrade as `pending` (from, to, start time). While it is there, `loom upgrade` and `loom rollback` refuse to run, and another `loomd` skips its checks.

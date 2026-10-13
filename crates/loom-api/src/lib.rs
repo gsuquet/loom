@@ -16,7 +16,8 @@ mod version;
 
 pub use api_version::ApiVersion;
 pub use auto_update::{
-    PendingUpgrade, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
+    ChannelSource, ChosenChannel, PendingUpgrade, UpdateChannel, UpdatePolicyMode, UpdateResult,
+    UpdateState, UpdateStatus,
 };
 pub use context::{
     CONTEXT_NAME_MAX_LEN, ContextAssignment, ContextName, ContextNameError, UNASSIGNED,

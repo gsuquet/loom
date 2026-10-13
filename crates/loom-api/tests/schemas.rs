@@ -9,11 +9,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use loom_api::{
-    ApiError, ApiVersion, Channel, ContextAssignment, ContextName, DaemonRestart, ErrorCode,
-    ForgeKind, InstallReport, PendingUpgrade, Profile, Remote, RemoteUrl, RepoIdentity,
-    RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp, UpdateChannel,
-    UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport,
-    UpgradeSkipReason, UpgradeSource, VersionInfo,
+    ApiError, ApiVersion, Channel, ChannelSource, ChosenChannel, ContextAssignment, ContextName,
+    DaemonRestart, ErrorCode, ForgeKind, InstallReport, PendingUpgrade, Profile, Remote, RemoteUrl,
+    RepoIdentity, RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp,
+    UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpgradeDecision,
+    UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -144,6 +144,10 @@ fn update_results(at: Timestamp) -> Vec<UpdateResult> {
 
 fn update_states(at: Timestamp) -> Vec<UpdateState> {
     let full = UpdateState {
+        channel: Some(ChosenChannel {
+            name: UpdateChannel::Dev,
+            chosen_at: at,
+        }),
         last_check: Some(at),
         available: Some("0.2.0".to_owned()),
         pending: Some(PendingUpgrade {
@@ -153,6 +157,7 @@ fn update_states(at: Timestamp) -> Vec<UpdateState> {
         }),
         failed_versions: vec!["0.1.5".to_owned()],
         last_result: None,
+        other: serde_json::Map::from_iter([("later".to_owned(), json!(1))]),
     };
     let mut states = vec![UpdateState::default()];
     states.extend(update_results(at).into_iter().map(|result| UpdateState {
@@ -173,6 +178,7 @@ fn samples_validate_against_their_schema() {
                 update: Some(UpdateStatus {
                     policy: UpdatePolicyMode::Auto,
                     channel: Some(UpdateChannel::Dev),
+                    channel_source: Some(ChannelSource::Chosen),
                     check_interval_secs: 21_600,
                     last_check: state.last_check,
                     available: state.available,
@@ -190,6 +196,7 @@ fn samples_validate_against_their_schema() {
             update: Some(UpdateStatus {
                 policy: UpdatePolicyMode::Notify,
                 channel: None,
+                channel_source: None,
                 check_interval_secs: 600,
                 last_check: None,
                 available: None,

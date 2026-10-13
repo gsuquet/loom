@@ -35,7 +35,7 @@ curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh |
 curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh | sh -s -- --prefix /opt/loom/bin
 ```
 
-Installing another version replaces both binaries. `--channel` and `--version` cannot be combined.
+Installing another version replaces both binaries. `--channel` and `--version` cannot be combined. A channel given with `--channel` is remembered: `loomd` and `loom upgrade` keep following it, even after an upgrade to a stable release.
 
 If GitHub answers with HTTP 403 or 429 (API rate limit), set a token and run the command again:
 

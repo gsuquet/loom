@@ -67,7 +67,7 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 | Request | Rejected (`#[serde(deny_unknown_fields)]`). No request type exists yet. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown enum values (`api_version`, `code`, `channel`, `profile`, `policy`, `kind`) are rejected.
+Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`) are rejected.
 
 ### Scalar encodings
 
@@ -117,6 +117,7 @@ Every field is required, except `update`.
   "update": {
     "policy": "auto",
     "channel": "dev",
+    "channel_source": "chosen",
     "check_interval_secs": 21600,
     "last_check": "2026-10-12T08:05:00Z",
     "available": null,
@@ -132,7 +133,8 @@ Every field is required, except `update`.
 | Field | Type | Content |
 | --- | --- | --- |
 | `policy` | `auto` \| `notify` \| `off` | Effective `[update] policy` (configured, or the default of the build channel). |
-| `channel` | `stable` \| `dev` \| `null` | Effective `[update] channel`; `null` for a local build without one: nothing is checked. |
+| `channel` | `stable` \| `dev` \| `null` | Effective channel: `[update] channel`, otherwise the channel chosen with `loom upgrade --channel`, otherwise the build channel ([channel resolution](configuration.md#channel-resolution)); `null` for a local build without a configured or chosen channel: nothing is checked. |
+| `channel_source` | `config` \| `chosen` \| `build` \| `null` | Where `channel` comes from; `null` when `channel` is. Always sent by this version; optional when reading, so that a client reads a daemon older than this field. |
 | `check_interval_secs` | integer (u64) | Effective interval between checks, before jitter. |
 | `last_check` | `Timestamp` \| `null` | `last_check` of the state. |
 | `available` | string \| `null` | `available` of the state, `null` when it is not newer than the daemon's version. |

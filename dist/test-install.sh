@@ -46,8 +46,9 @@ else
     echo "test-install: minisign not installed: signature cases are SKIPPED (run 'mise install')"
 fi
 
-# The installer must never pick up the caller's credentials or key override.
-unset LOOM_GITHUB_TOKEN GITHUB_TOKEN LOOM_INSTALL_PUBKEY
+# The installer must never pick up the caller's credentials or key override,
+# and the stub loom must never write into the caller's loom home.
+unset LOOM_GITHUB_TOKEN GITHUB_TOKEN LOOM_INSTALL_PUBKEY LOOM_HOME LOOM_TEST_STUB_FAIL
 
 # --- results -----------------------------------------------------------------
 
@@ -142,8 +143,18 @@ make_release() {
         s="$d/stage-$t"
         mkdir -p "$s"
         for bin in loom loomd; do
-            # shellcheck disable=SC2016 # $1 belongs to the generated stub.
-            printf '#!/bin/sh\nif [ "${1:-}" = -V ]; then echo "%s %s"; fi\n' "$bin" "$v" >"$s/$bin"
+            {
+                # shellcheck disable=SC2016 # $1 belongs to the generated stub.
+                printf '#!/bin/sh\nif [ "${1:-}" = -V ]; then echo "%s %s"; exit 0; fi\n' "$bin" "$v"
+                if [ "$bin" = loom ]; then
+                    # Any other call is logged to $LOOM_HOME/loom-args, one line per
+                    # call, and fails when LOOM_TEST_STUB_FAIL is set.
+                    # shellcheck disable=SC2016 # Expanded by the generated stub.
+                    printf '%s\n' \
+                        'if [ -n "${LOOM_HOME:-}" ]; then printf "%s\\n" "$*" >>"$LOOM_HOME/loom-args"; fi' \
+                        '[ -z "${LOOM_TEST_STUB_FAIL:-}" ] || exit 3'
+                fi
+            } >"$s/$bin"
             chmod 755 "$s/$bin"
         done
         echo "license" >"$s/LICENSE"
@@ -340,6 +351,50 @@ if $have_minisign; then
 else
     echo "skip bad signature, missing signature, embedded key (minisign not installed)"
 fi
+
+# --- remembered channel ------------------------------------------------------
+
+# inst_env ASSIGNMENT... : runs the installer under `env ASSIGNMENT...`, so
+# that no variable leaks into the next cases; arguments after `--`.
+inst_env() {
+    code=0
+    set_env=""
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do
+        set_env="$set_env $1"
+        shift
+    done
+    [ $# -gt 0 ] && shift
+    # shellcheck disable=SC2086 # Assignments without spaces, split on purpose.
+    env $set_env sh "$installer" "$@" >"$out" 2>&1 || code=$?
+}
+
+# logged HOME LINES...: the stub loom was called exactly with LINES.
+logged() {
+    log_file="$1/loom-args"
+    shift
+    [ "$(cat "$log_file" 2>/dev/null || true)" = "$(printf '%s\n' "$@")" ]
+}
+
+h1="$work/h1"
+mkdir -p "$h1"
+inst_env LOOM_HOME="$h1" -- --channel dev --prefix "$work/pc1"
+if exit_is 0 && reports "$work/pc1" 1.2.0-dev.12 && logged "$h1" "upgrade --channel dev --check --quiet" && says "follow the dev channel"; then ok "--channel dev records the channel with the installed loom"; else ko "--channel dev records the channel with the installed loom"; fi
+
+inst_env LOOM_HOME="$h1" -- --channel=dev --prefix "$work/pc1"
+if exit_is 0 && says "already installed" && logged "$h1" "upgrade --channel dev --check --quiet" "upgrade --channel dev --check --quiet"; then ok "an install already done still records the channel"; else ko "an install already done still records the channel"; fi
+
+h2="$work/h2"
+mkdir -p "$h2"
+inst_env LOOM_HOME="$h2" -- --prefix "$work/pc2"
+if exit_is 0 && reports "$work/pc2" 1.1.0 && [ ! -e "$h2/loom-args" ] && silent_about "follow the"; then ok "no --channel records nothing"; else ko "no --channel records nothing"; fi
+
+inst_env LOOM_HOME="$h2" -- --version 1.2.0-dev.3 --prefix "$work/pc2"
+if exit_is 0 && reports "$work/pc2" 1.2.0-dev.3 && [ ! -e "$h2/loom-args" ]; then ok "--version records no channel"; else ko "--version records no channel"; fi
+
+h3="$work/h3"
+mkdir -p "$h3"
+inst_env LOOM_HOME="$h3" LOOM_TEST_STUB_FAIL=1 -- --channel stable --prefix "$work/pc3"
+if exit_is 0 && reports "$work/pc3" 1.1.0 && logged "$h3" "upgrade --channel stable --check --quiet" && says "warning: could not record the stable channel"; then ok "a failure to record the channel is a warning"; else ko "a failure to record the channel is a warning"; fi
 
 # --- environment -------------------------------------------------------------
 

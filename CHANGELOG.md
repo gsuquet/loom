@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Workspace version is `0.2.0`: dev prereleases are now `0.2.0-dev.N`, above `0.1.0`.
 
+### Fixed
+- A machine installed with `install.sh --channel dev` no longer leaves the dev channel after the auto-upgrade moves it to a stable release. The channel given to `loom upgrade --channel` (run by `install.sh --channel`) is remembered in `state/update.json`; the effective channel is `[update] channel`, then the remembered one, then the build channel, and `loom status` shows which (`config`, `chosen`, `build`). Fields of `state/update.json` unknown to a version are now kept when it rewrites the file.
+
 ## [0.1.0] - 2026-10-12
 
 First release of the rewrite: install, run and keep loom up to date.
