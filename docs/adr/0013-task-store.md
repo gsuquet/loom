@@ -1,6 +1,6 @@
 # ADR-0013: Task store, kinds, priority, focus and backup
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-13
 
 ## Context

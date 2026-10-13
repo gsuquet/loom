@@ -69,7 +69,7 @@ Each task is a GitHub issue in the `v0.3` milestone, written with the [agent tas
 
 | # | Issue | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- | --- |
-| 1 | [#68](https://github.com/gsuquet/loom/pull/68) | ADR-0013 (task store, kinds, priority, focus, backup) and design docs | Research | – | Me + agent |
+| 1 | [#68](https://github.com/gsuquet/loom/pull/68) | Done: ADR-0013 (task store, kinds, priority, focus, backup) and design docs | Research | – | Me + agent |
 | 2 | [#69](https://github.com/gsuquet/loom/issues/69) | `loom-core` (pure): task, kind, status, importance, links and relations, IDs, shortest unique prefix, transitions and available actions, events, undo | Story | 1 | Agent |
 | 3 | [#70](https://github.com/gsuquet/loom/issues/70) | Priority (pure): lexicographic order, hidden `waiting` tasks, `--why` | Story | 2 | Agent |
 | 4 | [#71](https://github.com/gsuquet/loom/issues/71) | Task file format (pure): `task.md` TOML frontmatter round trip with unknown keys kept, `events.jsonl`, body template per kind | Story | 2 | Agent |
