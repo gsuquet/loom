@@ -232,8 +232,8 @@ mod tests {
                 endpoint(RemoteScheme::Https, "https://github.com"),
             ),
             (
-                "https://me@gitlab.ippon.fr/x/y.git",
-                endpoint(RemoteScheme::Https, "https://gitlab.ippon.fr"),
+                "https://me@gitlab.example.com/x/y.git",
+                endpoint(RemoteScheme::Https, "https://gitlab.example.com"),
             ),
             (
                 "HTTPS://Git.Example:8443/x",
@@ -351,7 +351,7 @@ mod tests {
                 RemoteProblem::SshAuth,
             ),
             (
-                "fatal: could not read Username for 'https://gitlab.ippon.fr': terminal prompts disabled\n",
+                "fatal: could not read Username for 'https://gitlab.example.com': terminal prompts disabled\n",
                 RemoteProblem::HttpsAuth,
             ),
             (

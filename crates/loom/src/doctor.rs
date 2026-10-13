@@ -1022,12 +1022,12 @@ mod tests {
                     ),
                 ),
                 remote(
-                    "https://gitlab.ippon.fr",
+                    "https://gitlab.example.com",
                     RemoteScheme::Https,
                     failed(
                         RemoteProblem::HttpsAuth,
                         "exit status: 128",
-                        "fatal: could not read Username for 'https://gitlab.ippon.fr': terminal prompts disabled\n",
+                        "fatal: could not read Username for 'https://gitlab.example.com': terminal prompts disabled\n",
                     ),
                 ),
                 remote(
@@ -1061,7 +1061,7 @@ mod tests {
             [
                 "ok    remote git@github.com (ssh, via personal/loom): reachable",
                 "fail  remote git@gitlab.com (ssh, via personal/loom): git@gitlab.com: Permission denied (publickey).",
-                "fail  remote https://gitlab.ippon.fr (https, via personal/loom): fatal: could not read Username for 'https://gitlab.ippon.fr': terminal prompts disabled",
+                "fail  remote https://gitlab.example.com (https, via personal/loom): fatal: could not read Username for 'https://gitlab.example.com': terminal prompts disabled",
                 "fail  remote git@gitlab.corp (ssh, via personal/loom): no answer within 20s",
                 "fail  remote git@gone.example (ssh, via personal/loom): ERROR: Repository not found.",
                 "fail  remote /srv/x.git (local, via personal/loom): cannot run git: not found",
@@ -1106,10 +1106,11 @@ mod tests {
             stderr_tail: "remote: ERROR: The project you were looking for could not be found or you don't have permission to view it.\n".to_owned(),
         }
         };
-        let mut repos: Vec<RepoSummary> = ["norauto/a", "norauto/b", "norauto/c", "norauto/d"]
-            .into_iter()
-            .map(|slug| updated(slug, vec![not_found()]))
-            .collect();
+        let mut repos: Vec<RepoSummary> =
+            ["company-a/a", "company-a/b", "company-a/c", "company-a/d"]
+                .into_iter()
+                .map(|slug| updated(slug, vec![not_found()]))
+                .collect();
         repos.push(updated(
             "personal/busy",
             vec![UpdateOutcome::Skipped {
@@ -1146,7 +1147,7 @@ mod tests {
         assert_eq!(
             details,
             [
-                "remote not found (4): norauto/a, norauto/b, norauto/c, …",
+                "remote not found (4): company-a/a, company-a/b, company-a/c, …",
                 "repository busy (1): personal/busy",
                 "local changes (1): personal/work",
                 "default branch diverged (1): personal/work",
