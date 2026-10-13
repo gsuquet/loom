@@ -1,5 +1,7 @@
 //! The pre-flight check (ADR-0011) on the real `loomd`: its repository scan stays in the
 //! throwaway directory.
+//!
+//! isolation-guard: HOME set by `loom_update::preflight::check`, which this test verifies.
 
 #![allow(
     clippy::unwrap_used,

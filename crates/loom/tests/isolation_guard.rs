@@ -17,11 +17,13 @@ const SPAWNS: [&str; 4] = [
     "fn loom_bin(",
 ];
 
-/// Ways a test sets `HOME` for what it starts.
-const ISOLATES: [&str; 3] = [
+/// Ways a test sets `HOME` for what it starts. The last one marks a file whose binary is
+/// started by code that sets `HOME` itself (the pre-flight check), which the test verifies.
+const ISOLATES: [&str; 4] = [
     "isolation::isolated_env(",
     ".env(\"HOME\"",
     "env!(\"CARGO_TARGET_TMPDIR\")",
+    "isolation-guard: HOME set by ",
 ];
 
 #[test]
