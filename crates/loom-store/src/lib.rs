@@ -1,4 +1,4 @@
-//! The SQLite index `index.db`: repositories and their search table (ADR-0012).
+//! The SQLite index `index.db`: repositories, their state and their search table (ADR-0012).
 //!
 //! One [`Store`] writes (loomd owns it); any number of [`Reader`]s read at the same time. The
 //! database runs in WAL mode, so a reader sees the state before or after a write transaction,
@@ -17,7 +17,7 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_api::{RepoIdentity, RepoSummary, Timestamp};
+use loom_api::{RepoIdentity, RepoState, RepoSummary, Timestamp};
 use loom_repo::ScanDiff;
 use rusqlite::{Connection, OpenFlags};
 use thiserror::Error;
@@ -191,6 +191,27 @@ impl Store {
     /// [`StoreError`] when the query fails or the row is invalid.
     pub fn get(&self, slug: &str) -> Result<Option<RepoSummary>, StoreError> {
         repos::get(&self.conn, slug)
+    }
+
+    /// The repository at `path`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or the row is invalid.
+    pub fn get_by_path(&self, path: &Path) -> Result<Option<RepoSummary>, StoreError> {
+        repos::get_by_path(&self.conn, path)
+    }
+
+    /// Replaces the state of the repository at `path` with `state`; the search table follows
+    /// its branch. Returns `false`, changing nothing, when no repository has this path (removed
+    /// since the state was read).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails, or the path is not valid UTF-8.
+    pub fn save_state(&mut self, path: &Path, state: &RepoState) -> Result<bool, StoreError> {
+        let _span = debug_span!("store.save_state", path = %path.display()).entered();
+        repos::save_state(&self.conn, path, state)
     }
 }
 

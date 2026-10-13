@@ -50,6 +50,18 @@ allow = ["BSD-3-Clause"]
 crate = "foldhash"
 allow = ["Zlib"]
 
+# `gix` repository state reads (`loom-repo`, ADR-0008): object decompression (`zlib-rs`, through
+# `gix-zlib`) and the `working-tree-encoding` conversion of the status (`encoding_rs`, through
+# `gix-filter`, BSD-3-Clause for its WHATWG data). Zlib and BSD-3-Clause are permissive and
+# MIT-compatible. Allowed for these crates only.
+[[licenses.exceptions]]
+crate = "zlib-rs"
+allow = ["Zlib"]
+
+[[licenses.exceptions]]
+crate = "encoding_rs"
+allow = ["BSD-3-Clause"]
+
 [licenses.private]
 # Workspace crates are not published (`publish = false`).
 ignore = true

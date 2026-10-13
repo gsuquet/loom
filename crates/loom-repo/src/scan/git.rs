@@ -56,7 +56,7 @@ pub(super) fn parse_head(content: &str) -> Option<Head> {
 /// Name and URL of every `[remote "<name>"]` with a `url`, in configuration order. A remote
 /// spread over several sections keeps the position and the first `url` of its first one,
 /// the URL git fetches from. Includes (`[include]`) are not followed. Pure.
-pub(super) fn parse_remotes(config: &[u8]) -> Result<Vec<(String, String)>, String> {
+pub fn parse_remotes(config: &[u8]) -> Result<Vec<(String, String)>, String> {
     let file =
         File::from_bytes_no_includes(config, Metadata::from(Source::Local), Options::default())
             .map_err(|error| error.to_string())?;
@@ -77,7 +77,7 @@ pub(super) fn parse_remotes(config: &[u8]) -> Result<Vec<(String, String)>, Stri
 }
 
 /// Content of `path`, `None` when it does not exist.
-pub(super) fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
+pub fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),

@@ -3,9 +3,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use loom_api::{ContextAssignment, ForgeKind, Remote, RepoIdentity, RepoSummary, Timestamp};
+use loom_api::{
+    ContextAssignment, ForgeKind, MaybeKnown, Remote, RepoIdentity, RepoState, RepoSummary,
+    Timestamp,
+};
 use loom_repo::{ScanDiff, assign_unique_slugs};
 use rusqlite::{Connection, OptionalExtension as _, Row, TransactionBehavior, params};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::StoreError;
 
@@ -19,14 +24,20 @@ pub struct RepoFilter {
     pub query: Option<String>,
 }
 
+/// Columns of [`read_row`], from `repos r LEFT JOIN repo_state s`.
 const COLUMNS: &str = "r.path, r.name, r.slug, r.assignment, r.remotes, r.primary_remote, \
-                       r.forge, r.registered, r.last_used";
+                       r.forge, r.registered, r.last_used, s.refreshed_at, s.head, s.dirty, \
+                       s.untracked, s.operation, s.upstream, s.default_branch, s.last_commit, \
+                       s.last_fetch, s.error";
+
+/// The tables [`COLUMNS`] come from.
+const FROM: &str = "repos r LEFT JOIN repo_state s ON s.repo_id = r.id";
 
 /// Repositories matching `filter`, sorted by slug, in one statement (one snapshot).
 pub fn list(conn: &Connection, filter: &RepoFilter) -> Result<Vec<RepoSummary>, StoreError> {
     let pattern = filter.query.as_deref().map(like_pattern);
     let sql = format!(
-        "SELECT {COLUMNS} FROM repos r JOIN repos_fts f ON f.rowid = r.id \
+        "SELECT {COLUMNS} FROM {FROM} JOIN repos_fts f ON f.rowid = r.id \
          WHERE (?1 IS NULL OR r.context = ?1) \
            AND (?2 IS NULL OR f.name LIKE ?2 ESCAPE '\\' OR f.slug LIKE ?2 ESCAPE '\\' \
                 OR f.path LIKE ?2 ESCAPE '\\' OR f.remotes LIKE ?2 ESCAPE '\\' \
@@ -40,10 +51,67 @@ pub fn list(conn: &Connection, filter: &RepoFilter) -> Result<Vec<RepoSummary>, 
 
 /// The repository with `slug`.
 pub fn get(conn: &Connection, slug: &str) -> Result<Option<RepoSummary>, StoreError> {
-    let sql = format!("SELECT {COLUMNS} FROM repos r WHERE r.slug = ?1");
+    let sql = format!("SELECT {COLUMNS} FROM {FROM} WHERE r.slug = ?1");
     conn.query_row(&sql, [slug], read_row)
         .optional()?
         .transpose()
+}
+
+/// The repository at `path`.
+pub fn get_by_path(conn: &Connection, path: &Path) -> Result<Option<RepoSummary>, StoreError> {
+    let sql = format!("SELECT {COLUMNS} FROM {FROM} WHERE r.path = ?1");
+    conn.query_row(&sql, [text(path)?], read_row)
+        .optional()?
+        .transpose()
+}
+
+/// Stores `state` as the state of the repository at `path`, replacing the previous one.
+/// Returns `false`, changing nothing, when no repository has this path (removed since).
+pub fn save_state(conn: &Connection, path: &Path, state: &RepoState) -> Result<bool, StoreError> {
+    let changed = conn.execute(
+        "INSERT INTO repo_state (repo_id, refreshed_at, head, dirty, untracked, operation, \
+                                 upstream, default_branch, last_commit, last_fetch, error) \
+         SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 FROM repos WHERE path = ?1 \
+         ON CONFLICT (repo_id) DO UPDATE SET \
+             refreshed_at = excluded.refreshed_at, head = excluded.head, \
+             dirty = excluded.dirty, untracked = excluded.untracked, \
+             operation = excluded.operation, upstream = excluded.upstream, \
+             default_branch = excluded.default_branch, last_commit = excluded.last_commit, \
+             last_fetch = excluded.last_fetch, error = excluded.error",
+        params![
+            text(path)?,
+            unix(state.refreshed_at)?,
+            encode(&state.head)?,
+            encode(&state.dirty)?,
+            encode(&state.untracked)?,
+            encode(&state.operation)?,
+            encode(&state.upstream)?,
+            encode(&state.default_branch)?,
+            encode(&state.last_commit)?,
+            encode(&state.last_fetch)?,
+            state.error,
+        ],
+    )?;
+    Ok(changed > 0)
+}
+
+/// A state field as stored: the JSON of its value, NULL when unknown.
+fn encode<T: Serialize>(field: &MaybeKnown<T>) -> Result<Option<String>, StoreError> {
+    field
+        .as_known()
+        .map(|value| {
+            serde_json::to_string(value).map_err(|error| StoreError::Corrupt(error.to_string()))
+        })
+        .transpose()
+}
+
+/// A stored state field: unknown when NULL.
+fn decode<T: DeserializeOwned>(column: Option<&str>) -> Result<MaybeKnown<T>, String> {
+    column.map_or(Ok(MaybeKnown::Unknown), |json| {
+        serde_json::from_str(json)
+            .map(MaybeKnown::Known)
+            .map_err(|error| error.to_string())
+    })
 }
 
 /// Paths of the registered repositories, sorted.
@@ -167,6 +235,18 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<RepoSummary, StoreError>> 
     let forge: Option<String> = row.get(6)?;
     let registered: bool = row.get(7)?;
     let last_used: Option<i64> = row.get(8)?;
+    let state = StateColumns {
+        refreshed_at: row.get(9)?,
+        head: row.get(10)?,
+        dirty: row.get(11)?,
+        untracked: row.get(12)?,
+        operation: row.get(13)?,
+        upstream: row.get(14)?,
+        default_branch: row.get(15)?,
+        last_commit: row.get(16)?,
+        last_fetch: row.get(17)?,
+        error: row.get(18)?,
+    };
     Ok(build(
         path,
         name,
@@ -177,7 +257,51 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<RepoSummary, StoreError>> 
         forge.as_deref(),
         registered,
         last_used,
+        state,
     ))
+}
+
+/// The `repo_state` columns of a row; `refreshed_at` is NULL when there is no state.
+struct StateColumns {
+    refreshed_at: Option<i64>,
+    head: Option<String>,
+    dirty: Option<String>,
+    untracked: Option<String>,
+    operation: Option<String>,
+    upstream: Option<String>,
+    default_branch: Option<String>,
+    last_commit: Option<String>,
+    last_fetch: Option<String>,
+    error: Option<String>,
+}
+
+impl StateColumns {
+    fn build(self) -> Result<Option<RepoState>, String> {
+        let Some(refreshed_at) = self.refreshed_at else {
+            return Ok(None);
+        };
+        let field = |name: &str, error: String| format!("state {name}: {error}");
+        Ok(Some(RepoState {
+            refreshed_at: timestamp(refreshed_at)
+                .ok_or_else(|| format!("state refreshed_at: {refreshed_at}"))?,
+            head: decode(self.head.as_deref()).map_err(|e| field("head", e))?,
+            dirty: decode(self.dirty.as_deref()).map_err(|e| field("dirty", e))?,
+            untracked: decode(self.untracked.as_deref()).map_err(|e| field("untracked", e))?,
+            operation: decode(self.operation.as_deref()).map_err(|e| field("operation", e))?,
+            upstream: decode(self.upstream.as_deref()).map_err(|e| field("upstream", e))?,
+            default_branch: decode(self.default_branch.as_deref())
+                .map_err(|e| field("default_branch", e))?,
+            last_commit: decode(self.last_commit.as_deref())
+                .map_err(|e| field("last_commit", e))?,
+            last_fetch: decode(self.last_fetch.as_deref()).map_err(|e| field("last_fetch", e))?,
+            error: self.error,
+        }))
+    }
+}
+
+/// Unix seconds read back.
+fn timestamp(secs: i64) -> Option<Timestamp> {
+    u64::try_from(secs).ok().and_then(Timestamp::from_unix_secs)
 }
 
 #[expect(
@@ -194,6 +318,7 @@ fn build(
     forge: Option<&str>,
     registered: bool,
     last_used: Option<i64>,
+    state: StateColumns,
 ) -> Result<RepoSummary, StoreError> {
     let corrupt = |what: &str, error: &dyn std::fmt::Display| {
         StoreError::Corrupt(format!("{what} of {slug}: {error}"))
@@ -209,13 +334,11 @@ fn build(
         Some(other) => return Err(corrupt("forge", &other)),
     };
     let last_used = last_used
-        .map(|secs| {
-            u64::try_from(secs)
-                .ok()
-                .and_then(Timestamp::from_unix_secs)
-                .ok_or_else(|| corrupt("last_used", &secs))
-        })
+        .map(|secs| timestamp(secs).ok_or_else(|| corrupt("last_used", &secs)))
         .transpose()?;
+    let state = state
+        .build()
+        .map_err(|error| StoreError::Corrupt(format!("{error} of {slug}")))?;
     Ok(RepoSummary {
         identity: RepoIdentity {
             path: PathBuf::from(path),
@@ -228,6 +351,7 @@ fn build(
         },
         registered,
         last_used,
+        state,
     })
 }
 

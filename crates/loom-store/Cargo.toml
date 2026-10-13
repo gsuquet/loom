@@ -14,7 +14,8 @@ loom-api.workspace = true
 loom-repo.workspace = true
 # SQLite, bundled: one known version with FTS5 and JSON on every platform (ADR-0012).
 rusqlite.workspace = true
-# Remotes and context assignments are stored as JSON columns.
+# Remotes, context assignments and state fields are stored as JSON columns.
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 # Debug spans around each store operation.

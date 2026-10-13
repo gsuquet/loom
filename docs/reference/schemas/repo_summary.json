@@ -59,6 +59,18 @@
     "slug": {
       "description": "`<context>/<name>`, with a numeric suffix (`-2`, `-3`…) when another repository has the\nsame one. `unassigned/<name>` for an unassigned repository.",
       "type": "string"
+    },
+    "state": {
+      "description": "State (the repo card), `null` until it is read for the first time.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RepoState"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [
@@ -192,6 +204,193 @@
         }
       ]
     },
+    "MaybeKnown_Nullable_RepoOperation": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RepoOperation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "MaybeKnown_Nullable_Timestamp": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "MaybeKnown_Nullable_Upstream": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Upstream"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "MaybeKnown_Nullable_string": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "MaybeKnown_RepoHead": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "$ref": "#/$defs/RepoHead"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "MaybeKnown_Untracked": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "$ref": "#/$defs/Untracked"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "MaybeKnown_uint64": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
     "Remote": {
       "description": "A `[remote \"<name>\"]` of a repository.",
       "type": "object",
@@ -249,11 +448,208 @@
         "path"
       ]
     },
+    "RepoHead": {
+      "description": "What `HEAD` points to.",
+      "oneOf": [
+        {
+          "description": "A branch with at least one commit.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "branch"
+            },
+            "name": {
+              "description": "Short branch name, such as `main` or `feat/x`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "A branch without any commit yet (new repository, orphan branch).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unborn"
+            },
+            "name": {
+              "description": "Short branch name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "A commit, outside any branch.",
+          "type": "object",
+          "properties": {
+            "commit": {
+              "description": "Abbreviated commit id (`core.abbrev`, at least 7 hexadecimal digits).",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "detached"
+            }
+          },
+          "required": [
+            "kind",
+            "commit"
+          ]
+        }
+      ]
+    },
+    "RepoOperation": {
+      "description": "A git operation left in progress in the working tree.",
+      "oneOf": [
+        {
+          "description": "`git rebase`, including an interactive one.",
+          "type": "string",
+          "const": "rebase"
+        },
+        {
+          "description": "`git merge`.",
+          "type": "string",
+          "const": "merge"
+        },
+        {
+          "description": "`git cherry-pick`.",
+          "type": "string",
+          "const": "cherry-pick"
+        },
+        {
+          "description": "`git revert`.",
+          "type": "string",
+          "const": "revert"
+        },
+        {
+          "description": "`git bisect`.",
+          "type": "string",
+          "const": "bisect"
+        },
+        {
+          "description": "`git am`: patches being applied from a mailbox.",
+          "type": "string",
+          "const": "am"
+        }
+      ]
+    },
+    "RepoState": {
+      "description": "The state of a repository, read without starting git, at [`RepoState::refreshed_at`].",
+      "type": "object",
+      "properties": {
+        "default_branch": {
+          "description": "Default branch: the target of `refs/remotes/<primary remote>/HEAD`, otherwise `main`,\notherwise `master` when the branch exists; `null` when none of them.",
+          "$ref": "#/$defs/MaybeKnown_Nullable_string"
+        },
+        "dirty": {
+          "description": "Tracked paths with a change: modified, staged, deleted, renamed or conflicted\n(untracked files are counted in `untracked`).",
+          "$ref": "#/$defs/MaybeKnown_uint64"
+        },
+        "error": {
+          "description": "Why some fields are unknown, in English; `null` when every field is known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "description": "What `HEAD` points to.",
+          "$ref": "#/$defs/MaybeKnown_RepoHead"
+        },
+        "last_commit": {
+          "description": "Committer date of `HEAD`'s commit, `null` for an unborn branch.",
+          "$ref": "#/$defs/MaybeKnown_Nullable_Timestamp"
+        },
+        "last_fetch": {
+          "description": "Modification time of `FETCH_HEAD`, `null` when the repository was never fetched.",
+          "$ref": "#/$defs/MaybeKnown_Nullable_Timestamp"
+        },
+        "operation": {
+          "description": "Operation in progress, `null` when none.",
+          "$ref": "#/$defs/MaybeKnown_Nullable_RepoOperation"
+        },
+        "refreshed_at": {
+          "description": "When the state was read.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "untracked": {
+          "description": "Untracked files.",
+          "$ref": "#/$defs/MaybeKnown_Untracked"
+        },
+        "upstream": {
+          "description": "Upstream of the `HEAD` branch, `null` when detached, unconfigured, or when its ref is\nmissing (never fetched, or deleted on the remote and pruned).",
+          "$ref": "#/$defs/MaybeKnown_Nullable_Upstream"
+        }
+      },
+      "required": [
+        "refreshed_at",
+        "head",
+        "dirty",
+        "untracked",
+        "operation",
+        "upstream",
+        "default_branch",
+        "last_commit",
+        "last_fetch"
+      ]
+    },
     "Timestamp": {
       "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
       "type": "string",
       "format": "date-time",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "Untracked": {
+      "description": "Untracked files of the working tree, `.gitignore` applied.",
+      "type": "object",
+      "properties": {
+        "capped": {
+          "description": "The count stopped at the cap: there are more.",
+          "type": "boolean"
+        },
+        "count": {
+          "description": "Number of untracked files (an untracked nested repository counts as one), at most the\ncap.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "count",
+        "capped"
+      ]
+    },
+    "Upstream": {
+      "description": "The upstream of the branch `HEAD` is on.",
+      "type": "object",
+      "properties": {
+        "ahead": {
+          "description": "Commits of `HEAD` that are not in the upstream.",
+          "$ref": "#/$defs/MaybeKnown_uint64"
+        },
+        "behind": {
+          "description": "Commits of the upstream that are not in `HEAD`.",
+          "$ref": "#/$defs/MaybeKnown_uint64"
+        },
+        "name": {
+          "description": "Short name of the upstream ref, such as `origin/main`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "ahead",
+        "behind"
+      ]
     }
   }
 }
