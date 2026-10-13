@@ -41,7 +41,7 @@
       "type": "object",
       "properties": {
         "check": {
-          "description": "What was checked, such as `roots`, `contexts` or `ssh git@github.com`.",
+          "description": "What was checked, such as `roots`, `contexts`, `remote git@github.com (ssh, via\npersonal/loom)` or `updates`.",
           "type": "string"
         },
         "detail": {

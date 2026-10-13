@@ -148,11 +148,20 @@ impl Schedule {
             });
         match fetch {
             FetchStatus::NotRun | FetchStatus::Succeeded => slot.failures = 0,
+            // Says nothing about the remote: the failures are kept, the next try is one
+            // interval away.
+            FetchStatus::Busy => {}
             FetchStatus::Failed => slot.failures = slot.failures.saturating_add(1),
         }
-        slot.next = now + jittered(backoff(interval, slot.failures), random());
+        let delay = match fetch {
+            FetchStatus::Busy => interval,
+            FetchStatus::NotRun | FetchStatus::Succeeded | FetchStatus::Failed => {
+                backoff(interval, slot.failures)
+            }
+        };
+        slot.next = now + jittered(delay, random());
         match fetch {
-            FetchStatus::NotRun => {}
+            FetchStatus::NotRun | FetchStatus::Busy => {}
             FetchStatus::Succeeded => {
                 self.hosts.insert(
                     host.to_owned(),
@@ -472,5 +481,38 @@ mod tests {
         schedule.finish(path, "", now, now, FetchStatus::NotRun, &mut middle);
         assert_eq!(schedule.host_backoff(""), None);
         assert_eq!(schedule.next_due(), Some(now + HOUR));
+    }
+
+    #[test]
+    fn a_busy_repository_is_retried_at_the_next_interval_without_backoff() {
+        let now = Instant::now();
+        let mut schedule = Schedule::new(HOUR);
+        let path = Path::new("/r/a");
+        schedule.start(path);
+        schedule.finish(path, "h", now, now, FetchStatus::Busy, &mut middle);
+        assert_eq!(schedule.host_backoff("h"), None);
+        assert_eq!(schedule.next_due(), Some(now + HOUR));
+
+        // After a failure: the host's backoff is neither extended nor cleared, the repository
+        // waits one interval, and its failures are kept for the next one.
+        schedule.start(path);
+        schedule.finish(path, "h", now, now, FetchStatus::Failed, &mut middle);
+        assert_eq!(schedule.host_backoff("h"), Some((now + HOUR * 2, 1)));
+        let at = now + HOUR * 2;
+        schedule.start(path);
+        schedule.finish(path, "h", at, at, FetchStatus::Busy, &mut middle);
+        assert_eq!(schedule.host_backoff("h"), Some((now + HOUR * 2, 1)));
+        assert_eq!(schedule.next_due(), Some(at + HOUR));
+        let later = at + HOUR;
+        schedule.start(path);
+        schedule.finish(
+            path,
+            "other",
+            later,
+            later,
+            FetchStatus::Failed,
+            &mut middle,
+        );
+        assert_eq!(schedule.next_due(), Some(later + HOUR * 4));
     }
 }

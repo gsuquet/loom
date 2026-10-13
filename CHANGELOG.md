@@ -32,6 +32,9 @@ Repository index (v0.2): loom knows every git repository on the machine, which c
 ### Fixed
 - A machine installed with `install.sh --channel dev` no longer leaves the dev channel after the auto-upgrade moves it to a stable release. The channel given to `loom upgrade --channel` (run by `install.sh --channel`) is remembered in `state/update.json`; the effective channel is `[update] channel`, then the remembered one, then the build channel, and `loom status` shows which (`config`, `chosen`, `build`). Fields of `state/update.json` unknown to a version are now kept when it rewrites the file.
 - Registration on use writes the repository and `last_used` in one transaction (a reader could see a newly registered repository without `last_used`).
+- Automatic repository updates no longer fail for good on a tag moved upstream (`! [rejected] 1.0.0 -> 1.0.0 (would clobber existing tag)` under `fetch.pruneTags` or `remote.<name>.tagOpt = --tags`): loomd fetches with `--no-prune --no-prune-tags --no-tags`, so updates only move branches and leave tags to you.
+- An update that meets a lock held by another git process (`index.lock: File exists`, `cannot lock ref … but expected …`) is now `skipped` with the new reason `busy`, retried at the next interval without backoff, instead of `failed`. Locks are never removed.
+- `loom repo doctor` checks each remote host the way updates reach it: loomd runs `git ls-remote` in one repository per host and scheme (new `POST /v1/diagnostics/remote-check`), with its environment and the user's git configuration (`core.sshCommand`, `includeIf`, credential helpers), HTTPS remotes included. It replaces the `ssh -T` check run from the shell, which failed where loomd's fetches succeeded. A new `updates` check groups the repositories whose last update failed or was skipped by reason, with a fix for each.
 
 ## [0.1.0] - 2026-10-12
 

@@ -7,6 +7,7 @@
 //! (`ssh -G`) and `~` expansion.
 
 mod context;
+mod diagnosis;
 mod diff;
 mod forge;
 mod identity;
@@ -16,6 +17,10 @@ pub mod state;
 pub mod update;
 
 pub use context::{ContextRules, ContextRulesError};
+pub use diagnosis::{
+    RemoteCheckTarget, RemoteEndpoint, classify_remote_failure, remote_check_targets,
+    remote_endpoint,
+};
 pub use diff::{ScanDiff, diff};
 pub use forge::detect_forge;
 pub use identity::{assign_unique_slugs, identify};
@@ -25,4 +30,6 @@ pub use scan::{
     scan_with_registered,
 };
 pub use state::{StateOptions, UpdateRefs, state, update_refs};
-pub use update::{Action, FetchDecision, UpdatePolicies, decide_fetch, decide_update, plan};
+pub use update::{
+    Action, FetchDecision, UpdatePolicies, decide_fetch, decide_update, is_busy, plan,
+};

@@ -59,7 +59,7 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | --- | --- |
 | `NO_COLOR` | Non-empty: no color with `--color auto`. |
 | `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given, and of `loom`. See [configuration](../configuration.md). |
-| `PATH` | Searched for `loomd` by `loom status`, `loom service install` and the `loom repo` commands when no `loomd` is next to the `loom` executable, and for `ssh` by `loom repo doctor`. |
+| `PATH` | Searched for `loomd` by `loom status`, `loom service install` and the `loom repo` commands when no `loomd` is next to the `loom` executable. |
 | `PWD` | The current directory of `loom repo` and of the registration on use, when it names the same directory as the working directory (symbolic links kept). See [`loom repo`](#repository-argument). |
 | `XDG_CONFIG_HOME` | Absolute path: `loom service` on Linux writes the systemd unit under `$XDG_CONFIG_HOME/systemd/user/` instead of `~/.config/systemd/user/`. |
 | `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN` | Optional GitHub token for `loom upgrade`, first non-empty one wins. Raises the API rate limit. Never printed. |
@@ -487,9 +487,13 @@ warn  unassigned: 1 repository has no context: /home/me/src/tool
            or match their remotes with `match.hosts`, or set `default_context = "<name>"`
 ok    ssh-agent: loomd sees an agent socket at /run/user/1000/ssh-agent.socket
 ok    home: loomd expands `~` to /home/me
-ok    ssh git@github.com: authenticated: Hi me! You've successfully authenticated, but GitHub does not provide shell access.
-fail  ssh git@gitlab.example: git@gitlab.example: Permission denied (publickey).
-      fix: run `ssh -T git@gitlab.example` in a terminal: load the key in the agent (`ssh-add`), accept the host key, or check the network (VPN)
+ok    remote git@github.com (ssh, via personal/loom): reachable
+fail  remote https://gitlab.example (https, via work/api): fatal: could not read Username for 'https://gitlab.example': terminal prompts disabled
+      fix: git has no credential for https://gitlab.example and cannot prompt: store one with a credential helper (run `git -C /home/me/work/api ls-remote origin HEAD` once in a terminal with a helper configured), or switch the remote to SSH (`git -C /home/me/work/api remote set-url origin <ssh url>`)
+warn  updates: remote not found (6): work/a, work/b, work/c, …
+      fix: the project was moved or deleted upstream, or access to it was lost: update the remote (`git remote set-url`), or forget the clone (`loom repo forget <slug>`)
+warn  updates: local changes (1): personal/notes
+      fix: commit, stash or discard them, then `loom repo sync <slug>`
 ```
 
 | Check | Status |
@@ -501,7 +505,8 @@ fail  ssh git@gitlab.example: git@gitlab.example: Permission denied (publickey).
 | `unassigned` | `warn` with the count, one example and the configuration that would assign it. |
 | `ssh-agent` | `SSH_AUTH_SOCK` in loomd's environment ([`GET /v1/diagnostics`](../api.md#daemondiagnostics)): `ok` when it is a socket; otherwise `fail` when an indexed remote uses SSH, `warn` when none does. The fix depends on the platform (systemd: `systemctl --user import-environment SSH_AUTH_SOCK`, then restart; launchd: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`). `warn` when loomd is older than this endpoint. |
 | `home` | `warn` when loomd's `HOME` differs from the one of `loom`: `~` in the configuration then expands elsewhere. |
-| `ssh <user>@<host>[:<port>]` | One per distinct SSH endpoint of the indexed remotes (`ssh://…`, `git+ssh://…`, `ssh+git://…` and scp-like `[user@]host:path` URLs; user `git` when the URL has none; the host as written, so that SSH aliases apply; a user or host starting with `-` or holding spaces is skipped). Runs `ssh -o BatchMode=yes -o ConnectTimeout=5 -T [-p <port>] <user>@<host>` with the environment of `loom`, all endpoints at once, each killed after 15 s. `ok` when the output holds a forge greeting (`successfully authenticated`, `Welcome to GitLab`, `authenticated via`, `You can use git to connect`, ASCII case ignored), whatever the exit code (GitHub exits with `1`), or on exit code `0`; `fail` on exit code `255` (the last output line as detail), on a timeout, or when `ssh` cannot run; `warn` on any other exit code. |
+| `remote <endpoint> (<scheme>, via <slug>)` | One per distinct endpoint and scheme of the primary remotes of the index, from [`POST /v1/diagnostics/remote-check`](../api.md#remote-check): loomd runs `git -C <repo> ls-remote --exit-code <primary remote> HEAD` in one repository of the endpoint, with the environment, git configuration (`core.sshCommand`, `includeIf`, credential helpers) and non-interactive settings of its updates. Endpoint: `<user>@<host>[:<port>]` for SSH (user `git` when the URL has none, an SSH alias as written), `<scheme>://<host>[:<port>]` for HTTP(S) and `git://`, the URL of a local or other remote. Scheme: `ssh`, `https`, `http`, `git`, `local`, `other`. `ok` (`reachable`) when the remote answers, even without `HEAD`; `fail` otherwise, with the last line of git's error output that is not git's generic `Could not read from remote repository` text as detail, and the fix of the kind of failure: SSH authentication (agent, `core.sshCommand`, host key), HTTPS authentication (credential helper, or switch the remote to SSH), not found (update the remote or forget the clone), network (no answer within 20 s, name resolution, connection: network or VPN), other (run the same `git ls-remote` in a terminal). One `ok` when no repository has a remote; `warn` when loomd is older than the endpoint. |
+| `updates` | The last update of every repository ([`last_update`](../api.md#lastupdate)), skips asked for (`policy_off`, `no_remote`) left out: one `warn` per reason, as `<reason> (<count>): <slug>, <slug>, <slug>, …` (at most 3 slugs, sorted), with its fix. Reasons, in this order: `fetch refused by SSH`, `fetch without HTTPS credential`, `remote not found`, `remote unreachable`, `fetch failed` (a failed fetch, classified from git's error output as for `remote`), `fast-forward failed`, `default branch move failed`, `repository unreadable`, `repository busy`, `state unknown`, `operation in progress`, `local changes`, `HEAD detached`, `branch without commit`, `branch without upstream`, `diverged from upstream`, `fast-forward refused by git`, `default branch diverged`. One `ok` when there is none. |
 
 `--json`: [`DoctorReport`](../schemas/doctor_report.json): `checks`, each with `check`, `status` (`ok`, `warn`, `fail`), `detail` and `fix` (absent when there is nothing to fix).
 

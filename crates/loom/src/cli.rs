@@ -226,8 +226,9 @@ pub enum RepoCommand {
     Register(RepoRegisterArgs),
     /// Remove a repository from the index (registering it again undoes it).
     Forget(RepoForgetArgs),
-    /// Check roots, contexts, unassigned repositories, loomd's SSH agent and SSH access to
-    /// each host; print the fixes. Exits with 1 when a check fails.
+    /// Check roots, contexts, unassigned repositories, loomd's SSH agent, each remote host as
+    /// loomd's git reaches it, and the last updates; print the fixes. Exits with 1 when a check
+    /// fails.
     Doctor(RepoDoctorArgs),
     /// Update repositories now, as loomd does on its schedule: fetch the primary remote, then
     /// fast-forward only when no local work can be affected.

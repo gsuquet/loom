@@ -15,8 +15,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use loom_api::{
-    ApiError, DaemonDiagnostics, ErrorCode, MaybeKnown, PlannedAction, RepoHead, RepoList,
-    RepoSummary, RepoUpdatePolicy, ScanResult, SearchField, SearchKind, SearchResults, SkipReason,
+    ApiError, DaemonDiagnostics, ErrorCode, MaybeKnown, PlannedAction, RemoteCheckOutcome,
+    RemoteCheckResult, RemoteProblem, RemoteScheme, RepoHead, RepoList, RepoSummary,
+    RepoUpdatePolicy, ScanResult, SearchField, SearchKind, SearchResults, SkipReason,
     SshAgentSocket, SyncOutcome, SyncResult, Untracked, UpdateOutcome,
 };
 use serde::de::DeserializeOwned;
@@ -473,6 +474,128 @@ fn diagnostics_report_the_agent_socket_and_home() {
         assert_eq!(diagnostics.home, Some(sandbox.user_home()));
         daemon.stop();
     }
+}
+
+/// Under `~/perso`: `app` and `app-2`, clones of a local remote; `gone`, whose remote does not
+/// exist; `ssh`, whose remote is `git@auth.invalid`. Returns the URLs of the local remote and
+/// of the missing one, and a `PATH` with an `ssh` that refuses every key first.
+fn remote_check_fixture(sandbox: &Sandbox) -> (String, String, std::ffi::OsString) {
+    let origin = sandbox.dir.path().join("origin.git");
+    git(
+        sandbox,
+        sandbox.dir.path(),
+        &["init", "-q", "--bare", origin.to_str().unwrap()],
+    );
+    let url = format!("file://{}", origin.display());
+    let seed = sandbox.dir.path().join("seed");
+    git(
+        sandbox,
+        sandbox.dir.path(),
+        &["clone", "-q", &url, seed.to_str().unwrap()],
+    );
+    push(sandbox, &seed, "f.txt", "one\n");
+    for name in ["app", "app-2", "gone", "ssh"] {
+        let repo = sandbox.user_home().join("perso").join(name);
+        git(
+            sandbox,
+            sandbox.dir.path(),
+            &["clone", "-q", &url, repo.to_str().unwrap()],
+        );
+    }
+    let perso = sandbox.user_home().join("perso");
+    let gone_url = format!("file://{}", sandbox.dir.path().join("gone.git").display());
+    git(
+        sandbox,
+        &perso.join("gone"),
+        &["remote", "set-url", "origin", &gone_url],
+    );
+    git(
+        sandbox,
+        &perso.join("ssh"),
+        &["remote", "set-url", "origin", "git@auth.invalid:x/y.git"],
+    );
+    // Only loomd's `PATH` has this `ssh`: the check must run in loomd, not in the client.
+    let bin = sandbox.dir.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let ssh = bin.join("ssh");
+    fs::write(
+        &ssh,
+        "#!/bin/sh\necho 'git@auth.invalid: Permission denied (publickey).' >&2\nexit 255\n",
+    )
+    .unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    (url, gone_url, std::env::join_paths(paths).unwrap())
+}
+
+#[test]
+fn remote_checks_run_git_in_the_environment_of_loomd() {
+    let sandbox = Sandbox::new();
+    let (url, gone_url, path) = remote_check_fixture(&sandbox);
+    let mut command = sandbox.command();
+    command.env("PATH", path);
+    let _daemon = Daemon::start(&mut command, &sandbox.socket());
+    wait_for_repos(&sandbox, 4);
+
+    let result: RemoteCheckResult =
+        ok(&sandbox.request("POST", "/v1/diagnostics/remote-check", None));
+
+    let found: Vec<(&str, RemoteScheme, &str, &RemoteCheckOutcome)> = result
+        .remotes
+        .iter()
+        .map(|check| {
+            (
+                check.endpoint.as_str(),
+                check.scheme,
+                check.via.as_str(),
+                &check.result,
+            )
+        })
+        .collect();
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert_eq!(found[0].0, "git@auth.invalid");
+    assert_eq!(found[0].1, RemoteScheme::Ssh);
+    assert_eq!(found[0].2, "personal/ssh");
+    assert!(
+        matches!(
+            found[0].3,
+            RemoteCheckOutcome::Failed { problem: RemoteProblem::SshAuth, stderr_tail, .. }
+                if stderr_tail.contains("Permission denied")
+        ),
+        "{:?}",
+        found[0]
+    );
+    assert_eq!(found[1].0, gone_url);
+    assert_eq!(found[1].1, RemoteScheme::Local);
+    assert!(
+        matches!(
+            found[1].3,
+            RemoteCheckOutcome::Failed {
+                problem: RemoteProblem::NotFound,
+                ..
+            }
+        ),
+        "{:?}",
+        found[1]
+    );
+    // Two repositories share the endpoint: checked once, in the lowest slug.
+    assert_eq!(
+        found[2],
+        (
+            url.as_str(),
+            RemoteScheme::Local,
+            "personal/app",
+            &RemoteCheckOutcome::Reachable
+        )
+    );
+    assert_eq!(
+        result.remotes[2].path,
+        sandbox.user_home().join("perso/app")
+    );
+    assert_eq!(result.remotes[2].remote, "origin");
 }
 
 #[test]

@@ -37,7 +37,7 @@ use common::snapshot::{Allowed, FastForward, Snapshot, compare};
 use common::{Daemon, POLL, TIMEOUT, git, git_run, ok, request};
 use loom_api::{
     RepoList, RepoOperation, RepoSummary, ScanResult, SkipReason, StateField, SyncOutcome,
-    SyncResult, UpdateOutcome,
+    SyncResult, UpdateOutcome, UpdateStep,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -177,6 +177,10 @@ struct Fixture {
     filter_marker: Option<PathBuf>,
     /// A file the `post-merge` hook writes: must exist after a fast-forward.
     hook_marker: Option<PathBuf>,
+    /// A tag the remote moves onto every incoming commit.
+    moved_tag: Option<&'static str>,
+    /// A lock file held by "another git process", and its content: must never change.
+    lock: Option<(PathBuf, &'static str)>,
 }
 
 impl Fixture {
@@ -197,6 +201,8 @@ impl Fixture {
             extras: Vec::new(),
             filter_marker: None,
             hook_marker: None,
+            moved_tag: None,
+            lock: None,
         };
         fixture.git_in(&fixture.root, &["init", "-q", "--bare", "up.git"]);
         fixture.git_in(&fixture.root, &["clone", "-q", &fixture.url(), "seed"]);
@@ -291,7 +297,13 @@ impl Fixture {
         let file = format!("incoming-{round}.txt");
         let mut files = vec![("f.txt", content.as_str()), (file.as_str(), "new\n")];
         files.extend(self.incoming_files.iter().copied());
-        self.push(self.incoming, &files, &format!("round {round}"))
+        let pushed = self.push(self.incoming, &files, &format!("round {round}"));
+        if let Some(tag) = self.moved_tag {
+            let seed = self.seed();
+            self.git_in(&seed, &["tag", "-f", tag, &pushed]);
+            self.git_in(&seed, &["push", "-q", "-f", "origin", tag]);
+        }
+        pushed
     }
 
     /// An executable script in the fixture directory, outside every working tree.
@@ -390,6 +402,11 @@ impl Fixture {
         {
             problems.push("the post-merge hook did not run".to_owned());
         }
+        if let Some((lock, content)) = &self.lock
+            && fs::read_to_string(lock).ok().as_deref() != Some(*content)
+        {
+            problems.push(format!("the lock {} was touched", lock.display()));
+        }
         problems
     }
 
@@ -404,7 +421,7 @@ impl Fixture {
 }
 
 /// Every risky state, built as a user would leave it, in the order of the issue.
-const FIXTURES: [fn(&Suite) -> Fixture; 23] = [
+const FIXTURES: [fn(&Suite) -> Fixture; 25] = [
     clean_behind,
     dirty_tracked,
     staged_only,
@@ -425,6 +442,8 @@ const FIXTURES: [fn(&Suite) -> Fixture; 23] = [
     filter,
     hook_fails,
     tag,
+    moved_tag,
+    locked,
     stash,
     policy_fetch,
     policy_off,
@@ -802,6 +821,49 @@ fn tag(suite: &Suite) -> Fixture {
     f.git_in(&seed, &["push", "-q", "origin", "v1"]);
     f.clone_work();
     f.git(&["tag", "-f", "v1", "HEAD~1"]);
+    f
+}
+
+/// A tag the remote moves onto the commits being fetched, with `fetch.pruneTags` and
+/// `tagOpt = --tags` set: a plain fetch would refuse to clobber the local tag and fail;
+/// updates fetch no tag, so the local tag stays and the branch moves.
+fn moved_tag(suite: &Suite) -> Fixture {
+    let mut f = Fixture::new(suite, "moved-tag", Expect::FastForward);
+    let seed = f.seed();
+    f.git_in(&seed, &["tag", "1.0.0"]);
+    f.git_in(&seed, &["push", "-q", "origin", "1.0.0"]);
+    f.clone_work();
+    f.git(&["config", "fetch.prune", "true"]);
+    f.git(&["config", "fetch.pruneTags", "true"]);
+    f.git(&["config", "remote.origin.tagOpt", "--tags"]);
+    f.moved_tag = Some("1.0.0");
+    f
+}
+
+/// `index.lock` held by another git process (an editor's automatic fetch): the fast-forward
+/// is skipped as busy, and the lock is left alone.
+fn locked(suite: &Suite) -> Fixture {
+    let mut f = Fixture::new(
+        suite,
+        "locked",
+        Expect::Skipped(
+            |reason| {
+                matches!(
+                    reason,
+                    SkipReason::Busy {
+                        step: UpdateStep::FastForward,
+                        ..
+                    }
+                )
+            },
+            "skipped: repository busy",
+        ),
+    );
+    f.clone_work();
+    let lock = f.repo.join(".git/index.lock");
+    let content = "held by another git process\n";
+    fs::write(&lock, content).unwrap();
+    f.lock = Some((lock, content));
     f
 }
 
