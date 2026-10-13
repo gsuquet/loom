@@ -1,0 +1,31 @@
+# shellcheck shell=bash
+# loom shell integration for bash. In ~/.bashrc: eval "$(loom shell-init bash)"
+# Each directory the shell enters, once per session, is sent to loomd in the background:
+# loomd registers the repository it is in. Nothing happens when loom is not installed.
+# Bash 3.2 compatible (macOS /bin/bash): no associative array.
+if command -v loom >/dev/null 2>&1; then
+  __loom_seen=$'\n'
+  __loom_pwd=
+  __loom_prompt() {
+    local status=$?
+    if [[ "$PWD" != "$__loom_pwd" ]]; then
+      __loom_pwd=$PWD
+      case $__loom_seen in
+        *$'\n'"$PWD"$'\n'*) ;;
+        *)
+          __loom_seen+="$PWD"$'\n'
+          # Detached (subshell: no job, no notice); every error and output discarded.
+          (command loom repo register --on-use --background </dev/null >/dev/null 2>&1 &) 2>/dev/null
+          ;;
+      esac
+    fi
+    # Keeps `$?` for the prompt commands that follow.
+    return "$status"
+  }
+  case ${PROMPT_COMMAND-} in
+    *__loom_prompt*) ;;
+    '') PROMPT_COMMAND=__loom_prompt ;;
+    # Appended on a line of its own: an existing value ending with `;` stays valid.
+    *) PROMPT_COMMAND+=$'\n__loom_prompt' ;;
+  esac
+fi

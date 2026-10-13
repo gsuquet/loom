@@ -276,6 +276,8 @@ loom repo register [OPTIONS] [PATH]
 | --- | --- | --- | --- |
 | `-n`, `--dry-run` |  |  | Print the repository that would be registered, change nothing |
 | `--json` |  |  | Print the registered repository as JSON (`RepoSummary` schema) |
+| `--on-use` |  |  | Register as a use, like any `loom` command run inside the repository: sets its `last_used`, leaves an indexed repository as it is, and never starts loomd |
+| `--background` |  |  | With `--on-use`: wait for loomd at most 50 ms, print nothing, and exit with 0 whatever happens (run by the shell integration) |
 | `-h`, `--help` |  |  | Print help |
 
 Global options apply.
@@ -377,6 +379,30 @@ loom search [OPTIONS] <QUERY>...
 | --- | --- | --- | --- |
 | `--limit <N>` |  | `20` | Most results to print |
 | `--json` |  |  | Print the results as JSON (`SearchResults` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom shell-init`
+
+Print the shell integration to evaluate in the shell's startup file: `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`.
+
+The directory the shell starts in, then each directory it enters, once per shell session, runs `loom repo register --on-use --background` detached, so that loomd registers the repository it is in. Does nothing when `loom` is not on `PATH`.
+
+```text
+loom shell-init [OPTIONS] <SHELL>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<SHELL>` | `zsh`, `bash` |  | Shell to integrate with |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |
 
 Global options apply.

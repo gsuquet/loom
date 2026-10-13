@@ -9,4 +9,5 @@ pub mod loomd_path;
 pub mod repo;
 pub mod search;
 pub mod service;
+pub mod shell;
 pub mod status;
