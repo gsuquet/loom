@@ -375,10 +375,11 @@ async fn register(env: &Env<'_>, args: &RepoRegisterArgs) -> Result<()> {
     if args.dry_run {
         return print(&format!("would register {}\n", root.display()));
     }
-    let client = connect(&env.layout, true).await?;
+    // A use never starts loomd, as the registration on use of the other commands.
+    let client = connect(&env.layout, !args.on_use).await?;
     let request = RegisterRequest {
         path: root,
-        on_use: false,
+        on_use: args.on_use,
     };
     let repo: RepoSummary = client
         .post(REGISTER_PATH, Some(&request))
@@ -388,7 +389,8 @@ async fn register(env: &Env<'_>, args: &RepoRegisterArgs) -> Result<()> {
         json(&repo)?
     } else {
         format!(
-            "registered {}: {}\n",
+            "{} {}: {}\n",
+            if args.on_use { "used" } else { "registered" },
             repo.identity.slug,
             repo.identity.path.display()
         )

@@ -55,8 +55,8 @@ description = "Lint GitHub Actions workflows"
 run = "actionlint"
 
 [tasks.shellcheck]
-description = "Lint shell scripts"
-run = "shellcheck dist/*.sh"
+description = "Lint shell scripts, including the bash integration printed by `loom shell-init bash`"
+run = "shellcheck dist/*.sh crates/loom/src/shell/init.bash"
 
 [tasks.test-install]
 description = "Test dist/install.sh against fake releases on a local fake API"

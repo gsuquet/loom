@@ -1,14 +1,16 @@
-//! Registration on use: a `loom` command run inside a repository tells loomd, which registers
-//! the repository when its index does not have it and marks it used. One request on a thread
-//! of its own, never starting loomd, never failing the command, and never delaying it by more
-//! than [`BUDGET`].
+//! Registration on use: a `loom` command run inside a repository (and
+//! `loom repo register --on-use --background`, run by the shell integration) tells loomd,
+//! which registers the repository when its index does not have it and marks it used. One
+//! request on a thread of its own, never starting loomd, never failing the command, and never
+//! delaying it by more than [`BUDGET`].
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use loom::repo::normalize;
 use loom_api::{RegisterRequest, RepoSummary};
 use loom_config::layout::Layout;
 use loom_repo::find_root;
@@ -35,9 +37,10 @@ impl Pending {
     }
 }
 
-/// Starts the registration of the repository of the current directory, when loomd's socket
-/// exists. Everything that fails is logged at debug level and skipped.
-pub fn spawn(layout: Option<Layout>) -> Option<Pending> {
+/// Starts the registration of the repository of `dir` (relative to the current directory;
+/// default: the current directory), when loomd's socket exists. Everything that fails is
+/// logged at debug level and skipped.
+pub fn spawn(layout: Option<Layout>, dir: Option<PathBuf>) -> Option<Pending> {
     let started = Instant::now();
     let layout = layout?;
     let parent = Span::current();
@@ -45,7 +48,7 @@ pub fn spawn(layout: Option<Layout>) -> Option<Pending> {
     let spawned = thread::Builder::new()
         .name("register-on-use".to_owned())
         .spawn(move || {
-            register(&layout, started, parent);
+            register(&layout, dir.as_deref(), started, parent);
             let _ = sender.send(());
         });
     match spawned {
@@ -60,7 +63,15 @@ pub fn spawn(layout: Option<Layout>) -> Option<Pending> {
     }
 }
 
-fn register(layout: &Layout, started: Instant, parent: Span) {
+/// `loom repo register --on-use --background`: the registration on use of `dir`, waited for
+/// within [`BUDGET`]. Never fails, never prints.
+pub fn register_in_background(layout: Option<Layout>, dir: Option<PathBuf>) {
+    if let Some(pending) = spawn(layout, dir) {
+        pending.wait();
+    }
+}
+
+fn register(layout: &Layout, dir: Option<&Path>, started: Instant, parent: Span) {
     // No socket: loomd is not running, and it is never started for this.
     if fs::symlink_metadata(&layout.socket).is_err() {
         debug!("loomd is not running: no registration on use");
@@ -68,7 +79,8 @@ fn register(layout: &Layout, started: Instant, parent: Span) {
     }
     let root: Option<PathBuf> = logical_cwd()
         .ok()
-        .and_then(|cwd| find_root(&cwd).ok().flatten());
+        .map(|cwd| dir.map_or_else(|| cwd.clone(), |dir| normalize(&cwd.join(dir))))
+        .and_then(|start| find_root(&start).ok().flatten());
     let Some(root) = root else {
         return;
     };

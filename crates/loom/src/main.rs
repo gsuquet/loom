@@ -23,6 +23,7 @@ use loom::loomd_path::loomd_candidates;
 use loom::service::{
     ServicePaths, ServiceSpec, format_status, opt_out_message, render_unit, unit_path,
 };
+use loom::shell::init_script;
 use loom::status::{render_human, version_mismatch};
 use loom_api::{ServicePlatform, StatusResponse, VersionInfo};
 use loom_config::config::{Config, OtlpEndpoint, TelemetryConfig, parse_config};
@@ -34,6 +35,7 @@ use loom_telemetry::{LOOM_SHUTDOWN_TIMEOUT, Options, TelemetryGuard};
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use service_cmd::{Supervisor, SystemRunner, Target};
 use tracing::field::Empty;
+use tracing::level_filters::LevelFilter;
 use tracing::{info_span, warn};
 
 use crate::client::{Client, ClientError};
@@ -47,7 +49,7 @@ fn main() -> ExitCode {
     let (config, config_problem) = telemetry_config();
     // The watchdog writes to `log/loomd.log`, which needs timestamps like loomd's own lines.
     let timestamps = matches!(cli.command, Command::UpgradeWatchdog(_));
-    let telemetry = init_telemetry(&cli.global, &config, timestamps);
+    let telemetry = init_telemetry(&cli.global, &config, timestamps, silent(&cli.command));
     if let Some(problem) = config_problem {
         warn!("traces are not exported: {problem}");
     }
@@ -65,7 +67,7 @@ fn main() -> ExitCode {
     }
     let result = span.in_scope(|| {
         let registration = registers_on_use(&cli.command)
-            .then(|| on_use::spawn(layout().ok()))
+            .then(|| on_use::spawn(layout().ok(), None))
             .flatten();
         let result = run(&cli);
         if let Some(registration) = registration {
@@ -124,12 +126,13 @@ fn telemetry_config() -> (TelemetryConfig, Option<String>) {
     }
 }
 
-/// Logs to stderr, at the level and with the colors the global flags ask for, and exports
-/// traces when `[telemetry]` enables it.
+/// Logs to stderr, at the level and with the colors the global flags ask for (nothing when
+/// `silent`), and exports traces when `[telemetry]` enables it.
 fn init_telemetry(
     global: &GlobalArgs,
     config: &TelemetryConfig,
     timestamps: bool,
+    silent: bool,
 ) -> TelemetryGuard {
     let color = use_color(
         global.color,
@@ -145,7 +148,11 @@ fn init_telemetry(
     let options = Options {
         service_name: "loom",
         version: &VERSION_INFO,
-        level: level(global.quiet, global.verbose),
+        level: if silent {
+            LevelFilter::OFF
+        } else {
+            level(global.quiet, global.verbose)
+        },
         color,
         timestamps,
         telemetry: &telemetry,
@@ -163,7 +170,8 @@ const fn registers_on_use(command: &Command) -> bool {
             RepoCommand::Scan(args) => !args.rebuild,
             RepoCommand::Ls(_) | RepoCommand::Doctor(_) => true,
         },
-        Command::UpgradeWatchdog(_) => false,
+        // Run by every new shell: no delay for it, and the hook it installs registers.
+        Command::ShellInit(_) | Command::UpgradeWatchdog(_) => false,
         Command::Version { .. }
         | Command::Status { .. }
         | Command::Service { .. }
@@ -172,8 +180,22 @@ const fn registers_on_use(command: &Command) -> bool {
     }
 }
 
+/// Whether the command prints nothing on stderr, whatever happens:
+/// `loom repo register --on-use --background`.
+const fn silent(command: &Command) -> bool {
+    matches!(command, Command::Repo { command: RepoCommand::Register(args) } if args.background)
+}
+
 fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
+        // Before `layout()?`: never fails.
+        Command::Repo {
+            command: RepoCommand::Register(args),
+        } if args.background => {
+            on_use::register_in_background(layout().ok(), args.path.clone());
+            Ok(())
+        }
+        Command::ShellInit(args) => print(init_script(args.shell)),
         Command::Version { json } => print_version(&VERSION_INFO, *json),
         Command::Status { json, no_start } => status(*json, *no_start),
         Command::Upgrade(args) => print(&upgrade::upgrade(&VERSION_INFO, args, &layout()?)?),
