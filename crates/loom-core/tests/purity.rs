@@ -2,7 +2,7 @@
 //!
 //! The sources are embedded at compile time; a new module must be added to `SOURCES`.
 
-const SOURCES: [(&str, &str); 9] = [
+const SOURCES: [(&str, &str); 10] = [
     ("Cargo.toml", include_str!("../Cargo.toml")),
     ("src/lib.rs", include_str!("../src/lib.rs")),
     ("src/command.rs", include_str!("../src/command.rs")),
@@ -11,6 +11,7 @@ const SOURCES: [(&str, &str); 9] = [
     ("src/event_log.rs", include_str!("../src/event_log.rs")),
     ("src/id.rs", include_str!("../src/id.rs")),
     ("src/task.rs", include_str!("../src/task.rs")),
+    ("src/task_file.rs", include_str!("../src/task_file.rs")),
     ("src/timestamp.rs", include_str!("../src/timestamp.rs")),
 ];
 

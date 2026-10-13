@@ -179,7 +179,7 @@ impl Kind {
 }
 
 impl ContentFormat {
-    fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         match self {
             Self::Talk => "talk",
             Self::Article => "article",

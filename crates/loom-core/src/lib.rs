@@ -1,6 +1,6 @@
 //! The task domain: tasks, their status transitions, commands and events, and the primitives
 //! they are built on (instants, calendar dates, context names, IDs), and the file formats they
-//! are stored in (`events.jsonl`), as strings in and strings out.
+//! are stored in (`task.md`, `events.jsonl`), as strings in and strings out.
 //!
 //! No I/O, no clock, no randomness of its own, no async runtime: callers inject the current time
 //! and a [`RandomSource`], and persist the events [`apply`] returns.
@@ -11,6 +11,7 @@ mod event;
 mod event_log;
 mod id;
 mod task;
+mod task_file;
 mod timestamp;
 
 pub use command::{
@@ -33,4 +34,5 @@ pub use task::{
     ContentFormat, ExternalRef, Importance, Kind, Link, ReadOnlyReason, Relations, Status,
     StatusName, Task, is_legal_transition,
 };
+pub use task_file::{FormatError, TaskDocument, body_template, parse_task_md, render_task_md};
 pub use timestamp::Timestamp;

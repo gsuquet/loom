@@ -58,6 +58,9 @@ sha2 = "0.11"
 tar = { version = "0.4", default-features = false }
 tempfile = "3.27"
 thiserror = "2.0"
+# Format-preserving TOML for `task.md`: comments, key order and unknown keys survive a rewrite.
+# Shares toml_datetime, toml_parser, toml_writer and winnow with `toml`; no serde feature.
+toml_edit = { version = "0.25", default-features = false, features = ["display", "parse"] }
 tokio = { version = "1.53", features = ["macros", "net", "rt", "signal"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 tracing = "0.1"
