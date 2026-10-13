@@ -3,9 +3,11 @@
 //! Reading is bounded: the status walk, the untracked count and the ahead/behind counts share
 //! a time budget, and the untracked count stops at a cap. A field that cannot be computed, in
 //! budget or at all, is [`MaybeKnown::Unknown`] and the reason is added to
-//! [`RepoState::error`]; the other fields are still read.
+//! [`RepoState::error`]; the other fields are still read. Filter drivers (`filter.<driver>.clean`
+//! or `.process`, such as git-lfs) are never run: they are removed from the in-memory
+//! configuration before the status walk.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -24,6 +26,7 @@ use gix::progress::Discard;
 use gix::remote::Direction;
 use gix::state::InProgress;
 use gix::status::UntrackedFiles;
+use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
 use loom_api::{MaybeKnown, RepoHead, RepoOperation, RepoState, Timestamp, Untracked, Upstream};
 
 use crate::scan::git;
@@ -87,7 +90,7 @@ pub fn state(
     let mut errors = Errors::default();
     let watchdog = Watchdog::start(options.budget);
     let last_fetch = errors.field("last_fetch", last_fetch(git_dir, common_dir));
-    let repo = match gix::open_opts(workdir, open_options(options.config)) {
+    let mut repo = match gix::open_opts(workdir, open_options(options.config)) {
         Ok(repo) => repo,
         Err(error) => {
             errors.push(format!("cannot open the repository: {error}"));
@@ -98,13 +101,15 @@ pub fn state(
             };
         }
     };
+    // Before anything reads the working tree: no filter driver may ever run.
+    let drivers = disable_filter_drivers(&mut repo);
     let head = errors.field("head", read_head(&repo));
     let operation = MaybeKnown::Known(repo.state().as_ref().map(operation));
     let last_commit = head.as_known().map_or(MaybeKnown::Unknown, |head| {
         errors.field("last_commit", last_commit(&repo, head))
     });
     let default_branch = errors.field("default_branch", default_branch(&repo, common_dir));
-    let dirty = errors.field("dirty", dirty(&repo, &watchdog));
+    let dirty = errors.field("dirty", dirty(&repo, &drivers, &watchdog));
     let untracked = errors.field(
         "untracked",
         untracked(&repo, &watchdog, options.untracked_cap),
@@ -395,9 +400,45 @@ fn choose_default_branch(
         .or_else(|| master.then(|| "master".to_owned()))
 }
 
+/// Removes every `[filter "<driver>"]` section from the in-memory configuration of `repo`
+/// (never from its files), so that no clean or process filter driver can run during the
+/// status. Returns the names of the drivers that had a `clean` or `process` command.
+fn disable_filter_drivers(repo: &mut gix::Repository) -> Result<BTreeSet<String>, String> {
+    let mut config = repo.config_snapshot_mut();
+    let mut drivers = BTreeSet::new();
+    let mut ids = Vec::new();
+    for (section, id) in config
+        .sections_and_ids_by_name("filter")
+        .into_iter()
+        .flatten()
+    {
+        let runs = section.value("clean").is_some() || section.value("process").is_some();
+        if let Some(name) = section.header().subsection_name().filter(|_| runs) {
+            drivers.insert(name.to_string());
+        }
+        ids.push(id);
+    }
+    for id in ids {
+        config.remove_section_by_id(id);
+    }
+    config
+        .commit()
+        .map_err(|error| format!("cannot disable the filter drivers: {error}"))?;
+    Ok(drivers)
+}
+
 /// Tracked paths with a change between `HEAD`, the index and the working tree, each counted
 /// once.
-fn dirty(repo: &gix::Repository, watchdog: &Watchdog) -> Result<u64, String> {
+///
+/// Filter drivers are never run (`drivers` were removed from the configuration). A file whose
+/// content has to be compared and whose `filter` attribute names one of them cannot be
+/// compared without it: the count is then unknown, never a guess.
+fn dirty(
+    repo: &gix::Repository,
+    drivers: &Result<BTreeSet<String>, String>,
+    watchdog: &Watchdog,
+) -> Result<u64, String> {
+    let drivers = drivers.as_ref().map_err(Clone::clone)?;
     if watchdog.expired() {
         return Err(watchdog.exceeded());
     }
@@ -410,11 +451,29 @@ fn dirty(repo: &gix::Repository, watchdog: &Watchdog) -> Result<u64, String> {
         .should_interrupt_owned(Arc::clone(&watchdog.expired));
     let iter = status.into_iter(Vec::<BString>::new());
     let mut paths: HashSet<BString> = HashSet::new();
+    // Files whose content was compared: without their driver, the comparison may be wrong.
+    let mut compared: Vec<(BString, gix::index::entry::Mode)> = Vec::new();
     let result = iter.map_err(|error| error.to_string()).and_then(|iter| {
         for item in iter {
             let item = item.map_err(|error| error.to_string())?;
             let path: &BStr = match &item {
-                gix::status::Item::IndexWorktree(item) => item.rela_path(),
+                gix::status::Item::IndexWorktree(item) => {
+                    if let gix::status::index_worktree::Item::Modification {
+                        entry,
+                        rela_path,
+                        status:
+                            EntryStatus::Change(Change::Modification {
+                                content_change: Some(()),
+                                ..
+                            }),
+                        ..
+                    } = item
+                        && !drivers.is_empty()
+                    {
+                        compared.push((rela_path.clone(), entry.mode));
+                    }
+                    item.rela_path()
+                }
                 gix::status::Item::TreeIndex(change) => change.location(),
             };
             paths.insert(path.to_owned());
@@ -425,7 +484,51 @@ fn dirty(repo: &gix::Repository, watchdog: &Watchdog) -> Result<u64, String> {
     if watchdog.expired() {
         return Err(watchdog.exceeded());
     }
-    result.map(|()| count(paths.len()))
+    result?;
+    if let Some((path, driver)) = needing_driver(repo, drivers, &compared)? {
+        return Err(format!(
+            "filter driver `{driver}` not run: {path} changed on disk and can only be compared through it"
+        ));
+    }
+    Ok(count(paths.len()))
+}
+
+/// The first of `compared` whose `filter` attribute names one of `drivers`, with the driver.
+fn needing_driver(
+    repo: &gix::Repository,
+    drivers: &BTreeSet<String>,
+    compared: &[(BString, gix::index::entry::Mode)],
+) -> Result<Option<(BString, String)>, String> {
+    if compared.is_empty() {
+        return Ok(None);
+    }
+    let index = repo.index_or_empty().map_err(|error| error.to_string())?;
+    let mut stack = repo
+        .attributes_only(
+            &index,
+            gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+        )
+        .map_err(|error| error.to_string())?;
+    let mut outcome = stack.selected_attribute_matches(["filter"]);
+    for (path, mode) in compared {
+        let platform = stack
+            .at_entry(path, Some(*mode))
+            .map_err(|error| error.to_string())?;
+        outcome.reset();
+        platform.matching_attributes(&mut outcome);
+        let driver = outcome
+            .iter_selected()
+            .find_map(|found| match found.assignment.state {
+                gix::attrs::StateRef::Value(value) => Some(value.as_bstr().to_string()),
+                gix::attrs::StateRef::Set
+                | gix::attrs::StateRef::Unset
+                | gix::attrs::StateRef::Unspecified => None,
+            });
+        if let Some(driver) = driver.filter(|driver| drivers.contains(driver)) {
+            return Ok(Some((path.clone(), driver)));
+        }
+    }
+    Ok(None)
 }
 
 /// Untracked files, `.gitignore` applied, counted up to `cap`.

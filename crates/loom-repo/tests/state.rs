@@ -11,6 +11,7 @@
 )]
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -708,5 +709,62 @@ fn unreadable_repository_is_all_unknown() {
             .unwrap()
             .starts_with("cannot open the repository"),
         "{state:?}"
+    );
+}
+
+#[test]
+fn filter_drivers_are_never_run() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("filtered");
+    fixture.commit(&repo, ".gitattributes", "*.bin filter=fake\n", "attributes");
+    // Committed before the driver exists: git stores the content as is.
+    fixture.commit(&repo, "data.bin", "payload\n", "data");
+    let marker = fixture.path("driver-ran");
+    let driver = fixture.path("fake-driver.sh");
+    fs::write(
+        &driver,
+        format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).unwrap();
+    let command = driver.to_str().unwrap();
+    for (key, value) in [
+        ("filter.fake.clean", command),
+        ("filter.fake.smudge", command),
+        ("filter.fake.process", command),
+        ("filter.fake.required", "true"),
+    ] {
+        fixture.git(&repo, &["config", key, value]);
+    }
+
+    // Unchanged on disk: nothing to compare, the count is known.
+    let state = Fixture::state(&repo);
+    assert_eq!(state.dirty, MaybeKnown::Known(0), "{state:?}");
+    // A change to a file without the driver is counted.
+    fs::write(repo.join("f.txt"), "two\n").unwrap();
+    assert_eq!(Fixture::state(&repo).dirty, MaybeKnown::Known(1));
+
+    // A file of the driver changed on disk: not compared without it, so unknown.
+    fs::write(repo.join("data.bin"), "changed!\n").unwrap();
+    let state = Fixture::state(&repo);
+    assert_eq!(state.dirty, MaybeKnown::Unknown);
+    let error = state.error.unwrap();
+    assert!(
+        error.contains("dirty: filter driver `fake` not run: data.bin"),
+        "{error}"
+    );
+    // The other fields are still read.
+    assert_eq!(
+        state.untracked,
+        MaybeKnown::Known(Untracked {
+            count: 0,
+            capped: false
+        })
+    );
+    assert!(!marker.exists(), "the filter driver ran");
+    // The configuration on disk is untouched.
+    assert_eq!(
+        fixture.git(&repo, &["config", "filter.fake.clean"]).trim(),
+        command
     );
 }

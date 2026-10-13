@@ -51,7 +51,7 @@ The same rules are the only source of truth for every tool: scripts ask `loom re
 
 ## State (repo card)
 
-Read with `gix`, no git process (ADR-0008), refreshed after a scan, after a fetch, on registration, periodically, and when `loom repo show` asks for it. The status walk, the untracked count and the ahead/behind counts share a time budget per repository; a field not computed in budget is reported unknown, never a failure of the whole state.
+Read with `gix`, no git process (ADR-0008), refreshed after a scan, after a fetch, on registration, periodically, and when `loom repo show` asks for it. The status walk, the untracked count and the ahead/behind counts share a time budget per repository; a field not computed in budget is reported unknown, never a failure of the whole state. Filter drivers (git-lfs…) are never run: a changed file that needs one to be compared makes `dirty` unknown, which blocks a fast-forward.
 
 | Field | Content |
 | --- | --- |
