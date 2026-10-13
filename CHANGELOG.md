@@ -9,11 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Repository index (v0.2): loom knows every git repository on the machine, which context it belongs to, whether it is up to date, and keeps it fetched.
+
+### Added
+- Contexts in `config.toml`: `default_context` and `[contexts.<name>]` with `match.hosts` (remote host and path prefix) and `match.paths`. A repository's context is, first match wins: `[repos."<path>"] context`, then hosts, then paths, then `default_context`, otherwise `unassigned`; never guessed from a directory name.
+- Repository index in loomd (`~/.loom/index.db`, SQLite): scan of `[repos] roots` to `max_depth` without starting git (`.git` directories and files, worktrees, exclusions, removals), stable slugs (`<context>/<name>`), repositories registered by hand kept while their `.git` exists, schema migrations that refuse a newer database.
+- Repository state read with `gix`, without starting git: head, tracked changes, untracked files, operation in progress, upstream ahead/behind, default branch, last commit, last fetch. A field that cannot be computed in its 2 s budget is `unknown`; filter drivers (git-lfs and others) are never run.
+- `loom repo ls|show|scan|register|forget|doctor`: the index for humans, scripts (`--json`) and pickers (`--format paths`); repositories named by path, `ctx/name` or name; `doctor` checks roots, contexts, unassigned repositories, loomd's SSH agent and non-interactive SSH to every host.
+- Registration on use: any `loom` command run inside an unindexed repository registers it (50 ms budget, never starts loomd); `loom shell-init zsh|bash` registers each directory the shell enters, in the background.
+- `loom search <query>`: every word as a prefix of a word of the name, slug, path, remotes, context or branch; case and diacritics ignored; ranked by exact name, name prefix, slug, then most recently used. About 10 ms for 1,000 repositories.
+- Automatic repository updates in loomd: `git fetch --no-prune` of the primary remote every `[repos] fetch_interval` (jittered, `fetch_concurrency` at a time, per-host backoff), then a fast-forward of the checked-out branch only when nothing local can be affected (no tracked change, no operation in progress, on a branch, upstream present, nothing ahead), and of the local default branch when it is checked out nowhere and strictly behind. Policy `ff | fetch | off` per context and per repository (`unassigned` repositories default to `fetch`). Never rebase, reset, stash, checkout, delete or prune; git runs non-interactively and honours the user's configuration and hooks. `loom repo sync [-n]` runs it now.
+- API: `/v1/repos` (list, card, scan, register, forget, sync), `/v1/search`, `/v1/diagnostics`, with JSON Schemas.
+- A safety suite in CI drives loomd over 23 repository states (dirty, staged, colliding untracked file, conflicted, ahead, diverged, detached, every operation in progress, worktree, submodule, filter driver, failing hook, tags, stash) and checks that nothing changes beyond what the update allows.
+
 ### Changed
 - Workspace version is `0.2.0`: dev prereleases are now `0.2.0-dev.N`, above `0.1.0`.
+- `loomd` needs `HOME` (to expand `~` in `[repos]` and `[contexts]`); an invalid `[contexts]`, `[repos]` or `[forges]` table stops it at start, like any configuration error.
+- The pre-flight check of an auto-upgrade runs the new `loomd` with a throwaway `HOME`: it never walks the real home.
+- CI: documentation-only pull requests run spelling and the secret scan only; the required check is `ci`; pull requests must be up to date with `main`; the release dry run and the end-to-end jobs only run when what they cover changes; no dev prerelease for a merge that changes nothing shipped.
+- Dependencies refreshed within their requirements (`schemars` 1.2.3, `sha2` 0.11.1, `rustls-native-certs` 0.8.5, `syn` 3.0.9).
 
 ### Fixed
 - A machine installed with `install.sh --channel dev` no longer leaves the dev channel after the auto-upgrade moves it to a stable release. The channel given to `loom upgrade --channel` (run by `install.sh --channel`) is remembered in `state/update.json`; the effective channel is `[update] channel`, then the remembered one, then the build channel, and `loom status` shows which (`config`, `chosen`, `build`). Fields of `state/update.json` unknown to a version are now kept when it rewrites the file.
+- Registration on use writes the repository and `last_used` in one transaction (a reader could see a newly registered repository without `last_used`).
 
 ## [0.1.0] - 2026-10-12
 

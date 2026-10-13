@@ -19,7 +19,7 @@
 
 ## v0.1 tasks
 
-Task 0 (docs split, `AGENTS.md`, README) and task 2 are done. Issue numbers match task numbers up to 14. Each task is a GitHub issue in the `v0.1` milestone, labelled `agent-ready`, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md).
+Done: released as [v0.1.0](https://github.com/gsuquet/loom/releases/tag/v0.1.0) on 2026-10-12. Issue numbers match task numbers up to 14. Each task is a GitHub issue in the `v0.1` milestone, labelled `agent-ready`, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md).
 
 | # | Issue | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- | --- |
@@ -44,6 +44,8 @@ Parallel tracks once 2 and 6 are merged: {3, 15, 4, 5}, {7, 8, 9, 13}, {10}. 11,
 ## v0.2 tasks
 
 Each task is a GitHub issue in the `v0.2` milestone, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md). Design: [Repositories](design/repos.md), [ADR-0012](adr/0012-repo-index.md).
+
+Tasks 1 to 10 are merged and on the `dev` channel. Task 11 (a week of real use, then deleting the dotfiles inventory scripts) is the last step before v0.2.0. Load-sensitive tests are tracked in [#57](https://github.com/gsuquet/loom/issues/57).
 
 | # | Issue | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- | --- |
