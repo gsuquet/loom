@@ -45,7 +45,7 @@ Parallel tracks once 2 and 6 are merged: {3, 15, 4, 5}, {7, 8, 9, 13}, {10}. 11,
 
 Each task is a GitHub issue in the `v0.2` milestone, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md). Design: [Repositories](design/repos.md), [ADR-0012](adr/0012-repo-index.md).
 
-Tasks 1 to 10 are merged and on the `dev` channel. Task 11 (a week of real use, then deleting the dotfiles inventory scripts) is the last step before v0.2.0. Load-sensitive tests are tracked in [#57](https://github.com/gsuquet/loom/issues/57).
+Released as [v0.2.0](https://github.com/gsuquet/loom/releases/tag/v0.2.0) on 2026-10-13, with tasks 1 to 10. Task 11 (a week of real use, then deleting the dotfiles inventory scripts) continues on v0.2.x. Load-sensitive tests are tracked in [#57](https://github.com/gsuquet/loom/issues/57).
 
 | # | Issue | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- | --- |

@@ -29,7 +29,7 @@ Loom keeps everything I have to do in one prioritized list, across all my contex
 
 ## Project status
 
-[v0.1.0](https://github.com/gsuquet/loom/releases/tag/v0.1.0) installs, runs `loomd` as a user service and keeps itself up to date. The repository index of v0.2 (contexts, repo cards, `loom search`, automatic fetch and fast-forward) is on the `dev` channel. What ships is in the [changelog](CHANGELOG.md); the design lives in [docs/design/](docs/design/) and the plan in the [roadmap](docs/roadmap.md).
+[v0.2.0](https://github.com/gsuquet/loom/releases/tag/v0.2.0) installs, runs `loomd` as a user service, keeps itself up to date, and indexes the git repositories of the machine: contexts, repo cards, `loom search`, automatic fetch and fast-forward. v0.3 (tasks and TUI) is in progress on the `dev` channel. What ships is in the [changelog](CHANGELOG.md); the design lives in [docs/design/](docs/design/) and the plan in the [roadmap](docs/roadmap.md).
 
 ## Who this project is for
 
@@ -51,7 +51,7 @@ loom service install
 loom status
 ```
 
-The repository index needs the `dev` channel until v0.2.0 (`loom upgrade --channel dev`). Then define your contexts in `~/.loom/config.toml` ([configure contexts](docs/how-to-guides/configure-contexts.md)), check them with `loom repo doctor`, and register the repositories the shell enters with `eval "$(loom shell-init zsh)"` ([shell integration](docs/how-to-guides/shell-integration.md)).
+Define your contexts in `~/.loom/config.toml` ([configure contexts](docs/how-to-guides/configure-contexts.md)), check them with `loom repo doctor`, and register the repositories the shell enters with `eval "$(loom shell-init zsh)"` ([shell integration](docs/how-to-guides/shell-integration.md)).
 
 To work on Loom:
 

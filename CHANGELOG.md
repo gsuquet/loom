@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
 Repository index (v0.2): loom knows every git repository on the machine, which context it belongs to, whether it is up to date, and keeps it fetched.
 
 ### Added
@@ -57,5 +59,6 @@ First release of the rewrite: install, run and keep loom up to date.
 - Rewrite from scratch. The previous workspace (13 crates) is removed.
 - Design documentation in `docs/design/` (target behavior), decisions in `docs/adr/`, plan in `docs/roadmap.md`, `AGENTS.md` for coding agents.
 
-[Unreleased]: https://github.com/gsuquet/loom/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/gsuquet/loom/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/gsuquet/loom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gsuquet/loom/releases/tag/v0.1.0
