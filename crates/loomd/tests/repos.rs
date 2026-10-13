@@ -17,8 +17,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use loom_api::{
-    ApiError, DaemonDiagnostics, ErrorCode, MaybeKnown, RepoHead, RepoList, RepoSummary,
-    ScanResult, SearchField, SearchKind, SearchResults, SshAgentSocket, Untracked,
+    ApiError, DaemonDiagnostics, ErrorCode, MaybeKnown, PlannedAction, RepoHead, RepoList,
+    RepoSummary, RepoUpdatePolicy, ScanResult, SearchField, SearchKind, SearchResults, SkipReason,
+    SshAgentSocket, SyncOutcome, SyncResult, Untracked, UpdateOutcome,
 };
 use schemars::schema_for;
 use serde::de::DeserializeOwned;
@@ -79,6 +80,13 @@ impl Sandbox {
         command
             .env("LOOM_HOME", self.loom_home())
             .env("HOME", self.user_home())
+            .env("XDG_CONFIG_HOME", self.user_home().join(".config"))
+            // The git commands of the automatic updates: no global or system configuration.
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_SSH_COMMAND")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .env_remove("NO_COLOR")
             .arg("--color=never")
             .stdin(Stdio::null())
@@ -842,5 +850,138 @@ fn refreshing_a_large_repository_does_not_block_the_api() {
     assert!(
         slowest < Duration::from_secs(1),
         "a list took {slowest:?} while the state was read"
+    );
+}
+
+/// Polls `GET path` until the repository's last update satisfies `done`.
+fn wait_for_update(
+    sandbox: &Sandbox,
+    path: &str,
+    done: impl Fn(&[UpdateOutcome]) -> bool,
+) -> RepoSummary {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let response = sandbox.request("GET", path, None);
+        if response.status != 404 {
+            let repo: RepoSummary = ok(&response);
+            if repo
+                .last_update
+                .as_ref()
+                .is_some_and(|update| done(&update.outcomes))
+            {
+                return repo;
+            }
+        }
+        assert!(Instant::now() < deadline, "no update for {path}");
+        thread::sleep(POLL);
+    }
+}
+
+/// A commit of `file` pushed to `main` of the remote `origin` from `seed`; its id.
+fn push(sandbox: &Sandbox, seed: &Path, file: &str, content: &str) -> String {
+    fs::write(seed.join(file), content).unwrap();
+    git(sandbox, seed, &["add", "-A"]);
+    git(sandbox, seed, &["commit", "-q", "-m", file]);
+    git(sandbox, seed, &["push", "-q", "origin", "HEAD:main"]);
+    git(sandbox, seed, &["rev-parse", "HEAD"]).trim().to_owned()
+}
+
+#[test]
+fn repositories_are_updated_on_start_and_on_request() {
+    let sandbox = Sandbox::new();
+    let origin = sandbox.dir.path().join("origin.git");
+    git(
+        &sandbox,
+        sandbox.dir.path(),
+        &["init", "-q", "--bare", origin.to_str().unwrap()],
+    );
+    let url = format!("file://{}", origin.display());
+    let seed = sandbox.dir.path().join("seed");
+    git(
+        &sandbox,
+        sandbox.dir.path(),
+        &["clone", "-q", &url, seed.to_str().unwrap()],
+    );
+    push(&sandbox, &seed, "f.txt", "one\n");
+    let repo = sandbox.user_home().join("perso/app");
+    git(
+        &sandbox,
+        sandbox.dir.path(),
+        &["clone", "-q", &url, repo.to_str().unwrap()],
+    );
+    // Behind when loomd starts: fast-forwarded by the first scheduled update.
+    let first = push(&sandbox, &seed, "f.txt", "two\n");
+    // Without remote: skipped, no git command.
+    git_repo(&sandbox, &sandbox.user_home().join("perso/local"), 1);
+    let _daemon = sandbox.start();
+
+    let app = wait_for_update(&sandbox, "/v1/repos/personal/app", |outcomes| {
+        matches!(outcomes, [UpdateOutcome::FastForwarded { .. }])
+    });
+    let update = app.last_update.unwrap();
+    assert_eq!(update.policy, RepoUpdatePolicy::Ff);
+    assert!(matches!(
+        &update.outcomes[0],
+        UpdateOutcome::FastForwarded { branch, to, .. } if branch == "main" && *to == first
+    ));
+    assert_eq!(fs::read_to_string(repo.join("f.txt")).unwrap(), "two\n");
+    // The state read after the update is stored with it.
+    let state = app.state.unwrap();
+    assert_eq!(
+        state.upstream.known().flatten().unwrap().behind,
+        MaybeKnown::Known(0)
+    );
+    let local = wait_for_update(&sandbox, "/v1/repos/personal/local", |_| true);
+    assert_eq!(
+        local.last_update.unwrap().outcomes,
+        [UpdateOutcome::Skipped {
+            reason: SkipReason::NoRemote
+        }]
+    );
+
+    // On request: a dry run changes nothing.
+    let second = push(&sandbox, &seed, "f.txt", "three\n");
+    let body = json!({ "repos": ["personal/app"], "dry_run": true });
+    let planned: SyncResult = ok(&sandbox.request("POST", "/v1/repos/sync", Some(&body)));
+    assert_eq!(planned.repos.len(), 1);
+    assert_eq!(planned.repos[0].slug, "personal/app");
+    assert_eq!(
+        planned.repos[0].result,
+        SyncOutcome::Planned {
+            policy: RepoUpdatePolicy::Ff,
+            actions: vec![PlannedAction::Fetch, PlannedAction::DecideAfterFetch],
+        }
+    );
+    assert_eq!(fs::read_to_string(repo.join("f.txt")).unwrap(), "two\n");
+
+    // Every repository, sorted by slug; the result is stored before the answer.
+    let synced: SyncResult = ok(&sandbox.request("POST", "/v1/repos/sync", Some(&json!({}))));
+    let slugs: Vec<&str> = synced.repos.iter().map(|repo| repo.slug.as_str()).collect();
+    assert_eq!(slugs, ["personal/app", "personal/local"]);
+    let SyncOutcome::Updated { update } = &synced.repos[0].result else {
+        panic!("{:?}", synced.repos[0]);
+    };
+    assert!(matches!(
+        update.outcomes.as_slice(),
+        [UpdateOutcome::FastForwarded { to, .. }] if *to == second
+    ));
+    assert_eq!(fs::read_to_string(repo.join("f.txt")).unwrap(), "three\n");
+    let stored: RepoSummary = sandbox.get("/v1/repos/personal/app");
+    assert_eq!(stored.last_update.as_ref(), Some(update));
+
+    // Errors.
+    assert_api_error(
+        &sandbox.request(
+            "POST",
+            "/v1/repos/sync",
+            Some(&json!({ "repos": ["personal/nope"] })),
+        ),
+        404,
+        ErrorCode::NotFound,
+    );
+    assert_api_error(
+        &sandbox.request("POST", "/v1/repos/sync", Some(&json!({ "dryrun": true }))),
+        400,
+        ErrorCode::InvalidRequest,
     );
 }

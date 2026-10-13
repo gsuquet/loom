@@ -10,6 +10,7 @@ mod doctor;
 mod error;
 mod repo;
 mod repo_state;
+mod repo_update;
 mod search;
 mod service;
 mod status;
@@ -32,6 +33,10 @@ pub use repo::{
     RepoUpdatePolicy, ScanIssue, ScanResult,
 };
 pub use repo_state::{MaybeKnown, RepoHead, RepoOperation, RepoState, Untracked, Upstream};
+pub use repo_update::{
+    LastUpdate, PlannedAction, RepoSync, SkipReason, StateField, SyncOutcome, SyncRequest,
+    SyncResult, UpdateOutcome, UpdateStep,
+};
 pub use search::{DEFAULT_SEARCH_LIMIT, SearchField, SearchKind, SearchResult, SearchResults};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;

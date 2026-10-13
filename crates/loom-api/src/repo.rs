@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContextAssignment, RepoState, Timestamp};
+use crate::{ContextAssignment, LastUpdate, RepoState, Timestamp};
 
 /// Forge hosting a remote (`[forges."<host>"] kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -139,6 +139,9 @@ pub struct RepoSummary {
     /// State (the repo card), `null` until it is read for the first time.
     #[serde(default)]
     pub state: Option<RepoState>,
+    /// Result of the last update (fetch, fast-forward), `null` until the first one.
+    #[serde(default)]
+    pub last_update: Option<LastUpdate>,
 }
 
 /// Repositories of the index, sorted by slug.

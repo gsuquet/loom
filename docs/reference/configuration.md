@@ -86,7 +86,7 @@ Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m
 
 `default_context`, `[contexts]`, `[repos]` and `[forges]` are read and validated with the rest of `config.toml`: an invalid value stops `loomd` and is reported by `loom` like any other error in the file. `loomd` uses them for the [repository index](#indexdb): it reads them once, when it starts, so a change takes effect after a restart; the scan on start then reassigns the contexts (and the slugs) of every repository. `~` is the user's home directory (`HOME`); `loomd` exits with code 1 when it is unknown.
 
-`fetch_concurrency` and `update` are not used yet. `fetch_interval` is, for now, only the time between two refreshes of every repository's [state](api.md#state-refresh); no fetch runs.
+`update`, `fetch_interval` and `fetch_concurrency` drive the automatic updates of `loomd`: a fetch of each repository's primary remote, then fast-forwards only when no local work can be affected ([updates](api.md#updates), [how updates work](../explanation/repo-updates.md)). The update policy of a repository is its `[repos."<path>"] update`, otherwise the `update` of its context, otherwise `ff`. A repository without a context (`unassigned`) and without `[repos."<path>"] update` gets `fetch`: fetched, never fast-forwarded. An explicit `[repos."<path>"] update` always applies, `ff` included.
 
 ```toml
 default_context = "personal"
@@ -121,15 +121,15 @@ kind = "gitlab"
 | `[contexts.<name>]` | table | none | `<name>`: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-` (the rule of `-c`). `unassigned` is reserved. A table without keys is valid. |
 | `[contexts.<name>] match.paths` | array of strings: paths | none | At least one entry when given. Each entry is absolute, `~` or starts with `~/`; `..` is not allowed. |
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A trailing `/` is ignored. |
-| `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. |
+| `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no git command. |
 | `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
 | `[repos] max_depth` | integer | `4` | 0 to 4294967295. Deepest directory level examined below each root, the root being level 0. |
 | `[repos] exclude` | array of strings: glob patterns | `[]` | Each pattern is not empty and is a valid glob (`*`, `?`, `**`, `[…]`, `{a,b}`). A pattern without `/` matches a directory name at any depth (`archive`, `*-old`); a pattern with `/` matches the whole directory path relative to its root, with `/` separators (`clients/old`, `**/fixtures`). A matching directory is not walked. Hidden directories and `node_modules`, `vendor`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__` are always excluded. |
-| `[repos] fetch_interval` | string: duration | `"1h"` | Duration syntax of `[update] check_interval`. At least `"1m"`. Time between two refreshes of every repository state. |
-| `[repos] fetch_concurrency` | integer | `4` | 1 to 4294967295. |
+| `[repos] fetch_interval` | string: duration | `"1h"` | Duration syntax of `[update] check_interval`. At least `"1m"`. Time between two updates of a repository, ±10 % at random, and between two refreshes of every repository state. A failed fetch waits 2, 4, then 8 times as long. |
+| `[repos] fetch_concurrency` | integer | `4` | 1 to 4294967295. Updates running at the same time; above 64, 64. |
 | `[repos."<path>"]` | table | none | `<path>`: same path rules as `match.paths`. Two keys naming the same path (`"~/a"` and `"~/a/"`) are rejected. |
 | `[repos."<path>"] context` | string | none | Names a defined context. |
-| `[repos."<path>"] update` | string: `"ff"`, `"fetch"`, `"off"` | none | Update policy of this repository. |
+| `[repos."<path>"] update` | string: `"ff"`, `"fetch"`, `"off"` | none | Update policy of this repository, over its context's, and over the `fetch` default of an `unassigned` repository. |
 | `[forges."<host>"]` | table | none | `<host>`: a lowercase host name (ASCII letters, digits, `-`, `.`), without port or path. |
 | `[forges."<host>"] kind` | string: `"github"`, `"gitlab"` | required | Forge of the host. |
 
@@ -271,9 +271,9 @@ Error: cannot start the repository index
   caused by: the index /home/me/.loom/index.db has schema version 2, this loom supports up to 1: upgrade loom, or stop loomd and delete the file to rebuild it
 ```
 
-`loomd` then scans the repositories (see [`POST /v1/repos/scan`](api.md#repositories)) and serves the API during that scan. After the scan, it reads the state of every repository in the background, then again every `[repos] fetch_interval` (see [state refresh](api.md#state-refresh)).
+`loomd` then scans the repositories (see [`POST /v1/repos/scan`](api.md#repositories)) and serves the API during that scan. After the scan, it reads the state of every repository in the background, then again every `[repos] fetch_interval` (see [state refresh](api.md#state-refresh)), and updates the repositories on their schedule (see [updates](api.md#updates)). The result of the last update of each repository is kept in the index, across restarts.
 
-`loom repo scan --rebuild` rebuilds the index from a scan of the roots while `loomd` runs (see [`loom repo scan`](cli/conventions.md#loom-repo-scan)). It can also be rebuilt by hand: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, slugs are assigned again, and states are read again.
+`loom repo scan --rebuild` rebuilds the index from a scan of the roots while `loomd` runs (see [`loom repo scan`](cli/conventions.md#loom-repo-scan)). It can also be rebuilt by hand: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, slugs are assigned again, states are read again, and the results of the last updates are lost (every repository is then updated at once).
 
 ## `run/`
 

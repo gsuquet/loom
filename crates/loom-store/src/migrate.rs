@@ -11,7 +11,8 @@ use crate::StoreError;
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_repos.sql"),
     include_str!("migrations/0002_repo_state.sql"),
-    include_str!("migrations/0003_search_tokenizer.sql"),
+    include_str!("migrations/0003_repo_update.sql"),
+    include_str!("migrations/0004_search_tokenizer.sql"),
 ];
 
 /// Schema version this code reads and writes: the number of migrations.

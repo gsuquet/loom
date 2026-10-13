@@ -23,6 +23,10 @@ The design docs placed contexts and SQLite in v0.3 and left the repo card undefi
 5. **No compatibility files**: `~/.cache/git/*.json` are not written. Scripts and agent instructions use `loom repo ls --json` / `loom repo show --json`.
 6. **Registration on use** through any `loom` command run inside a repo and a shell hook (`loom shell-init`), brought forward from v0.3.
 
+## Clarifications
+
+- 2026-10-13 (#42): the default policy of an `unassigned` repository is `fetch`, not `ff`: no rule says it belongs to a context whose policy was chosen. An explicit `[repos."<path>"] update` is the user's intent for that path and wins, `ff` included.
+
 ## Consequences
 
 - One definition of contexts for repos now and tasks later; the v0.3 domain work reuses it.

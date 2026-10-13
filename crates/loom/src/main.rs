@@ -160,7 +160,11 @@ fn init_telemetry(
 const fn registers_on_use(command: &Command) -> bool {
     match command {
         Command::Repo { command } => match command {
-            RepoCommand::Show(_) | RepoCommand::Register(_) | RepoCommand::Forget(_) => false,
+            // `sync` updates indexed repositories only: it never adds one.
+            RepoCommand::Show(_)
+            | RepoCommand::Register(_)
+            | RepoCommand::Forget(_)
+            | RepoCommand::Sync(_) => false,
             RepoCommand::Scan(args) => !args.rebuild,
             RepoCommand::Ls(_) | RepoCommand::Doctor(_) => true,
         },

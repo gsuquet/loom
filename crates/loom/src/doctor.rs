@@ -635,6 +635,7 @@ mod tests {
             registered: false,
             last_used: None,
             state: None,
+            last_update: None,
         }
     }
 

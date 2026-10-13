@@ -11,19 +11,19 @@ use std::time::Duration;
 
 use loom::cli::{
     GlobalArgs, RepoCommand, RepoDoctorArgs, RepoForgetArgs, RepoListFormat, RepoLsArgs,
-    RepoRegisterArgs, RepoScanArgs, RepoShowArgs, VERSION_INFO,
+    RepoRegisterArgs, RepoScanArgs, RepoShowArgs, RepoSyncArgs, VERSION_INFO,
 };
 use loom::conventions::{CONFIRMATION_REFUSED, Confirmation, confirmation};
 use loom::doctor::{self, SSH_DEADLINE_SECS, SshRun, SshTarget};
 use loom::repo::{
     RepoArg, Selection, disambiguation_contexts, find_by_path, is_unassigned, lost_on_rebuild,
-    normalize, parse_arg, render_card, render_paths, render_scan, render_table, repo_api_path,
-    select,
+    normalize, parse_arg, render_card, render_paths, render_scan, render_sync, render_table,
+    repo_api_path, select,
 };
 use loom::status::version_mismatch;
 use loom_api::{
     CheckStatus, ContextAssignment, ContextName, DaemonDiagnostics, DoctorCheck, DoctorReport,
-    RegisterRequest, RepoList, RepoSummary, ScanResult,
+    RegisterRequest, RepoList, RepoSummary, ScanResult, SyncRequest, SyncResult,
 };
 use loom_config::config::Config;
 use loom_config::layout::{Layout, MAX_SOCKET_PATH_BYTES, check_socket_path};
@@ -41,6 +41,10 @@ pub const REPOS_PATH: &str = "/v1/repos";
 pub const REGISTER_PATH: &str = "/v1/repos/register";
 /// Path of the scan endpoint.
 const SCAN_PATH: &str = "/v1/repos/scan";
+/// Path of the update endpoint.
+const SYNC_PATH: &str = "/v1/repos/sync";
+/// Longest wait for `loom repo sync`: every fetch of the index may take its timeout.
+const SYNC_TIMEOUT: Duration = Duration::from_hours(1);
 /// Path of the diagnostics endpoint.
 const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
 /// Longest wait for a scan: it walks every root.
@@ -79,6 +83,7 @@ pub fn run(command: &RepoCommand, global: &GlobalArgs, layout: Layout) -> Result
             RepoCommand::Register(args) => register(&env, args).await,
             RepoCommand::Forget(args) => forget(&env, args).await,
             RepoCommand::Doctor(args) => doctor(&env, args).await,
+            RepoCommand::Sync(args) => sync(&env, args).await,
         }
     })
 }
@@ -422,6 +427,34 @@ async fn forget(env: &Env<'_>, args: &RepoForgetArgs) -> Result<()> {
             removed.identity.slug,
             removed.identity.path.display()
         )
+    })
+}
+
+/// `loom repo sync`: updates the repositories given (all of them when none) through loomd.
+async fn sync(env: &Env<'_>, args: &RepoSyncArgs) -> Result<()> {
+    let client = connect(&env.layout, true).await?;
+    let mut slugs = Vec::with_capacity(args.repos.len());
+    for arg in &args.repos {
+        match resolve(env, &client, Some(arg)).await? {
+            Resolved::Indexed(repo) => slugs.push(repo.identity.slug),
+            Resolved::Unindexed(root) => {
+                return Err(miette!("{} is not in the index", root.display()));
+            }
+        }
+    }
+    let request = SyncRequest {
+        repos: slugs,
+        dry_run: args.dry_run,
+    };
+    let result: SyncResult = client
+        .with_timeout(SYNC_TIMEOUT)
+        .post(SYNC_PATH, Some(&request))
+        .await
+        .map_err(|error| api_error(&error))?;
+    print(&if args.json {
+        json(&result)?
+    } else {
+        render_sync(&result)
     })
 }
 

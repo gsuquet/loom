@@ -16,6 +16,8 @@ pub const STATUS_PATH: &str = "/v1/status";
 pub const REPOS_PATH: &str = "/v1/repos";
 /// Path of the scan endpoint.
 pub const REPOS_SCAN_PATH: &str = "/v1/repos/scan";
+/// Path of the update endpoint.
+pub const REPOS_SYNC_PATH: &str = "/v1/repos/sync";
 /// Path of the registration endpoint.
 pub const REPOS_REGISTER_PATH: &str = "/v1/repos/register";
 /// Route of one repository: its slug `<context>/<name>`, as two path segments.

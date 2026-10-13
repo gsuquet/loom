@@ -21,7 +21,7 @@ use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use loom_api::{
     ApiError, ApiVersion, DaemonDiagnostics, RegisterRequest, RepoList, SearchResults,
-    StatusResponse, Timestamp, UpdateState,
+    StatusResponse, SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -32,10 +32,10 @@ use loom_config::layout::{
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    DIAGNOSTICS_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, RepoGetQuery,
-    RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, agent_socket, clock_error,
-    home_value, invalid_request, method_not_allowed, not_found, register_path, repo_filter,
-    search_request, slug, status_at, timestamp,
+    DIAGNOSTICS_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH,
+    RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, agent_socket,
+    clock_error, home_value, invalid_request, method_not_allowed, not_found, register_path,
+    repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
@@ -336,6 +336,7 @@ fn router(app: App) -> Router {
         .route(REPOS_PATH, get(list_repos))
         .route(REPOS_SCAN_PATH, post(scan_repos))
         .route(REPOS_REGISTER_PATH, post(register_repo))
+        .route(REPOS_SYNC_PATH, post(sync_repos))
         .route(REPO_PATH, get(get_repo).delete(forget_repo))
         .route(SEARCH_PATH, get(search))
         .route(DIAGNOSTICS_PATH, get(diagnostics))
@@ -476,6 +477,19 @@ async fn register_repo(
     match path {
         Ok((path, on_use)) => respond(app.repos.register(path, on_use).await),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+async fn sync_repos(
+    State(app): State<Arc<App>>,
+    body: Result<Json<SyncRequest>, JsonRejection>,
+) -> Response {
+    match body {
+        Ok(Json(request)) => respond(app.repos.sync(request).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
     }
 }
 
