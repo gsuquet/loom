@@ -24,6 +24,9 @@ globset = { version = "0.4", default-features = false }
 gix = { version = "0.89", default-features = false, features = ["sha1", "status"] }
 gix-config = { version = "0.62", default-features = false, features = ["sha1"] }
 http = "1"
+# Already compiled through gix-date. No default features: loom-core needs neither the time zone
+# database nor the system clock.
+jiff = { version = "0.2.38", default-features = false }
 http-body-util = "0.1"
 hyper = { version = "1.12", default-features = false, features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
