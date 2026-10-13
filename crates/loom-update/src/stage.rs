@@ -149,9 +149,7 @@ pub fn probe(dir: &Path) -> Result<Version, UpdateError> {
 
 fn run(program: &Path, args: &[&str]) -> Result<String, String> {
     let shown = format!("{} {}", program.display(), args.join(" "));
-    let output = Command::new(program)
-        .args(args)
-        .output()
+    let output = crate::exec::retry_busy(|| Command::new(program).args(args).output())
         .map_err(|error| format!("cannot run `{shown}`: {error}"))?;
     if !output.status.success() {
         return Err(format!(

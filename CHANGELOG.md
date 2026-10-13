@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disk usage of the loom home: `loom status` prints `disk: <total> (versions …, index …, logs …, contexts …)`, and `GET /v1/status` (`loom status --json`) carries a `disk` object with the allocated bytes of `versions/`, the index (and its WAL), `log/`, `state/`, each context store and the rest, the kept versions and the free space of the volume. Measured by loomd without following symbolic links, cached 5 minutes and measured again when `versions/` changes; an unreadable directory counts as 0 with a warning.
 - `loom repo doctor` checks the disk usage: `disk` (parts that could not be measured), `disk-versions` (versions kept beyond what `loom rollback` needs), `disk-wal` (`index.db-wal` above 64 MB) and `disk-free` (less than 1 GB free on the volume of the loom home).
 
+### Fixed
+- On Linux, the pre-flight check of an upgrade and the probe of a staged release retry for up to about a second when the new binary is still busy (`Text file busy`): another thread forking while the file was written could make a valid upgrade fail.
+
 ## [0.2.0] - 2026-10-13
 
 Repository index (v0.2): loom knows every git repository on the machine, which context it belongs to, whether it is up to date, and keeps it fetched.
