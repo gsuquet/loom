@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SearchResults",
+  "description": "Results of a search, best first.",
+  "type": "object",
+  "properties": {
+    "results": {
+      "description": "The results, at most the requested limit.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SearchResult"
+      }
+    }
+  },
+  "required": [
+    "results"
+  ],
+  "$defs": {
+    "SearchField": {
+      "description": "A searched field of a repository.",
+      "oneOf": [
+        {
+          "description": "Directory name.",
+          "type": "string",
+          "const": "name"
+        },
+        {
+          "description": "`<context>/<name>`.",
+          "type": "string",
+          "const": "slug"
+        },
+        {
+          "description": "Absolute path.",
+          "type": "string",
+          "const": "path"
+        },
+        {
+          "description": "Remote URLs, as configured.",
+          "type": "string",
+          "const": "remotes"
+        },
+        {
+          "description": "Context name, `unassigned` included.",
+          "type": "string",
+          "const": "context"
+        },
+        {
+          "description": "Branch the repository is on, empty when detached or not read yet.",
+          "type": "string",
+          "const": "branch"
+        }
+      ]
+    },
+    "SearchKind": {
+      "description": "What a search result is. Repositories only for now; tasks and notes join in v0.3.",
+      "oneOf": [
+        {
+          "description": "A repository of the index.",
+          "type": "string",
+          "const": "repo"
+        }
+      ]
+    },
+    "SearchResult": {
+      "description": "One match of a search.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context name, `unassigned` for a repository without context.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "What matched.",
+          "$ref": "#/$defs/SearchKind"
+        },
+        "matched_fields": {
+          "description": "Fields holding at least one of the query terms, in column order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchField"
+          }
+        },
+        "name": {
+          "description": "Directory name of the repository.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute path of the repository.",
+          "type": "string"
+        },
+        "score": {
+          "description": "Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only\none of the ranking keys; the order of the results is the ranking.",
+          "type": "number",
+          "format": "double"
+        },
+        "slug": {
+          "description": "Slug of the repository.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "slug",
+        "name",
+        "context",
+        "path",
+        "score",
+        "matched_fields"
+      ]
+    }
+  }
+}

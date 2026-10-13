@@ -10,6 +10,7 @@ mod doctor;
 mod error;
 mod repo;
 mod repo_state;
+mod search;
 mod service;
 mod status;
 mod timestamp;
@@ -31,6 +32,7 @@ pub use repo::{
     RepoUpdatePolicy, ScanIssue, ScanResult,
 };
 pub use repo_state::{MaybeKnown, RepoHead, RepoOperation, RepoState, Untracked, Upstream};
+pub use search::{DEFAULT_SEARCH_LIMIT, SearchField, SearchKind, SearchResult, SearchResults};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;

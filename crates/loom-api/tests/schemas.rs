@@ -13,9 +13,10 @@ use loom_api::{
     ContextName, DaemonDiagnostics, DaemonRestart, DoctorCheck, DoctorReport, ErrorCode, ForgeKind,
     InstallReport, MaybeKnown, PendingUpgrade, Profile, RegisterRequest, Remote, RemoteUrl,
     RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary, RollbackReport,
-    ScanIssue, ScanResult, ServicePlatform, ServiceStatus, SshAgentSocket, StatusResponse,
-    Timestamp, Untracked, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
-    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
+    ScanIssue, ScanResult, SearchField, SearchKind, SearchResult, SearchResults, ServicePlatform,
+    ServiceStatus, SshAgentSocket, StatusResponse, Timestamp, Untracked, UpdateChannel,
+    UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -37,6 +38,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("repo_summary", schema_for!(RepoSummary)),
         ("rollback_report", schema_for!(RollbackReport)),
         ("scan_result", schema_for!(ScanResult)),
+        ("search_results", schema_for!(SearchResults)),
         ("service_platform", schema_for!(ServicePlatform)),
         ("service_status", schema_for!(ServiceStatus)),
         ("status_response", schema_for!(StatusResponse)),
@@ -240,6 +242,20 @@ fn samples_validate_against_their_schema() {
     for report in upgrade_reports() {
         errors.extend(violations(&report).unwrap());
     }
+    errors.extend(
+        violations(&SearchResults {
+            results: vec![SearchResult {
+                kind: SearchKind::Repo,
+                slug: "personal/loom".to_owned(),
+                name: "loom".to_owned(),
+                context: "personal".to_owned(),
+                path: "/home/me/perso/loom".into(),
+                score: 1.25,
+                matched_fields: vec![SearchField::Name, SearchField::Slug, SearchField::Path],
+            }],
+        })
+        .unwrap(),
+    );
     errors.extend(
         violations(&RollbackReport {
             current_version: "0.2.0".to_owned(),

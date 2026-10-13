@@ -10,6 +10,7 @@
 
 mod migrate;
 mod repos;
+pub mod search;
 
 use std::fs::{self, OpenOptions, Permissions};
 use std::io;
@@ -17,7 +18,7 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_api::{RepoIdentity, RepoState, RepoSummary, Timestamp};
+use loom_api::{RepoIdentity, RepoState, RepoSummary, SearchResult, Timestamp};
 use loom_repo::ScanDiff;
 use rusqlite::{Connection, OpenFlags};
 use thiserror::Error;
@@ -288,6 +289,22 @@ impl Reader {
     pub fn get(&self, slug: &str) -> Result<Option<RepoSummary>, StoreError> {
         let _span = debug_span!("store.get", slug).entered();
         repos::get(&self.conn, slug)
+    }
+
+    /// The repositories matching `query`, only those of `context` when given, best first, at
+    /// most `limit`, read in one snapshot. See [`search`] for the query syntax and the ranking.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when a query fails.
+    pub fn search(
+        &self,
+        query: &str,
+        context: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, StoreError> {
+        let _span = debug_span!("store.search", context, limit).entered();
+        search::search(&self.conn, query, context, limit)
     }
 }
 
