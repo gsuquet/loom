@@ -39,6 +39,10 @@ Constraints found while planning:
 9. **Recurring tasks**: `[[contexts.<name>.schedules]]` in `config.toml` with an RRULE (RFC 5545), kind, importance and a policy `skip | stack | replace`. Dedup key `(schedule_id, occurrence_date)`; only the latest missed occurrence is created.
 10. **Archive**: a task moves to `archive/<yyyy>/<id>/` 7 days after `done` or `cancelled` (`[tasks] archive_after`). Archived tasks stay readable and searchable, read-only.
 
+## Clarifications
+
+- 2026-10-13 (#71): `toml_edit` was not yet a dependency, contrary to the Context section; #71 adds it (`parse` and `display` only), sharing its parser crates with `toml`. `task.md` stores no `updated` key: the time of the last change is the `at` of the last event, so an edit on one machine does not conflict with an edit of another field elsewhere.
+
 ## Consequences
 
 - The design example of `task.md` changes from YAML to TOML. Obsidian and GitHub show the frontmatter as text.

@@ -59,6 +59,7 @@ blocks = []
 Free notes, kind template sections.
 ```
 
+- `task.md` has no `updated` key: the last change is the `at` of the last event in `events.jsonl`.
 - Frontmatter is TOML between `+++` lines, rewritten with `toml_edit`: comments, key order and unknown keys survive ([ADR-0013](../adr/0013-task-store.md)). A task of an unknown kind or status, written by a newer version, is shown read-only.
 - `events.jsonl` lines carry a schema version `v`, the actor and the `machine_id`.
 
