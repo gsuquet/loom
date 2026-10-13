@@ -9,7 +9,7 @@ Loom knows every git repository on the machine, which context it belongs to, and
 - **Roots**: `[repos] roots` in `config.toml`, default `["~/perso", "~/work"]` plus the `match.paths` of every context. Roots that do not exist are skipped.
 - **Walk**: depth `[repos] max_depth` (default 4) below each root, symbolic links not followed, no git process started.
 - **A repository** is a directory with a `.git` directory or a `.git` file (`gitdir:` pointer: worktrees, submodules checked out as separate repos). The walk does not descend into a repository: nested repositories are found only through their own root or by registration.
-- **Excluded**: hidden directories, `node_modules`, `vendor`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, plus `[repos] exclude` (glob patterns).
+- **Excluded**: hidden directories, `node_modules`, `vendor`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, plus `[repos] exclude` (glob patterns: without `/`, matched against directory names; with `/`, against the path relative to the root).
 - **Registration on use**: a repo outside the roots is added when a `loom` command runs inside it, or when the shell hook (`loom shell-init`) sees the shell enter it. `loom repo register <path>` does it explicitly; `loom repo forget` removes it.
 - **Removal**: a scan removes the repos that no longer exist on disk. A scan of some roots never removes repos found under other roots.
 

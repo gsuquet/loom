@@ -43,7 +43,7 @@ Crates are added when a version needs them, never ahead of time.
 | `loom-config` | lib | v0.1 | Loom home resolution, files under it, `config.toml` parsing. No I/O. Shared by `loom` and `loomd` |
 | `loom-update` | lib | v0.1 | Release discovery, update decision (pure), download, verification, install, rollback, auto-upgrade decisions (pure), update state, pre-flight and health check (ADR-0011). Shared by `loom` and `loomd` |
 | `loom-telemetry` | lib | v0.1 | `tracing` subscriber of both binaries: logs on stderr, OTLP/HTTP trace export when enabled (decisions pure), W3C trace context propagation. Shared by `loom` and `loomd` |
-| `loom-repo` | lib | v0.2 | Repo identity, context matching, scanning, state (`gix`), update decisions (pure) |
+| `loom-repo` | lib | v0.2 | Repo identity, context matching, scan diff, update decisions (pure); discovery scan (`scan` module, the only one with I/O: directory listing and git files read with `gix-config`, no git process); state (`gix`) |
 | `loom-core` | lib | v0.3 | Domain: tasks, events, notes, priority, contexts. No I/O. |
 | `loom-store` | lib | v0.2 | SQLite index (`index.db`): repos and search in v0.2; `StorePort`, local files + git adapter, tasks in v0.3 |
 

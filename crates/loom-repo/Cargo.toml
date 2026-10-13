@@ -12,7 +12,14 @@ publish.workspace = true
 loom-api.workspace = true
 # `[contexts]`, `[repos]` and `[forges]` rules it applies.
 loom-config.workspace = true
+# Reads `[remote] url` from git config files without starting git (ADR-0008).
+gix-config.workspace = true
+# `[repos] exclude` globs.
+globset.workspace = true
 thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
