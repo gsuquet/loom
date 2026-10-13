@@ -33,7 +33,7 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 
 Pinned with [mise](https://mise.jdx.dev) in `.mise/config.toml`. Run `mise install` once.
 
-The quality gate is `mise run check` (`mise tasks` lists what it runs); CI runs it on Linux and macOS. Pull requests that only touch docs (`docs/`, top-level `*.md`, `LICENSE`, except the generated references) run spelling and the secret scan only. The required check is `ci`; pull requests must be up to date with `main` before merging. `mise run fmt` formats the workspace; `mise tasks` lists every task.
+The quality gate is `mise run check`; CI runs it on Linux and macOS. Pull requests that only touch docs (`docs/`, top-level `*.md`, `LICENSE`, except the generated references) run spelling and the secret scan only. The required check is `ci`; pull requests must be up to date with `main` before merging. `mise run fmt` formats the workspace; `mise tasks` lists every task.
 
 ## Working on a task
 
