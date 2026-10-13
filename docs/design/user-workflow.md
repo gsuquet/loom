@@ -16,8 +16,8 @@
 | --- | --- | --- |
 | Capture | `loom add "…"` from any shell, context inferred from cwd; global hotkey later (Raycast/Alfred calling the CLI) | CLI |
 | Start of day | `loom` opens the Today view | TUI |
-| Triage | On each inbox item: `a` accept (kind, importance, due), `d` delegate, `z` snooze (`waiting until`), `m` merge into an existing task, `s` split, `x` cancel | TUI |
-| Focus | `loom go <id>` / `g`: set active, cd to the repo or worktree, open the editor. One focus task at a time; delegated tasks run in the background | CLI + shell integration |
+| Triage | On each inbox item: `a` accept (kind, importance, due), `d` delegate, `z` snooze (`waiting until`), `m` merge into an existing task, `s` split, `x` cancel (v0.3: `a`, `z`, `x`; merge and split later) | TUI |
+| Focus | `loom go <id>` / `g`: set active, cd to the repo or worktree. One focus task per context, machine-local; delegated tasks run in the background | CLI + shell integration |
 | Note | `loom log "…"` attaches to the focus task | CLI |
 | Delegate | `d` -> suggested template -> readiness check -> pack preview (editable) -> budget -> run starts | TUI |
 | Watch | Run view: live stream, attach/detach, send a message, cancel | TUI |
@@ -58,7 +58,9 @@ Tabs:
 | Runs | Runs of this task; opens the run view (live, or replayed from the stored stream) |
 | Files | Artifacts with preview: Markdown, text, diffs; images through the terminal graphics protocol when supported (Ghostty, Kitty) |
 
-Editing in place: fields through pickers (status, kind, importance, due, context), text (body, comments, issue description) in an embedded editor. `$EDITOR` is an alternative for long texts.
+Editing in place: fields through pickers (status, kind, importance, due, context), text (body, comments, issue description) in an embedded editor. `$EDITOR` is an alternative for long texts. v0.3 ships the pickers and `$EDITOR`; the embedded editor comes later.
+
+Projects are parent tasks: Relations shows the tree, and Today can group its list by parent.
 
 ### Code review
 

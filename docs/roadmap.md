@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | v0.1 | Install, auto-upgrade, `dev` channel + `loom upgrade --from <path>`, rollback, loomd as launchd/systemd service, otel diagnostics, `loom version` / `loom status` | Clean install on macOS and Linux; a release is picked up in N h without action; a local build installs and rolls back; traces visible locally |
 | v0.2 | Repo index (scan roots + register on use), contexts of repos, freshness, clean/dirty, fetch + ff-only on clean trees, repo cards, `loom search` | Dotfiles inventory scripts deleted; search < 100 ms; one week of auto-update with zero lost local changes |
-| v0.3 | Tasks core: store, contexts, cron, archive, priority, multi-machine sync, TUI Today + Inbox + triage + task detail with in-place editing, `loom go` shell integration | I start my day with `loom` instead of anything else |
+| v0.3 | Tasks core: store, contexts, cron, archive, priority, backup of each context store, TUI Today + Inbox + triage + task detail (pickers, `$EDITOR`), `loom go` shell integration, `loom search` over tasks, disk usage | I start my day with `loom` instead of anything else |
 | v0.4 | Forge MRs: MRs to review (fetch `refs/*/head`, diff per SHA, MR mirror, TUI review view with drafts and batch publish), repo metadata, `loom pr` (draft, task-linked) | Reviews handled from loom without opening the forge inbox |
 | v0.5 | Forge issues (GitLab, GitHub): two-way sync, creation with lint, TUI drafts view | A GitLab issue created and another edited in the TUI, both pushed with no change on untouched fields |
 | v0.6 | Observation: events, Claude Code hooks, transcripts, calendar | A day of work reconstructable from the ledger |
@@ -15,7 +15,7 @@
 | v0.9 | Specialists (including the ticket writer), context packs, Datadog tools for agents (shaped results, spill to file) | An Investigation delegated with Datadog access, no credentials given to the agent |
 | v0.10 | Factory on local runners: pipelines, intake rules, scheduler, autonomy policy, direct API runtime, replay evaluation | A Story labelled `loom:auto` reaches a draft MR overnight on my machine with no action from me, and I approve it in the morning |
 | v0.11 | Central instance: StorePort over HTTP, central runner with one container per run, night windows, web UI | Long runs leave my laptop; a client context restricted to local runners never runs centrally |
-| later | Freshservice, Slack, Datadog ingestion; learnings extraction; other harness adapters (Codex, Antigravity) | |
+| later | Multi-machine (poller per context, leases, `task.md` conflicts as inbox tasks) once a second machine exists; triage merge and split; embedded text editor; Freshservice, Slack, Datadog ingestion; learnings extraction; other harness adapters (Codex, Antigravity) | |
 
 ## v0.1 tasks
 
@@ -63,8 +63,29 @@ Released as [v0.2.0](https://github.com/gsuquet/loom/releases/tag/v0.2.0) on 202
 
 Parallel tracks once 5 is merged: {6, 7, 9} and {8, 10}.
 
-## Open decisions
+## v0.3 tasks
 
-- One focus task at a time, or several.
-- Presentation vs Content kind.
-- Admin kind granularity (one kind, or Timesheet/Expense/Interview subtypes).
+Each task is a GitHub issue in the `v0.3` milestone, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md). Design: [Domain model](design/domain-model.md), [Storage](design/storage.md), [User workflow](design/user-workflow.md), [ADR-0013](adr/0013-task-store.md).
+
+| # | Issue | Task | Kind | Depends on | Owner |
+| --- | --- | --- | --- | --- | --- |
+| 1 | – | ADR-0013 (task store, kinds, priority, focus, backup) and design docs | Research | – | Me + agent |
+| 2 | ISSUE_2 | `loom-core` (pure): task, kind, status, importance, links and relations, IDs, shortest unique prefix, transitions and available actions, events, undo | Story | 1 | Agent |
+| 3 | ISSUE_3 | Priority (pure): lexicographic order, hidden `waiting` tasks, `--why` | Story | 2 | Agent |
+| 4 | ISSUE_4 | Task file format (pure): `task.md` TOML frontmatter round trip with unknown keys kept, `events.jsonl`, body template per kind | Story | 2 | Agent |
+| 5 | ISSUE_5 | `loom-store`: `StorePort`, files adapter per context, atomic writes, tasks index and FTS (migration 0005), `loom reindex`, hand-edit detection | Story | 4 | Agent |
+| 6 | ISSUE_6 | loomd tasks API: create, read, edit, transitions, ranked list, events, undo | Story | 3, 5 | Agent |
+| 7 | ISSUE_7 | `loom add\|ls\|show\|edit\|set\|done\|cancel\|snooze\|undo`, `--json`, context from the working directory | Story | 6 | Agent |
+| 8 | ISSUE_8 | `loom go`, focus per context, `repo` link, `cd` through `shell-init`, `loom log` | Story | 7 | Agent |
+| 9 | ISSUE_9 | Recurring tasks: RRULE schedules, dedup per occurrence, `skip\|stack\|replace`, latest missed occurrence | Story | 6 | Agent |
+| 10 | ISSUE_10 | Archive after N days, read-only, readable and searchable | Story | 6 | Agent |
+| 11 | ISSUE_11 | Backup: git repository per context store, unsigned commit per change, push and fast-forward pull, `loom sync`, `machine.toml`, doctor | Story | 5 | Agent |
+| 12 | ISSUE_12 | `loom search` over tasks (title, body, links), < 100 ms | Story | 5 | Agent |
+| 13 | ISSUE_13 | TUI skeleton: ratatui, API client, context colors, keymap, `?` help, `/` search | Story | 6 | Agent |
+| 14 | ISSUE_14 | TUI Today and Inbox, triage (`a`, `z`, `x`, `c`, `g`), group by parent | Story | 3, 13 | Agent |
+| 15 | ISSUE_15 | TUI task detail: Overview, Relations, Events, Files; field pickers; `$EDITOR` for the body | Story | 13 | Agent |
+| 16 | ISSUE_16 | Store safety suite: crash during a write, invalid hand edit, reindex equal to the files, version skew | Chore | 5, 11 | Agent |
+| 17 | – | Enter my tasks, a week of starting the day with `loom` | Chore | 14, 15 | Me |
+| 18 | ISSUE_18 | Disk usage of the loom home in `loom status` and `--json`, doctor checks (kept versions, WAL, free space) | Story | – | Agent |
+
+Parallel tracks: 18 from the start; after 2, {3} and {4, 5}; after 5, {11, 12, 16}; after 6, {7, 8}, {9, 10}, {13, 14, 15}.
