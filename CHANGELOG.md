@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Disk usage of the loom home: `loom status` prints `disk: <total> (versions …, index …, logs …, contexts …)`, and `GET /v1/status` (`loom status --json`) carries a `disk` object with the allocated bytes of `versions/`, the index (and its WAL), `log/`, `state/`, each context store and the rest, the kept versions and the free space of the volume. Measured by loomd without following symbolic links, cached 5 minutes and measured again when `versions/` changes; an unreadable directory counts as 0 with a warning.
+- `[contexts.<name>] store.path` in `config.toml`: root of the context's task store, `<loom home>/contexts/<name>` by default; two contexts cannot share one.
 - `loom repo doctor` checks the disk usage: `disk` (parts that could not be measured), `disk-versions` (versions kept beyond what `loom rollback` needs), `disk-wal` (`index.db-wal` above 64 MB) and `disk-free` (less than 1 GB free on the volume of the loom home).
 
 ### Fixed

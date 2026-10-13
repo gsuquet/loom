@@ -8,7 +8,10 @@
 //! [`Store`] opens and recorded in `PRAGMA user_version`. A database newer than this code is
 //! refused, never downgraded.
 
+pub mod atomic;
+pub mod files;
 mod migrate;
+pub mod port;
 mod repos;
 pub mod search;
 

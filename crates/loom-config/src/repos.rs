@@ -15,7 +15,7 @@ use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
 
-/// `[contexts.<name>]`: how repositories are matched to a context.
+/// `[contexts.<name>]`: how repositories are matched to a context, and where its tasks live.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextConfig {
@@ -25,6 +25,28 @@ pub struct ContextConfig {
     /// `update`: policy of the context's repositories; `None` leaves the default (`ff`).
     #[serde(default)]
     pub update: Option<RepoUpdatePolicy>,
+    /// `store` table: the context's task store.
+    #[serde(default)]
+    pub store: ContextStore,
+}
+
+/// `store` table of a context.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextStore {
+    /// `store.path`: root of the context store; `None` for `<loom home>/contexts/<name>`.
+    #[serde(default, deserialize_with = "store_path")]
+    pub path: Option<Spanned<ConfigPath>>,
+}
+
+fn store_path<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Spanned<ConfigPath>>, D::Error> {
+    let path = Spanned::<String>::deserialize(deserializer)?;
+    let span = path.span();
+    ConfigPath::try_from(path.into_inner())
+        .map(|path| Some(Spanned::new(span, path)))
+        .map_err(|error| D::Error::custom(format!("store.path: {error}")))
 }
 
 /// `match` table of a context. Each list, when given, has at least one entry.

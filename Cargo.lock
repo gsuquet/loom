@@ -2071,10 +2071,12 @@ name = "loom-store"
 version = "0.3.0"
 dependencies = [
  "loom-api",
+ "loom-core",
  "loom-repo",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tracing",
