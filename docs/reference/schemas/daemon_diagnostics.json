@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DaemonDiagnostics",
+  "description": "Environment of `loomd` that its git operations depend on. Never carries a secret value.",
+  "type": "object",
+  "properties": {
+    "home": {
+      "description": "`HOME` of `loomd` (expands `~` in the configuration); `null` when unset or empty.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ssh_auth_sock": {
+      "description": "The SSH agent socket `loomd` and its `git` processes see.",
+      "$ref": "#/$defs/SshAgentSocket"
+    }
+  },
+  "required": [
+    "ssh_auth_sock"
+  ],
+  "$defs": {
+    "SshAgentSocket": {
+      "description": "What `SSH_AUTH_SOCK` points to in the environment of `loomd`.",
+      "oneOf": [
+        {
+          "description": "`SSH_AUTH_SOCK` is unset or empty.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "unset"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Nothing exists at the path, or it cannot be examined.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Value of `SSH_AUTH_SOCK`.",
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "const": "missing"
+            }
+          },
+          "required": [
+            "state",
+            "path"
+          ]
+        },
+        {
+          "description": "The path exists but is not a unix socket.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Value of `SSH_AUTH_SOCK`.",
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "const": "not_a_socket"
+            }
+          },
+          "required": [
+            "state",
+            "path"
+          ]
+        },
+        {
+          "description": "The path is a unix socket.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Value of `SSH_AUTH_SOCK`.",
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "const": "socket"
+            }
+          },
+          "required": [
+            "state",
+            "path"
+          ]
+        }
+      ]
+    }
+  }
+}

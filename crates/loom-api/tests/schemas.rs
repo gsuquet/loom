@@ -9,13 +9,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use loom_api::{
-    ApiError, ApiVersion, Channel, ChannelSource, ChosenChannel, ContextAssignment, ContextName,
-    DaemonRestart, ErrorCode, ForgeKind, InstallReport, MaybeKnown, PendingUpgrade, Profile,
-    RegisterRequest, Remote, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState,
-    RepoSummary, RollbackReport, ScanIssue, ScanResult, ServicePlatform, ServiceStatus,
-    StatusResponse, Timestamp, Untracked, UpdateChannel, UpdatePolicyMode, UpdateResult,
-    UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource,
-    Upstream, VersionInfo,
+    ApiError, ApiVersion, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
+    ContextName, DaemonDiagnostics, DaemonRestart, DoctorCheck, DoctorReport, ErrorCode, ForgeKind,
+    InstallReport, MaybeKnown, PendingUpgrade, Profile, RegisterRequest, Remote, RemoteUrl,
+    RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary, RollbackReport,
+    ScanIssue, ScanResult, ServicePlatform, ServiceStatus, SshAgentSocket, StatusResponse,
+    Timestamp, Untracked, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
+    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -27,6 +27,8 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("api_error", schema_for!(ApiError)),
         ("api_version", schema_for!(ApiVersion)),
         ("context_assignment", schema_for!(ContextAssignment)),
+        ("daemon_diagnostics", schema_for!(DaemonDiagnostics)),
+        ("doctor_report", schema_for!(DoctorReport)),
         ("error_code", schema_for!(ErrorCode)),
         ("register_request", schema_for!(RegisterRequest)),
         ("repo_identity", schema_for!(RepoIdentity)),
@@ -507,6 +509,14 @@ fn repo_samples_validate_against_their_schema() {
     errors.extend(
         violations(&RegisterRequest {
             path: "/home/me/src/x".into(),
+            on_use: false,
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&RegisterRequest {
+            path: "/home/me/src/x".into(),
+            on_use: true,
         })
         .unwrap(),
     );
@@ -524,6 +534,67 @@ fn repo_samples_validate_against_their_schema() {
         .unwrap(),
     );
     assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+#[test]
+fn diagnostics_samples_validate_against_their_schema() {
+    let mut errors = Vec::new();
+    for ssh_auth_sock in [
+        SshAgentSocket::Unset,
+        SshAgentSocket::Missing {
+            path: "/tmp/gone".into(),
+        },
+        SshAgentSocket::NotASocket {
+            path: "/tmp/file".into(),
+        },
+        SshAgentSocket::Socket {
+            path: "/run/user/1000/ssh-agent.socket".into(),
+        },
+    ] {
+        errors.extend(
+            violations(&DaemonDiagnostics {
+                ssh_auth_sock: ssh_auth_sock.clone(),
+                home: Some("/home/me".into()),
+            })
+            .unwrap(),
+        );
+        errors.extend(
+            violations(&DaemonDiagnostics {
+                ssh_auth_sock,
+                home: None,
+            })
+            .unwrap(),
+        );
+    }
+    let check = |name: &str, status, fix: Option<&str>| DoctorCheck {
+        check: name.to_owned(),
+        status,
+        detail: "detail".to_owned(),
+        fix: fix.map(str::to_owned),
+    };
+    errors.extend(
+        violations(&DoctorReport {
+            checks: vec![
+                check("roots", CheckStatus::Ok, None),
+                check("ssh git@example.com", CheckStatus::Fail, Some("ssh-add")),
+                check("unassigned", CheckStatus::Warn, Some("define a context")),
+            ],
+        })
+        .unwrap(),
+    );
+    errors.extend(violations(&DoctorReport { checks: vec![] }).unwrap());
+    assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+#[test]
+fn register_request_on_use_is_optional() {
+    let request: RegisterRequest = serde_json::from_value(json!({ "path": "/x" })).unwrap();
+    assert!(!request.on_use);
+    // Omitted when false: an older daemon, which rejects unknown fields, still reads it.
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        json!({ "path": "/x" })
+    );
 }
 
 #[test]

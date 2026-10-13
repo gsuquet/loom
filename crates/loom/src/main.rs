@@ -1,6 +1,8 @@
 //! `loom`: the CLI, later the TUI.
 
 mod client;
+mod on_use;
+mod repo_cmd;
 mod service_cmd;
 mod start;
 mod upgrade;
@@ -13,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{CommandFactory as _, FromArgMatches as _};
-use loom::cli::{Cli, Command, GlobalArgs, ServiceCommand, VERSION_INFO, command_path};
+use loom::cli::{
+    Cli, Command, GlobalArgs, RepoCommand, ServiceCommand, VERSION_INFO, command_path,
+};
 use loom::conventions::{Exit, use_color, write_out};
 use loom::loomd_path::loomd_candidates;
 use loom::service::{
@@ -59,7 +63,16 @@ fn main() -> ExitCode {
     if let Some(context) = &cli.global.context {
         span.record("loom.context", context.as_str());
     }
-    let result = span.in_scope(|| run(&cli));
+    let result = span.in_scope(|| {
+        let registration = registers_on_use(&cli.command)
+            .then(|| on_use::spawn(layout().ok()))
+            .flatten();
+        let result = run(&cli);
+        if let Some(registration) = registration {
+            registration.wait();
+        }
+        result
+    });
     let exit = match result {
         Ok(()) => Exit::Success,
         Err(report) => {
@@ -141,6 +154,24 @@ fn init_telemetry(
     loom_telemetry::init(&options, &env_var)
 }
 
+/// Whether the command registers the repository of the current directory on use. Not the
+/// commands that register or remove repositories themselves, nor the internal watchdog.
+const fn registers_on_use(command: &Command) -> bool {
+    match command {
+        Command::Repo { command } => match command {
+            RepoCommand::Show(_) | RepoCommand::Register(_) | RepoCommand::Forget(_) => false,
+            RepoCommand::Scan(args) => !args.rebuild,
+            RepoCommand::Ls(_) | RepoCommand::Doctor(_) => true,
+        },
+        Command::UpgradeWatchdog(_) => false,
+        Command::Version { .. }
+        | Command::Status { .. }
+        | Command::Service { .. }
+        | Command::Upgrade(_)
+        | Command::Rollback(_) => true,
+    }
+}
+
 fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Version { json } => print_version(&VERSION_INFO, *json),
@@ -148,6 +179,7 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Upgrade(args) => print(&upgrade::upgrade(&VERSION_INFO, args, &layout()?)?),
         Command::Rollback(args) => print(&upgrade::rollback(&VERSION_INFO, args, &layout()?)?),
         Command::Service { command } => run_service(command),
+        Command::Repo { command } => repo_cmd::run(command, &cli.global, layout()?),
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;
             let supervisor = watchdog_supervisor(&layout);

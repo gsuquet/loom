@@ -86,6 +86,15 @@ pub enum Command {
     /// Restore the previous version: the highest version kept in `<loom home>/versions/` other
     /// than the running one.
     Rollback(RollbackArgs),
+    /// List, show, scan, register and check the repositories loomd indexes.
+    ///
+    /// Starts loomd when it is not running (except `doctor`). Run inside a repository the index
+    /// does not know, any `loom` command registers it.
+    Repo {
+        /// Repository command to run.
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
     /// Internal: started by loomd from the saved previous version after an auto-upgrade;
     /// waits for the new loomd and rolls back when it does not answer (ADR-0011).
     #[command(name = "__upgrade-watchdog", hide = true)]
@@ -163,6 +172,114 @@ pub enum ReleaseChannel {
 fn parse_release_version(text: &str) -> Result<Version, String> {
     loom_update::release::tag_version(&format!("v{text}"))
         .ok_or_else(|| format!("expected X.Y.Z or X.Y.Z-dev.N, got `{text}`"))
+}
+
+/// `loom repo` commands.
+///
+/// A `<REPO>` argument is a path (absolute, relative starting with `.`, or `~`), walked up to
+/// the repository root; a slug `<context>/<name>`; or a name, which `-c` or the context of the
+/// current directory narrows when several repositories have it.
+#[derive(Debug, Subcommand)]
+pub enum RepoCommand {
+    /// List the indexed repositories, sorted by context then name (`-c` keeps one context).
+    Ls(RepoLsArgs),
+    /// Show a repository: identity, context and the rule that chose it, state.
+    Show(RepoShowArgs),
+    /// Scan the roots and the registered repositories now.
+    Scan(RepoScanArgs),
+    /// Add a repository outside the roots to the index; scans keep it while it exists.
+    Register(RepoRegisterArgs),
+    /// Remove a repository from the index (registering it again undoes it).
+    Forget(RepoForgetArgs),
+    /// Check roots, contexts, unassigned repositories, loomd's SSH agent and SSH access to
+    /// each host; print the fixes. Exits with 1 when a check fails.
+    Doctor(RepoDoctorArgs),
+}
+
+/// Output format of `loom repo ls`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RepoListFormat {
+    /// Aligned columns: unassigned flag (`!`), slug, HEAD, state, path.
+    Table,
+    /// One absolute path per line, nothing else (for `fzf`).
+    Paths,
+}
+
+/// Options of `loom repo ls`.
+#[derive(Debug, clap::Args)]
+pub struct RepoLsArgs {
+    /// Print the list as JSON (`RepoList` schema).
+    #[arg(long, conflicts_with = "format")]
+    pub json: bool,
+    /// Output format.
+    #[arg(long, value_name = "FORMAT", value_enum, default_value_t = RepoListFormat::Table)]
+    pub format: RepoListFormat,
+}
+
+/// Options of `loom repo show`.
+#[derive(Debug, clap::Args)]
+pub struct RepoShowArgs {
+    /// Repository: path, `<context>/<name>` or name. Default: the repository of the current
+    /// directory. A path the index does not know is registered.
+    #[arg(value_name = "REPO")]
+    pub repo: Option<String>,
+    /// Read the repository's state now instead of showing the stored one.
+    #[arg(long)]
+    pub refresh: bool,
+    /// Print the repository as JSON (`RepoSummary` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom repo scan`.
+#[derive(Debug, clap::Args)]
+pub struct RepoScanArgs {
+    /// Drop the whole index and rebuild it from the roots: registered repositories outside the
+    /// roots, `last_used` and states are lost. Asks for confirmation.
+    #[arg(long)]
+    pub rebuild: bool,
+    /// Print what would change, change nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the result as JSON (`ScanResult` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom repo register`.
+#[derive(Debug, clap::Args)]
+pub struct RepoRegisterArgs {
+    /// A directory inside the repository. Default: the current directory.
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+    /// Print the repository that would be registered, change nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the registered repository as JSON (`RepoSummary` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom repo forget`.
+#[derive(Debug, clap::Args)]
+pub struct RepoForgetArgs {
+    /// Repository: path, `<context>/<name>` or name.
+    #[arg(value_name = "REPO")]
+    pub repo: String,
+    /// Print the repository that would be removed, change nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the removed repository as JSON (`RepoSummary` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom repo doctor`.
+#[derive(Debug, clap::Args)]
+pub struct RepoDoctorArgs {
+    /// Print the report as JSON (`DoctorReport` schema).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `loom service` commands.
@@ -276,6 +393,7 @@ mod tests {
             | Command::Status { .. }
             | Command::Upgrade(_)
             | Command::Rollback(_)
+            | Command::Repo { .. }
             | Command::UpgradeWatchdog(_) => {
                 panic!("not a service command: {args:?}")
             }
@@ -307,6 +425,64 @@ mod tests {
         );
         let error = Cli::try_parse_from(["loom", "service", "status", "-n"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
+
+    fn repo(args: &[&str]) -> super::RepoCommand {
+        let mut full = vec!["loom", "repo"];
+        full.extend_from_slice(args);
+        match Cli::try_parse_from(full).unwrap().command {
+            Command::Repo { command } => command,
+            other => panic!("not a repo command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_commands_parse() {
+        use super::{RepoCommand, RepoListFormat};
+        let RepoCommand::Ls(ls) = repo(&["ls"]) else {
+            panic!("ls")
+        };
+        assert_eq!(ls.format, RepoListFormat::Table);
+        assert!(!ls.json);
+        let RepoCommand::Ls(ls) = repo(&["ls", "--format", "paths"]) else {
+            panic!("ls")
+        };
+        assert_eq!(ls.format, RepoListFormat::Paths);
+        let RepoCommand::Show(show) = repo(&["show", "--refresh", "--json"]) else {
+            panic!("show")
+        };
+        assert_eq!(show.repo, None);
+        assert!(show.refresh && show.json);
+        let RepoCommand::Scan(scan) = repo(&["scan", "--rebuild", "-n"]) else {
+            panic!("scan")
+        };
+        assert!(scan.rebuild && scan.dry_run && !scan.json);
+        let RepoCommand::Register(register) = repo(&["register"]) else {
+            panic!("register")
+        };
+        assert_eq!(register.path, None);
+        let RepoCommand::Forget(forget) = repo(&["forget", "work/x", "-n"]) else {
+            panic!("forget")
+        };
+        assert_eq!(forget.repo, "work/x");
+        assert!(forget.dry_run);
+        assert!(matches!(repo(&["doctor", "--json"]), RepoCommand::Doctor(args) if args.json));
+        // `-c` reaches the repo commands.
+        let cli = Cli::try_parse_from(["loom", "repo", "ls", "-c", "work"]).unwrap();
+        assert_eq!(cli.global.context.unwrap().as_str(), "work");
+    }
+
+    #[test]
+    fn repo_usage_errors() {
+        for args in [
+            &["loom", "repo"][..],
+            &["loom", "repo", "ls", "--json", "--format", "paths"],
+            &["loom", "repo", "ls", "--format", "csv"],
+            &["loom", "repo", "forget"],
+            &["loom", "repo", "doctor", "-n"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 
     #[test]

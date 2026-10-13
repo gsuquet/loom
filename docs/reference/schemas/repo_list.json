@@ -556,7 +556,7 @@
           ]
         },
         "last_used": {
-          "description": "Last time the repository was used, when known.",
+          "description": "Last time the repository was used (`loom repo show`, or a `loom` command run inside\nit), when known.",
           "anyOf": [
             {
               "$ref": "#/$defs/Timestamp"

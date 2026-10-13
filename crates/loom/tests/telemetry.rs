@@ -71,6 +71,8 @@ fn loom(home: &Path, args: &[&str], env: &[(&str, String)]) -> Output {
         command.env_remove(name);
     }
     command
+        // Outside any repository: no registration on use adds its own request.
+        .current_dir(home)
         .env("LOOM_HOME", home)
         .envs(isolation::isolated_env(home))
         .env_remove("NO_COLOR")

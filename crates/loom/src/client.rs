@@ -4,13 +4,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use http_body_util::{BodyExt as _, Empty};
+use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::client::conn::http1;
-use hyper::{Request, header};
+use hyper::{Method, Request, header};
 use hyper_util::rt::TokioIo;
 use loom_api::{ApiError, StatusResponse};
 use loom_telemetry::propagation::inject_context;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::net::UnixStream;
@@ -65,6 +66,14 @@ impl Client {
         }
     }
 
+    /// The same client, each request taking at most `timeout`, connection included.
+    pub fn with_timeout(&self, timeout: Duration) -> Self {
+        Self {
+            socket: self.socket.clone(),
+            timeout,
+        }
+    }
+
     /// Path of the socket.
     pub fn socket(&self) -> &Path {
         &self.socket
@@ -78,17 +87,46 @@ impl Client {
     /// `GET path`, with the JSON body of a successful response decoded as `T`. Traced as a
     /// client span whose context is sent to loomd.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
+        self.call(Method::GET, path, None).await
+    }
+
+    /// `POST path` with `body` as JSON (an empty body when `None`).
+    pub async fn post<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Option<&(impl Serialize + Sync)>,
+    ) -> Result<T, ClientError> {
+        let body = body.map(serde_json::to_vec).transpose().map_err(|error| {
+            ClientError::Protocol(format!("cannot encode the request: {error}"))
+        })?;
+        self.call(Method::POST, path, body).await
+    }
+
+    /// `DELETE path`.
+    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
+        self.call(Method::DELETE, path, None).await
+    }
+
+    async fn call<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<T, ClientError> {
         let span = info_span!(
             "http.client",
-            otel.name = %format!("GET {path}"),
+            otel.name = %format!("{method} {path}"),
             otel.kind = "client",
             otel.status_code = field::Empty,
             otel.status_description = field::Empty,
-            http.request.method = "GET",
+            http.request.method = method.as_str(),
             url.path = path,
             http.response.status_code = field::Empty,
         );
-        let result = self.request(path).instrument(span.clone()).await;
+        let result = self
+            .request(&method, path, body)
+            .instrument(span.clone())
+            .await;
         if let Err(error) = &result {
             span.record("otel.status_code", "ERROR");
             span.record("otel.status_description", error.to_string());
@@ -96,24 +134,29 @@ impl Client {
         result
     }
 
-    async fn request<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let (status, body) = tokio::time::timeout(self.timeout, self.exchange(path))
+    async fn request<T: DeserializeOwned>(
+        &self,
+        method: &Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<T, ClientError> {
+        let (status, body) = tokio::time::timeout(self.timeout, self.exchange(method, path, body))
             .await
             .map_err(|_| {
                 ClientError::Protocol(format!(
-                    "no answer to GET {path} within {} s",
-                    self.timeout.as_secs()
+                    "no answer to {method} {path} within {} ms",
+                    self.timeout.as_millis()
                 ))
             })??;
         if status.is_success() {
             return serde_json::from_slice(&body).map_err(|error| {
-                ClientError::Protocol(format!("invalid body for GET {path}: {error}"))
+                ClientError::Protocol(format!("invalid body for {method} {path}: {error}"))
             });
         }
         let error = serde_json::from_slice::<ApiError>(&body).map_or_else(
             |_| {
                 ClientError::Protocol(format!(
-                    "HTTP {status} for GET {path} without an error body"
+                    "HTTP {status} for {method} {path} without an error body"
                 ))
             },
             |error| ClientError::Api {
@@ -124,8 +167,13 @@ impl Client {
         Err(error)
     }
 
-    /// Connects, sends `GET path` and reads the whole response.
-    async fn exchange(&self, path: &str) -> Result<(hyper::StatusCode, Bytes), ClientError> {
+    /// Connects, sends the request and reads the whole response.
+    async fn exchange(
+        &self,
+        method: &Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<(hyper::StatusCode, Bytes), ClientError> {
         let stream =
             UnixStream::connect(&self.socket)
                 .await
@@ -140,9 +188,15 @@ impl Client {
         // `send_request` reports too.
         drop(tokio::spawn(connection));
 
-        let mut request = Request::get(path)
-            .header(header::HOST, HOST)
-            .body(Empty::<Bytes>::new())
+        let mut builder = Request::builder()
+            .method(method.clone())
+            .uri(path)
+            .header(header::HOST, HOST);
+        if body.is_some() {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+        }
+        let mut request = builder
+            .body(Full::new(Bytes::from(body.unwrap_or_default())))
             .map_err(|error| protocol("invalid request", &error))?;
         inject_context(&Span::current(), request.headers_mut());
         let response = sender

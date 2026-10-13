@@ -4,6 +4,8 @@
 pub mod cli;
 pub mod cli_doc;
 pub mod conventions;
+pub mod doctor;
 pub mod loomd_path;
+pub mod repo;
 pub mod service;
 pub mod status;

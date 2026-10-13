@@ -1,9 +1,10 @@
 //! Responses of the API, decided without I/O. The HTTP wiring lives in the binary.
 
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use loom_api::{ApiError, ContextName, ErrorCode, StatusResponse, Timestamp};
+use loom_api::{ApiError, ContextName, ErrorCode, SshAgentSocket, StatusResponse, Timestamp};
 use serde::Deserialize;
 
 /// Path of the status endpoint.
@@ -16,6 +17,42 @@ pub const REPOS_SCAN_PATH: &str = "/v1/repos/scan";
 pub const REPOS_REGISTER_PATH: &str = "/v1/repos/register";
 /// Route of one repository: its slug `<context>/<name>`, as two path segments.
 pub const REPO_PATH: &str = "/v1/repos/{context}/{name}";
+/// Path of the diagnostics endpoint: the environment of the daemon.
+pub const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
+
+/// Query parameters of `POST /v1/repos/scan`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanQuery {
+    /// `true`: drop the whole index and rebuild it from the roots alone.
+    #[serde(default)]
+    pub rebuild: bool,
+    /// `true`: compute the changes, apply nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// What `SSH_AUTH_SOCK` (`value`) points to; `kind` tells whether a path is a socket, `None`
+/// when nothing can be examined there. An empty value counts as unset.
+pub fn agent_socket(
+    value: Option<&OsStr>,
+    kind: impl FnOnce(&Path) -> Option<bool>,
+) -> SshAgentSocket {
+    let Some(path) = value.filter(|value| !value.is_empty()).map(PathBuf::from) else {
+        return SshAgentSocket::Unset;
+    };
+    match kind(&path) {
+        None => SshAgentSocket::Missing { path },
+        Some(false) => SshAgentSocket::NotASocket { path },
+        Some(true) => SshAgentSocket::Socket { path },
+    }
+}
+
+/// `HOME` as reported: `None` when unset or empty.
+#[must_use]
+pub fn home_value(value: Option<&OsStr>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
 
 /// Query parameters of `GET /v1/repos`. Empty values are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -154,10 +191,11 @@ pub fn clock_error() -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        RepoQuery, method_not_allowed, not_found, register_path, repo_filter, repo_not_found, slug,
-        status_at, timestamp,
+        RepoQuery, ScanQuery, agent_socket, home_value, method_not_allowed, not_found,
+        register_path, repo_filter, repo_not_found, slug, status_at, timestamp,
     };
-    use loom_api::{ApiVersion, ErrorCode, StatusResponse, Timestamp, VersionInfo};
+    use loom_api::{ApiVersion, ErrorCode, SshAgentSocket, StatusResponse, Timestamp, VersionInfo};
+    use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -190,6 +228,44 @@ mod tests {
             let error = register_path(Path::new(bad)).unwrap_err();
             assert_eq!(error.code, ErrorCode::InvalidRequest, "{bad}");
         }
+    }
+
+    #[test]
+    fn agent_socket_states() {
+        let socket =
+            |value: Option<&str>, kind: Option<bool>| agent_socket(value.map(OsStr::new), |_| kind);
+        assert_eq!(socket(None, Some(true)), SshAgentSocket::Unset);
+        assert_eq!(socket(Some(""), Some(true)), SshAgentSocket::Unset);
+        assert_eq!(
+            socket(Some("/a"), None),
+            SshAgentSocket::Missing { path: "/a".into() }
+        );
+        assert_eq!(
+            socket(Some("/a"), Some(false)),
+            SshAgentSocket::NotASocket { path: "/a".into() }
+        );
+        assert_eq!(
+            socket(Some("/a"), Some(true)),
+            SshAgentSocket::Socket { path: "/a".into() }
+        );
+        assert_eq!(home_value(Some(OsStr::new(""))), None);
+        assert_eq!(home_value(None), None);
+        assert_eq!(
+            home_value(Some(OsStr::new("/home/me"))),
+            Some(PathBuf::from("/home/me"))
+        );
+    }
+
+    #[test]
+    fn scan_query_defaults_and_rejects_unknown_parameters() {
+        let parse = |text: &str| serde_json::from_str::<ScanQuery>(text);
+        assert_eq!(parse("{}").unwrap(), ScanQuery::default());
+        assert!(
+            parse(r#"{"rebuild": true, "dry_run": true}"#)
+                .unwrap()
+                .rebuild
+        );
+        assert!(parse(r#"{"force": true}"#).is_err());
     }
 
     #[test]

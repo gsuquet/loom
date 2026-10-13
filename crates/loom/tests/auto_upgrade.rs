@@ -195,6 +195,8 @@ impl Env {
         }
         // Spans reach the fake collector quickly when telemetry is on.
         command.env("OTEL_BSP_SCHEDULE_DELAY", "100");
+        // Outside any repository: no registration on use talks to loomd.
+        command.current_dir(self.home.path());
         command
     }
 

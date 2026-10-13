@@ -184,6 +184,33 @@ impl Store {
         repos::forget(&mut self.conn, slug)
     }
 
+    /// Sets `last_used` of the repository at `path` to `now`; `false`, changing nothing, when
+    /// no repository has this path.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails, or the path is not valid UTF-8.
+    pub fn set_last_used(&mut self, path: &Path, now: Timestamp) -> Result<bool, StoreError> {
+        let _span = debug_span!("store.set_last_used", path = %path.display()).entered();
+        repos::set_last_used(&self.conn, path, now)
+    }
+
+    /// Replaces the whole index with `repos` (their slugs unique), at `now`, in one
+    /// transaction: every other repository, its state, `registered` flag and `last_used` are
+    /// dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when a write fails; nothing is changed then.
+    pub fn replace_all(
+        &mut self,
+        repos: &[RepoIdentity],
+        now: Timestamp,
+    ) -> Result<(), StoreError> {
+        let _span = debug_span!("store.replace_all", repos = repos.len()).entered();
+        repos::replace_all(&mut self.conn, repos, now)
+    }
+
     /// The repository with `slug`.
     ///
     /// # Errors
