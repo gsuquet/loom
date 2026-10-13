@@ -20,6 +20,7 @@ pub mod archive;
 pub mod auto;
 pub mod daemon;
 mod decision;
+pub mod exec;
 pub mod github;
 pub mod health;
 pub mod install;

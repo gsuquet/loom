@@ -46,8 +46,7 @@ pub fn check(staged_dir: &Path, expected: &Version, timeout: Duration) -> Result
     for name in REMOVED_ENV {
         command.env_remove(name);
     }
-    let mut child = command
-        .spawn()
+    let mut child = crate::exec::retry_busy(|| command.spawn())
         .map_err(|error| format!("cannot start {}: {error}", loomd.display()))?;
     let result = wait(
         &mut child,
