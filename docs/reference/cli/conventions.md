@@ -34,7 +34,7 @@ Shipped on `loom repo scan --rebuild`.
 
 ## Dry run
 
-Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install`, `loom service uninstall`, `loom repo scan`, `loom repo register` and `loom repo forget`.
+Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install`, `loom service uninstall`, `loom upgrade`, `loom rollback`, `loom repo scan`, `loom repo register`, `loom repo forget` and `loom repo sync`.
 
 ## Streams
 
@@ -371,7 +371,7 @@ JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `cu
 
 ## `loom repo`
 
-`loom repo` reads and changes the repository index of loomd through the [API](../api.md#repositories). `ls`, `show`, `scan`, `register` (without `-n` or `--on-use`) and `forget` start loomd as [`loom status`](#starting-loomd) does when it is not running, then wait for its scan on start, so that the index they read is complete. `doctor`, `register -n` and `register --on-use` never start it.
+`loom repo` reads and changes the repository index of loomd through the [API](../api.md#repositories). `ls`, `show`, `scan`, `register` (without `-n` or `--on-use`), `forget` and `sync` start loomd as [`loom status`](#starting-loomd) does when it is not running, then wait for its scan on start, so that the index they read is complete. `doctor`, `register -n` and `register --on-use` never start it.
 
 ### Repository argument
 
@@ -398,7 +398,7 @@ Error: `loom` names several repositories; give one of:
 
 ### Registration on use
 
-Every `loom` command run inside a git repository, except `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `shell-init` and the internal watchdog, sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory, on a thread of its own: loomd registers it when the index does not have it, and sets its `last_used`. The command waits for it at most 50 ms after it started, and never fails because of it. Nothing is sent when the socket file does not exist; loomd is never started for it. `loom repo show` sets `last_used` the same way. `loom repo register --on-use --background`, run by the [shell integration](#loom-shell-init), sends the same request for its `<PATH>` (default: the current directory).
+Every `loom` command run inside a git repository, except `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync`, `shell-init` and the internal watchdog, sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory, on a thread of its own: loomd registers it when the index does not have it, and sets its `last_used`. The command waits for it at most 50 ms after it started, and never fails because of it. Nothing is sent when the socket file does not exist; loomd is never started for it. `loom repo show` sets `last_used` the same way. `loom repo register --on-use --background`, run by the [shell integration](#loom-shell-init), sends the same request for its `<PATH>` (default: the current directory).
 
 ### `loom repo ls`
 
@@ -459,7 +459,7 @@ error:          untracked: time budget of 2s exceeded
 
 `POST /v1/repos/scan`. Human output: `<added> added, <updated> updated, <removed> removed in <ms> ms`, then one `cannot read <path>: <message>` line per path the scan could not read. `-n`/`--dry-run`: `would add <n>, update <n>, remove <n>`, nothing changed. `--json`: [`ScanResult`](../schemas/scan_result.json).
 
-`--rebuild` drops the whole index (states, `last_used`, registrations) and scans the roots again: registered repositories outside the roots are lost. Before asking, it warns on stderr, naming the registered repositories outside the roots. It then follows the [confirmations](#confirmations) rules; on the terminal it asks `Rebuild the repository index (<n> registered repositories outside the roots lost)? [y/N]`, and any answer other than `y` or `yes` fails with `rebuild cancelled: nothing changed`. With `-n`, it neither asks nor changes anything, and reports the counts of a rebuild: every repository of the index removed, every repository found added.
+`--rebuild` drops the whole index (states, results of the last updates, `last_used`, registrations) and scans the roots again: registered repositories outside the roots are lost. Before asking, it warns on stderr, naming the registered repositories outside the roots. It then follows the [confirmations](#confirmations) rules; on the terminal it asks `Rebuild the repository index (<n> registered repositories outside the roots lost)? [y/N]`, and any answer other than `y` or `yes` fails with `rebuild cancelled: nothing changed`. With `-n`, it neither asks nor changes anything, and reports the counts of a rebuild: every repository of the index removed, every repository found added.
 
 ### `loom repo register` and `forget`
 
@@ -512,6 +512,57 @@ fail  ssh git@gitlab.example: git@gitlab.example: Permission denied (publickey).
 | `0` | Success, including `-n`; `doctor` without any `fail`; `register --on-use --background` always. |
 | `1` | loomd cannot be started, is not running (`register --on-use`), or answers with an error; `<REPO>` not found, ambiguous, not inside a git repository, or (for `forget`) not in the index; `register` outside a git repository; `--rebuild` refused or cancelled; `doctor` with at least one `fail` (after printing the report: `Error: 1 check failed`, `Error: <n> checks failed`). |
 | `2` | Usage error: missing subcommand or `forget` argument, `--json` with `--format`, unknown `--format`. |
+
+### `loom repo sync`
+
+`loom repo sync [<REPO>...] [-n] [--json]` asks loomd to update repositories now ([`POST /v1/repos/sync`](../api.md#updates)), as it does on its schedule ([how updates work](../../explanation/repo-updates.md)): fetch of the primary remote, fast-forward of the branch `HEAD` is on and of the default branch only under the conditions of the update policy. It ignores the schedule and the backoff of unreachable hosts. Each `<REPO>` is resolved as described in [repository argument](#repository-argument) and must be in the index; without any, every repository of the index is updated. Like `ls`, it starts loomd when needed and waits for its scan on start. It never registers the repository of the current directory on use.
+
+The command waits for every update to end (at most one hour); updates run `fetch_concurrency` at a time.
+
+#### Human output
+
+One line per repository, sorted by slug: the slug, two spaces, then what happened. Several outcomes of one update are separated by `; `.
+
+```text
+$ loom repo sync
+personal/dotfiles  fetched
+personal/loom  fast-forwarded main 1a2b3c4..5d6e7f8
+personal/notes  skipped: 2 changed tracked paths
+personal/site  fetched; moved default branch main 0a1b2c3..4d5e6f7
+unassigned/scratch  skipped: no remote
+work/api  failed: fetch: timed out after 120s
+work/legacy  skipped: update policy is off
+```
+
+| Outcome | Meaning |
+| --- | --- |
+| `fetched` | The primary remote was fetched; no branch had to move. |
+| `fast-forwarded <branch> <from>..<to>` | The branch `HEAD` is on was fast-forwarded (commit ids abbreviated to 7 digits). |
+| `moved default branch <branch> <from>..<to>` | The local default branch, checked out nowhere, was fast-forwarded. |
+| `skipped: <reason>` | A step was not done; the reasons are listed in [`SkipReason`](../api.md#lastupdate). |
+| `failed: <step>: <error>[: <last line of git's stderr>]` | A git command failed or timed out; `step` is `fetch`, `fast_forward` or `move_default_branch`. |
+
+With `-n`/`--dry-run`, nothing is fetched or merged: each line says what an update would do, decided from the state read now. Whether a branch moves depends on what the fetch brings, so it is not predicted (`then decide`), unless the working tree already rules out a fast-forward of the branch `HEAD` is on. The default branch is never predicted.
+
+```text
+$ loom repo sync -n
+personal/loom  would fetch, then decide
+personal/notes  would fetch, skip: 2 changed tracked paths
+work/docs  would fetch
+work/legacy  skip: update policy is off
+```
+
+#### JSON output
+
+`loom repo sync --json`: [`SyncResult`](../schemas/sync_result.json), as returned by the API.
+
+#### Exit status
+
+| Code | Cases |
+| --- | --- |
+| `0` | Every repository was handled, whatever its outcome (skipped and failed updates included). |
+| `1` | loomd cannot be started or reached, a slug names no repository (`not_found`), or the request fails. |
+| `2` | Usage error. |
 
 ## `loom shell-init`
 

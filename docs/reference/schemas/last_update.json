@@ -1,0 +1,512 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LastUpdate",
+  "description": "The last update of a repository, by `loomd` on its schedule or by `POST /v1/repos/sync`.",
+  "type": "object",
+  "properties": {
+    "outcomes": {
+      "description": "What happened, in order: the fetch or why there was none, the branch `HEAD` is on, then\nthe default branch when it was moved or could not be. Never empty.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/UpdateOutcome"
+      }
+    },
+    "policy": {
+      "description": "The update policy it applied.",
+      "$ref": "#/$defs/RepoUpdatePolicy"
+    },
+    "time": {
+      "description": "When the update ended.",
+      "$ref": "#/$defs/Timestamp"
+    }
+  },
+  "required": [
+    "time",
+    "policy",
+    "outcomes"
+  ],
+  "$defs": {
+    "RepoOperation": {
+      "description": "A git operation left in progress in the working tree.",
+      "oneOf": [
+        {
+          "description": "`git rebase`, including an interactive one.",
+          "type": "string",
+          "const": "rebase"
+        },
+        {
+          "description": "`git merge`.",
+          "type": "string",
+          "const": "merge"
+        },
+        {
+          "description": "`git cherry-pick`.",
+          "type": "string",
+          "const": "cherry-pick"
+        },
+        {
+          "description": "`git revert`.",
+          "type": "string",
+          "const": "revert"
+        },
+        {
+          "description": "`git bisect`.",
+          "type": "string",
+          "const": "bisect"
+        },
+        {
+          "description": "`git am`: patches being applied from a mailbox.",
+          "type": "string",
+          "const": "am"
+        }
+      ]
+    },
+    "RepoUpdatePolicy": {
+      "description": "How `loomd` updates a repository (`update` of a context or of `[repos.\"<path>\"]`).",
+      "oneOf": [
+        {
+          "description": "Fetch, then fast-forward when it is safe.",
+          "type": "string",
+          "const": "ff"
+        },
+        {
+          "description": "Fetch only.",
+          "type": "string",
+          "const": "fetch"
+        },
+        {
+          "description": "Neither fetch nor fast-forward.",
+          "type": "string",
+          "const": "off"
+        }
+      ]
+    },
+    "SkipReason": {
+      "description": "Why a step of an update was not done.",
+      "oneOf": [
+        {
+          "description": "Policy `off`: neither fetch nor fast-forward.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "policy_off"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "description": "The repository has no remote to fetch.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "no_remote"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "description": "The repository cannot be opened.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "unreadable"
+            },
+            "error": {
+              "description": "Why, in English.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "error"
+          ]
+        },
+        {
+          "description": "A field the decision needs is unknown (time budget exceeded, unreadable).",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "unknown"
+            },
+            "field": {
+              "description": "The field.",
+              "$ref": "#/$defs/StateField"
+            }
+          },
+          "required": [
+            "code",
+            "field"
+          ]
+        },
+        {
+          "description": "An operation is in progress.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "operation"
+            },
+            "operation": {
+              "description": "The operation.",
+              "$ref": "#/$defs/RepoOperation"
+            }
+          },
+          "required": [
+            "code",
+            "operation"
+          ]
+        },
+        {
+          "description": "Tracked paths are modified, staged or conflicted.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "dirty"
+            },
+            "paths": {
+              "description": "How many.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "code",
+            "paths"
+          ]
+        },
+        {
+          "description": "`HEAD` is not on a branch.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "detached"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "description": "The branch `HEAD` is on has no commit.",
+          "type": "object",
+          "properties": {
+            "branch": {
+              "description": "Short branch name.",
+              "type": "string"
+            },
+            "code": {
+              "type": "string",
+              "const": "unborn"
+            }
+          },
+          "required": [
+            "code",
+            "branch"
+          ]
+        },
+        {
+          "description": "The branch `HEAD` is on has no upstream, or its upstream ref does not exist.",
+          "type": "object",
+          "properties": {
+            "branch": {
+              "description": "Short branch name.",
+              "type": "string"
+            },
+            "code": {
+              "type": "string",
+              "const": "no_upstream"
+            }
+          },
+          "required": [
+            "code",
+            "branch"
+          ]
+        },
+        {
+          "description": "The branch has commits its upstream does not have, and the reverse.",
+          "type": "object",
+          "properties": {
+            "ahead": {
+              "description": "Commits of the branch not in its upstream.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "behind": {
+              "description": "Commits of the upstream not in the branch.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "branch": {
+              "description": "Short branch name.",
+              "type": "string"
+            },
+            "code": {
+              "type": "string",
+              "const": "diverged"
+            }
+          },
+          "required": [
+            "code",
+            "branch",
+            "ahead",
+            "behind"
+          ]
+        },
+        {
+          "description": "`git merge --ff-only` refused, such as when an untracked file would be overwritten.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "merge_refused"
+            },
+            "stderr_tail": {
+              "description": "The end of git's standard error.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "stderr_tail"
+          ]
+        },
+        {
+          "description": "The local default branch has commits its upstream does not have, and the reverse.",
+          "type": "object",
+          "properties": {
+            "ahead": {
+              "description": "Commits of the branch not in its upstream.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "behind": {
+              "description": "Commits of the upstream not in the branch.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "branch": {
+              "description": "Short branch name.",
+              "type": "string"
+            },
+            "code": {
+              "type": "string",
+              "const": "default_branch_diverged"
+            }
+          },
+          "required": [
+            "code",
+            "branch",
+            "ahead",
+            "behind"
+          ]
+        }
+      ]
+    },
+    "StateField": {
+      "description": "A piece of repository state an update decision needs.",
+      "oneOf": [
+        {
+          "description": "What `HEAD` points to.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Tracked changes.",
+          "type": "string",
+          "const": "dirty"
+        },
+        {
+          "description": "Operation in progress.",
+          "type": "string",
+          "const": "operation"
+        },
+        {
+          "description": "Upstream of the `HEAD` branch.",
+          "type": "string",
+          "const": "upstream"
+        },
+        {
+          "description": "Commits of `HEAD` not in its upstream.",
+          "type": "string",
+          "const": "ahead"
+        },
+        {
+          "description": "Commits of the upstream not in `HEAD`.",
+          "type": "string",
+          "const": "behind"
+        },
+        {
+          "description": "The commits of `HEAD` and of its upstream.",
+          "type": "string",
+          "const": "commits"
+        },
+        {
+          "description": "The default branch, its upstream and the worktrees that have it checked out.",
+          "type": "string",
+          "const": "default_branch"
+        }
+      ]
+    },
+    "Timestamp": {
+      "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "UpdateOutcome": {
+      "description": "One result of an update.",
+      "oneOf": [
+        {
+          "description": "The primary remote was fetched; no branch had to move.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "fetched"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The branch `HEAD` is on was fast-forwarded to its upstream.",
+          "type": "object",
+          "properties": {
+            "branch": {
+              "description": "Short branch name.",
+              "type": "string"
+            },
+            "from": {
+              "description": "Commit id before (40 or 64 hexadecimal digits).",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "fast_forwarded"
+            },
+            "to": {
+              "description": "Commit id after.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "branch",
+            "from",
+            "to"
+          ]
+        },
+        {
+          "description": "The local default branch, checked out nowhere, was fast-forwarded to its upstream.",
+          "type": "object",
+          "properties": {
+            "branch": {
+              "description": "Short branch name.",
+              "type": "string"
+            },
+            "from": {
+              "description": "Commit id before.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "default_branch_moved"
+            },
+            "to": {
+              "description": "Commit id after.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "branch",
+            "from",
+            "to"
+          ]
+        },
+        {
+          "description": "A step was not done, on purpose.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skipped"
+            },
+            "reason": {
+              "description": "Why.",
+              "$ref": "#/$defs/SkipReason"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "description": "A git command failed or timed out.",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "What went wrong: exit status, timeout, or why git could not start.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "stderr_tail": {
+              "description": "The end of git's standard error, at most 2,000 bytes.",
+              "type": "string"
+            },
+            "step": {
+              "description": "The step that failed.",
+              "$ref": "#/$defs/UpdateStep"
+            }
+          },
+          "required": [
+            "kind",
+            "step",
+            "error",
+            "stderr_tail"
+          ]
+        }
+      ]
+    },
+    "UpdateStep": {
+      "description": "A step of an update that runs git.",
+      "oneOf": [
+        {
+          "description": "`git fetch` of the primary remote.",
+          "type": "string",
+          "const": "fetch"
+        },
+        {
+          "description": "`git merge --ff-only` of the branch `HEAD` is on.",
+          "type": "string",
+          "const": "fast_forward"
+        },
+        {
+          "description": "`git fetch <remote> <branch>:<branch>` of the default branch.",
+          "type": "string",
+          "const": "move_default_branch"
+        }
+      ]
+    }
+  }
+}

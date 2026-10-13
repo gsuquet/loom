@@ -23,14 +23,17 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::StatusCode;
-use loom_api::{ApiError, RepoState, RepoSummary, ScanIssue, ScanResult, Timestamp};
+use loom_api::{
+    ApiError, LastUpdate, RepoState, RepoSummary, RepoSync, ScanIssue, ScanResult, SyncOutcome,
+    SyncRequest, SyncResult, Timestamp,
+};
 use loom_config::config::Config;
 use loom_config::repos::{ForgeConfig, ForgeHost};
 use loom_repo::scan::Exclusions;
 use loom_repo::state::unreadable;
 use loom_repo::{
-    ContextRules, ScanDiff, ScanOptions, StateOptions, diff, find_root, git_dirs, read_repos,
-    scan_roots, scan_with_registered, state,
+    ContextRules, ScanDiff, ScanOptions, StateOptions, UpdatePolicies, diff, find_root, git_dirs,
+    plan, read_repos, scan_roots, scan_with_registered, state,
 };
 use loom_store::{Reader, RepoFilter, Store, StoreError};
 use loomd::api::{ScanQuery, internal, invalid_request, repo_not_found, timestamp, unavailable};
@@ -38,6 +41,8 @@ use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::field::Empty;
 use tracing::{Span, debug, info, info_span, warn};
+
+use crate::updates::{self, Updater, UpdaterHandle};
 
 /// Longest wait for `ssh -G <alias>`.
 const SSH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -54,7 +59,7 @@ type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 const MAX_STATE_THREADS: usize = 4;
 
 /// A request to the store thread, with the span of the API request that sent it.
-enum Command {
+pub enum Command {
     /// `initial`: the scan on start, after which every state is refreshed.
     Scan {
         reply: Option<Reply<ScanResult>>,
@@ -67,6 +72,14 @@ enum Command {
         path: PathBuf,
         state: Box<RepoState>,
         reply: Option<Reply<RepoSummary>>,
+    },
+    /// Writes the result of an update of the repository at `path`, and the state read after
+    /// it, then answers with the repository.
+    SaveUpdate {
+        path: PathBuf,
+        update: Box<LastUpdate>,
+        state: Option<Box<RepoState>>,
+        reply: Reply<RepoSummary>,
     },
     Register {
         path: PathBuf,
@@ -82,11 +95,12 @@ enum Command {
     Stop,
 }
 
-/// The running store thread and state threads.
+/// The running store thread, state threads and updater.
 pub struct RepoIndex {
     commands: mpsc::Sender<Command>,
     thread: JoinHandle<()>,
     states: StatePool,
+    updater: Updater,
 }
 
 /// What the API handlers use: the command channel, the database path for reads, and how
@@ -96,6 +110,7 @@ pub struct RepoHandle {
     commands: mpsc::Sender<Command>,
     db: PathBuf,
     state_options: StateOptions,
+    updates: UpdaterHandle,
 }
 
 /// How scans walk and identify repositories, from the configuration read at start.
@@ -160,16 +175,31 @@ pub fn start(db: &Path, config: &Config, home: &Path) -> Result<(RepoIndex, Repo
         })
         .into_diagnostic()
         .wrap_err("cannot start the repository index thread")?;
+    let (updater, update_handle) = updates::start(
+        updates::Settings {
+            interval: state_interval,
+            concurrency: usize::try_from(config.repos.fetch_concurrency).unwrap_or(usize::MAX),
+            policies: UpdatePolicies::new(config, home),
+            runner: loomd::repo_update::GitRunner::from_env(),
+            state_options,
+        },
+        &commands,
+        db.to_path_buf(),
+    )
+    .into_diagnostic()
+    .wrap_err("cannot start the repository update threads")?;
     let handle = RepoHandle {
         commands: commands.clone(),
         db: db.to_path_buf(),
         state_options,
+        updates: update_handle,
     };
     Ok((
         RepoIndex {
             commands,
             thread,
             states,
+            updater,
         },
         handle,
     ))
@@ -180,6 +210,8 @@ impl RepoIndex {
     /// their requests answered `unavailable`. The state threads finish the state they are
     /// reading (at most its budget) and drop the queued ones.
     pub fn stop(self) {
+        // First: its workers write through the store thread.
+        self.updater.stop();
         self.states.stopping.store(true, Ordering::Release);
         let _ = self.commands.send(Command::Stop);
         if self.thread.join().is_err() {
@@ -263,7 +295,7 @@ impl StatePool {
 }
 
 /// `mutex` locked; a thread that panicked holding it left consistent data (a set, a queue).
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -330,6 +362,48 @@ impl RepoHandle {
         })
     }
 
+    /// Updates the repositories of `request` now (every repository when it names none), or
+    /// with `dry_run`, says what an update would do from their state read now. Results sorted
+    /// by slug.
+    pub async fn sync(&self, request: SyncRequest) -> Result<SyncResult, Failure> {
+        let mut repos = if request.repos.is_empty() {
+            self.list(RepoFilter::default()).await?
+        } else {
+            let mut repos = Vec::with_capacity(request.repos.len());
+            for slug in request.repos {
+                repos.push(self.get(slug).await?);
+            }
+            repos
+        };
+        repos.sort_by(|a, b| a.identity.slug.cmp(&b.identity.slug));
+        repos.dedup_by(|a, b| a.identity.slug == b.identity.slug);
+        if request.dry_run {
+            let policies = std::sync::Arc::clone(&self.updates.policies);
+            let options = self.state_options;
+            let planned = tokio::task::spawn_blocking(move || {
+                repos
+                    .into_iter()
+                    .map(|repo| planned(repo, &policies, &options))
+                    .collect()
+            })
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    internal(format!("dry run failed: {error}")),
+                )
+            })?;
+            return Ok(SyncResult { repos: planned });
+        }
+        let repos = self.updates.sync(repos).await.ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                unavailable("loomd is stopping"),
+            )
+        })?;
+        Ok(SyncResult { repos })
+    }
+
     /// Registers the repository holding `path` (absolute, normalized). `on_use`: registration
     /// on use, see [`loom_api::RegisterRequest::on_use`].
     pub async fn register(&self, path: PathBuf, on_use: bool) -> Result<RepoSummary, Failure> {
@@ -394,6 +468,20 @@ impl RepoHandle {
                 internal(format!("index read failed: {error}")),
             )),
         }
+    }
+}
+
+/// What an update of `repo` would do, from its state read now.
+fn planned(repo: RepoSummary, policies: &UpdatePolicies, options: &StateOptions) -> RepoSync {
+    let identity = repo.identity;
+    let policy = policies.policy(&identity.path, &identity.context);
+    let state = read_state(&identity.path, options);
+    RepoSync {
+        result: SyncOutcome::Planned {
+            policy,
+            actions: plan(policy, identity.primary_remote.as_deref(), &state),
+        },
+        slug: identity.slug,
     }
 }
 
@@ -477,6 +565,14 @@ impl Worker {
                         let _ = reply.send(saved);
                     }
                 }
+                Command::SaveUpdate {
+                    path,
+                    update,
+                    state,
+                    reply,
+                } => {
+                    let _ = reply.send(self.save_update(&path, &update, state.as_deref()));
+                }
                 Command::Register {
                     path,
                     on_use,
@@ -526,6 +622,33 @@ impl Worker {
         };
         repo.ok_or_else(|| {
             debug!(path = %path.display(), "state of a removed repository dropped");
+            (
+                StatusCode::NOT_FOUND,
+                repo_not_found(&path.display().to_string()),
+            )
+        })
+    }
+
+    /// Writes the last update of the repository at `path`, and its state when given.
+    fn save_update(
+        &mut self,
+        path: &Path,
+        update: &LastUpdate,
+        state: Option<&RepoState>,
+    ) -> Result<RepoSummary, Failure> {
+        let saved = self
+            .store
+            .save_update(path, update, state)
+            .map_err(|error| store_failure(&error))?;
+        let repo = if saved {
+            self.store
+                .get_by_path(path)
+                .map_err(|error| store_failure(&error))?
+        } else {
+            None
+        };
+        repo.ok_or_else(|| {
+            debug!(path = %path.display(), "update of a removed repository dropped");
             (
                 StatusCode::NOT_FOUND,
                 repo_not_found(&path.display().to_string()),

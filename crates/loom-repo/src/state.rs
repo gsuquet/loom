@@ -150,6 +150,256 @@ pub const fn unreadable(now: Timestamp, error: String) -> RepoState {
     }
 }
 
+/// A ref and the commit it points to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefTip {
+    /// Full ref name, such as `refs/remotes/origin/main`.
+    pub name: String,
+    /// Commit id, in hexadecimal.
+    pub id: String,
+}
+
+/// The local default branch and its upstream, as an update needs them to move it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultBranchRefs {
+    /// Short branch name, such as `main`.
+    pub branch: String,
+    /// Commit id of the local branch.
+    pub id: String,
+    /// `branch.<branch>.remote`: the primary remote.
+    pub remote: String,
+    /// `branch.<branch>.merge`: the full name of the branch on the remote.
+    pub merge: String,
+    /// The remote-tracking ref of the upstream and its commit.
+    pub upstream: RefTip,
+    /// Commits of the local branch not in its upstream.
+    pub ahead: u64,
+    /// Commits of the upstream not in the local branch.
+    pub behind: u64,
+    /// The branch is checked out, rebased or bisected in a working tree of the repository (the
+    /// main one or a linked one).
+    pub checked_out: bool,
+}
+
+/// What an update needs beyond [`RepoState`]: the commits it moves between, and the default
+/// branch. Read with `gix`, never starting git.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRefs {
+    /// Commit id of `HEAD`; `None` on an unborn branch.
+    pub head: MaybeKnown<Option<String>>,
+    /// The remote-tracking ref of the `HEAD` branch's upstream and its commit; `None` when
+    /// detached, without an upstream, or when its ref does not exist.
+    pub upstream: MaybeKnown<Option<RefTip>>,
+    /// The default branch, when it exists locally and has an existing upstream on the primary
+    /// remote; `None` otherwise (there is nothing to move then).
+    pub default_branch: MaybeKnown<Option<DefaultBranchRefs>>,
+    /// Why some fields are unknown; `None` when every field is known.
+    pub error: Option<String>,
+}
+
+/// Reads the [`UpdateRefs`] of the repository whose working tree is `workdir`.
+///
+/// `common_dir` is as [`crate::git_dirs`] resolves it. `default_branch` is the field of the
+/// state just read; unknown, it makes the default branch unknown.
+///
+/// Never fails: what cannot be read is [`MaybeKnown::Unknown`], with the reason in
+/// [`UpdateRefs::error`]. Nothing is written.
+#[must_use]
+pub fn update_refs(
+    common_dir: &Path,
+    workdir: &Path,
+    default_branch: &MaybeKnown<Option<String>>,
+    options: &StateOptions,
+) -> UpdateRefs {
+    let mut errors = Errors::default();
+    let watchdog = Watchdog::start(options.budget);
+    let repo = match gix::open_opts(workdir, open_options(options.config)) {
+        Ok(repo) => repo,
+        Err(error) => {
+            errors.push(format!("cannot open the repository: {error}"));
+            return UpdateRefs {
+                head: MaybeKnown::Unknown,
+                upstream: MaybeKnown::Unknown,
+                default_branch: MaybeKnown::Unknown,
+                error: errors.into_message(),
+            };
+        }
+    };
+    let head = read_head(&repo);
+    let head_id = match &head {
+        Ok(head) => match head.card {
+            RepoHead::Unborn { .. } => Ok(None),
+            RepoHead::Branch { .. } | RepoHead::Detached { .. } => repo
+                .head_id()
+                .map(|id| Some(id.to_string()))
+                .map_err(|error| error.to_string()),
+        },
+        Err(error) => Err(error.clone()),
+    };
+    let head_id = errors.field("head", head_id);
+    let upstream = match &head {
+        Ok(head) => head
+            .branch
+            .as_ref()
+            .map_or(Ok(None), |branch| tracking_tip(&repo, branch.as_ref())),
+        Err(error) => Err(error.clone()),
+    };
+    let upstream = errors.field("upstream", upstream);
+    let default_branch = match default_branch {
+        MaybeKnown::Known(None) => MaybeKnown::Known(None),
+        MaybeKnown::Known(Some(branch)) => errors.field(
+            "default_branch",
+            default_branch_refs(&repo, common_dir, branch, &watchdog),
+        ),
+        MaybeKnown::Unknown => {
+            errors.push("default_branch: unknown in the state".to_owned());
+            MaybeKnown::Unknown
+        }
+    };
+    UpdateRefs {
+        head: head_id,
+        upstream,
+        default_branch,
+        error: errors.into_message(),
+    }
+}
+
+/// The remote-tracking ref of the upstream of `branch` and its commit; `None` when the branch
+/// has no upstream or its ref does not exist.
+fn tracking_tip(
+    repo: &gix::Repository,
+    branch: &gix::refs::FullNameRef,
+) -> Result<Option<RefTip>, String> {
+    let Some(tracking) = repo.branch_remote_tracking_ref_name(branch, Direction::Fetch) else {
+        return Ok(None);
+    };
+    let tracking = tracking.map_err(|error| error.to_string())?;
+    let Some(mut reference) = repo
+        .try_find_reference(tracking.as_ref())
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let id = reference
+        .peel_to_id()
+        .map_err(|error| error.to_string())?
+        .detach();
+    Ok(Some(RefTip {
+        name: tracking.as_bstr().to_string(),
+        id: id.to_string(),
+    }))
+}
+
+/// The local `branch` with its upstream; `None` when the branch does not exist locally, has no
+/// upstream, its upstream is not on the primary remote, or its ref does not exist.
+fn default_branch_refs(
+    repo: &gix::Repository,
+    common_dir: &Path,
+    branch: &str,
+    watchdog: &Watchdog,
+) -> Result<Option<DefaultBranchRefs>, String> {
+    let full = format!("refs/heads/{branch}");
+    let Some(mut local) = repo
+        .try_find_reference(full.as_str())
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let local_id = local
+        .peel_to_id()
+        .map_err(|error| error.to_string())?
+        .detach();
+    let name = local.name().to_owned();
+    let Some(merge) = repo.branch_remote_ref_name(name.as_ref(), Direction::Fetch) else {
+        return Ok(None);
+    };
+    let merge = merge.map_err(|error| error.to_string())?;
+    let Some(remote) = repo.branch_remote_name(branch, Direction::Fetch) else {
+        return Ok(None);
+    };
+    let remote = remote.as_bstr().to_string();
+    // Only the primary remote is fetched: an upstream elsewhere is never moved.
+    let remotes: Vec<String> = repo
+        .remote_names()
+        .into_iter()
+        .map(|name| name.to_string())
+        .collect();
+    let names: Vec<&str> = remotes.iter().map(String::as_str).collect();
+    if primary_remote(&names) != Some(remote.as_str()) {
+        return Ok(None);
+    }
+    let Some(upstream) = tracking_tip(repo, name.as_ref())? else {
+        return Ok(None);
+    };
+    let upstream_id =
+        gix::ObjectId::from_hex(upstream.id.as_bytes()).map_err(|error| error.to_string())?;
+    let (ahead, behind) = ahead_behind(repo, local_id, upstream_id, watchdog)?
+        .ok_or_else(|| format!("ahead/behind: {}", watchdog.exceeded()))?;
+    let checked_out = branch_checked_out(common_dir, branch)?;
+    Ok(Some(DefaultBranchRefs {
+        branch: branch.to_owned(),
+        id: local_id.to_string(),
+        remote,
+        merge: merge.as_bstr().to_string(),
+        upstream,
+        ahead,
+        behind,
+        checked_out,
+    }))
+}
+
+/// Files of a git directory that name the branch of its working tree: `HEAD`, the branch a
+/// rebase works on, the branch a bisect started from.
+const BRANCH_FILES: [&str; 4] = [
+    "HEAD",
+    "rebase-merge/head-name",
+    "rebase-apply/head-name",
+    "BISECT_START",
+];
+
+/// Whether `branch` is in use in a working tree of the repository whose common git directory
+/// is `common_dir`: the main one (`<common>/HEAD`) and every linked one
+/// (`<common>/worktrees/<id>/HEAD`), including a rebase or a bisect in progress. A file that
+/// exists but cannot be read is an error: the answer would be a guess.
+fn branch_checked_out(common_dir: &Path, branch: &str) -> Result<bool, String> {
+    let mut dirs = vec![common_dir.to_path_buf()];
+    let worktrees = common_dir.join("worktrees");
+    match fs::read_dir(&worktrees) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|error| format!("{}: {error}", worktrees.display()))?;
+                dirs.push(entry.path());
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", worktrees.display())),
+    }
+    for dir in dirs {
+        for file in BRANCH_FILES {
+            let path = dir.join(file);
+            match fs::read_to_string(&path) {
+                Ok(text) if names_branch(file, &text, branch) => return Ok(true),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("{}: {error}", path.display())),
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Whether `text`, the content of `file` (one of [`BRANCH_FILES`]), names `branch`. Pure.
+fn names_branch(file: &str, text: &str, branch: &str) -> bool {
+    let text = text.trim_end();
+    let full = format!("refs/heads/{branch}");
+    match file {
+        "HEAD" => text.strip_prefix("ref:").map(str::trim) == Some(full.as_str()),
+        // `git bisect start` records the branch name, or a commit id when detached.
+        "BISECT_START" => text == branch || text == full,
+        _ => text == full,
+    }
+}
+
 /// Open options: read only what `config` allows, never start git.
 fn open_options(config: GitConfig) -> gix::open::Options {
     let mut permissions = match config {
@@ -709,7 +959,9 @@ fn count(len: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_count, choose_default_branch, join_errors, operation, primary_remote};
+    use super::{
+        cap_count, choose_default_branch, join_errors, names_branch, operation, primary_remote,
+    };
     use gix::state::InProgress;
     use loom_api::{RepoOperation, Untracked};
 
@@ -798,6 +1050,26 @@ mod tests {
                 capped: true
             }
         );
+    }
+
+    #[test]
+    fn branch_files_are_matched_on_the_full_name() {
+        assert!(names_branch("HEAD", "ref: refs/heads/main\n", "main"));
+        assert!(names_branch("HEAD", "ref:refs/heads/main", "main"));
+        assert!(!names_branch("HEAD", "ref: refs/heads/main-2\n", "main"));
+        assert!(!names_branch("HEAD", "0123abcd\n", "main"));
+        assert!(names_branch(
+            "rebase-merge/head-name",
+            "refs/heads/main\n",
+            "main"
+        ));
+        assert!(!names_branch(
+            "rebase-apply/head-name",
+            "detached HEAD\n",
+            "main"
+        ));
+        assert!(names_branch("BISECT_START", "main\n", "main"));
+        assert!(!names_branch("BISECT_START", "maintenance\n", "main"));
     }
 
     #[test]
