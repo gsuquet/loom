@@ -26,7 +26,10 @@ pub use auto_update::{
 pub use context::{
     CONTEXT_NAME_MAX_LEN, ContextAssignment, ContextName, ContextNameError, UNASSIGNED,
 };
-pub use doctor::{CheckStatus, DaemonDiagnostics, DoctorCheck, DoctorReport, SshAgentSocket};
+pub use doctor::{
+    CheckStatus, DaemonDiagnostics, DoctorCheck, DoctorReport, RemoteCheck, RemoteCheckOutcome,
+    RemoteCheckResult, RemoteProblem, RemoteScheme, SshAgentSocket,
+};
 pub use error::{ApiError, ErrorCode};
 pub use repo::{
     ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,

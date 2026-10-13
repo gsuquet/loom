@@ -333,5 +333,43 @@ pub fn plan(
     }
 }
 
+/// Whether git failed only because another git process held a lock of the repository, from
+/// its standard error `stderr`. Pure.
+///
+/// Conservative: `true` only when the output has a lock line (`Unable to create
+/// '….lock': File exists`, `Another git process seems to be running`, `cannot lock ref '…':
+/// is at … but expected …`) and every other error line (`error:`, `fatal:`, a ref update
+/// line starting with `!`) is a lock line or a ref git was `unable to update` because of it.
+/// A ref that cannot be created because another ref is in the way, a rejected update, or any
+/// unknown error keeps the failure a failure.
+#[must_use]
+pub fn is_busy(stderr: &str) -> bool {
+    let mut lock = false;
+    for line in stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let lower = line.to_ascii_lowercase();
+        if is_lock_line(&lower) {
+            lock = true;
+            continue;
+        }
+        let error =
+            lower.starts_with("error:") || lower.starts_with("fatal:") || lower.starts_with('!');
+        if error && !lower.ends_with("(unable to update local ref)") {
+            return false;
+        }
+    }
+    lock
+}
+
+/// A line, lowercase, that says a lock is held by another process.
+fn is_lock_line(line: &str) -> bool {
+    line.contains(".lock': file exists")
+        || line.starts_with("another git process seems to be running")
+        || (line.contains("cannot lock ref '") && line.contains("but expected"))
+}
+
 #[cfg(test)]
 mod tests;

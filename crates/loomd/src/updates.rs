@@ -68,6 +68,8 @@ pub struct UpdaterHandle {
     messages: mpsc::Sender<Message>,
     /// The update policies, also used for dry runs.
     pub policies: Arc<UpdatePolicies>,
+    /// How the updates run git, also used by the remote checks.
+    pub runner: Arc<GitRunner>,
 }
 
 /// Settings of the updates.
@@ -153,7 +155,11 @@ pub fn start(
             messages: messages.clone(),
             thread,
         },
-        UpdaterHandle { messages, policies },
+        UpdaterHandle {
+            messages,
+            policies,
+            runner,
+        },
     ))
 }
 

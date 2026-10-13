@@ -397,6 +397,29 @@
             "ahead",
             "behind"
           ]
+        },
+        {
+          "description": "Another git process (an editor's automatic fetch, a command of the user) held a lock of\nthe repository (`index.lock`, a ref lock) during this step. Retried at the next\ninterval, without backoff; the lock is never removed.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "busy"
+            },
+            "stderr_tail": {
+              "description": "The end of git's standard error.",
+              "type": "string"
+            },
+            "step": {
+              "description": "The step that met the lock.",
+              "$ref": "#/$defs/UpdateStep"
+            }
+          },
+          "required": [
+            "code",
+            "step",
+            "stderr_tail"
+          ]
         }
       ]
     },

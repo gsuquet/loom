@@ -308,7 +308,7 @@ Global options apply.
 
 ### `loom repo doctor`
 
-Check roots, contexts, unassigned repositories, loomd's SSH agent and SSH access to each host; print the fixes. Exits with 1 when a check fails
+Check roots, contexts, unassigned repositories, loomd's SSH agent, each remote host as loomd's git reaches it, and the last updates; print the fixes. Exits with 1 when a check fails
 
 ```text
 loom repo doctor [OPTIONS]

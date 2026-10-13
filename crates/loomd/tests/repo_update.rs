@@ -20,10 +20,13 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{RepoOperation, RepoUpdatePolicy, SkipReason, Timestamp, UpdateOutcome, UpdateStep};
+use loom_api::{
+    RemoteCheckOutcome, RemoteProblem, RepoOperation, RepoUpdatePolicy, SkipReason, Timestamp,
+    UpdateOutcome, UpdateStep,
+};
 use loom_repo::StateOptions;
 use loom_repo::state::GitConfig;
-use loomd::repo_update::{FetchStatus, GitRunner, Report, Target, update};
+use loomd::repo_update::{FetchStatus, GitRunner, Report, Target, check_remote, update};
 use loomd::schedule::{Candidate, Schedule};
 use tempfile::TempDir;
 
@@ -377,6 +380,253 @@ fn a_local_tag_that_differs_from_the_remote_one_does_not_fail_the_update() {
     );
     // The local tag is kept.
     assert_eq!(fixture.rev(&repo, "v1"), local_tag);
+}
+
+#[test]
+fn a_tag_moved_upstream_does_not_fail_the_update_whatever_the_tag_configuration() {
+    let fixture = Fixture::new();
+    let seed = fixture.seed();
+    fixture.git(&seed, &["tag", "1.0.0"]);
+    fixture.git(&seed, &["push", "-q", "origin", "1.0.0"]);
+    let repo = fixture.clone("work");
+    // The configuration of the machine where it happened: `fetch.pruneTags` adds
+    // `refs/tags/*:refs/tags/*` to every fetch of the remote, even with `--no-prune`, and
+    // `remote.<name>.tagOpt = --tags` asks for every tag.
+    fixture.git(&repo, &["config", "fetch.prune", "true"]);
+    fixture.git(&repo, &["config", "fetch.pruneTags", "true"]);
+    fixture.git(&repo, &["config", "remote.origin.tagOpt", "--tags"]);
+    let local_tag = fixture.rev(&repo, "1.0.0");
+    // Upstream, the tag moves onto a new commit: the history the next fetch brings.
+    let to = fixture.advance("main", "f.txt", "two\n");
+    fixture.git(&seed, &["tag", "-f", "1.0.0", &to]);
+    fixture.git(&seed, &["push", "-q", "-f", "origin", "1.0.0"]);
+    // A plain fetch refuses to clobber the local tag, and fails as a whole.
+    let clobbered = fixture.run(&repo, &["fetch", "--no-prune", "origin"]);
+    assert!(
+        !clobbered.status.success(),
+        "the fetch was expected to fail"
+    );
+    let stderr = String::from_utf8_lossy(&clobbered.stderr);
+    assert!(stderr.contains("would clobber existing tag"), "{stderr}");
+    // `--no-tags` alone does not stop the tag refspec of `fetch.pruneTags`.
+    let no_tags = fixture.run(&repo, &["fetch", "--no-prune", "--no-tags", "origin"]);
+    assert!(!no_tags.status.success(), "the fetch was expected to fail");
+    assert_eq!(fixture.rev(&repo, "1.0.0"), local_tag);
+    let before = fixture.snapshot(&repo);
+
+    let report = fixture.update(&repo, RepoUpdatePolicy::Ff);
+
+    assert_eq!(report.fetch, FetchStatus::Succeeded, "{report:?}");
+    assert!(
+        matches!(
+            outcomes(&report),
+            [UpdateOutcome::FastForwarded { to: head, .. }] if *head == to
+        ),
+        "{:?}",
+        outcomes(&report)
+    );
+    // Only branches moved: the local tag is the user's.
+    let after = fixture.snapshot(&repo);
+    assert_eq!(after.refs["refs/tags/1.0.0"], local_tag);
+    assert_eq!(
+        after.local_refs(&["refs/heads/main"]),
+        before.local_refs(&["refs/heads/main"])
+    );
+    let tags: Vec<&String> = after
+        .refs
+        .keys()
+        .filter(|name| name.starts_with("refs/tags/"))
+        .collect();
+    assert_eq!(tags, ["refs/tags/1.0.0"]);
+}
+
+#[test]
+fn a_lock_held_by_another_git_process_is_a_busy_skip_and_stays() {
+    // `index.lock`: the fetch succeeds, the fast-forward meets the lock.
+    let fixture = Fixture::new();
+    let repo = fixture.clone("work");
+    let remote = fixture.advance("main", "f.txt", "two\n");
+    let lock = repo.join(".git/index.lock");
+    fs::write(&lock, "held\n").unwrap();
+    let before = fixture.snapshot(&repo);
+
+    let report = fixture.update(&repo, RepoUpdatePolicy::Ff);
+
+    let [
+        UpdateOutcome::Skipped {
+            reason: SkipReason::Busy { step, stderr_tail },
+        },
+    ] = outcomes(&report)
+    else {
+        panic!("{:?}", outcomes(&report));
+    };
+    assert_eq!(*step, UpdateStep::FastForward);
+    assert!(stderr_tail.contains("index.lock"), "{stderr_tail}");
+    assert_eq!(report.fetch, FetchStatus::Succeeded);
+    assert!(!report.update.failed());
+    assert_eq!(fs::read_to_string(&lock).unwrap(), "held\n");
+    let after = fixture.snapshot(&repo);
+    before.assert_untouched(&after);
+    assert_eq!(after.refs["refs/remotes/origin/main"], remote);
+
+    // Released: the next update fast-forwards.
+    fs::remove_file(&lock).unwrap();
+    let report = fixture.update(&repo, RepoUpdatePolicy::Ff);
+    assert!(
+        matches!(outcomes(&report), [UpdateOutcome::FastForwarded { .. }]),
+        "{:?}",
+        outcomes(&report)
+    );
+
+    // A ref lock: the fetch meets it; no backoff.
+    let fixture = Fixture::new();
+    let repo = fixture.clone("work");
+    fixture.advance("main", "f.txt", "two\n");
+    let lock = repo.join(".git/refs/remotes/origin/main.lock");
+    fs::write(&lock, "held\n").unwrap();
+    let before = fixture.snapshot(&repo);
+
+    let report = fixture.update(&repo, RepoUpdatePolicy::Ff);
+
+    assert!(
+        matches!(
+            outcomes(&report),
+            [UpdateOutcome::Skipped {
+                reason: SkipReason::Busy {
+                    step: UpdateStep::Fetch,
+                    ..
+                }
+            }]
+        ),
+        "{:?}",
+        outcomes(&report)
+    );
+    assert_eq!(report.fetch, FetchStatus::Busy);
+    assert_eq!(fs::read_to_string(&lock).unwrap(), "held\n");
+    before.assert_untouched(&fixture.snapshot(&repo));
+}
+
+#[test]
+fn a_remote_check_tells_a_reachable_remote_from_a_missing_one() {
+    let fixture = Fixture::new();
+    let timeout = Duration::from_secs(20);
+    let local = fixture.clone("local");
+    assert_eq!(
+        check_remote(&local, "origin", &fixture.runner(), timeout),
+        RemoteCheckOutcome::Reachable
+    );
+
+    // Empty remote: no `HEAD`, still reachable.
+    let empty = fixture.path("empty.git");
+    fixture.git(
+        fixture.dir.path(),
+        &["init", "-q", "--bare", empty.to_str().unwrap()],
+    );
+    let empty_url = format!("file://{}", empty.display());
+    fixture.git(&local, &["remote", "add", "empty", &empty_url]);
+    assert_eq!(
+        check_remote(&local, "empty", &fixture.runner(), timeout),
+        RemoteCheckOutcome::Reachable
+    );
+
+    // Gone.
+    let gone_url = format!("file://{}", fixture.path("gone.git").display());
+    fixture.git(&local, &["remote", "add", "gone", &gone_url]);
+    let RemoteCheckOutcome::Failed { problem, .. } =
+        check_remote(&local, "gone", &fixture.runner(), timeout)
+    else {
+        panic!("a missing remote is not reachable");
+    };
+    assert_eq!(problem, RemoteProblem::NotFound);
+}
+
+#[test]
+fn a_remote_check_sees_the_git_configuration_of_the_remote() {
+    let fixture = Fixture::new();
+    let timeout = Duration::from_secs(20);
+    // An SSH remote whose key comes from `core.sshCommand`, set for its URL only through
+    // `includeIf "hasconfig:remote.*.url:…"` in the global configuration: git applies it,
+    // and the check runs git, so it sees it. A plain `ssh` (first in `PATH`) is refused.
+    let keyed = fixture.clone("keyed");
+    fixture.git(
+        &keyed,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://git@keyed.invalid/x.git",
+        ],
+    );
+    let bin = fixture.path("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fixture.script(
+        "bin/ssh",
+        "echo 'git@keyed.invalid: Permission denied (publickey).' >&2\nexit 255",
+    );
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&path));
+    let mut runner = fixture.runner();
+    runner
+        .env
+        .push(("PATH".into(), Some(std::env::join_paths(paths).unwrap())));
+    let RemoteCheckOutcome::Failed { problem, .. } =
+        check_remote(&keyed, "origin", &runner, timeout)
+    else {
+        panic!("the plain ssh was expected to be refused");
+    };
+    assert_eq!(problem, RemoteProblem::SshAuth);
+
+    let keyed_ssh = fixture.script(
+        "keyed-ssh",
+        &format!("exec git upload-pack '{}'", fixture.origin().display()),
+    );
+    let include = fixture.path("keyed.gitconfig");
+    fs::write(
+        &include,
+        format!("[core]\n\tsshCommand = {}\n", keyed_ssh.display()),
+    )
+    .unwrap();
+    let global = fixture.path("global.gitconfig");
+    fs::write(
+        &global,
+        format!(
+            "[includeIf \"hasconfig:remote.*.url:ssh://git@keyed.invalid/**\"]\n\tpath = {}\n",
+            include.display()
+        ),
+    )
+    .unwrap();
+    runner
+        .env
+        .push(("GIT_CONFIG_GLOBAL".into(), Some(global.into_os_string())));
+    assert_eq!(
+        check_remote(&keyed, "origin", &runner, timeout),
+        RemoteCheckOutcome::Reachable
+    );
+    // The repository is untouched: `ls-remote` writes nothing.
+    assert!(!keyed.join(".git/FETCH_HEAD").exists());
+
+    // No answer: stopped after its timeout, a network problem.
+    let hanging = fixture.script("hanging-ssh", "exec sleep 60");
+    fixture.git(
+        &keyed,
+        &["config", "core.sshCommand", hanging.to_str().unwrap()],
+    );
+    let runner = GitRunner {
+        kill_grace: Duration::from_millis(500),
+        ..fixture.runner()
+    };
+    let started = Instant::now();
+    let outcome = check_remote(&keyed, "origin", &runner, Duration::from_secs(2));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(
+        matches!(
+            &outcome,
+            RemoteCheckOutcome::Failed { problem: RemoteProblem::Network, error, .. }
+                if error == "no answer within 2s"
+        ),
+        "{outcome:?}"
+    );
 }
 
 #[test]

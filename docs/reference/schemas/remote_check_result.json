@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RemoteCheckResult",
+  "description": "Answer of `POST /v1/diagnostics/remote-check`: one check per distinct endpoint and scheme of\nthe primary remotes of the index, sorted by scheme, then endpoint.",
+  "type": "object",
+  "properties": {
+    "remotes": {
+      "description": "The checks.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RemoteCheck"
+      }
+    }
+  },
+  "required": [
+    "remotes"
+  ],
+  "$defs": {
+    "RemoteCheck": {
+      "description": "One remote endpoint checked by `POST /v1/diagnostics/remote-check`.",
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "description": "The endpoint: `user@host[:port]` for SSH (an SSH alias as written), `scheme://host[:port]`\nfor HTTP(S) and `git://`, the URL of a local or other remote.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Its path.",
+          "type": "string"
+        },
+        "remote": {
+          "description": "Name of that repository's primary remote.",
+          "type": "string"
+        },
+        "result": {
+          "description": "What happened.",
+          "$ref": "#/$defs/RemoteCheckOutcome"
+        },
+        "scheme": {
+          "description": "Its transport.",
+          "$ref": "#/$defs/RemoteScheme"
+        },
+        "via": {
+          "description": "Slug of the repository the check ran in.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "scheme",
+        "via",
+        "path",
+        "remote",
+        "result"
+      ]
+    },
+    "RemoteCheckOutcome": {
+      "description": "Result of `git ls-remote` against one remote.",
+      "oneOf": [
+        {
+          "description": "The remote answered.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "reachable"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "git failed, timed out or could not start.",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "What went wrong: exit status, timeout, or why git could not start.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "problem": {
+              "description": "What kind of failure, from git's error output.",
+              "$ref": "#/$defs/RemoteProblem"
+            },
+            "stderr_tail": {
+              "description": "The end of git's standard error, at most 2,000 bytes.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "problem",
+            "error",
+            "stderr_tail"
+          ]
+        }
+      ]
+    },
+    "RemoteProblem": {
+      "description": "Why git could not reach a remote, read from its error output.",
+      "oneOf": [
+        {
+          "description": "SSH refused the key, or the host key is unknown.",
+          "type": "string",
+          "const": "ssh_auth"
+        },
+        {
+          "description": "HTTP(S) authentication failed, or git has no credential and cannot prompt.",
+          "type": "string",
+          "const": "https_auth"
+        },
+        {
+          "description": "The remote answered that the repository does not exist (moved, deleted, access lost).",
+          "type": "string",
+          "const": "not_found"
+        },
+        {
+          "description": "The host could not be reached: name resolution, connection, timeout.",
+          "type": "string",
+          "const": "network"
+        },
+        {
+          "description": "Anything else.",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    },
+    "RemoteScheme": {
+      "description": "Transport of a remote, as `POST /v1/diagnostics/remote-check` groups remotes.",
+      "oneOf": [
+        {
+          "description": "`ssh://`, `git+ssh://`, `ssh+git://` or scp-like `[user@]host:path`.",
+          "type": "string",
+          "const": "ssh"
+        },
+        {
+          "description": "`https://`.",
+          "type": "string",
+          "const": "https"
+        },
+        {
+          "description": "`http://`.",
+          "type": "string",
+          "const": "http"
+        },
+        {
+          "description": "`git://`.",
+          "type": "string",
+          "const": "git"
+        },
+        {
+          "description": "A local path or a `file://` URL.",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "Any other transport (`ext::`, a remote helper…).",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    }
+  }
+}

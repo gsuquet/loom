@@ -9,7 +9,8 @@ use loom_api::{
 use loom_config::config::parse_config;
 
 use super::{
-    Action, FetchDecision, UpdatePolicies, decide_fetch, decide_update, local_blocker, plan,
+    Action, FetchDecision, UpdatePolicies, decide_fetch, decide_update, is_busy, local_blocker,
+    plan,
 };
 use crate::state::{DefaultBranchRefs, RefTip, UpdateRefs};
 
@@ -623,4 +624,40 @@ update = "off"
         UpdatePolicies::default().policy(Path::new("/x"), &path("personal")),
         RepoUpdatePolicy::Ff
     );
+}
+
+#[test]
+fn only_a_lock_held_by_another_process_is_busy() {
+    let busy = [
+        // `git merge` while an editor holds the index.
+        "fatal: Unable to create '/home/me/work/x/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'. Please make sure all processes\nare terminated then try again. If it still fails, a git process\nmay have crashed in this repository earlier:\nremove the file manually to continue.\n",
+        // The same, its first line cut by the tail.
+        "Another git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'. Please make sure all processes\nare terminated then try again. If it still fails, a git process\nmay have crashed in this repository earlier:\nremove the file manually to continue.\n",
+        // `git fetch` while another fetch moved the remote-tracking ref.
+        "error: cannot lock ref 'refs/remotes/origin/feat/x': is at 1111111111111111111111111111111111111111 but expected 2222222222222222222222222222222222222222\nFrom github.com:me/x\n ! 2222222..3333333  feat/x     -> origin/feat/x  (unable to update local ref)\n",
+        // `git fetch` while another fetch holds the ref lock.
+        "error: cannot lock ref 'refs/remotes/origin/main': Unable to create '/home/me/work/x/.git/refs/remotes/origin/main.lock': File exists.\n\nAnother git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'.\nFrom gitlab.com:me/x\n ! 1111111..2222222  main       -> origin/main  (unable to update local ref)\n",
+        // `packed-refs` locked.
+        "error: Unable to create '/home/me/work/x/.git/packed-refs.lock': File exists.\n",
+    ];
+    for stderr in busy {
+        assert!(is_busy(stderr), "{stderr}");
+    }
+    let not_busy = [
+        "",
+        "fatal: unable to access 'https://gitlab.example/x.git/': Could not resolve host: gitlab.example\n",
+        "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n",
+        // A tag moved upstream: not a lock.
+        "From github.com:me/x\n ! [rejected]        1.0.0      -> 1.0.0  (would clobber existing tag)\n",
+        // `unable to update local ref` without a lock: a ref in the way (needs a prune).
+        "error: cannot lock ref 'refs/remotes/origin/a/b': 'refs/remotes/origin/a' exists; cannot create 'refs/remotes/origin/a/b'\nFrom github.com:me/x\n ! [new branch]      a/b        -> origin/a/b  (unable to update local ref)\nerror: some local refs could not be updated; try running\n 'git remote prune origin' to remove any old, conflicting branches\n",
+        " ! 1111111..2222222  main       -> origin/main  (unable to update local ref)\n",
+        // A lock, and another failure: the other failure is reported.
+        "error: cannot lock ref 'refs/remotes/origin/main': is at 1111111111111111111111111111111111111111 but expected 2222222222222222222222222222222222222222\n ! [rejected]        1.0.0      -> 1.0.0  (would clobber existing tag)\n",
+        "error: Your local changes to the following files would be overwritten by merge:\n\tf.txt\n",
+        "error: The following untracked working tree files would be overwritten by merge:\n\tincoming.txt\nPlease move or remove them before you merge.\nAborting\n",
+    ];
+    for stderr in not_busy {
+        assert!(!is_busy(stderr), "{stderr}");
+    }
 }

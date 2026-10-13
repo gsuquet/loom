@@ -250,6 +250,15 @@ pub enum SkipReason {
         /// Commits of the upstream not in the branch.
         behind: u64,
     },
+    /// Another git process (an editor's automatic fetch, a command of the user) held a lock of
+    /// the repository (`index.lock`, a ref lock) during this step. Retried at the next
+    /// interval, without backoff; the lock is never removed.
+    Busy {
+        /// The step that met the lock.
+        step: UpdateStep,
+        /// The end of git's standard error.
+        stderr_tail: String,
+    },
 }
 
 impl fmt::Display for SkipReason {
@@ -285,6 +294,18 @@ impl fmt::Display for SkipReason {
                 f,
                 "default branch {branch} diverged from its upstream ({ahead} ahead, {behind} behind)"
             ),
+            Self::Busy { step, stderr_tail } => {
+                write!(
+                    f,
+                    "repository busy: another git process holds a lock ({step})"
+                )?;
+                detail(
+                    f,
+                    stderr_tail
+                        .lines()
+                        .find(|line| line.to_ascii_lowercase().contains("lock")),
+                )
+            }
         }
     }
 }
@@ -475,6 +496,14 @@ mod tests {
             }
             .to_string(),
             "dirty unknown"
+        );
+        assert_eq!(
+            SkipReason::Busy {
+                step: UpdateStep::FastForward,
+                stderr_tail: "fatal: Unable to create '/r/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository\n".to_owned(),
+            }
+            .to_string(),
+            "repository busy: another git process holds a lock (fast_forward): fatal: Unable to create '/r/.git/index.lock': File exists."
         );
         assert_eq!(
             SkipReason::Dirty { paths: 1 }.to_string(),

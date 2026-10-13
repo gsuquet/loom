@@ -12,13 +12,14 @@ A repository left alone for a week is a week behind: `git pull` before every pie
 - Each delay moves by up to ±10 % at random, so that repositories found together are not fetched together forever.
 - At most `[repos] fetch_concurrency` updates (4 by default) run at the same time.
 - A failed fetch (host unreachable, VPN down, authentication refused, timeout) delays the next update of its repository: 2, then 4, then 8 times the interval, never more. The host of the primary remote backs off the same way, so its other repositories wait too, but only when no fetch of that host succeeded in the meantime: a host that answers for other repositories is up, and the failure is the repository's own. Repositories of other hosts are never delayed. The next successful fetch of the host clears its backoff.
+- A repository another git process is working on (an editor's automatic fetch, a command you run) is skipped as `busy` and tried again one interval later, without any backoff: the lock says nothing about the remote.
 
 `loom repo sync` runs the same update now, for the repositories it names or for all of them, regardless of the schedule and of the backoff.
 
 ## What an update does
 
 1. **Policy.** `update = "ff"` (the default), `"fetch"` or `"off"`, from `[repos."<path>"]`, otherwise from the repository's context. `off`: nothing runs. A repository without a context (`unassigned`) gets `fetch` by default, since no rule says it is yours to move; `[repos."<path>"] update` still sets its policy, `ff` included.
-2. **Fetch.** `git fetch --no-prune <primary remote>`. No ref is ever deleted, even when the user's configuration asks for pruning. Tags come with git's automatic tag following (and `remote.<name>.tagOpt`): a local tag that differs from the remote one is kept, and does not fail the fetch as an explicit `--tags` would. A repository without a remote, or one that cannot be opened, is skipped without running git.
+2. **Fetch.** `git fetch --no-prune --no-prune-tags --no-tags <primary remote>`. No ref is ever deleted, even when the user's configuration asks for pruning, and no tag is fetched: automatic updates move branches only, tags are the user's business. Fetching tags would make one moved upstream fail the whole fetch, every time: git refuses to overwrite an existing local tag (`! [rejected] 1.0.0 -> 1.0.0 (would clobber existing tag)`) as soon as tags are fetched, which `fetch.pruneTags` (it adds `refs/tags/*:refs/tags/*` even with `--no-prune`, and only `--no-prune-tags` removes it) or `remote.<name>.tagOpt = --tags` (which `--no-tags` overrides) do. `git fetch --tags` brings them when you want them. A repository without a remote, or one that cannot be opened, is skipped without running git.
 3. **State.** The state is read again, after the fetch and right before deciding: the working tree may have changed since the update started.
 4. **Branch `HEAD` is on.** It is fast-forwarded with `git merge --ff-only --no-autostash <commit of its upstream>` only when every condition holds; the first that fails is the reason of the skip:
    - no operation in progress (rebase, merge, cherry-pick, revert, bisect, am);
@@ -30,7 +31,7 @@ A repository left alone for a week is a week behind: `git pull` before every pie
    - every one of these is known: a field the state could not read in its time budget, or a file that needs a filter driver (git-lfs…) to be compared, means no move.
 
    When the upstream has nothing new, nothing has to move and nothing is reported as skipped.
-5. **Default branch.** When the local default branch (`refs/remotes/<primary>/HEAD`, otherwise `main`, otherwise `master`) is checked out in no working tree of the repository, not even a linked one, nor being rebased or bisected, has an upstream on the primary remote, and is strictly behind it, it is moved with `git fetch --no-prune <primary> <its branch on the remote>:refs/heads/<branch>`. Ahead or diverged, it stays, and the update says so. Checked out somewhere, it is left to the update of that working tree, under the conditions above.
+5. **Default branch.** When the local default branch (`refs/remotes/<primary>/HEAD`, otherwise `main`, otherwise `master`) is checked out in no working tree of the repository, not even a linked one, nor being rebased or bisected, has an upstream on the primary remote, and is strictly behind it, it is moved with `git fetch --no-prune --no-prune-tags --no-tags <primary> <its branch on the remote>:refs/heads/<branch>`. Ahead or diverged, it stays, and the update says so. Checked out somewhere, it is left to the update of that working tree, under the conditions above.
 6. **Result.** The state is read once more and stored with the result of the update, its [`last_update`](../reference/api.md#lastupdate): `fetched`, `fast_forwarded`, `default_branch_moved`, `skipped` with a reason, or `failed` with the step and the end of git's error output.
 
 Nothing else ever happens: no rebase, reset, stash, checkout, branch deletion or pruning, no other branch moved, no conflict resolved.
@@ -41,7 +42,11 @@ loom's own decision is the first guard: it reads the state with `gix` and refuse
 
 When git refuses, the update reports it as skipped (`git refused the fast-forward: …`), and does not retry before the next interval. The typical case is an untracked file with the same name as a file the remote added.
 
-An automated suite in CI, on Linux and macOS, covers both guards end to end: it runs `loomd` on repositories left in every risky state (changes tracked, staged, conflicted or untracked, ahead, diverged, detached, without upstream, rebase, merge, cherry-pick, bisect or `git am` in progress, the default branch checked out in a linked worktree, a dirty submodule, a filter driver, a failing `post-merge` hook, a moved local tag, a stash, policies `fetch` and `off`) and fails on any change to refs, index, files, stash, operation or configuration other than a fetch and the fast-forward of a clean branch.
+## When another git process is working
+
+git protects a repository with lock files: `index.lock` while it writes the index, `<ref>.lock` while it moves a ref. An editor that fetches in the background, or a command you run, holds them for a moment. An update that meets one fails in git (`fatal: Unable to create '…/index.lock': File exists`, `error: cannot lock ref 'refs/remotes/origin/…': is at … but expected …`); loomd reads git's error output and reports the step as skipped, `repository busy`, rather than failed. It never removes a lock: from outside, a lock of a running process and one left by a crashed process look the same, and removing the first corrupts the repository. The next update, one interval later, tries again; a lock still there then is probably stale, and `git status` in the repository says what to do. Only an error output made of lock messages counts: anything else, even next to a lock message, stays a failure.
+
+An automated suite in CI, on Linux and macOS, covers both guards end to end: it runs `loomd` on repositories left in every risky state (changes tracked, staged, conflicted or untracked, ahead, diverged, detached, without upstream, rebase, merge, cherry-pick, bisect or `git am` in progress, the default branch checked out in a linked worktree, a dirty submodule, a filter driver, a failing `post-merge` hook, a moved local tag, a tag moved upstream under `fetch.pruneTags` and `tagOpt = --tags`, an `index.lock` held by another process, a stash, policies `fetch` and `off`) and fails on any change to refs, index, files, stash, operation or configuration other than a fetch and the fast-forward of a clean branch.
 
 ## Hooks and configuration
 
@@ -57,6 +62,8 @@ When `loomd` stops, an update already running is not interrupted: its git comman
 
 Under `loom service`, `loomd` is not started from a terminal, so its fetches only reach SSH remotes through an SSH agent it can see. On macOS, the launchd user agent inherits `SSH_AUTH_SOCK` from the user session (the system `ssh-agent`, with keychain passphrases). On Linux, the systemd user unit must see the agent socket. Without one, SSH fetches fail with `Permission denied (publickey)` and their host backs off; HTTPS remotes with a credential helper are not affected.
 
+`loom repo doctor` checks each remote host the way an update reaches it: loomd itself runs `git ls-remote` in one repository of the host, with its own environment and the user's git configuration. A check run from the shell would see another environment (another agent, another `PATH`) and miss the git configuration: a key given by `core.sshCommand`, possibly for some remotes only through `includeIf "hasconfig:remote.*.url:…"`, applies to git, not to a hand-built `ssh -T`. The doctor also groups the repositories whose last update failed or was skipped by reason, with the fix of each reason.
+
 ## When a repository is skipped
 
 `loom repo sync -n` shows what an update would do now, and `last_update` in `GET /v1/repos/{context}/{name}` what the last one did. Each reason is a state of the working tree that only you can change:
@@ -69,6 +76,7 @@ Under `loom service`, `loomd` is not started from a terminal, so its fetches onl
 | `branch <b> has no upstream` | `git branch --set-upstream-to <remote>/<b>`, or leave it: a local branch is never moved. |
 | `<b> diverged from its upstream` | Rebase or merge by hand. |
 | `git refused the fast-forward: …` | Usually an untracked file the remote now tracks: move it aside. |
+| `repository busy: another git process holds a lock (<step>)` | Nothing: the next update tries again. If it lasts, check that no git process runs in the repository; a crashed one leaves its lock file behind. |
 | `<field> unknown` | The state could not be read in time, or a file needs a filter driver to be compared; check `error` in the state, and run `git status`. |
 | `update policy is off` | Set `update` in `config.toml` if the repository should be updated. |
 | `repository unreadable: …` | The repository cannot be opened: check its `.git`. |

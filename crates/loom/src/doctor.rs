@@ -1,21 +1,22 @@
 //! `loom repo doctor`: the checks, decided without I/O from what `main.rs` read (configuration,
-//! filesystem, loomd, `ssh`).
+//! filesystem, loomd and its remote checks).
 
-use std::collections::BTreeSet;
-use std::fmt::{self, Write as _};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
-    CheckStatus, ContextName, DaemonDiagnostics, DoctorCheck, DoctorReport, RepoSummary,
-    ServicePlatform, SshAgentSocket,
+    CheckStatus, ContextName, DaemonDiagnostics, DoctorCheck, DoctorReport, RemoteCheck,
+    RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RepoSummary,
+    ServicePlatform, SkipReason, SshAgentSocket, UpdateOutcome, UpdateStep,
 };
 use loom_config::config::Config;
-use loom_repo::ContextRules;
+use loom_repo::{ContextRules, classify_remote_failure, remote_endpoint};
 
 use crate::repo::is_unassigned;
 
-/// Longest a `ssh` check may run before it is killed.
-pub const SSH_DEADLINE_SECS: u64 = 15;
+/// Most slugs named per group of the `updates` check.
+const UPDATES_EXAMPLES: usize = 3;
 
 fn check(name: impl Into<String>, status: CheckStatus, detail: impl Into<String>) -> DoctorCheck {
     DoctorCheck {
@@ -326,177 +327,272 @@ pub fn home_check(daemon: Option<&Path>, local: Option<&Path>) -> DoctorCheck {
     }
 }
 
-/// An SSH endpoint of a remote: `[user@]host[:port]`, as written in the URL (an SSH alias
-/// stays an alias, so that `~/.ssh/config` applies).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SshTarget {
-    /// User; `git` when the URL has none.
-    pub user: String,
-    /// Host name or alias.
-    pub host: String,
-    /// Port, when given.
-    pub port: Option<u16>,
-}
-
-impl fmt::Display for SshTarget {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", self.user, self.host)?;
-        if let Some(port) = self.port {
-            write!(f, ":{port}")?;
-        }
-        Ok(())
-    }
-}
-
-impl SshTarget {
-    /// Arguments of `ssh` for a non-interactive check of this target.
-    #[must_use]
-    pub fn ssh_args(&self) -> Vec<String> {
-        let mut args: Vec<String> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T"]
-            .map(str::to_owned)
-            .to_vec();
-        if let Some(port) = self.port {
-            args.push("-p".to_owned());
-            args.push(port.to_string());
-        }
-        args.push(format!("{}@{}", self.user, self.host));
-        args
-    }
-}
-
-/// The SSH endpoint of a remote URL.
-///
-/// Read from `ssh://[user@]host[:port]/path` (also `git+ssh://`, `ssh+git://`) or the
-/// scp-like `[user@]host:path`. `None` for any other URL, and for a user or host that could
-/// pass an option to `ssh` (leading `-`, spaces, control characters).
+/// Whether the primary remote of a repository of `repos` uses SSH: loomd then needs an agent
+/// (or a configured SSH command) to fetch it.
 #[must_use]
-pub fn ssh_target(url: &str) -> Option<SshTarget> {
-    let (authority, explicit) = if let Some((scheme, rest)) = url.split_once("://") {
-        if !matches!(scheme, "ssh" | "git+ssh" | "ssh+git") {
-            return None;
-        }
-        (rest.split('/').next().unwrap_or_default(), true)
-    } else {
-        // scp-like: a `:` before any `/`.
-        let (authority, _) = url.split_once(':')?;
-        if authority.contains('/') {
-            return None;
-        }
-        (authority, false)
-    };
-    let (user, host_port) = match authority.rsplit_once('@') {
-        Some((user, rest)) => (Some(user), rest),
-        None => (None, authority),
-    };
-    // `[v6 address]` keeps its colons; a port follows `:` in an `ssh://` URL only.
-    let (host, port_text) = match host_port.strip_prefix('[') {
-        Some(bracketed) => {
-            let (host, rest) = bracketed.split_once(']')?;
-            (host, rest.strip_prefix(':'))
-        }
-        None if explicit => match host_port.split_once(':') {
-            Some((host, port)) => (host, Some(port)),
-            None => (host_port, None),
-        },
-        None => (host_port, None),
-    };
-    let port = match port_text {
-        Some(port) if explicit => Some(port.parse::<u16>().ok()?),
-        Some(_) => return None,
-        None => None,
-    };
-    let safe = |text: &str| {
-        !text.is_empty()
-            && !text.starts_with('-')
-            && text.chars().all(|c| !c.is_whitespace() && !c.is_control())
-    };
-    let user = user.unwrap_or("git");
-    if !safe(host) || !safe(user) {
-        return None;
-    }
-    Some(SshTarget {
-        user: user.to_owned(),
-        host: host.to_owned(),
-        port,
+pub fn uses_ssh(repos: &[RepoSummary]) -> bool {
+    repos.iter().any(|repo| {
+        let identity = &repo.identity;
+        identity
+            .primary_remote
+            .as_deref()
+            .and_then(|name| identity.remotes.iter().find(|remote| remote.name == name))
+            .is_some_and(|remote| remote_endpoint(&remote.url).scheme == RemoteScheme::Ssh)
     })
 }
 
-/// Distinct SSH endpoints of every remote of `repos`, sorted.
-#[must_use]
-pub fn ssh_targets(repos: &[RepoSummary]) -> Vec<SshTarget> {
-    repos
-        .iter()
-        .flat_map(|repo| repo.identity.remotes.iter())
-        .filter_map(|remote| ssh_target(&remote.url))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-/// What `ssh -T` printed and how it ended. `code` is `None` when it was killed (deadline).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SshRun {
-    /// Exit code.
-    pub code: Option<i32>,
-    /// stdout and stderr, joined.
-    pub output: String,
-}
-
-/// Forges greet an authenticated key without opening a shell, and exit with various codes
-/// (GitHub with 1): the greeting decides, not the code.
-const GREETINGS: [&str; 4] = [
-    "successfully authenticated",
-    "welcome to gitlab",
-    "authenticated via",
-    "you can use git to connect",
+/// Lines git adds after the error of a remote, lowercase: they never say what went wrong.
+const GIT_BOILERPLATE: [&str; 3] = [
+    "fatal: could not read from remote repository.",
+    "please make sure you have the correct access rights",
+    "and the repository exists.",
 ];
 
-/// The check of one SSH target from how `ssh -T` ended.
+/// The last non-empty line of git's error output `text` that is not
+/// [`GIT_BOILERPLATE`], trimmed; the last non-empty line when every line is.
+fn last_line(text: &str) -> Option<&str> {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let last = lines.clone().next_back();
+    lines
+        .rfind(|line| !GIT_BOILERPLATE.contains(&line.to_ascii_lowercase().as_str()))
+        .or(last)
+}
+
+/// One check per remote endpoint loomd checked: `ok` when it answered, `fail` with the last
+/// line of git's error and the fix of its kind of failure otherwise.
 #[must_use]
-pub fn ssh_check(target: &SshTarget, run: &SshRun) -> DoctorCheck {
-    let name = format!("ssh {target}");
-    let lines: Vec<&str> = run
-        .output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    let lower = run.output.to_lowercase();
-    if let Some(greeting) = GREETINGS
-        .iter()
-        .find(|greeting| lower.contains(*greeting))
-        .and_then(|greeting| {
-            lines
-                .iter()
-                .find(|line| line.to_lowercase().contains(greeting))
-        })
-    {
-        return check(name, CheckStatus::Ok, format!("authenticated: {greeting}"));
+pub fn remote_checks(result: &RemoteCheckResult) -> Vec<DoctorCheck> {
+    if result.remotes.is_empty() {
+        return vec![check(
+            "remote",
+            CheckStatus::Ok,
+            "no indexed repository has a remote",
+        )];
     }
-    let last = lines.last().copied().unwrap_or("no output");
-    let fix = format!(
-        "run `ssh -T {target}` in a terminal: load the key in the agent (`ssh-add`), accept the host key, or check the network (VPN)"
+    result.remotes.iter().map(remote_check).collect()
+}
+
+fn remote_check(remote: &RemoteCheck) -> DoctorCheck {
+    let name = format!(
+        "remote {} ({}, via {})",
+        remote.endpoint, remote.scheme, remote.via
     );
-    match run.code {
-        Some(0) => check(name, CheckStatus::Ok, "connected"),
-        Some(255) => with_fix(check(name, CheckStatus::Fail, last), fix),
-        Some(code) => with_fix(
-            check(
-                name,
-                CheckStatus::Warn,
-                format!("exited with code {code}: {last}"),
-            ),
-            fix,
-        ),
-        None => with_fix(
-            check(
-                name,
-                CheckStatus::Fail,
-                format!("no answer within {SSH_DEADLINE_SECS} s"),
-            ),
-            fix,
-        ),
+    match &remote.result {
+        RemoteCheckOutcome::Reachable => check(name, CheckStatus::Ok, "reachable"),
+        RemoteCheckOutcome::Failed {
+            problem,
+            error,
+            stderr_tail,
+        } => {
+            let detail = match (last_line(stderr_tail), *problem) {
+                // A timeout says more than the last line git wrote before it.
+                (_, RemoteProblem::Network) if stderr_tail.trim().is_empty() => error.clone(),
+                (Some(line), _) => line.to_owned(),
+                (None, _) => error.clone(),
+            };
+            with_fix(
+                check(name, CheckStatus::Fail, detail),
+                remote_fix(*problem, remote),
+            )
+        }
     }
+}
+
+/// How to fix a remote loomd's git cannot reach.
+fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck) -> String {
+    let RemoteCheck {
+        endpoint,
+        via,
+        path,
+        remote,
+        ..
+    } = remote;
+    let path = path.display();
+    let try_it = format!("git -C {path} ls-remote {remote} HEAD");
+    match problem {
+        RemoteProblem::SshAuth => format!(
+            "SSH refused loomd's git: load the key in the agent loomd sees (`ssh-add`; see the ssh-agent check), or give git the key with `core.sshCommand` (per remote: `includeIf \"hasconfig:remote.*.url:…\"`); a new or changed host key: run `{try_it}` once in a terminal"
+        ),
+        RemoteProblem::HttpsAuth => format!(
+            "git has no credential for {endpoint} and cannot prompt: store one with a credential helper (run `{try_it}` once in a terminal with a helper configured), or switch the remote to SSH (`git -C {path} remote set-url {remote} <ssh url>`)"
+        ),
+        RemoteProblem::NotFound => format!(
+            "the project was moved or deleted upstream, or access to it was lost: update the remote (`git -C {path} remote set-url {remote} <new url>`), or forget the clone (`loom repo forget {via}`)"
+        ),
+        RemoteProblem::Network => format!(
+            "{endpoint} cannot be reached from loomd: check the network or the VPN, then run `loom repo doctor` again"
+        ),
+        RemoteProblem::Other => format!("run `{try_it}` in a terminal to see the whole error"),
+    }
+}
+
+/// Why the last update of a repository did not complete: one group of the `updates` check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum UpdateIssue {
+    Fetch(RemoteProblem),
+    FastForwardFailed,
+    MoveDefaultBranchFailed,
+    Unreadable,
+    Busy,
+    Unknown,
+    Operation,
+    Dirty,
+    Detached,
+    Unborn,
+    NoUpstream,
+    Diverged,
+    MergeRefused,
+    DefaultBranchDiverged,
+}
+
+impl UpdateIssue {
+    /// The issue an outcome reports; `None` for a success or a skip asked for (policy `off`,
+    /// no remote).
+    fn of(outcome: &UpdateOutcome) -> Option<Self> {
+        match outcome {
+            UpdateOutcome::Fetched
+            | UpdateOutcome::FastForwarded { .. }
+            | UpdateOutcome::DefaultBranchMoved { .. } => None,
+            UpdateOutcome::Failed {
+                step, stderr_tail, ..
+            } => Some(match step {
+                UpdateStep::Fetch => Self::Fetch(classify_remote_failure(stderr_tail)),
+                UpdateStep::FastForward => Self::FastForwardFailed,
+                UpdateStep::MoveDefaultBranch => Self::MoveDefaultBranchFailed,
+            }),
+            UpdateOutcome::Skipped { reason } => match reason {
+                SkipReason::PolicyOff | SkipReason::NoRemote => None,
+                SkipReason::Unreadable { .. } => Some(Self::Unreadable),
+                SkipReason::Busy { .. } => Some(Self::Busy),
+                SkipReason::Unknown { .. } => Some(Self::Unknown),
+                SkipReason::Operation { .. } => Some(Self::Operation),
+                SkipReason::Dirty { .. } => Some(Self::Dirty),
+                SkipReason::Detached => Some(Self::Detached),
+                SkipReason::Unborn { .. } => Some(Self::Unborn),
+                SkipReason::NoUpstream { .. } => Some(Self::NoUpstream),
+                SkipReason::Diverged { .. } => Some(Self::Diverged),
+                SkipReason::MergeRefused { .. } => Some(Self::MergeRefused),
+                SkipReason::DefaultBranchDiverged { .. } => Some(Self::DefaultBranchDiverged),
+            },
+        }
+    }
+
+    /// The group, as printed, and how to fix it.
+    const fn text(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Fetch(RemoteProblem::SshAuth) => (
+                "fetch refused by SSH",
+                "loomd's git cannot authenticate: see the `remote` check of the host",
+            ),
+            Self::Fetch(RemoteProblem::HttpsAuth) => (
+                "fetch without HTTPS credential",
+                "store a credential for the host, or switch these remotes to SSH: see the `remote` check of the host",
+            ),
+            Self::Fetch(RemoteProblem::NotFound) => (
+                "remote not found",
+                "the project was moved or deleted upstream, or access to it was lost: update the remote (`git remote set-url`), or forget the clone (`loom repo forget <slug>`)",
+            ),
+            Self::Fetch(RemoteProblem::Network) => (
+                "remote unreachable",
+                "check the network or the VPN; loomd tries again, less often while the host stays down",
+            ),
+            Self::Fetch(RemoteProblem::Other) => (
+                "fetch failed",
+                "`loom repo show <slug>` shows the end of git's error; `git fetch` in the repository shows all of it",
+            ),
+            Self::FastForwardFailed => (
+                "fast-forward failed",
+                "`loom repo show <slug>` shows git's error; `git status` in the repository shows its state",
+            ),
+            Self::MoveDefaultBranchFailed => (
+                "default branch move failed",
+                "`loom repo show <slug>` shows git's error",
+            ),
+            Self::Unreadable => (
+                "repository unreadable",
+                "check its `.git`, or forget it (`loom repo forget <slug>`)",
+            ),
+            Self::Busy => (
+                "repository busy",
+                "another git process held a lock: nothing to do, the next update tries again; if it lasts, check that no git process runs there (a crashed one leaves its lock file behind)",
+            ),
+            Self::Unknown => (
+                "state unknown",
+                "the state could not be read in time, or a file needs a filter driver: `loom repo show --refresh <slug>` and `git status`",
+            ),
+            Self::Operation => (
+                "operation in progress",
+                "finish or abort it (`git rebase --continue` or `--abort`, and so on)",
+            ),
+            Self::Dirty => (
+                "local changes",
+                "commit, stash or discard them, then `loom repo sync <slug>`",
+            ),
+            Self::Detached => ("HEAD detached", "check out a branch"),
+            Self::Unborn => ("branch without commit", "commit, or check out a branch"),
+            Self::NoUpstream => (
+                "branch without upstream",
+                "`git branch --set-upstream-to <remote>/<branch>`, or leave it: a local branch is never moved",
+            ),
+            Self::Diverged => ("diverged from upstream", "rebase or merge by hand"),
+            Self::MergeRefused => (
+                "fast-forward refused by git",
+                "usually an untracked file the remote now tracks: move it aside",
+            ),
+            Self::DefaultBranchDiverged => (
+                "default branch diverged",
+                "rebase or merge the default branch by hand",
+            ),
+        }
+    }
+}
+
+/// The `updates` check: the repositories whose last update failed or was skipped.
+///
+/// One `warn` per reason with its count, up to [`UPDATES_EXAMPLES`] slugs and its fix; one
+/// `ok` when there are none. A skip asked for (policy `off`, no remote) is not counted.
+#[must_use]
+pub fn updates_checks(repos: &[RepoSummary]) -> Vec<DoctorCheck> {
+    let mut groups: BTreeMap<UpdateIssue, BTreeSet<&str>> = BTreeMap::new();
+    let mut updated = 0_usize;
+    for repo in repos {
+        let Some(update) = &repo.last_update else {
+            continue;
+        };
+        updated += 1;
+        for issue in update.outcomes.iter().filter_map(UpdateIssue::of) {
+            groups
+                .entry(issue)
+                .or_default()
+                .insert(repo.identity.slug.as_str());
+        }
+    }
+    if groups.is_empty() {
+        let detail = match updated {
+            0 => "no repository updated yet".to_owned(),
+            1 => "the last update of 1 repository went through".to_owned(),
+            count => format!("the last update of all {count} repositories went through"),
+        };
+        return vec![check("updates", CheckStatus::Ok, detail)];
+    }
+    groups
+        .into_iter()
+        .map(|(issue, slugs)| {
+            let (label, fix) = issue.text();
+            let mut examples: Vec<&str> = slugs.iter().copied().take(UPDATES_EXAMPLES).collect();
+            if slugs.len() > UPDATES_EXAMPLES {
+                examples.push("…");
+            }
+            with_fix(
+                check(
+                    "updates",
+                    CheckStatus::Warn,
+                    format!("{label} ({}): {}", slugs.len(), examples.join(", ")),
+                ),
+                fix,
+            )
+        })
+        .collect()
 }
 
 /// Human output: one `ok|warn|fail  <check>: <detail>` line per check, each fix below its
@@ -525,14 +621,16 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use loom_api::{
-        CheckStatus, ContextAssignment, DaemonDiagnostics, DoctorCheck, DoctorReport, Remote,
-        RepoIdentity, RepoSummary, ServicePlatform, SshAgentSocket,
+        CheckStatus, ContextAssignment, DaemonDiagnostics, DoctorCheck, DoctorReport, LastUpdate,
+        Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme,
+        RepoIdentity, RepoSummary, RepoUpdatePolicy, ServicePlatform, SkipReason, SshAgentSocket,
+        Timestamp, UpdateOutcome, UpdateStep,
     };
     use loom_config::config::parse_config;
 
     use super::{
-        SshRun, SshTarget, agent_check, contexts_check, home_check, render, roots, roots_checks,
-        ssh_check, ssh_target, ssh_targets, tilde, unassigned_check,
+        agent_check, contexts_check, home_check, remote_checks, render, roots, roots_checks, tilde,
+        unassigned_check, updates_checks, uses_ssh,
     };
 
     const HOME: &str = "/home/me";
@@ -719,118 +817,211 @@ mod tests {
         assert_eq!(home_check(None, Some(home)).status, CheckStatus::Warn);
     }
 
-    fn target(user: &str, host: &str, port: Option<u16>) -> SshTarget {
-        SshTarget {
-            user: user.to_owned(),
-            host: host.to_owned(),
-            port,
+    #[test]
+    fn ssh_is_used_when_a_primary_remote_uses_it() {
+        let mut https = repo(
+            "/a",
+            ContextAssignment::Unassigned,
+            &["https://github.com/a/b.git"],
+        );
+        https.identity.primary_remote = Some("origin".to_owned());
+        assert!(!uses_ssh(std::slice::from_ref(&https)));
+        let mut ssh = repo(
+            "/b",
+            ContextAssignment::Unassigned,
+            &["git@github.com:c/d.git"],
+        );
+        ssh.identity.primary_remote = Some("origin".to_owned());
+        assert!(uses_ssh(&[https, ssh]));
+        assert!(!uses_ssh(&[repo("/c", ContextAssignment::Unassigned, &[])]));
+    }
+
+    fn remote(endpoint: &str, scheme: RemoteScheme, result: RemoteCheckOutcome) -> RemoteCheck {
+        RemoteCheck {
+            endpoint: endpoint.to_owned(),
+            scheme,
+            via: "personal/loom".to_owned(),
+            path: PathBuf::from("/home/me/perso/loom"),
+            remote: "origin".to_owned(),
+            result,
+        }
+    }
+
+    fn failed(problem: RemoteProblem, error: &str, stderr_tail: &str) -> RemoteCheckOutcome {
+        RemoteCheckOutcome::Failed {
+            problem,
+            error: error.to_owned(),
+            stderr_tail: stderr_tail.to_owned(),
         }
     }
 
     #[test]
-    fn ssh_targets_from_remote_urls() {
-        let cases = [
-            (
-                "git@github.com:gsuquet/loom.git",
-                Some(target("git", "github.com", None)),
-            ),
-            ("gh-work:org/repo.git", Some(target("git", "gh-work", None))),
-            (
-                "me@host.example:repo",
-                Some(target("me", "host.example", None)),
-            ),
-            (
-                "ssh://git@gitlab.example:2222/g/r.git",
-                Some(target("git", "gitlab.example", Some(2222))),
-            ),
-            (
-                "ssh://gitlab.example/g/r",
-                Some(target("git", "gitlab.example", None)),
-            ),
-            ("git+ssh://u@h/r", Some(target("u", "h", None))),
-            ("ssh://git@[::1]:22/r", Some(target("git", "::1", Some(22)))),
-            ("ssh://git@[::1]/r", Some(target("git", "::1", None))),
-            ("https://github.com/gsuquet/loom.git", None),
-            ("file:///srv/r.git", None),
-            ("/srv/backup/loom", None),
-            ("../sibling", None),
-            ("./a:b", None),
-            ("-oProxyCommand=x:repo", None),
-            ("git@-oProxyCommand=x:repo", None),
-            ("ssh://h:notaport/r", None),
-        ];
-        for (url, expected) in cases {
-            assert_eq!(ssh_target(url), expected, "{url}");
-        }
-        let repos = vec![
-            repo(
-                "/a",
-                ContextAssignment::Unassigned,
-                &["git@github.com:a/b.git", "https://x/y"],
-            ),
-            repo(
-                "/b",
-                ContextAssignment::Unassigned,
-                &["git@github.com:c/d.git", "ssh://git@gitlab.example:2222/e"],
-            ),
-        ];
-        let targets: Vec<String> = ssh_targets(&repos)
-            .iter()
-            .map(ToString::to_string)
+    fn one_line_per_remote_with_the_fix_of_its_failure() {
+        let checks = remote_checks(&RemoteCheckResult {
+            remotes: vec![
+                remote(
+                    "git@github.com",
+                    RemoteScheme::Ssh,
+                    RemoteCheckOutcome::Reachable,
+                ),
+                remote(
+                    "git@gitlab.com",
+                    RemoteScheme::Ssh,
+                    failed(
+                        RemoteProblem::SshAuth,
+                        "exit status: 128",
+                        "git@gitlab.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n",
+                    ),
+                ),
+                remote(
+                    "https://gitlab.ippon.fr",
+                    RemoteScheme::Https,
+                    failed(
+                        RemoteProblem::HttpsAuth,
+                        "exit status: 128",
+                        "fatal: could not read Username for 'https://gitlab.ippon.fr': terminal prompts disabled\n",
+                    ),
+                ),
+                remote(
+                    "git@gitlab.corp",
+                    RemoteScheme::Ssh,
+                    failed(RemoteProblem::Network, "no answer within 20s", ""),
+                ),
+                remote(
+                    "git@gone.example",
+                    RemoteScheme::Ssh,
+                    failed(
+                        RemoteProblem::NotFound,
+                        "exit status: 128",
+                        "ERROR: Repository not found.\n",
+                    ),
+                ),
+                remote(
+                    "/srv/x.git",
+                    RemoteScheme::Local,
+                    failed(RemoteProblem::Other, "cannot run git: not found", ""),
+                ),
+            ],
+        });
+        let report = render(&DoctorReport { checks });
+        let lines: Vec<&str> = report
+            .lines()
+            .filter(|line| !line.starts_with(' '))
             .collect();
-        assert_eq!(targets, ["git@github.com", "git@gitlab.example:2222"]);
         assert_eq!(
-            target("git", "h", Some(2222)).ssh_args(),
+            lines,
             [
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=5",
-                "-T",
-                "-p",
-                "2222",
-                "git@h"
+                "ok    remote git@github.com (ssh, via personal/loom): reachable",
+                "fail  remote git@gitlab.com (ssh, via personal/loom): git@gitlab.com: Permission denied (publickey).",
+                "fail  remote https://gitlab.ippon.fr (https, via personal/loom): fatal: could not read Username for 'https://gitlab.ippon.fr': terminal prompts disabled",
+                "fail  remote git@gitlab.corp (ssh, via personal/loom): no answer within 20s",
+                "fail  remote git@gone.example (ssh, via personal/loom): ERROR: Repository not found.",
+                "fail  remote /srv/x.git (local, via personal/loom): cannot run git: not found",
             ]
         );
+        assert!(report.contains("core.sshCommand"), "{report}");
+        assert!(report.contains("switch the remote to SSH"), "{report}");
+        assert!(report.contains("VPN"), "{report}");
+        assert!(
+            report.contains("loom repo forget personal/loom"),
+            "{report}"
+        );
+        assert!(
+            report.contains("git -C /home/me/perso/loom ls-remote origin HEAD"),
+            "{report}"
+        );
+        let none = remote_checks(&RemoteCheckResult { remotes: vec![] });
+        assert_eq!(none[0].status, CheckStatus::Ok);
+    }
+
+    fn updated(slug: &str, outcomes: Vec<UpdateOutcome>) -> RepoSummary {
+        let mut repo = repo(
+            &format!("/home/me/{slug}"),
+            ContextAssignment::Unassigned,
+            &[],
+        );
+        repo.identity.slug = slug.to_owned();
+        repo.last_update = Some(LastUpdate {
+            time: Timestamp::EPOCH,
+            policy: RepoUpdatePolicy::Ff,
+            outcomes,
+        });
+        repo
     }
 
     #[test]
-    fn ssh_outcomes() {
-        let target = target("git", "github.com", None);
-        let run = |code: Option<i32>, output: &str| {
-            ssh_check(
-                &target,
-                &SshRun {
-                    code,
-                    output: output.to_owned(),
-                },
-            )
+    fn failed_and_skipped_updates_are_grouped_by_reason() {
+        let not_found = || {
+            UpdateOutcome::Failed {
+            step: UpdateStep::Fetch,
+            error: "exit status: 128".to_owned(),
+            stderr_tail: "remote: ERROR: The project you were looking for could not be found or you don't have permission to view it.\n".to_owned(),
+        }
         };
-        // GitHub exits 1 on success.
-        let github = run(
-            Some(1),
-            "Hi me! You've successfully authenticated, but GitHub does not provide shell access.\n",
-        );
-        assert_eq!(github.status, CheckStatus::Ok);
-        assert_eq!(github.check, "ssh git@github.com");
-        assert!(github.detail.starts_with("authenticated: Hi me!"));
+        let mut repos: Vec<RepoSummary> = ["norauto/a", "norauto/b", "norauto/c", "norauto/d"]
+            .into_iter()
+            .map(|slug| updated(slug, vec![not_found()]))
+            .collect();
+        repos.push(updated(
+            "personal/busy",
+            vec![UpdateOutcome::Skipped {
+                reason: SkipReason::Busy {
+                    step: UpdateStep::FastForward,
+                    stderr_tail: String::new(),
+                },
+            }],
+        ));
+        repos.push(updated(
+            "personal/work",
+            vec![
+                UpdateOutcome::Skipped {
+                    reason: SkipReason::Dirty { paths: 2 },
+                },
+                UpdateOutcome::Skipped {
+                    reason: SkipReason::DefaultBranchDiverged {
+                        branch: "main".to_owned(),
+                        ahead: 1,
+                        behind: 1,
+                    },
+                },
+            ],
+        ));
+        repos.push(updated("personal/fine", vec![UpdateOutcome::Fetched]));
+        repos.push(updated(
+            "personal/off",
+            vec![UpdateOutcome::Skipped {
+                reason: SkipReason::PolicyOff,
+            }],
+        ));
+        let checks = updates_checks(&repos);
+        let details: Vec<&str> = checks.iter().map(|check| check.detail.as_str()).collect();
         assert_eq!(
-            run(Some(0), "Welcome to GitLab, @me!\n").status,
-            CheckStatus::Ok
+            details,
+            [
+                "remote not found (4): norauto/a, norauto/b, norauto/c, …",
+                "repository busy (1): personal/busy",
+                "local changes (1): personal/work",
+                "default branch diverged (1): personal/work",
+            ]
         );
-        assert_eq!(run(Some(0), "").detail, "connected");
-        let denied = run(
-            Some(255),
-            "git@github.com: Permission denied (publickey).\n",
+        assert!(checks.iter().all(|check| check.check == "updates"
+            && check.status == CheckStatus::Warn
+            && check.fix.is_some()));
+        assert!(
+            checks[0]
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("moved or deleted upstream")
         );
-        assert_eq!(denied.status, CheckStatus::Fail);
+
+        let ok = updates_checks(&repos[6..]);
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].status, CheckStatus::Ok);
         assert_eq!(
-            denied.detail,
-            "git@github.com: Permission denied (publickey)."
+            ok[0].detail,
+            "the last update of all 2 repositories went through"
         );
-        assert!(denied.fix.unwrap().contains("ssh -T git@github.com"));
-        assert_eq!(run(Some(1), "shell refused\n").status, CheckStatus::Warn);
-        assert_eq!(run(None, "").status, CheckStatus::Fail);
     }
 
     #[test]

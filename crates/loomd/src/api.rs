@@ -26,6 +26,8 @@ pub const REPO_PATH: &str = "/v1/repos/{context}/{name}";
 pub const SEARCH_PATH: &str = "/v1/search";
 /// Path of the diagnostics endpoint: the environment of the daemon.
 pub const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
+/// Path of the remote check: `git ls-remote` of each remote endpoint of the index.
+pub const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
 
 /// Query parameters of `POST /v1/repos/scan`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

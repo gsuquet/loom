@@ -12,13 +12,13 @@ use loom_api::{
     ApiError, ApiVersion, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
     ContextName, DaemonDiagnostics, DaemonRestart, DoctorCheck, DoctorReport, ErrorCode, ForgeKind,
     InstallReport, LastUpdate, MaybeKnown, PendingUpgrade, PlannedAction, Profile, RegisterRequest,
-    Remote, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary,
-    RepoSync, RepoUpdatePolicy, RollbackReport, ScanIssue, ScanResult, SearchField, SearchKind,
-    SearchResult, SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket,
-    StateField, StatusResponse, SyncOutcome, SyncRequest, SyncResult, Timestamp, Untracked,
-    UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
-    UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream,
-    VersionInfo,
+    Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme,
+    RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary, RepoSync,
+    RepoUpdatePolicy, RollbackReport, ScanIssue, ScanResult, SearchField, SearchKind, SearchResult,
+    SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
+    StatusResponse, SyncOutcome, SyncRequest, SyncResult, Timestamp, Untracked, UpdateChannel,
+    UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpdateStep,
+    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -35,6 +35,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("error_code", schema_for!(ErrorCode)),
         ("last_update", schema_for!(LastUpdate)),
         ("register_request", schema_for!(RegisterRequest)),
+        ("remote_check_result", schema_for!(RemoteCheckResult)),
         ("repo_identity", schema_for!(RepoIdentity)),
         ("repo_list", schema_for!(RepoList)),
         ("repo_state", schema_for!(RepoState)),
@@ -622,6 +623,10 @@ fn last_updates(at: Timestamp) -> Vec<LastUpdate> {
                     ahead: 1,
                     behind: 1,
                 }),
+                skipped(SkipReason::Busy {
+                    step: UpdateStep::FastForward,
+                    stderr_tail: s("fatal: Unable to create '/r/.git/index.lock': File exists."),
+                }),
             ],
         },
         LastUpdate {
@@ -732,14 +737,98 @@ fn diagnostics_samples_validate_against_their_schema() {
         violations(&DoctorReport {
             checks: vec![
                 check("roots", CheckStatus::Ok, None),
-                check("ssh git@example.com", CheckStatus::Fail, Some("ssh-add")),
+                check(
+                    "remote git@example.com (ssh, via personal/loom)",
+                    CheckStatus::Fail,
+                    Some("ssh-add"),
+                ),
                 check("unassigned", CheckStatus::Warn, Some("define a context")),
+                check("updates", CheckStatus::Warn, Some("forget the clone")),
             ],
         })
         .unwrap(),
     );
     errors.extend(violations(&DoctorReport { checks: vec![] }).unwrap());
     assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+#[test]
+fn remote_check_samples_validate_against_their_schema() {
+    let mut errors = Vec::new();
+    let remote = |endpoint: &str, scheme, result| RemoteCheck {
+        endpoint: endpoint.to_owned(),
+        scheme,
+        via: "personal/loom".to_owned(),
+        path: "/home/me/perso/loom".into(),
+        remote: "origin".to_owned(),
+        result,
+    };
+    let failed = |problem| RemoteCheckOutcome::Failed {
+        problem,
+        error: "exit status: 128".to_owned(),
+        stderr_tail: "fatal: x\n".to_owned(),
+    };
+    errors.extend(
+        violations(&RemoteCheckResult {
+            remotes: vec![
+                remote(
+                    "git@github.com",
+                    RemoteScheme::Ssh,
+                    RemoteCheckOutcome::Reachable,
+                ),
+                remote(
+                    "git@gitlab.com",
+                    RemoteScheme::Ssh,
+                    failed(RemoteProblem::SshAuth),
+                ),
+                remote(
+                    "https://gitlab.example",
+                    RemoteScheme::Https,
+                    failed(RemoteProblem::HttpsAuth),
+                ),
+                remote(
+                    "http://h",
+                    RemoteScheme::Http,
+                    failed(RemoteProblem::NotFound),
+                ),
+                remote("git://h", RemoteScheme::Git, failed(RemoteProblem::Network)),
+                remote("/srv/x", RemoteScheme::Local, failed(RemoteProblem::Other)),
+                remote(
+                    "s3://b/x",
+                    RemoteScheme::Other,
+                    RemoteCheckOutcome::Reachable,
+                ),
+            ],
+        })
+        .unwrap(),
+    );
+    errors.extend(violations(&RemoteCheckResult { remotes: vec![] }).unwrap());
+    assert!(errors.is_empty(), "schema violations: {errors:?}");
+    for scheme in [
+        RemoteScheme::Ssh,
+        RemoteScheme::Https,
+        RemoteScheme::Http,
+        RemoteScheme::Git,
+        RemoteScheme::Local,
+        RemoteScheme::Other,
+    ] {
+        assert_eq!(
+            serde_json::to_value(scheme).unwrap(),
+            json!(scheme.to_string())
+        );
+    }
+    for problem in [
+        RemoteProblem::SshAuth,
+        RemoteProblem::HttpsAuth,
+        RemoteProblem::NotFound,
+        RemoteProblem::Network,
+        RemoteProblem::Other,
+    ] {
+        assert_eq!(
+            serde_json::to_value(problem).unwrap(),
+            json!(problem.to_string())
+        );
+    }
 }
 
 #[test]
