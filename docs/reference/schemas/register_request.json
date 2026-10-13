@@ -4,6 +4,10 @@
   "description": "Body of `POST /v1/repos/register`.",
   "type": "object",
   "properties": {
+    "on_use": {
+      "description": "Registration on use (a `loom` command run inside the repository): a repository already\nin the index is left as it is, only its `last_used` is set; one not in the index is\nregistered. `last_used` is set to now in both cases.",
+      "type": "boolean"
+    },
     "path": {
       "description": "Absolute path of the repository or of a directory inside it.",
       "type": "string"

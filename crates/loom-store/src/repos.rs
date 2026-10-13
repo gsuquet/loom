@@ -178,6 +178,31 @@ pub fn register(
     Ok(summary)
 }
 
+/// Sets `last_used` of the repository at `path`; `false` when no repository has this path.
+pub fn set_last_used(conn: &Connection, path: &Path, now: Timestamp) -> Result<bool, StoreError> {
+    let changed = conn.execute(
+        "UPDATE repos SET last_used = ?2 WHERE path = ?1",
+        params![text(path)?, unix(now)?],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Removes every repository, then inserts `repos` (with unique slugs), in one transaction.
+pub fn replace_all(
+    conn: &mut Connection,
+    repos: &[RepoIdentity],
+    now: Timestamp,
+) -> Result<(), StoreError> {
+    let now = unix(now)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute("DELETE FROM repos", [])?;
+    for repo in repos {
+        upsert(&tx, repo, false, now)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn forget(conn: &mut Connection, slug: &str) -> Result<Option<RepoSummary>, StoreError> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let found = get(&tx, slug)?;
