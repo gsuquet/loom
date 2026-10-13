@@ -390,6 +390,7 @@ mod tests {
             socket_path: "/l/run/loomd.sock".into(),
             config_path: "/l/config.toml".into(),
             update: None,
+            disk: None,
         }
     }
 

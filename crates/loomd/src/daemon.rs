@@ -48,6 +48,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
+use crate::disk_usage::DiskCache;
 use crate::repos::{self, Failure, RepoHandle};
 use crate::updater::{self, Settings};
 
@@ -126,6 +127,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         socket_path: layout.socket.clone(),
         config_path: layout.config.clone(),
         update: None,
+        disk: None,
     };
     let settings = update_settings(&config);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -149,6 +151,8 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         update_state: layout.update_state.clone(),
         running: Version::parse(&VERSION_INFO.version).ok(),
         repos: repo_handle,
+        layout: layout.clone(),
+        disk: DiskCache::default(),
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     updater.stop();
@@ -185,6 +189,10 @@ struct App {
     running: Option<Version>,
     /// The repository index.
     repos: RepoHandle,
+    /// Paths under the loom home.
+    layout: Layout,
+    /// Last disk usage of the loom home, a new process starts without one.
+    disk: DiskCache,
 }
 
 /// Reads the configuration, and whether the file is missing: a missing file gives the
@@ -365,6 +373,7 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         app.settings.interval,
         app.running.as_ref(),
     ));
+    status.disk = app.disk.get(&app.layout, now).await;
     Json(status).into_response()
 }
 

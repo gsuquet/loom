@@ -135,12 +135,15 @@ channel:     dev
 loom_home:   /home/me/.loom
 socket_path: /home/me/.loom/run/loomd.sock
 config_path: /home/me/.loom/config.toml
+disk:        35 MB (versions 30 MB, index 4.2 MB, logs 25 KB, contexts 0 B)
 updates:     auto, channel dev (chosen), every 6h
 last_check:  2026-10-12T08:05:00Z
 available:   none
 failed:      0.1.1
 last_result: upgraded 0.1.0-dev.41 -> 0.1.0-dev.42 at 2026-10-12T08:00:30Z
 ```
+
+The `disk` line comes from the `disk` object of the status ([API reference](../api.md#diskusage)), as `<total> (versions <versions>, index <index>, logs <logs>, contexts <sum of the context stores>)`; a daemon without it prints no `disk` line. Sizes use decimal units (`B`, `KB`, `MB`, `GB`, `TB`, `PB`, `EB`; 1 KB = 1,000 bytes), rounded to one decimal below 10 (`4.2 MB`) and to a whole number from 10 (`35 MB`).
 
 The update lines come from the `update` object of the status ([API reference](../api.md#updatestatus)); a daemon without it prints none of them.
 
@@ -480,6 +483,11 @@ ok    config: /home/me/.loom/config.toml is valid
 ok    roots: 3 roots exist
 ok    contexts: 2 contexts, no overlapping match.paths
 ok    loomd: loomd 0.2.0 running, pid 4242
+ok    disk: 35 MB (versions 30 MB, index 4.2 MB, logs 25 KB, contexts 0 B) in /home/me/.loom
+warn  disk-versions: 3 previous versions kept (30 MB), rollback needs at most 2: 0.1.0 is not needed
+      fix: delete it (`rm -r /home/me/.loom/versions/0.1.0`), or let the next upgrade or rollback prune it
+ok    disk-wal: index.db-wal is 4.1 MB, below 64 MB
+ok    disk-free: 120 GB free on the volume of /home/me/.loom
 warn  unassigned: 1 repository has no context: /home/me/src/tool
       fix: add a context that matches them to /home/me/.loom/config.toml, then restart loomd:
              [contexts.<name>]
@@ -502,6 +510,10 @@ warn  updates: local changes (1): personal/notes
 | `roots` | One `warn` per scan root (`[repos] roots`, then each `match.paths`, `~` expanded) that is not a directory, naming where it comes from; otherwise one `ok`. |
 | `contexts` | `fail` when `match.paths` entries of two contexts are the same directory once `~` is expanded, or two `[repos."<path>"]` keys name the same repository: loomd refuses such a configuration. Nested entries of different contexts are valid (the longest prefix wins) and are listed in the `ok` line. |
 | `loomd` | `warn` when loomd is not running: the checks below are skipped, and loomd is not started. `fail` when it answers with an error. |
+| `disk` | The disk usage loomd measured ([`DiskUsage`](../api.md#diskusage)): `ok` with the total and its parts; `warn` when a part could not be measured (counted as 0), listing the warnings. `warn` when loomd is older than this field; the other `disk-*` checks are then skipped. |
+| `disk-versions` | `warn` when `versions/` holds a version `loom rollback` does not need, by the retention rule of the upgrades (the 2 highest versions other than the running one are kept, a copy of the running version is not needed; by count alone when the running version is not a semantic version), naming them and how to delete them. Directories not named after a version are ignored. |
+| `disk-wal` | `warn` when `index.db-wal` is larger than 64 MB (64,000,000 bytes): SQLite is not copying it into `index.db`. The fix is to restart loomd. |
+| `disk-free` | `warn` when less than 1 GB (1,000,000,000 bytes) is free for an unprivileged process on the volume of the loom home. Absent when the free space is unknown (the `disk` check then warns). |
 | `unassigned` | `warn` with the count, one example and the configuration that would assign it. |
 | `ssh-agent` | `SSH_AUTH_SOCK` in loomd's environment ([`GET /v1/diagnostics`](../api.md#daemondiagnostics)): `ok` when it is a socket; otherwise `fail` when an indexed remote uses SSH, `warn` when none does. The fix depends on the platform (systemd: `systemctl --user import-environment SSH_AUTH_SOCK`, then restart; launchd: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`). `warn` when loomd is older than this endpoint. |
 | `home` | `warn` when loomd's `HOME` differs from the one of `loom`: `~` in the configuration then expands elsewhere. |

@@ -16,6 +16,18 @@
       "description": "Build information of the daemon binary.",
       "$ref": "#/$defs/VersionInfo"
     },
+    "disk": {
+      "description": "Disk usage of the loom home. Absent from daemons older than this field.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DiskUsage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "loom_home": {
       "description": "Absolute path of the loom home directory the daemon uses.",
       "type": "string"
@@ -112,6 +124,121 @@
           "type": "string",
           "const": "build"
         }
+      ]
+    },
+    "ContextDiskUsage": {
+      "description": "Space a context store (`contexts/<name>/`) takes.",
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "description": "Allocated bytes of the directory and everything under it.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "name": {
+          "description": "Name of the directory under `contexts/`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "bytes"
+      ]
+    },
+    "DiskUsage": {
+      "description": "Space the loom home takes on disk, by part.\n\nSizes are allocated bytes (blocks, not file lengths), symbolic links are counted as links\nand never followed, and a file with several hard links in the home is counted once.",
+      "type": "object",
+      "properties": {
+        "available_bytes": {
+          "description": "Bytes an unprivileged process can still write on the volume of the loom home;\n`null` when the volume could not be queried.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "computed_at": {
+          "description": "Instant the sizes were measured; loomd keeps them for a while (see the API reference).",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "contexts": {
+          "description": "One entry per directory under `contexts/`, sorted by name; empty without context stores.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextDiskUsage"
+          }
+        },
+        "index_bytes": {
+          "description": "`index.db`, `index.db-wal` and `index.db-shm`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "index_wal_bytes": {
+          "description": "`index.db-wal` alone (included in `index_bytes`).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "kept_versions": {
+          "description": "Names of the directories in `versions/`, sorted.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "logs_bytes": {
+          "description": "`log/`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "other_bytes": {
+          "description": "Everything else: the home directory itself, `config.toml`, `run/`, `staging/`,\n`contexts/` itself and files directly in it, unknown entries.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "state_bytes": {
+          "description": "`state/`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total_bytes": {
+          "description": "Every part below, added up: the whole loom home.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "versions_bytes": {
+          "description": "`versions/`: previous versions kept for `loom rollback`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "warnings": {
+          "description": "What could not be measured (a directory that cannot be read counts as 0), in English.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "computed_at",
+        "total_bytes",
+        "versions_bytes",
+        "index_bytes",
+        "index_wal_bytes",
+        "logs_bytes",
+        "state_bytes",
+        "other_bytes",
+        "contexts",
+        "kept_versions",
+        "warnings"
       ]
     },
     "PendingUpgrade": {

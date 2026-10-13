@@ -10,15 +10,16 @@ use std::path::PathBuf;
 
 use loom_api::{
     ApiError, ApiVersion, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
-    ContextName, DaemonDiagnostics, DaemonRestart, DoctorCheck, DoctorReport, ErrorCode, ForgeKind,
-    InstallReport, LastUpdate, MaybeKnown, PendingUpgrade, PlannedAction, Profile, RegisterRequest,
-    Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme,
-    RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RollbackReport, ScanIssue, ScanResult, SearchField, SearchKind, SearchResult,
-    SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
-    StatusResponse, SyncOutcome, SyncRequest, SyncResult, Timestamp, Untracked, UpdateChannel,
-    UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpdateStep,
-    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
+    ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart, DiskUsage, DoctorCheck,
+    DoctorReport, ErrorCode, ForgeKind, InstallReport, LastUpdate, MaybeKnown, PendingUpgrade,
+    PlannedAction, Profile, RegisterRequest, Remote, RemoteCheck, RemoteCheckOutcome,
+    RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl, RepoHead, RepoIdentity, RepoList,
+    RepoOperation, RepoState, RepoSummary, RepoSync, RepoUpdatePolicy, RollbackReport, ScanIssue,
+    ScanResult, SearchField, SearchKind, SearchResult, SearchResults, ServicePlatform,
+    ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse, SyncOutcome,
+    SyncRequest, SyncResult, Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode,
+    UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -115,6 +116,28 @@ fn status(started_at: Timestamp) -> StatusResponse {
         socket_path: "/run/loom/loomd.sock".into(),
         config_path: "/etc/loom/config.toml".into(),
         update: None,
+        disk: None,
+    }
+}
+
+/// A disk usage with a context store and a warning.
+fn disk_usage(computed_at: Timestamp, available_bytes: Option<u64>) -> DiskUsage {
+    DiskUsage {
+        computed_at,
+        total_bytes: 35_000_000,
+        versions_bytes: 30_000_000,
+        index_bytes: 4_200_000,
+        index_wal_bytes: 4_096,
+        logs_bytes: 24_576,
+        state_bytes: 8_192,
+        other_bytes: 755_136,
+        contexts: vec![ContextDiskUsage {
+            name: "personal".to_owned(),
+            bytes: 12_096,
+        }],
+        kept_versions: vec!["0.1.0".to_owned(), "0.2.0".to_owned()],
+        available_bytes,
+        warnings: vec!["cannot read /l/log: permission denied".to_owned()],
     }
 }
 
@@ -225,6 +248,15 @@ fn samples_validate_against_their_schema() {
         })
         .unwrap(),
     );
+    for available_bytes in [Some(1_000_000_000), None] {
+        errors.extend(
+            violations(&StatusResponse {
+                disk: Some(disk_usage(started_at, available_bytes)),
+                ..status(started_at)
+            })
+            .unwrap(),
+        );
+    }
     errors.extend(violations(&ApiVersion::V1).unwrap());
     errors.extend(
         violations(&ServiceStatus {

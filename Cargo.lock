@@ -2126,6 +2126,7 @@ dependencies = [
  "loom-telemetry",
  "loom-update",
  "miette",
+ "rustix",
  "schemars",
  "semver",
  "serde",

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiVersion, Timestamp, UpdateStatus, VersionInfo};
+use crate::{ApiVersion, DiskUsage, Timestamp, UpdateStatus, VersionInfo};
 
 /// State of a running loomd.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -29,6 +29,9 @@ pub struct StatusResponse {
     /// Auto-upgrade policy and state. Absent from daemons older than this field.
     #[serde(default)]
     pub update: Option<UpdateStatus>,
+    /// Disk usage of the loom home. Absent from daemons older than this field.
+    #[serde(default)]
+    pub disk: Option<DiskUsage>,
 }
 
 #[cfg(test)]
@@ -55,6 +58,7 @@ mod tests {
             socket_path: "/run/user/1000/loom/loomd.sock".into(),
             config_path: "/home/me/.config/loom/config.toml".into(),
             update: None,
+            disk: None,
         }
     }
 
@@ -79,6 +83,7 @@ mod tests {
                 "socket_path": "/run/user/1000/loom/loomd.sock",
                 "config_path": "/home/me/.config/loom/config.toml",
                 "update": null,
+                "disk": null,
             })
         );
     }
@@ -106,6 +111,16 @@ mod tests {
     fn accepts_a_daemon_without_update_state() {
         let mut value = serde_json::to_value(sample()).unwrap();
         value.as_object_mut().unwrap().remove("update");
+        assert_eq!(
+            serde_json::from_value::<StatusResponse>(value).unwrap(),
+            sample()
+        );
+    }
+
+    #[test]
+    fn accepts_a_daemon_without_disk_usage() {
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value.as_object_mut().unwrap().remove("disk");
         assert_eq!(
             serde_json::from_value::<StatusResponse>(value).unwrap(),
             sample()

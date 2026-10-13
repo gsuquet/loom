@@ -158,6 +158,7 @@ fn other_daemon_status(home: &Path) -> StatusResponse {
         socket_path: socket(home),
         config_path: home.join("config.toml"),
         update: None,
+        disk: None,
     }
 }
 

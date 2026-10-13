@@ -28,7 +28,7 @@
 | `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
 | `POST` | `/v1/diagnostics/remote-check` | `200` | [`RemoteCheckResult`](#remotecheckresult) |
 
-`uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state.
+`uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state. `disk` is the last measure of the loom home while it is fresh, otherwise a new one ([cache](#diskusage)).
 
 ### Repositories
 
@@ -241,8 +241,9 @@ State of a running loomd.
 | `socket_path` | path | Absolute path of the unix socket the daemon listens on. |
 | `config_path` | path | Absolute path of the configuration file the daemon loaded. |
 | `update` | [`UpdateStatus`](#updatestatus) or `null` | Auto-upgrade policy and state. Always sent by this version; optional when reading, so that a client reads a daemon older than this field. |
+| `disk` | [`DiskUsage`](#diskusage) or `null` | Disk usage of the loom home. Sent by this version (`null` only when the measure failed unexpectedly); optional when reading, so that a client reads a daemon older than this field. |
 
-Every field is required, except `update`.
+Every field is required, except `update` and `disk`.
 
 ```json
 {
@@ -271,9 +272,51 @@ Every field is required, except `update`.
     "pending": null,
     "failed_versions": [],
     "last_result": { "kind": "up_to_date", "at": "2026-10-12T08:05:00Z" }
+  },
+  "disk": {
+    "computed_at": "2026-10-12T08:01:30Z",
+    "total_bytes": 35012608,
+    "versions_bytes": 30027776,
+    "index_bytes": 4206592,
+    "index_wal_bytes": 4120576,
+    "logs_bytes": 24576,
+    "state_bytes": 8192,
+    "other_bytes": 745472,
+    "contexts": [],
+    "kept_versions": ["0.1.0-dev.40", "0.1.0-dev.41"],
+    "available_bytes": 120394752000,
+    "warnings": []
   }
 }
 ```
+
+### `DiskUsage`
+
+Disk usage of the loom home, measured by `loomd`.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `computed_at` | `Timestamp` | Instant of the measure. |
+| `total_bytes` | integer (u64) | The whole loom home: the sum of every part below. |
+| `versions_bytes` | integer (u64) | `versions/`: previous versions kept for `loom rollback`. |
+| `index_bytes` | integer (u64) | `index.db`, `index.db-wal` and `index.db-shm`. |
+| `index_wal_bytes` | integer (u64) | `index.db-wal` alone, included in `index_bytes`. |
+| `logs_bytes` | integer (u64) | `log/`. |
+| `state_bytes` | integer (u64) | `state/`. |
+| `other_bytes` | integer (u64) | Everything else: the home directory itself, `config.toml`, `run/`, `staging/`, `contexts/` itself and the files directly in it, any other entry. |
+| `contexts` | list of objects | One per directory under `contexts/`, sorted by `name`: `name` (directory name, lossy UTF-8) and `bytes`. Empty when there is none. |
+| `kept_versions` | list of strings | Names of the directories in `versions/`, sorted. |
+| `available_bytes` | integer (u64) \| `null` | Bytes an unprivileged process can still write on the volume of the loom home (`statvfs`: `f_bavail` × `f_frsize`); `null` when the query failed. |
+| `warnings` | list of strings | What could not be measured, in English (`cannot read <path>: <error>`). |
+
+| Property | Value |
+| --- | --- |
+| Sizes | Allocated bytes: `st_blocks` × 512 of each entry, not file lengths. A directory counts its own blocks too. |
+| Symbolic links | Counted as links (their own blocks), never followed. The loom home itself may be a symbolic link: it is followed once. |
+| Hard links | A file with several links counts once. |
+| Bounds | Only entries under the loom home are read. Directories mounted under it are walked like any other. |
+| Errors | Never an error response. A directory or entry that cannot be read counts as 0 and adds a warning, also logged at `warn` level. A missing `versions/`, `log/`, `state/` or `contexts/` counts as 0 without a warning. An entry deleted during the walk is skipped. |
+| Cache | Measured on a blocking thread at the first `GET /v1/status`, then reused for 5 minutes. Measured again earlier when the modification time of `versions/` changed (a version saved, restored or pruned by an upgrade or a rollback). A new `loomd` (after an upgrade, a rollback or a restart) starts without a measure. |
 
 ### `UpdateStatus`
 

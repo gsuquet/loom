@@ -6,14 +6,25 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
-    CheckStatus, ContextName, DaemonDiagnostics, DoctorCheck, DoctorReport, RemoteCheck,
+    CheckStatus, ContextName, DaemonDiagnostics, DiskUsage, DoctorCheck, DoctorReport, RemoteCheck,
     RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RepoSummary,
     ServicePlatform, SkipReason, SshAgentSocket, UpdateOutcome, UpdateStep,
 };
 use loom_config::config::Config;
 use loom_repo::{ContextRules, classify_remote_failure, remote_endpoint};
+use loom_update::versions::{KEEP, to_prune};
+use semver::Version;
 
 use crate::repo::is_unassigned;
+use crate::status::{disk_text, format_bytes};
+
+/// `disk-wal` warns when `index.db-wal` is larger than this (64 MB). SQLite checkpoints the
+/// WAL every 1,000 pages (about 4 MB) by default: a WAL this large means checkpoints are not
+/// happening.
+pub const WAL_WARN_BYTES: u64 = 64_000_000;
+
+/// `disk-free` warns when less than this (1 GB) is free on the volume of the loom home.
+pub const FREE_SPACE_WARN_BYTES: u64 = 1_000_000_000;
 
 /// Most slugs named per group of the `updates` check.
 const UPDATES_EXAMPLES: usize = 3;
@@ -595,6 +606,142 @@ pub fn updates_checks(repos: &[RepoSummary]) -> Vec<DoctorCheck> {
         .collect()
 }
 
+/// The disk checks of the loom home `home`, from the usage measured by loomd `running`.
+///
+/// `disk` (total, parts that could not be measured), `disk-versions` (previous versions kept
+/// beyond what `loom rollback` needs), `disk-wal` ([`WAL_WARN_BYTES`]) and `disk-free`
+/// ([`FREE_SPACE_WARN_BYTES`], absent when the free space is unknown).
+#[must_use]
+pub fn disk_checks(disk: &DiskUsage, home: &Path, running: &str) -> Vec<DoctorCheck> {
+    let summary = format!("{} in {}", disk_text(disk), home.display());
+    let usage = if disk.warnings.is_empty() {
+        check("disk", CheckStatus::Ok, summary)
+    } else {
+        with_fix(
+            check(
+                "disk",
+                CheckStatus::Warn,
+                format!("{summary}; counted as 0: {}", disk.warnings.join("; ")),
+            ),
+            "make these paths readable by the user running loomd",
+        )
+    };
+    let mut checks = vec![usage, versions_check(disk, home, running)];
+    checks.push(if disk.index_wal_bytes > WAL_WARN_BYTES {
+        with_fix(
+            check(
+                "disk-wal",
+                CheckStatus::Warn,
+                format!(
+                    "index.db-wal is {}, above {}",
+                    format_bytes(disk.index_wal_bytes),
+                    format_bytes(WAL_WARN_BYTES)
+                ),
+            ),
+            "restart loomd: SQLite copies the WAL into index.db and removes it when loomd closes the index",
+        )
+    } else {
+        check(
+            "disk-wal",
+            CheckStatus::Ok,
+            format!(
+                "index.db-wal is {}, below {}",
+                format_bytes(disk.index_wal_bytes),
+                format_bytes(WAL_WARN_BYTES)
+            ),
+        )
+    });
+    if let Some(available) = disk.available_bytes {
+        let free = format!(
+            "{} free on the volume of {}",
+            format_bytes(available),
+            home.display()
+        );
+        checks.push(if available < FREE_SPACE_WARN_BYTES {
+            with_fix(
+                check(
+                    "disk-free",
+                    CheckStatus::Warn,
+                    format!("{free}, below {}", format_bytes(FREE_SPACE_WARN_BYTES)),
+                ),
+                "free space on that volume: loomd writes its index, logs and upgrade downloads in the loom home",
+            )
+        } else {
+            check("disk-free", CheckStatus::Ok, free)
+        });
+    }
+    checks
+}
+
+/// `disk-versions`: the saved versions `loom rollback` does not need, by the retention rule of
+/// the upgrades (`loom_update::versions::to_prune`); by count alone when the running version
+/// is not a version. Directories not named after a version are left out.
+fn versions_check(disk: &DiskUsage, home: &Path, running: &str) -> DoctorCheck {
+    let saved: Vec<(&str, Version)> = disk
+        .kept_versions
+        .iter()
+        .filter_map(|name| Some((name.as_str(), Version::parse(name).ok()?)))
+        .collect();
+    if saved.is_empty() {
+        return check("disk-versions", CheckStatus::Ok, "no previous version kept");
+    }
+    let versions: Vec<Version> = saved.iter().map(|(_, version)| version.clone()).collect();
+    let mut doomed = Version::parse(running).map_or_else(
+        |_| {
+            let mut sorted = versions.clone();
+            sorted.sort_by(|a, b| b.cmp_precedence(a));
+            sorted.split_off(KEEP.min(sorted.len()))
+        },
+        |installed| to_prune(&versions, &installed, None, KEEP),
+    );
+    doomed.sort_by(Version::cmp_precedence);
+    let kept = format!(
+        "{} previous version{} kept ({})",
+        saved.len(),
+        if saved.len() == 1 { "" } else { "s" },
+        format_bytes(disk.versions_bytes)
+    );
+    if doomed.is_empty() {
+        return check(
+            "disk-versions",
+            CheckStatus::Ok,
+            format!("{kept}: rollback needs at most {KEEP}"),
+        );
+    }
+    let names: Vec<&str> = doomed
+        .iter()
+        .filter_map(|version| {
+            saved
+                .iter()
+                .find(|(_, saved)| saved.cmp_precedence(version).is_eq())
+                .map(|(name, _)| *name)
+        })
+        .collect();
+    let paths: Vec<String> = names
+        .iter()
+        .map(|name| home.join("versions").join(name).display().to_string())
+        .collect();
+    let (verb, pronoun) = if names.len() == 1 {
+        ("is", "it")
+    } else {
+        ("are", "them")
+    };
+    with_fix(
+        check(
+            "disk-versions",
+            CheckStatus::Warn,
+            format!(
+                "{kept}, rollback needs at most {KEEP}: {} {verb} not needed",
+                names.join(", ")
+            ),
+        ),
+        format!(
+            "delete {pronoun} (`rm -r {}`), or let the next upgrade or rollback prune {pronoun}",
+            paths.join(" ")
+        ),
+    )
+}
+
 /// Human output: one `ok|warn|fail  <check>: <detail>` line per check, each fix below its
 /// check, indented.
 #[must_use]
@@ -621,16 +768,17 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use loom_api::{
-        CheckStatus, ContextAssignment, DaemonDiagnostics, DoctorCheck, DoctorReport, LastUpdate,
-        Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme,
-        RepoIdentity, RepoSummary, RepoUpdatePolicy, ServicePlatform, SkipReason, SshAgentSocket,
-        Timestamp, UpdateOutcome, UpdateStep,
+        CheckStatus, ContextAssignment, DaemonDiagnostics, DiskUsage, DoctorCheck, DoctorReport,
+        LastUpdate, Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem,
+        RemoteScheme, RepoIdentity, RepoSummary, RepoUpdatePolicy, ServicePlatform, SkipReason,
+        SshAgentSocket, Timestamp, UpdateOutcome, UpdateStep,
     };
     use loom_config::config::parse_config;
 
     use super::{
-        agent_check, contexts_check, home_check, remote_checks, render, roots, roots_checks, tilde,
-        unassigned_check, updates_checks, uses_ssh,
+        FREE_SPACE_WARN_BYTES, WAL_WARN_BYTES, agent_check, contexts_check, disk_checks,
+        home_check, remote_checks, render, roots, roots_checks, tilde, unassigned_check,
+        updates_checks, uses_ssh,
     };
 
     const HOME: &str = "/home/me";
@@ -1052,5 +1200,198 @@ mod tests {
         );
         assert_eq!(tilde(Path::new("/home/me"), Some(Path::new(HOME))), "~");
         assert_eq!(tilde(Path::new("/srv"), Some(Path::new(HOME))), "/srv");
+    }
+
+    fn disk() -> DiskUsage {
+        DiskUsage {
+            computed_at: Timestamp::EPOCH,
+            total_bytes: 35_000_000,
+            versions_bytes: 30_000_000,
+            index_bytes: 4_200_000,
+            index_wal_bytes: 4_096,
+            logs_bytes: 24_000,
+            state_bytes: 8_192,
+            other_bytes: 767_712,
+            contexts: vec![],
+            kept_versions: vec!["0.1.0".to_owned(), "0.1.1".to_owned()],
+            available_bytes: Some(50_000_000_000),
+            warnings: vec![],
+        }
+    }
+
+    fn disk_check(checks: &[DoctorCheck], name: &str) -> DoctorCheck {
+        checks
+            .iter()
+            .find(|check| check.check == name)
+            .unwrap_or_else(|| panic!("no {name} in {checks:?}"))
+            .clone()
+    }
+
+    const LOOM_HOME: &str = "/home/me/.loom";
+
+    #[test]
+    fn a_healthy_home_gives_four_ok_checks() {
+        let checks = disk_checks(&disk(), Path::new(LOOM_HOME), "0.2.0");
+        let names: Vec<&str> = checks.iter().map(|check| check.check.as_str()).collect();
+        assert_eq!(names, ["disk", "disk-versions", "disk-wal", "disk-free"]);
+        assert!(
+            checks
+                .iter()
+                .all(|check| check.status == CheckStatus::Ok && check.fix.is_none()),
+            "{checks:?}"
+        );
+        assert_eq!(
+            checks[0].detail,
+            "35 MB (versions 30 MB, index 4.2 MB, logs 24 KB, contexts 0 B) in /home/me/.loom"
+        );
+        assert_eq!(
+            checks[1].detail,
+            "2 previous versions kept (30 MB): rollback needs at most 2"
+        );
+        assert_eq!(checks[2].detail, "index.db-wal is 4.1 KB, below 64 MB");
+        assert_eq!(
+            checks[3].detail,
+            "50 GB free on the volume of /home/me/.loom"
+        );
+    }
+
+    #[test]
+    fn unmeasured_parts_warn() {
+        let usage = DiskUsage {
+            warnings: vec![
+                "cannot read /home/me/.loom/log: permission denied".to_owned(),
+                "cannot read /home/me/.loom/state: permission denied".to_owned(),
+            ],
+            ..disk()
+        };
+        let check = disk_check(&disk_checks(&usage, Path::new(LOOM_HOME), "0.2.0"), "disk");
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert!(
+            check.detail.ends_with(
+                "; counted as 0: cannot read /home/me/.loom/log: permission denied; cannot read /home/me/.loom/state: permission denied"
+            ),
+            "{}",
+            check.detail
+        );
+        assert!(check.fix.unwrap().contains("readable"));
+    }
+
+    #[test]
+    fn versions_beyond_what_rollback_needs_warn_with_the_ones_to_delete() {
+        let usage = DiskUsage {
+            kept_versions: ["0.1.0", "0.1.1", "0.1.2", "notes"]
+                .map(str::to_owned)
+                .to_vec(),
+            ..disk()
+        };
+        let checks = disk_checks(&usage, Path::new(LOOM_HOME), "0.2.0");
+        let check = disk_check(&checks, "disk-versions");
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert_eq!(
+            check.detail,
+            "3 previous versions kept (30 MB), rollback needs at most 2: 0.1.0 is not needed"
+        );
+        assert_eq!(
+            check.fix.as_deref(),
+            Some(
+                "delete it (`rm -r /home/me/.loom/versions/0.1.0`), or let the next upgrade or rollback prune it"
+            )
+        );
+    }
+
+    #[test]
+    fn a_copy_of_the_running_version_is_not_needed() {
+        let usage = DiskUsage {
+            kept_versions: vec!["0.1.0".to_owned(), "0.2.0".to_owned()],
+            ..disk()
+        };
+        let checks = disk_checks(&usage, Path::new(LOOM_HOME), "0.2.0");
+        let check = disk_check(&checks, "disk-versions");
+        assert_eq!(check.status, CheckStatus::Warn, "{check:?}");
+        assert!(
+            check.detail.ends_with(": 0.2.0 is not needed"),
+            "{}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn several_versions_to_delete_are_listed_from_the_oldest() {
+        let usage = DiskUsage {
+            kept_versions: ["0.1.3", "0.1.0", "0.1.2", "0.1.1"]
+                .map(str::to_owned)
+                .to_vec(),
+            ..disk()
+        };
+        // A running version that is not semver: only the count decides.
+        let checks = disk_checks(&usage, Path::new(LOOM_HOME), "unknown");
+        let check = disk_check(&checks, "disk-versions");
+        assert!(
+            check.detail.ends_with(": 0.1.0, 0.1.1 are not needed"),
+            "{}",
+            check.detail
+        );
+        assert_eq!(
+            check.fix.as_deref(),
+            Some(
+                "delete them (`rm -r /home/me/.loom/versions/0.1.0 /home/me/.loom/versions/0.1.1`), or let the next upgrade or rollback prune them"
+            )
+        );
+    }
+
+    #[test]
+    fn no_previous_version_is_ok() {
+        let usage = DiskUsage {
+            kept_versions: vec![],
+            versions_bytes: 0,
+            ..disk()
+        };
+        let checks = disk_checks(&usage, Path::new(LOOM_HOME), "0.2.0");
+        let check = disk_check(&checks, "disk-versions");
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert_eq!(check.detail, "no previous version kept");
+    }
+
+    #[test]
+    fn a_large_wal_warns_above_the_threshold() {
+        let at = |bytes| {
+            let usage = DiskUsage {
+                index_wal_bytes: bytes,
+                ..disk()
+            };
+            disk_check(
+                &disk_checks(&usage, Path::new(LOOM_HOME), "0.2.0"),
+                "disk-wal",
+            )
+        };
+        assert_eq!(at(WAL_WARN_BYTES).status, CheckStatus::Ok);
+        let check = at(WAL_WARN_BYTES + 1);
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert_eq!(check.detail, "index.db-wal is 64 MB, above 64 MB");
+        assert!(check.fix.unwrap().contains("restart loomd"));
+    }
+
+    #[test]
+    fn low_free_space_warns_below_the_threshold() {
+        let at = |available| {
+            let usage = DiskUsage {
+                available_bytes: available,
+                ..disk()
+            };
+            disk_checks(&usage, Path::new(LOOM_HOME), "0.2.0")
+        };
+        assert_eq!(
+            disk_check(&at(Some(FREE_SPACE_WARN_BYTES)), "disk-free").status,
+            CheckStatus::Ok
+        );
+        let check = disk_check(&at(Some(FREE_SPACE_WARN_BYTES - 1)), "disk-free");
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert_eq!(
+            check.detail,
+            "1.0 GB free on the volume of /home/me/.loom, below 1.0 GB"
+        );
+        assert!(check.fix.is_some());
+        // Unknown: `disk` carries the warning of the failed query.
+        assert!(at(None).iter().all(|check| check.check != "disk-free"));
     }
 }

@@ -6,6 +6,7 @@
 mod api_version;
 mod auto_update;
 mod context;
+mod disk;
 mod doctor;
 mod error;
 mod repo;
@@ -26,6 +27,7 @@ pub use auto_update::{
 pub use context::{
     CONTEXT_NAME_MAX_LEN, ContextAssignment, ContextName, ContextNameError, UNASSIGNED,
 };
+pub use disk::{ContextDiskUsage, DiskUsage};
 pub use doctor::{
     CheckStatus, DaemonDiagnostics, DoctorCheck, DoctorReport, RemoteCheck, RemoteCheckOutcome,
     RemoteCheckResult, RemoteProblem, RemoteScheme, SshAgentSocket,
