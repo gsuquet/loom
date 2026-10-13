@@ -25,7 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 # `process`: the `ssh` checks of `loom repo doctor`, killed at their deadline.
-tokio = { workspace = true, features = ["process", "time"] }
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 
 [dev-dependencies]

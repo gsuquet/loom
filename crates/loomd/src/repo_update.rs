@@ -17,11 +17,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use loom_api::{
-    LastUpdate, RepoState, RepoUpdatePolicy, SkipReason, Timestamp, UpdateOutcome, UpdateStep,
+    LastUpdate, RemoteCheckOutcome, RemoteProblem, RepoState, RepoUpdatePolicy, SkipReason,
+    Timestamp, UpdateOutcome, UpdateStep,
 };
 use loom_repo::state::UpdateRefs;
 use loom_repo::{
-    Action, FetchDecision, StateOptions, decide_fetch, decide_update, git_dirs, state, update_refs,
+    Action, FetchDecision, StateOptions, classify_remote_failure, decide_fetch, decide_update,
+    git_dirs, is_busy, state, update_refs,
 };
 use tracing::field::Empty;
 use tracing::{Span, debug, info, info_span, warn};
@@ -110,6 +112,9 @@ pub enum FetchStatus {
     NotRun,
     /// `git fetch` exited with status 0.
     Succeeded,
+    /// `git fetch` met a lock held by another git process: neither the repository nor its host
+    /// backs off.
+    Busy,
     /// `git fetch` failed, timed out or could not start.
     Failed,
 }
@@ -199,12 +204,27 @@ fn run(
     };
 
     let git = Git::new(runner, target.path, &git_dir);
-    if let Err(failure) = git.fetch(&remote) {
-        return finish(
-            vec![failure.outcome(UpdateStep::Fetch)],
-            Some(read()),
-            FetchStatus::Failed,
-        );
+    match git.fetch(&remote) {
+        Ok(()) => {}
+        Err(Failure::Exit { stderr_tail, .. }) if is_busy(&stderr_tail) => {
+            return finish(
+                vec![UpdateOutcome::Skipped {
+                    reason: SkipReason::Busy {
+                        step: UpdateStep::Fetch,
+                        stderr_tail,
+                    },
+                }],
+                Some(read()),
+                FetchStatus::Busy,
+            );
+        }
+        Err(failure) => {
+            return finish(
+                vec![failure.outcome(UpdateStep::Fetch)],
+                Some(read()),
+                FetchStatus::Failed,
+            );
+        }
     }
 
     // Read right before acting: the working tree may have changed since the first read.
@@ -235,6 +255,58 @@ fn run(
         settle(outcome, &refs);
     }
     finish(outcomes, Some(state), FetchStatus::Succeeded)
+}
+
+/// Longest wait for `git ls-remote` of a remote check.
+pub const REMOTE_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Checks that the remote `remote` of the repository at `path` answers, as an update reaches it.
+///
+/// Runs `git ls-remote --exit-code <remote> HEAD` in its working tree, with the runner's
+/// environment, `GIT_TERMINAL_PROMPT=0` and SSH `BatchMode` unless the user configured an SSH
+/// command. Nothing is written to the repository. Exit code 2 (the remote has no `HEAD`, such as an empty repository) is a reachable remote.
+#[must_use]
+pub fn check_remote(
+    path: &Path,
+    remote: &str,
+    runner: &GitRunner,
+    timeout: Duration,
+) -> RemoteCheckOutcome {
+    let git_dir = match git_dirs(path) {
+        Ok((git_dir, _)) => git_dir,
+        Err(error) => {
+            return RemoteCheckOutcome::Failed {
+                problem: RemoteProblem::Other,
+                error: format!("repository unreadable: {error}"),
+                stderr_tail: String::new(),
+            };
+        }
+    };
+    let git = Git::new(runner, path, &git_dir);
+    match git.ls_remote(remote, timeout) {
+        Ok(()) => RemoteCheckOutcome::Reachable,
+        Err(Failure::Exit { status, .. }) if status.code() == Some(2) => {
+            RemoteCheckOutcome::Reachable
+        }
+        Err(Failure::Exit {
+            status,
+            stderr_tail,
+        }) => RemoteCheckOutcome::Failed {
+            problem: classify_remote_failure(&stderr_tail),
+            error: status.to_string(),
+            stderr_tail,
+        },
+        Err(Failure::Timeout { after, stderr_tail }) => RemoteCheckOutcome::Failed {
+            problem: RemoteProblem::Network,
+            error: format!("no answer within {}s", after.as_secs()),
+            stderr_tail,
+        },
+        Err(Failure::Run(error)) => RemoteCheckOutcome::Failed {
+            problem: RemoteProblem::Other,
+            error: format!("cannot run git: {error}"),
+            stderr_tail: String::new(),
+        },
+    }
 }
 
 /// Replaces the expected `to` of a move with the commit read after it, when known.
@@ -330,9 +402,12 @@ impl<'a> Git<'a> {
         }
     }
 
-    /// `git fetch --no-prune <remote>`: no ref is ever deleted. Tags follow git's automatic
-    /// tag following and `remote.<name>.tagOpt`, which never overwrite an existing local tag
-    /// (an explicit `--tags` fails the whole fetch on a tag that differs from the remote's).
+    /// `git fetch --no-prune --no-prune-tags --no-tags <remote>`: no ref is ever deleted, and
+    /// only branches move. Tags are the user's: a tag moved upstream is refused (`would clobber
+    /// existing tag`) and fails the whole fetch whenever tags are fetched, by
+    /// `fetch.pruneTags` or `remote.<name>.pruneTags` (which add `refs/tags/*:refs/tags/*` even
+    /// with `--no-prune`, and which only `--no-prune-tags` removes), or by
+    /// `remote.<name>.tagOpt = --tags` (which `--no-tags` overrides).
     fn fetch(&self, remote: &str) -> Result<(), Failure> {
         let span = info_span!("repo.fetch", remote, outcome = Empty);
         let _entered = span.enter();
@@ -340,6 +415,8 @@ impl<'a> Git<'a> {
             &[
                 OsStr::new("fetch"),
                 OsStr::new("--no-prune"),
+                OsStr::new("--no-prune-tags"),
+                OsStr::new("--no-tags"),
                 OsStr::new(remote),
             ],
             self.runner.fetch_timeout,
@@ -348,8 +425,27 @@ impl<'a> Git<'a> {
         result.map(drop)
     }
 
-    /// `git merge --ff-only --no-autostash <to>`. A refusal of git (an untracked file in the
-    /// way, a change made since the decision) is a skip.
+    /// `git ls-remote --exit-code <remote> HEAD`: whether the remote answers, with the
+    /// environment of a fetch.
+    fn ls_remote(&self, remote: &str, timeout: Duration) -> Result<(), Failure> {
+        let span = info_span!("repo.ls_remote", remote, outcome = Empty);
+        let _entered = span.enter();
+        let result = self.output(
+            &[
+                OsStr::new("ls-remote"),
+                OsStr::new("--exit-code"),
+                OsStr::new(remote),
+                OsStr::new("HEAD"),
+            ],
+            timeout,
+        );
+        record(&span, &result);
+        result.map(drop)
+    }
+
+    /// `git merge --ff-only --no-autostash <to>`. A lock held by another git process is a
+    /// busy skip; any other refusal of git (an untracked file in the way, a change made since
+    /// the decision) is a skip too.
     fn fast_forward(&self, branch: String, from: String, to: &str) -> UpdateOutcome {
         let span = info_span!(
             "repo.fast_forward",
@@ -375,6 +471,14 @@ impl<'a> Git<'a> {
                 from,
                 to: to.to_owned(),
             },
+            Err(Failure::Exit { stderr_tail, .. }) if is_busy(&stderr_tail) => {
+                UpdateOutcome::Skipped {
+                    reason: SkipReason::Busy {
+                        step: UpdateStep::FastForward,
+                        stderr_tail,
+                    },
+                }
+            }
             Err(Failure::Exit { stderr_tail, .. }) => UpdateOutcome::Skipped {
                 reason: SkipReason::MergeRefused { stderr_tail },
             },
@@ -382,8 +486,9 @@ impl<'a> Git<'a> {
         }
     }
 
-    /// `git fetch --no-prune <remote> <merge>:refs/heads/<branch>`: git refuses anything but a
-    /// fast-forward, and a branch checked out in any working tree.
+    /// `git fetch --no-prune --no-prune-tags --no-tags <remote> <merge>:refs/heads/<branch>`:
+    /// git refuses anything but a fast-forward, and a branch checked out in any working tree.
+    /// No tag moves, as in [`Self::fetch`]. A lock held by another git process is a busy skip.
     fn move_default_branch(
         &self,
         branch: String,
@@ -405,6 +510,8 @@ impl<'a> Git<'a> {
             &[
                 OsStr::new("fetch"),
                 OsStr::new("--no-prune"),
+                OsStr::new("--no-prune-tags"),
+                OsStr::new("--no-tags"),
                 OsStr::new(remote),
                 OsStr::new(&refspec),
             ],
@@ -413,6 +520,14 @@ impl<'a> Git<'a> {
         record(&span, &result);
         match result {
             Ok(_) => UpdateOutcome::DefaultBranchMoved { branch, from, to },
+            Err(Failure::Exit { stderr_tail, .. }) if is_busy(&stderr_tail) => {
+                UpdateOutcome::Skipped {
+                    reason: SkipReason::Busy {
+                        step: UpdateStep::MoveDefaultBranch,
+                        stderr_tail,
+                    },
+                }
+            }
             Err(failure) => failure.outcome(UpdateStep::MoveDefaultBranch),
         }
     }

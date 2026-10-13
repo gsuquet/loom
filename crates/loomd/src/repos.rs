@@ -24,8 +24,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ApiError, LastUpdate, RepoState, RepoSummary, RepoSync, ScanIssue, ScanResult, SearchResult,
-    SyncOutcome, SyncRequest, SyncResult, Timestamp,
+    ApiError, LastUpdate, RemoteCheck, RemoteCheckResult, RepoState, RepoSummary, RepoSync,
+    ScanIssue, ScanResult, SearchResult, SyncOutcome, SyncRequest, SyncResult, Timestamp,
 };
 use loom_config::config::Config;
 use loom_config::repos::{ForgeConfig, ForgeHost};
@@ -33,12 +33,13 @@ use loom_repo::scan::Exclusions;
 use loom_repo::state::unreadable;
 use loom_repo::{
     ContextRules, ScanDiff, ScanOptions, StateOptions, UpdatePolicies, diff, find_root, git_dirs,
-    plan, read_repos, scan_roots, scan_with_registered, state,
+    plan, read_repos, remote_check_targets, scan_roots, scan_with_registered, state,
 };
 use loom_store::{Reader, RepoFilter, Store, StoreError};
 use loomd::api::{
     ScanQuery, SearchRequest, internal, invalid_request, repo_not_found, timestamp, unavailable,
 };
+use loomd::repo_update::{REMOTE_CHECK_TIMEOUT, check_remote};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::field::Empty;
@@ -404,6 +405,44 @@ impl RepoHandle {
             )
         })?;
         Ok(SyncResult { repos })
+    }
+
+    /// Checks each distinct endpoint of the primary remotes of the index, all at once, with
+    /// `git ls-remote` run in one of its repositories exactly as an update runs git (same
+    /// environment, same SSH and prompt settings), each stopped after
+    /// [`REMOTE_CHECK_TIMEOUT`].
+    pub async fn remote_check(&self) -> Result<RemoteCheckResult, Failure> {
+        let repos = self.list(RepoFilter::default()).await?;
+        let checks: Vec<_> = remote_check_targets(&repos)
+            .into_iter()
+            .map(|target| {
+                let runner = Arc::clone(&self.updates.runner);
+                let parent = Span::current();
+                tokio::task::spawn_blocking(move || {
+                    let _entered = parent.entered();
+                    let result =
+                        check_remote(&target.path, &target.remote, &runner, REMOTE_CHECK_TIMEOUT);
+                    RemoteCheck {
+                        endpoint: target.endpoint.endpoint,
+                        scheme: target.endpoint.scheme,
+                        via: target.slug,
+                        path: target.path,
+                        remote: target.remote,
+                        result,
+                    }
+                })
+            })
+            .collect();
+        let mut remotes = Vec::with_capacity(checks.len());
+        for check in checks {
+            remotes.push(check.await.map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    internal(format!("remote check failed: {error}")),
+                )
+            })?);
+        }
+        Ok(RemoteCheckResult { remotes })
     }
 
     /// Registers the repository holding `path` (absolute, normalized). `on_use`: registration

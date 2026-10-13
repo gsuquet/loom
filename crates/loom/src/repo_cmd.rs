@@ -1,4 +1,4 @@
-//! `loom repo`: queries loomd, the filesystem and `ssh`. Decisions are in `loom::repo` and
+//! `loom repo`: queries loomd and the filesystem. Decisions are in `loom::repo` and
 //! `loom::doctor`.
 
 use std::env;
@@ -6,7 +6,6 @@ use std::fs;
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use loom::cli::{
@@ -14,7 +13,7 @@ use loom::cli::{
     RepoRegisterArgs, RepoScanArgs, RepoShowArgs, RepoSyncArgs, VERSION_INFO,
 };
 use loom::conventions::{CONFIRMATION_REFUSED, Confirmation, confirmation};
-use loom::doctor::{self, SSH_DEADLINE_SECS, SshRun, SshTarget};
+use loom::doctor;
 use loom::repo::{
     RepoArg, Selection, disambiguation_contexts, find_by_path, is_unassigned, lost_on_rebuild,
     normalize, parse_arg, render_card, render_paths, render_scan, render_sync, render_table,
@@ -23,7 +22,7 @@ use loom::repo::{
 use loom::status::version_mismatch;
 use loom_api::{
     CheckStatus, ContextAssignment, ContextName, DaemonDiagnostics, DoctorCheck, DoctorReport,
-    RegisterRequest, RepoList, RepoSummary, ScanResult, SyncRequest, SyncResult,
+    RegisterRequest, RemoteCheckResult, RepoList, RepoSummary, ScanResult, SyncRequest, SyncResult,
 };
 use loom_config::config::Config;
 use loom_config::layout::{Layout, MAX_SOCKET_PATH_BYTES, check_socket_path};
@@ -47,6 +46,11 @@ const SYNC_PATH: &str = "/v1/repos/sync";
 const SYNC_TIMEOUT: Duration = Duration::from_hours(1);
 /// Path of the diagnostics endpoint.
 const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
+/// Path of the remote check endpoint.
+const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
+/// Longest wait for the remote checks: they run at once in loomd, each stopped after 20 s
+/// (then 5 s for its processes to exit).
+const REMOTE_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest wait for a scan: it walks every root.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Longest wait for a state read on demand: its budget, plus a scan it may wait for.
@@ -70,7 +74,7 @@ pub fn run(command: &RepoCommand, global: &GlobalArgs, layout: Layout) -> Result
         cwd: logical_cwd().into_diagnostic()?,
         home: env::home_dir().filter(|home| !home.as_os_str().is_empty()),
     };
-    // The async runtime only drives the API client and `ssh`.
+    // The async runtime only drives the API client.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -528,8 +532,9 @@ async fn doctor(env: &Env<'_>, args: &RepoDoctorArgs) -> Result<()> {
     Ok(())
 }
 
-/// Checks that need loomd: it runs, its index, its environment, SSH to each host. loomd is
-/// not started: its environment is what is checked.
+/// Checks that need loomd: it runs, its index, its environment, each remote endpoint reached
+/// by loomd's own git, the last updates. loomd is not started: its environment is what is
+/// checked.
 async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
     if let Err(error) = check_socket_path(&env.layout.socket, MAX_SOCKET_PATH_BYTES) {
         return vec![check("loomd", CheckStatus::Fail, error.to_string(), None)];
@@ -541,7 +546,7 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
             return vec![check(
                 "loomd",
                 CheckStatus::Warn,
-                "not running: the index, loomd's environment and SSH access are not checked"
+                "not running: the index, loomd's environment, the remotes and the updates are not checked"
                     .to_owned(),
                 Some("`loom status` starts it; `loom service install` keeps it running"),
             )];
@@ -569,13 +574,12 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
         env.home.as_deref(),
         &env.layout.config,
     ));
-    let targets = doctor::ssh_targets(&repos);
     match client.get::<DaemonDiagnostics>(DIAGNOSTICS_PATH).await {
         Ok(diagnostics) => {
             checks.push(doctor::agent_check(
                 &diagnostics,
                 current_platform(),
-                !targets.is_empty(),
+                doctor::uses_ssh(&repos),
             ));
             checks.push(doctor::home_check(
                 diagnostics.home.as_deref(),
@@ -598,64 +602,20 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
             None,
         )),
     }
-    checks.extend(ssh_checks(targets).await);
-    checks
-}
-
-/// `ssh -T` to each target, all at once, each killed after its deadline.
-async fn ssh_checks(targets: Vec<SshTarget>) -> Vec<DoctorCheck> {
-    let runs: Vec<_> = targets
-        .into_iter()
-        .map(|target| tokio::spawn(async move { (ssh_run(&target).await, target) }))
-        .collect();
-    let mut checks = Vec::new();
-    for run in runs {
-        match run.await {
-            Ok((Ok(run), target)) => checks.push(doctor::ssh_check(&target, &run)),
-            Ok((Err(error), target)) => checks.push(check(
-                &format!("ssh {target}"),
-                CheckStatus::Fail,
-                format!("cannot run ssh: {error}"),
-                Some("install the OpenSSH client"),
-            )),
-            Err(error) => checks.push(check(
-                "ssh",
-                CheckStatus::Fail,
-                format!("the check failed: {error}"),
-                None,
-            )),
-        }
-    }
-    checks
-}
-
-async fn ssh_run(target: &SshTarget) -> io::Result<SshRun> {
-    let child = tokio::process::Command::new("ssh")
-        .args(target.ssh_args())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    match tokio::time::timeout(
-        Duration::from_secs(SSH_DEADLINE_SECS),
-        child.wait_with_output(),
-    )
-    .await
+    match client
+        .with_timeout(REMOTE_CHECK_TIMEOUT)
+        .post::<RemoteCheckResult>(REMOTE_CHECK_PATH, None::<&()>)
+        .await
     {
-        Ok(output) => {
-            let output = output?;
-            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            Ok(SshRun {
-                code: output.status.code(),
-                output: text,
-            })
-        }
-        // The child is killed when its future is dropped.
-        Err(_) => Ok(SshRun {
-            code: None,
-            output: String::new(),
-        }),
+        Ok(result) => checks.extend(doctor::remote_checks(&result)),
+        Err(ClientError::Api { status: 404, .. }) => checks.push(check(
+            "remote",
+            CheckStatus::Warn,
+            format!("loomd {} cannot check the remotes", status.daemon.version),
+            Some("restart loomd with the version of this loom"),
+        )),
+        Err(error) => checks.push(check("remote", CheckStatus::Fail, error.to_string(), None)),
     }
+    checks.extend(doctor::updates_checks(&repos));
+    checks
 }

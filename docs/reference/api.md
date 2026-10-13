@@ -26,6 +26,7 @@
 | `POST` | `/v1/repos/sync` | `200` | [`SyncResult`](#syncresult) |
 | `GET` | `/v1/search` | `200` | [`SearchResults`](#searchresults) |
 | `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
+| `POST` | `/v1/diagnostics/remote-check` | `200` | [`RemoteCheckResult`](#remotecheckresult) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state.
 
@@ -93,12 +94,24 @@ Except on `?refresh=true`, states are read in the background by at most 4 thread
 | First update | At once for a repository never updated (within a second of the scan that indexed it); otherwise one interval after its `last_update`. |
 | Interval | `[repos] fetch_interval` (default 1 hour) after the end of the previous update, ±10 % at random. The index is read again every 10 seconds for new repositories. |
 | Concurrency | At most `[repos] fetch_concurrency` updates at once (default 4, at most 64). |
-| Backoff | After a failed fetch, the repository's next update waits 2, 4, then 8 times the interval (never more), counting consecutive failures. Every repository of the same host (`host[:port]` of the primary remote, or its URL for a local path) waits as long, unless a fetch of that host that started earlier succeeded in the meantime. A successful fetch clears the host's backoff. Other hosts are not affected. |
+| Backoff | After a failed fetch, the repository's next update waits 2, 4, then 8 times the interval (never more), counting consecutive failures. Every repository of the same host (`host[:port]` of the primary remote, or its URL for a local path) waits as long, unless a fetch of that host that started earlier succeeded in the meantime. A successful fetch clears the host's backoff. Other hosts are not affected. A fetch that met a lock held by another git process (`busy`) neither backs off nor counts as a failure: the next update is one interval away. |
 | Policy | `[repos."<path>"] update`, otherwise the context's `update`, otherwise `ff`; `fetch` for an `unassigned` repository without `[repos."<path>"] update`. |
-| git commands | `git fetch --no-prune <primary>` (timeout 120 s; tags as git's automatic tag following and `remote.<name>.tagOpt` decide, an existing local tag is never overwritten); `git merge --ff-only --no-autostash <commit>` (10 min); `git fetch --no-prune <primary> <merge ref>:refs/heads/<default branch>` (120 s). On timeout, the command's process group gets `SIGTERM`, then `SIGKILL` 5 s later. |
+| git commands | `git fetch --no-prune --no-prune-tags --no-tags <primary>` (timeout 120 s; no tag is fetched, whatever `fetch.pruneTags`, `remote.<name>.pruneTags` or `remote.<name>.tagOpt` say); `git merge --ff-only --no-autostash <commit>` (10 min); `git fetch --no-prune --no-prune-tags --no-tags <primary> <merge ref>:refs/heads/<default branch>` (120 s). On timeout, the command's process group gets `SIGTERM`, then `SIGKILL` 5 s later. A command that fails only because another git process holds a lock of the repository (`Unable to create '….lock': File exists`, `cannot lock ref '…': is at … but expected …`) gives the skip reason `busy`; the lock is never removed. |
 | git environment | `loomd`'s environment and the user's git configuration and hooks, plus `GIT_TERMINAL_PROMPT=0`, `GIT_CEILING_DIRECTORIES=<parent of the working tree>`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` unless `core.sshCommand` (read with `git config --get`), `GIT_SSH_COMMAND` or `GIT_SSH` is set; `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE` and `GIT_PREFIX` removed. |
 
 `POST /v1/repos/sync` takes a [`SyncRequest`](#syncrequest) and updates the repositories it names (every repository of the index when it names none) now, regardless of their schedule and of the backoff, then answers with a [`SyncResult`](#syncresult), sorted by slug, after every result is stored. A repository already being updated is updated again once that update ends. The answer may take as long as the updates (each command has its timeout). With `dry_run: true`, nothing runs: each state is read now and the result says what an update would do.
+
+#### Remote check
+
+`POST /v1/diagnostics/remote-check` (no body) checks that each remote endpoint of the index answers `loomd`'s git, and answers with a [`RemoteCheckResult`](#remotecheckresult) (the checks of `loom repo doctor`).
+
+| Property | Value |
+| --- | --- |
+| Endpoints | One per distinct endpoint and scheme of the primary remotes of the index (see [`RemoteCheck`](#remotecheckresult)). |
+| Repository | One repository of the endpoint: one whose last update did not fail to fetch when there is one, then the lowest slug. |
+| git command | `git -C <repository> ls-remote --exit-code <primary remote> HEAD`, with the [git environment](#updates) of the updates: the user's git configuration (`core.sshCommand`, `includeIf`, credential helpers), `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode` unless an SSH command is configured. Nothing is written to the repository. |
+| Timing | Every endpoint at once, each stopped after 20 s (process group `SIGTERM`, then `SIGKILL` 5 s later). |
+| Result | `reachable` when git exits with `0`, or with `2` (no `HEAD` on the remote, such as an empty repository); otherwise `failed` with the kind of failure read from git's error output. |
 
 ### Search
 
@@ -154,6 +167,7 @@ curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/
   -d '{"repos": ["personal/loom"], "dry_run": true}' http://loomd/v1/repos/sync
 curl --unix-socket ~/.loom/run/loomd.sock -X POST 'http://loomd/v1/repos/scan?dry_run=true'
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/diagnostics
+curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/diagnostics/remote-check
 ```
 
 ## Types
@@ -170,6 +184,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
 | `LastUpdate` | [`schemas/last_update.json`](schemas/last_update.json) (in `RepoSummary` and `SyncResult`) |
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
+| `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
 | `RepoList` | [`schemas/repo_list.json`](schemas/repo_list.json) |
 | `RepoState` | [`schemas/repo_state.json`](schemas/repo_state.json) (in `RepoSummary`) |
@@ -378,6 +393,7 @@ The result of the last update of a repository, scheduled or requested.
 | `diverged` | `branch`, `ahead`, `behind` | The branch and its upstream both have commits the other lacks. |
 | `merge_refused` | `stderr_tail` | `git merge --ff-only` refused (an untracked file in the way, a change made since the decision). Not retried before the next update. |
 | `default_branch_diverged` | `branch`, `ahead`, `behind` | The local default branch and its upstream both have commits the other lacks. |
+| `busy` | `step` (`fetch`, `fast_forward`, `move_default_branch`), `stderr_tail` | Another git process (an editor's automatic fetch, a command of the user) held a lock of the repository during this step: `index.lock` or another `*.lock` file existed, or a ref moved under the fetch. Retried at the next interval, without [backoff](#updates); the lock is never removed. Any other failure, or a lock along with another error, stays `failed`. |
 
 ```json
 {
@@ -471,13 +487,70 @@ The environment of `loomd` its git operations depend on, read at each request. N
 }
 ```
 
+### `RemoteCheckResult`
+
+Answer of [`POST /v1/diagnostics/remote-check`](#remote-check).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `remotes` | list of `RemoteCheck` | One per distinct endpoint and scheme of the primary remotes of the index, sorted by scheme (in the order below), then endpoint. Empty when no repository has a remote. |
+
+`RemoteCheck`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `endpoint` | string | `<user>@<host>[:<port>]` for SSH (user `git` when the URL has none; the host lowercase, an SSH alias as written), `<scheme>://<host>[:<port>]` for `https`, `http` and `git` (no user, no password), the URL otherwise. |
+| `scheme` | string | `ssh` (`ssh://`, `git+ssh://`, `ssh+git://`, scp-like `[user@]host:path`), `https`, `http`, `git`, `local` (a path or `file://`), `other`. |
+| `via` | string | Slug of the repository the check ran in. |
+| `path` | path | Its path. |
+| `remote` | string | Name of its primary remote. |
+| `result` | object | Tagged by `kind`: `reachable`, or `failed` with `problem`, `error` (exit status, `no answer within 20s`, `cannot run git: …`, `repository unreadable: …`) and `stderr_tail` (the last 2,000 bytes at most of git's standard error). |
+
+`problem`, read from git's error output, the first that matches:
+
+| `problem` | When git's error output holds (ASCII case ignored) |
+| --- | --- |
+| `ssh_auth` | `Permission denied (publickey`, `(password` or `(keyboard-interactive`, `Host key verification failed`, `Too many authentication failures`, `no such identity` |
+| `https_auth` | `could not read Username`, `could not read Password`, `terminal prompts disabled`, `Authentication failed for`, `HTTP Basic: Access denied`, `Invalid username or password`, `The requested URL returned error: 401` or `403` |
+| `not_found` | `Repository not found`, `could not be found or you don't have permission`, `does not appear to be a git repository`, `The requested URL returned error: 404`, `' not found` |
+| `network` | `Could not resolve host`, `Could not resolve hostname`, `Name or service not known`, `Connection timed out`, `Operation timed out`, `Connection refused`, `Network is unreachable`, `No route to host`, `Failed to connect to`, `Connection reset`, `Connection closed by`; also a check stopped after 20 s |
+| `other` | Anything else, or git could not run |
+
+```json
+{
+  "remotes": [
+    {
+      "endpoint": "git@github.com",
+      "scheme": "ssh",
+      "via": "personal/loom",
+      "path": "/home/me/perso/loom",
+      "remote": "origin",
+      "result": { "kind": "reachable" }
+    },
+    {
+      "endpoint": "https://gitlab.example",
+      "scheme": "https",
+      "via": "work/api",
+      "path": "/home/me/work/api",
+      "remote": "origin",
+      "result": {
+        "kind": "failed",
+        "problem": "https_auth",
+        "error": "exit status: 128",
+        "stderr_tail": "fatal: could not read Username for 'https://gitlab.example': terminal prompts disabled\n"
+      }
+    }
+  ]
+}
+```
+
 ### `DoctorReport`
 
 Output of `loom repo doctor --json`; checks and their order: [CLI conventions](cli/conventions.md#loom-repo-doctor).
 
 | Field | Type | Content |
 | --- | --- | --- |
-| `checks` | list of objects | `check` (string: `config`, `roots`, `contexts`, `loomd`, `index`, `unassigned`, `ssh-agent`, `home`, `ssh <user>@<host>[:<port>]`), `status` (`ok`, `warn`, `fail`), `detail` (string), `fix` (string, absent when there is nothing to fix; may hold several lines). |
+| `checks` | list of objects | `check` (string: `config`, `roots`, `contexts`, `loomd`, `index`, `unassigned`, `ssh-agent`, `home`, `remote`, `remote <endpoint> (<scheme>, via <slug>)`, `updates`), `status` (`ok`, `warn`, `fail`), `detail` (string), `fix` (string, absent when there is nothing to fix; may hold several lines). |
 
 ### `ApiError`
 

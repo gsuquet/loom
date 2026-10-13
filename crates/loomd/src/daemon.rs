@@ -32,10 +32,10 @@ use loom_config::layout::{
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    DIAGNOSTICS_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH,
-    RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, agent_socket,
-    clock_error, home_value, invalid_request, method_not_allowed, not_found, register_path,
-    repo_filter, search_request, slug, status_at, timestamp,
+    DIAGNOSTICS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH,
+    REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery,
+    SearchQuery, agent_socket, clock_error, home_value, invalid_request, method_not_allowed,
+    not_found, register_path, repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
@@ -340,6 +340,7 @@ fn router(app: App) -> Router {
         .route(REPO_PATH, get(get_repo).delete(forget_repo))
         .route(SEARCH_PATH, get(search))
         .route(DIAGNOSTICS_PATH, get(diagnostics))
+        .route(REMOTE_CHECK_PATH, post(remote_check))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -465,6 +466,11 @@ async fn diagnostics() -> Response {
         home: home_value(env::var_os("HOME").as_deref()),
     })
     .into_response()
+}
+
+/// `git ls-remote` of each remote endpoint of the index, in loomd's environment.
+async fn remote_check(State(app): State<Arc<App>>) -> Response {
+    respond(app.repos.remote_check().await)
 }
 
 async fn register_repo(

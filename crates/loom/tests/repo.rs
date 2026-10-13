@@ -652,15 +652,51 @@ fn registration_on_use_gives_up_after_its_budget() {
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
 }
 
-/// An `ssh` that greets `git@good.example` the way GitHub does (exit 1), refuses
+/// `git <args>` in `dir`, hermetic (`HOME` is `home`, no global or system configuration, no
+/// signing), which must succeed.
+fn git(home: &Path, dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_SSH_COMMAND")
+        .env_remove("GIT_SSH")
+        .args([
+            "-c",
+            "user.name=Loom Test",
+            "-c",
+            "user.email=loom@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// An `ssh` that serves the bare repository `good` for `git@good.example`, refuses
 /// `git@bad.example` (exit 255), and logs its arguments.
-fn ssh_stub(dir: &Path) -> PathBuf {
+fn ssh_stub(dir: &Path, good: &Path) -> PathBuf {
     let bin = dir.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let log = dir.join("ssh.log");
     let script = format!(
-        "#!/bin/sh\necho \"$@\" >> '{}'\nfor last; do :; done\ncase \"$last\" in\n  git@good.example) echo \"Hi me! You've successfully authenticated, but GitHub does not provide shell access.\" >&2; exit 1 ;;\n  git@bad.example) echo 'git@bad.example: Permission denied (publickey).' >&2; exit 255 ;;\nesac\nexit 255\n",
-        log.display()
+        "#!/bin/sh\necho \"$@\" >> '{}'\ncase \"$*\" in\n  *git@good.example*) exec git upload-pack '{}' ;;\n  *git@bad.example*) echo 'git@bad.example: Permission denied (publickey).' >&2; exit 255 ;;\nesac\nexit 255\n",
+        log.display(),
+        good.display()
     );
     let path = bin.join("ssh");
     fs::write(&path, script).unwrap();
@@ -668,23 +704,54 @@ fn ssh_stub(dir: &Path) -> PathBuf {
     bin
 }
 
+/// The bare repository `good.git` with one commit, served by the `ssh` stub, and two
+/// repositories under `~/perso` whose primary remotes are `git@good.example` and
+/// `git@bad.example`; the path of the stub's directory.
+fn doctor_remotes(sandbox: &Sandbox) -> PathBuf {
+    let home = sandbox.home();
+    let good = sandbox.dir.path().join("good.git");
+    let top = sandbox.dir.path();
+    git(
+        &home,
+        top,
+        &["init", "-q", "--bare", good.to_str().unwrap()],
+    );
+    let seed = top.join("seed");
+    git(&home, top, &["init", "-q", seed.to_str().unwrap()]);
+    fs::write(seed.join("f.txt"), "one\n").unwrap();
+    git(&home, &seed, &["add", "-A"]);
+    git(&home, &seed, &["commit", "-q", "-m", "one"]);
+    git(
+        &home,
+        &seed,
+        &["push", "-q", good.to_str().unwrap(), "HEAD:main"],
+    );
+    let remote_good = home.join("perso/remote-good");
+    let remote_bad = home.join("perso/remote-bad");
+    for (repo, remotes) in [
+        (&remote_good, &[("origin", "git@good.example:me/x.git")][..]),
+        (
+            &remote_bad,
+            &[
+                ("origin", "git@bad.example:me/y.git"),
+                ("up", "git@good.example:up/y.git"),
+            ][..],
+        ),
+    ] {
+        git(&home, top, &["init", "-q", repo.to_str().unwrap()]);
+        for (name, url) in remotes {
+            git(&home, repo, &["remote", "add", name, url]);
+        }
+    }
+    ssh_stub(sandbox.dir.path(), &good)
+}
+
 #[test]
 fn doctor_reports_checks_and_fixes() {
     let config = format!("{CONFIG}\n[contexts.gone]\nmatch.paths = [\"~/missing\"]\n");
     let sandbox = Sandbox::new(&config);
     let home = sandbox.home();
-    fake_repo(
-        &home.join("perso/remote-good"),
-        &[("origin", "git@good.example:me/x.git")],
-    );
-    fake_repo(
-        &home.join("perso/remote-bad"),
-        &[
-            ("origin", "git@bad.example:me/y.git"),
-            ("up", "git@good.example:up/y.git"),
-        ],
-    );
-    let stub = ssh_stub(sandbox.dir.path());
+    let stub = doctor_remotes(&sandbox);
     let path = format!(
         "{}:{}",
         stub.display(),
@@ -695,6 +762,9 @@ fn doctor_reports_checks_and_fixes() {
     let env = [
         ("PATH", path.as_str()),
         ("SSH_AUTH_SOCK", agent.to_str().unwrap()),
+        // loomd's git: no global or system configuration.
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
     ];
 
     // Without loomd: the configuration checks only, loomd is not started.
@@ -712,16 +782,15 @@ fn doctor_reports_checks_and_fixes() {
     assert!(text.contains("warn  loomd: not running"), "{text}");
     assert!(!sandbox.socket().exists());
 
-    // loomd started from this environment: it sees the agent.
+    // loomd started from this environment: it sees the agent and the `ssh` of `PATH`. The
+    // sync makes the last update of every repository known.
     let output = sandbox.loom_with(&home, &["repo", "scan"], &env);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let output = sandbox.loom_with(&home, &["repo", "sync"], &env);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let output = sandbox.loom_with(&home, &["repo", "doctor"], &env);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(
-        stderr(&output).contains("1 check failed"),
-        "{}",
-        stderr(&output)
-    );
+    assert!(stderr(&output).contains("failed"), "{}", stderr(&output));
     let text = stdout(&output);
     for line in [
         "ok    config: ",
@@ -734,25 +803,19 @@ fn doctor_reports_checks_and_fixes() {
             agent.display()
         ),
         &format!("ok    home: loomd expands `~` to {}\n", home.display()),
-        "ok    ssh git@good.example: authenticated: Hi me!",
-        "fail  ssh git@bad.example: git@bad.example: Permission denied (publickey).\n",
-        "      fix: run `ssh -T git@bad.example` in a terminal",
+        "ok    remote git@good.example (ssh, via personal/remote-good): reachable\n",
+        "fail  remote git@bad.example (ssh, via personal/remote-bad): git@bad.example: Permission denied (publickey).\n",
+        "      fix: SSH refused loomd's git: load the key in the agent loomd sees",
+        "warn  updates: fetch refused by SSH (1): personal/remote-bad\n",
     ] {
         assert!(text.contains(line), "{line:?} not in\n{text}");
     }
-    // One check per distinct host, never interactive.
+    // git ran `ssh` in batch mode, for the updates and for the checks alike.
     let log = fs::read_to_string(sandbox.dir.path().join("ssh.log")).unwrap();
-    let mut checks: Vec<&str> = log
-        .lines()
-        .filter(|line| line.contains("BatchMode"))
-        .collect();
-    checks.sort_unstable();
-    assert_eq!(
-        checks,
-        [
-            "-o BatchMode=yes -o ConnectTimeout=5 -T git@bad.example",
-            "-o BatchMode=yes -o ConnectTimeout=5 -T git@good.example"
-        ],
+    assert!(log.contains("git@good.example"), "{log}");
+    assert!(log.contains("git@bad.example"), "{log}");
+    assert!(
+        log.lines().all(|line| line.contains("BatchMode=yes")),
         "{log}"
     );
 
@@ -767,7 +830,14 @@ fn doctor_reports_checks_and_fixes() {
             .find(|check| check.check == name)
             .map(|check| check.status)
     };
-    assert_eq!(status("ssh git@good.example"), Some(CheckStatus::Ok));
-    assert_eq!(status("ssh git@bad.example"), Some(CheckStatus::Fail));
+    assert_eq!(
+        status("remote git@good.example (ssh, via personal/remote-good)"),
+        Some(CheckStatus::Ok)
+    );
+    assert_eq!(
+        status("remote git@bad.example (ssh, via personal/remote-bad)"),
+        Some(CheckStatus::Fail)
+    );
     assert_eq!(status("unassigned"), Some(CheckStatus::Warn));
+    assert_eq!(status("updates"), Some(CheckStatus::Warn));
 }
