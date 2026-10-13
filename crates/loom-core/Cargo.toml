@@ -13,9 +13,11 @@ jiff = { workspace = true, features = ["serde"] }
 # `jiff02`: JSON Schema of `jiff::civil::Date`.
 schemars = { workspace = true, features = ["jiff02"] }
 serde.workspace = true
-# `events.jsonl` lines.
+# `events.jsonl` lines, and the bridge from TOML values to the serde forms of the domain types.
 serde_json.workspace = true
 thiserror.workspace = true
+# `task.md` frontmatter, rewritten key by key.
+toml_edit.workspace = true
 
 [lints]
 workspace = true
