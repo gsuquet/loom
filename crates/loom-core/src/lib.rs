@@ -1,5 +1,6 @@
 //! The task domain: tasks, their status transitions, commands and events, and the primitives
-//! they are built on (instants, calendar dates, context names, IDs).
+//! they are built on (instants, calendar dates, context names, IDs), and the file formats they
+//! are stored in (`events.jsonl`), as strings in and strings out.
 //!
 //! No I/O, no clock, no randomness of its own, no async runtime: callers inject the current time
 //! and a [`RandomSource`], and persist the events [`apply`] returns.
@@ -7,6 +8,7 @@
 mod command;
 mod context;
 mod event;
+mod event_log;
 mod id;
 mod priority;
 mod task;
@@ -18,6 +20,9 @@ pub use command::{
 pub use context::{CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, UNASSIGNED};
 pub use event::{
     Actor, Change, EVENT_SCHEMA_VERSION, Event, EventRecord, FieldChange, MachineId, Origin,
+};
+pub use event_log::{
+    EventEncodeError, EventLog, SkipReason, SkippedLine, parse_events, render_event,
 };
 pub use id::{
     EventId, ID_LEN, IdError, PrefixError, RandomSource, TaskId, resolve_prefix,

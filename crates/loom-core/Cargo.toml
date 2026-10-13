@@ -13,10 +13,9 @@ jiff = { workspace = true, features = ["serde"] }
 # `jiff02`: JSON Schema of `jiff::civil::Date`.
 schemars = { workspace = true, features = ["jiff02"] }
 serde.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
+# `events.jsonl` lines.
 serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
