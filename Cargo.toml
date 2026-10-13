@@ -30,6 +30,7 @@ hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"
 jsonschema = { version = "0.58", default-features = false }
 loom-api = { path = "crates/loom-api" }
 loom-config = { path = "crates/loom-config" }
+loom-core = { path = "crates/loom-core" }
 loom-repo = { path = "crates/loom-repo" }
 loom-store = { path = "crates/loom-store" }
 loom-telemetry = { path = "crates/loom-telemetry" }

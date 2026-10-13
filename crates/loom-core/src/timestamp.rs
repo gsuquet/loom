@@ -16,7 +16,7 @@ const TEXT_LEN: usize = 20;
 /// An instant, serialized as an RFC 3339 string in UTC with whole seconds: `2026-10-12T08:00:00Z`.
 ///
 /// Only that canonical form is accepted when deserializing: no fractional seconds, no offset
-/// other than `Z`, uppercase `T` and `Z`, years 1970 to 9999. `loom-api` has no clock: callers
+/// other than `Z`, uppercase `T` and `Z`, years 1970 to 9999. `loom-core` has no clock: callers
 /// build a `Timestamp` from seconds since the Unix epoch they read themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp {
