@@ -221,10 +221,9 @@ async fn resolve(env: &Env<'_>, client: &Client, arg: Option<&str>) -> Result<Re
         Vec::new()
     };
     let by_root = |root: PathBuf| {
-        find_by_path(&repos, &root, canonical)
-            .map_or(Resolved::Unindexed(root), |repo| {
-                Resolved::Indexed(repo.clone())
-            })
+        find_by_path(&repos, &root, canonical).map_or(Resolved::Unindexed(root), |repo| {
+            Resolved::Indexed(repo.clone())
+        })
     };
     match select(&parsed, &repos, &contexts).into_diagnostic()? {
         Selection::Repo(repo) => Ok(Resolved::Indexed(repo.clone())),
@@ -557,7 +556,12 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
             ),
             Some("restart loomd with the version of this loom"),
         )),
-        Err(error) => checks.push(check("ssh-agent", CheckStatus::Fail, error.to_string(), None)),
+        Err(error) => checks.push(check(
+            "ssh-agent",
+            CheckStatus::Fail,
+            error.to_string(),
+            None,
+        )),
     }
     checks.extend(ssh_checks(targets).await);
     checks

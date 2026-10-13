@@ -385,8 +385,11 @@ fn registration_on_use_marks_known_repositories_used_and_registers_unknown_ones(
     fake_repo(&outside, &[]);
     fs::create_dir_all(outside.join("src")).unwrap();
     // The same repository reached through a symbolic link.
-    std::os::unix::fs::symlink(sandbox.user_home().join("perso"), sandbox.user_home().join("p"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        sandbox.user_home().join("perso"),
+        sandbox.user_home().join("p"),
+    )
+    .unwrap();
     let _daemon = sandbox.start();
     sandbox.scan();
 
@@ -396,7 +399,10 @@ fn registration_on_use_marks_known_repositories_used_and_registers_unknown_ones(
         Some(&json!({ "path": known.join("."), "on_use": true })),
     ));
     assert_eq!(used.identity.slug, "personal/known");
-    assert!(!used.registered, "an indexed repository is not marked registered");
+    assert!(
+        !used.registered,
+        "an indexed repository is not marked registered"
+    );
     let first_use = used.last_used.unwrap();
 
     let through_link: RepoSummary = ok(&sandbox.request(
@@ -436,15 +442,18 @@ fn scan_dry_run_and_rebuild() {
 
     let dry: ScanResult = ok(&sandbox.request("POST", "/v1/repos/scan?dry_run=true", None));
     assert_eq!((dry.added, dry.updated, dry.removed), (1, 0, 0));
-    assert_eq!(sandbox.slugs("/v1/repos"), ["personal/a", "unassigned/tool"]);
+    assert_eq!(
+        sandbox.slugs("/v1/repos"),
+        ["personal/a", "unassigned/tool"]
+    );
 
-    let dry: ScanResult = ok(&sandbox.request(
-        "POST",
-        "/v1/repos/scan?rebuild=true&dry_run=true",
-        None,
-    ));
+    let dry: ScanResult =
+        ok(&sandbox.request("POST", "/v1/repos/scan?rebuild=true&dry_run=true", None));
     assert_eq!((dry.added, dry.updated, dry.removed), (2, 0, 2));
-    assert_eq!(sandbox.slugs("/v1/repos"), ["personal/a", "unassigned/tool"]);
+    assert_eq!(
+        sandbox.slugs("/v1/repos"),
+        ["personal/a", "unassigned/tool"]
+    );
 
     let rebuilt: ScanResult = ok(&sandbox.request("POST", "/v1/repos/scan?rebuild=true", None));
     assert_eq!((rebuilt.added, rebuilt.updated, rebuilt.removed), (2, 0, 2));
@@ -471,7 +480,12 @@ fn diagnostics_report_the_agent_socket_and_home() {
     let plain = sandbox.dir.path().join("plain");
     fs::write(&plain, "").unwrap();
     for (value, expected) in [
-        (Some(agent.clone()), SshAgentSocket::Socket { path: agent.clone() }),
+        (
+            Some(agent.clone()),
+            SshAgentSocket::Socket {
+                path: agent.clone(),
+            },
+        ),
         (
             Some(plain.clone()),
             SshAgentSocket::NotASocket {

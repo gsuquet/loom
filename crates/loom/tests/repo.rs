@@ -123,7 +123,12 @@ impl Sandbox {
     /// Runs `args`, expecting success; stdout.
     fn ok(&self, cwd: &Path, args: &[&str]) -> String {
         let output = self.loom_in(cwd, args);
-        assert_eq!(output.status.code(), Some(0), "{args:?}: {}", stderr(&output));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            stderr(&output)
+        );
         stdout(&output)
     }
 
@@ -214,7 +219,11 @@ fn ls_starts_loomd_and_lists_in_every_format() {
     assert!(lines[0].starts_with("  SLUG"), "{table}");
     assert!(lines[4].starts_with("! unassigned/tool"), "{table}");
     assert!(lines[1].starts_with("  personal/a "), "{table}");
-    assert!(stderr(&output).contains("1 repositories (marked `!`)"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("1 repositories (marked `!`)"),
+        "{}",
+        stderr(&output)
+    );
 
     let paths = sandbox.ok(&home, &["repo", "ls", "--format", "paths"]);
     let expected: String = [
@@ -232,11 +241,20 @@ fn ls_starts_loomd_and_lists_in_every_format() {
     // Sorted by context, then name.
     assert_eq!(
         sandbox.slugs(),
-        ["personal/a", "personal/b", "personal/loom", "unassigned/tool", "work/loom"]
+        [
+            "personal/a",
+            "personal/b",
+            "personal/loom",
+            "unassigned/tool",
+            "work/loom"
+        ]
     );
 
     let work = sandbox.ok(&home, &["-c", "work", "repo", "ls", "--format=paths"]);
-    assert_eq!(work, format!("{}\n", home.join("perso/clients/loom").display()));
+    assert_eq!(
+        work,
+        format!("{}\n", home.join("perso/clients/loom").display())
+    );
     let unassigned = sandbox.ok(&home, &["repo", "ls", "--json", "-c", "unassigned"]);
     let list: RepoList = valid(&unassigned);
     assert_eq!(list.repos.len(), 1);
@@ -256,13 +274,25 @@ fn show_resolves_paths_slugs_and_names() {
     let shown = sandbox.show(&home, &["work/loom"]);
     assert_eq!(shown.identity.path, home.join("perso/clients/loom"));
     assert!(shown.last_used.is_some());
-    assert!(shown.state.is_some(), "the state is read when there is none");
+    assert!(
+        shown.state.is_some(),
+        "the state is read when there is none"
+    );
 
     // Paths: relative, absolute, `~`, below the root.
-    assert_eq!(sandbox.show(&home.join("perso"), &["./b"]).identity.slug, "personal/b");
+    assert_eq!(
+        sandbox.show(&home.join("perso"), &["./b"]).identity.slug,
+        "personal/b"
+    );
     let sub = a.join("sub/dir");
-    assert_eq!(sandbox.show(&home, &[sub.to_str().unwrap()]).identity.slug, "personal/a");
-    assert_eq!(sandbox.show(&home, &["~/perso/a/sub"]).identity.slug, "personal/a");
+    assert_eq!(
+        sandbox.show(&home, &[sub.to_str().unwrap()]).identity.slug,
+        "personal/a"
+    );
+    assert_eq!(
+        sandbox.show(&home, &["~/perso/a/sub"]).identity.slug,
+        "personal/a"
+    );
     // No argument: the repository of the current directory, also without `PWD`.
     assert_eq!(sandbox.show(&sub, &[]).identity.slug, "personal/a");
     let output = Command::new(loom_bin())
@@ -275,10 +305,16 @@ fn show_resolves_paths_slugs_and_names() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(valid::<RepoSummary>(&stdout(&output)).identity.slug, "personal/a");
+    assert_eq!(
+        valid::<RepoSummary>(&stdout(&output)).identity.slug,
+        "personal/a"
+    );
 
     // A unique name.
-    assert_eq!(sandbox.show(&home, &["tool"]).identity.slug, "unassigned/tool");
+    assert_eq!(
+        sandbox.show(&home, &["tool"]).identity.slug,
+        "unassigned/tool"
+    );
 
     // An ambiguous name, from a directory without context: the candidates, exit 1.
     let output = sandbox.loom(&["repo", "show", "loom"]);
@@ -286,25 +322,45 @@ fn show_resolves_paths_slugs_and_names() {
     let text = stderr(&output);
     assert!(text.contains("`loom` names several repositories"), "{text}");
     assert!(
-        text.contains(&format!("  personal/loom ({})", home.join("perso/loom").display())),
+        text.contains(&format!(
+            "  personal/loom ({})",
+            home.join("perso/loom").display()
+        )),
         "{text}"
     );
     assert!(
-        text.contains(&format!("  work/loom ({})", home.join("perso/clients/loom").display())),
+        text.contains(&format!(
+            "  work/loom ({})",
+            home.join("perso/clients/loom").display()
+        )),
         "{text}"
     );
     // The repository of the current directory decides, then `match.paths`, then `-c` first.
     assert_eq!(sandbox.show(&a, &["loom"]).identity.slug, "personal/loom");
-    assert_eq!(sandbox.show(&home.join("work"), &["loom"]).identity.slug, "work/loom");
-    assert_eq!(sandbox.show(&a, &["-c", "work", "loom"]).identity.slug, "work/loom");
+    assert_eq!(
+        sandbox.show(&home.join("work"), &["loom"]).identity.slug,
+        "work/loom"
+    );
+    assert_eq!(
+        sandbox.show(&a, &["-c", "work", "loom"]).identity.slug,
+        "work/loom"
+    );
 
     // Not a repository, not a name.
     let output = sandbox.loom(&["repo", "show"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("is not inside a git repository"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("is not inside a git repository"),
+        "{}",
+        stderr(&output)
+    );
     let output = sandbox.loom(&["repo", "show", "nope"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("no repository `nope`"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("no repository `nope`"),
+        "{}",
+        stderr(&output)
+    );
 
     // A path outside the index is registered.
     let ext = sandbox.show(&home, &["~/elsewhere/ext/src"]);
@@ -314,7 +370,10 @@ fn show_resolves_paths_slugs_and_names() {
     // Human card.
     let card = sandbox.ok(&home, &["repo", "show", "personal/a"]);
     assert!(card.starts_with("slug:           personal/a\n"), "{card}");
-    assert!(card.contains("context:        personal (match.paths \"~/perso\")\n"), "{card}");
+    assert!(
+        card.contains("context:        personal (match.paths \"~/perso\")\n"),
+        "{card}"
+    );
 }
 
 #[test]
@@ -329,11 +388,17 @@ fn register_and_forget() {
     assert!(!sandbox.socket().exists());
 
     let registered = sandbox.ok(&home, &["repo", "register", "elsewhere/ext/src"]);
-    assert_eq!(registered, format!("registered unassigned/ext: {}\n", ext.display()));
+    assert_eq!(
+        registered,
+        format!("registered unassigned/ext: {}\n", ext.display())
+    );
     assert!(sandbox.slugs().contains(&"unassigned/ext".to_owned()));
 
     let dry = sandbox.ok(&home, &["repo", "forget", "ext", "-n"]);
-    assert_eq!(dry, format!("would forget unassigned/ext: {}\n", ext.display()));
+    assert_eq!(
+        dry,
+        format!("would forget unassigned/ext: {}\n", ext.display())
+    );
     let forgotten: RepoSummary =
         valid(&sandbox.ok(&home, &["repo", "forget", "unassigned/ext", "--json"]));
     assert_eq!(forgotten.identity.path, ext);
@@ -344,7 +409,11 @@ fn register_and_forget() {
     // A path of a repository the index does not have is not registered by `forget`.
     let path = sandbox.loom(&["repo", "forget", ext.to_str().unwrap()]);
     assert_eq!(path.status.code(), Some(1));
-    assert!(stderr(&path).contains("is not in the index"), "{}", stderr(&path));
+    assert!(
+        stderr(&path).contains("is not in the index"),
+        "{}",
+        stderr(&path)
+    );
 
     let not_a_repo = sandbox.loom(&["repo", "register", "work"]);
     assert_eq!(not_a_repo.status.code(), Some(1));
@@ -364,7 +433,8 @@ fn rebuild_needs_a_confirmation() {
 
     let dry = sandbox.ok(&home, &["repo", "scan", "-n"]);
     assert_eq!(dry, "would add 1, update 0, remove 0\n");
-    let result: ScanResult = valid(&sandbox.ok(&home, &["repo", "scan", "--rebuild", "-n", "--json"]));
+    let result: ScanResult =
+        valid(&sandbox.ok(&home, &["repo", "scan", "--rebuild", "-n", "--json"]));
     assert_eq!((result.added, result.removed), (6, 6));
     assert!(!sandbox.slugs().contains(&"personal/new".to_owned()));
 
@@ -373,15 +443,26 @@ fn rebuild_needs_a_confirmation() {
     assert_eq!(refused.status.code(), Some(1));
     let text = stderr(&refused);
     assert!(
-        text.contains("confirmation required but stdin is not a terminal; pass -y/--yes to confirm"),
+        text.contains(
+            "confirmation required but stdin is not a terminal; pass -y/--yes to confirm"
+        ),
         "{text}"
     );
-    assert!(text.contains("1 registered repositories outside the roots will be lost"), "{text}");
-    assert!(text.contains(&home.join("elsewhere/ext").display().to_string()), "{text}");
+    assert!(
+        text.contains("1 registered repositories outside the roots will be lost"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&home.join("elsewhere/ext").display().to_string()),
+        "{text}"
+    );
     assert!(sandbox.slugs().contains(&"unassigned/ext".to_owned()));
 
     let rebuilt = sandbox.ok(&home, &["repo", "scan", "--rebuild", "-y"]);
-    assert!(rebuilt.starts_with("6 added, 0 updated, 6 removed in "), "{rebuilt}");
+    assert!(
+        rebuilt.starts_with("6 added, 0 updated, 6 removed in "),
+        "{rebuilt}"
+    );
     let slugs = sandbox.slugs();
     assert!(slugs.contains(&"personal/new".to_owned()), "{slugs:?}");
     assert!(!slugs.contains(&"unassigned/ext".to_owned()), "{slugs:?}");
@@ -392,10 +473,18 @@ fn wait_for_path(sandbox: &Sandbox, path: &Path) -> RepoSummary {
     let deadline = Instant::now() + TIMEOUT;
     loop {
         let list: RepoList = valid(&sandbox.ok(&sandbox.home(), &["repo", "ls", "--json"]));
-        if let Some(repo) = list.repos.into_iter().find(|repo| repo.identity.path == path) {
+        if let Some(repo) = list
+            .repos
+            .into_iter()
+            .find(|repo| repo.identity.path == path)
+        {
             return repo;
         }
-        assert!(Instant::now() < deadline, "{} never indexed", path.display());
+        assert!(
+            Instant::now() < deadline,
+            "{} never indexed",
+            path.display()
+        );
         thread::sleep(POLL);
     }
 }
@@ -471,10 +560,16 @@ fn doctor_reports_checks_and_fixes() {
     let config = format!("{CONFIG}\n[contexts.gone]\nmatch.paths = [\"~/missing\"]\n");
     let sandbox = Sandbox::new(&config);
     let home = sandbox.home();
-    fake_repo(&home.join("perso/remote-good"), &[("origin", "git@good.example:me/x.git")]);
+    fake_repo(
+        &home.join("perso/remote-good"),
+        &[("origin", "git@good.example:me/x.git")],
+    );
     fake_repo(
         &home.join("perso/remote-bad"),
-        &[("origin", "git@bad.example:me/y.git"), ("up", "git@good.example:up/y.git")],
+        &[
+            ("origin", "git@bad.example:me/y.git"),
+            ("up", "git@good.example:up/y.git"),
+        ],
     );
     let stub = ssh_stub(sandbox.dir.path());
     let path = format!(
@@ -493,8 +588,14 @@ fn doctor_reports_checks_and_fixes() {
     let output = sandbox.loom_with(&home, &["repo", "doctor"], &env);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let text = stdout(&output);
-    assert!(text.contains("warn  roots: ~/missing (match.paths of gone) does not exist\n"), "{text}");
-    assert!(text.contains("ok    contexts: 3 contexts, no overlapping match.paths\n"), "{text}");
+    assert!(
+        text.contains("warn  roots: ~/missing (match.paths of gone) does not exist\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("ok    contexts: 3 contexts, no overlapping match.paths\n"),
+        "{text}"
+    );
     assert!(text.contains("warn  loomd: not running"), "{text}");
     assert!(!sandbox.socket().exists());
 
@@ -503,7 +604,11 @@ fn doctor_reports_checks_and_fixes() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let output = sandbox.loom_with(&home, &["repo", "doctor"], &env);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(stderr(&output).contains("1 check failed"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("1 check failed"),
+        "{}",
+        stderr(&output)
+    );
     let text = stdout(&output);
     for line in [
         "ok    config: ",
@@ -511,7 +616,10 @@ fn doctor_reports_checks_and_fixes() {
         "warn  unassigned: 1 repository has no context: ",
         "      fix: add a context that matches them to ",
         "             match.paths = [\"~/src\"]\n",
-        &format!("ok    ssh-agent: loomd sees an agent socket at {}\n", agent.display()),
+        &format!(
+            "ok    ssh-agent: loomd sees an agent socket at {}\n",
+            agent.display()
+        ),
         &format!("ok    home: loomd expands `~` to {}\n", home.display()),
         "ok    ssh git@good.example: authenticated: Hi me!",
         "fail  ssh git@bad.example: git@bad.example: Permission denied (publickey).\n",
@@ -521,7 +629,10 @@ fn doctor_reports_checks_and_fixes() {
     }
     // One check per distinct host, never interactive.
     let log = fs::read_to_string(sandbox.dir.path().join("ssh.log")).unwrap();
-    let mut checks: Vec<&str> = log.lines().filter(|line| line.contains("BatchMode")).collect();
+    let mut checks: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("BatchMode"))
+        .collect();
     checks.sort_unstable();
     assert_eq!(
         checks,

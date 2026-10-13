@@ -40,7 +40,9 @@ pub struct DaemonDiagnostics {
 }
 
 /// Outcome of one check of `loom repo doctor`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum CheckStatus {
     /// Nothing to fix.

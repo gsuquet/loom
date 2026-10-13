@@ -29,8 +29,8 @@ use loom_config::repos::{ForgeConfig, ForgeHost};
 use loom_repo::scan::Exclusions;
 use loom_repo::state::unreadable;
 use loom_repo::{
-    ContextRules, ScanDiff, ScanOptions, StateOptions, diff, find_root, git_dirs, read_repos, scan_roots,
-    scan_with_registered, state,
+    ContextRules, ScanDiff, ScanOptions, StateOptions, diff, find_root, git_dirs, read_repos,
+    scan_roots, scan_with_registered, state,
 };
 use loom_store::{Reader, RepoFilter, Store, StoreError};
 use loomd::api::{ScanQuery, internal, invalid_request, repo_not_found, timestamp, unavailable};

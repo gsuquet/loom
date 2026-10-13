@@ -10,12 +10,12 @@ use std::path::PathBuf;
 
 use loom_api::{
     ApiError, ApiVersion, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
-    ContextName, DaemonDiagnostics, DaemonRestart, DoctorCheck, DoctorReport, ErrorCode, ForgeKind, InstallReport, MaybeKnown, PendingUpgrade, Profile,
-    RegisterRequest, Remote, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState,
-    RepoSummary, RollbackReport, ScanIssue, ScanResult, ServicePlatform, ServiceStatus,
-    SshAgentSocket, StatusResponse, Timestamp, Untracked, UpdateChannel, UpdatePolicyMode, UpdateResult,
-    UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource,
-    Upstream, VersionInfo,
+    ContextName, DaemonDiagnostics, DaemonRestart, DoctorCheck, DoctorReport, ErrorCode, ForgeKind,
+    InstallReport, MaybeKnown, PendingUpgrade, Profile, RegisterRequest, Remote, RemoteUrl,
+    RepoHead, RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary, RollbackReport,
+    ScanIssue, ScanResult, ServicePlatform, ServiceStatus, SshAgentSocket, StatusResponse,
+    Timestamp, Untracked, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
+    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;

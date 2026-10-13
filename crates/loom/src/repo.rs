@@ -51,10 +51,12 @@ pub enum ResolveError {
 }
 
 fn candidate_lines(candidates: &[(String, PathBuf)]) -> String {
-    candidates.iter().fold(String::new(), |mut text, (slug, path)| {
-        let _ = write!(text, "\n  {slug} ({})", path.display());
-        text
-    })
+    candidates
+        .iter()
+        .fold(String::new(), |mut text, (slug, path)| {
+            let _ = write!(text, "\n  {slug} ({})", path.display());
+            text
+        })
 }
 
 /// Classifies `arg`: a path when it starts with `/`, `.` or `~`; a slug or a path when it
@@ -352,7 +354,12 @@ pub fn state_summary(state: Option<&RepoState>) -> String {
         return "not read yet".to_owned();
     };
     if matches!(
-        (&state.operation, &state.dirty, &state.untracked, &state.upstream),
+        (
+            &state.operation,
+            &state.dirty,
+            &state.untracked,
+            &state.upstream
+        ),
         (
             MaybeKnown::Unknown,
             MaybeKnown::Unknown,
@@ -467,22 +474,27 @@ pub fn render_card(repo: &RepoSummary) -> String {
         None => fields.push(("state", "not read yet".to_owned())),
         Some(state) => fields.extend(state_fields(state)),
     }
-    fields.iter().fold(String::new(), |mut text, (name, value)| {
-        let label = if name.is_empty() {
-            String::new()
-        } else {
-            format!("{name}:")
-        };
-        let _ = writeln!(text, "{label:<16}{value}");
-        text
-    })
+    fields
+        .iter()
+        .fold(String::new(), |mut text, (name, value)| {
+            let label = if name.is_empty() {
+                String::new()
+            } else {
+                format!("{name}:")
+            };
+            let _ = writeln!(text, "{label:<16}{value}");
+            text
+        })
 }
 
 fn state_fields(state: &RepoState) -> Vec<(&'static str, String)> {
     let known = |value: Option<String>| value.unwrap_or_else(|| "unknown".to_owned());
     let mut fields = vec![
         ("head", head_text(&state.head)),
-        ("dirty", known(state.dirty.known().map(|count| count.to_string()))),
+        (
+            "dirty",
+            known(state.dirty.known().map(|count| count.to_string())),
+        ),
         (
             "untracked",
             known(state.untracked.known().map(untracked_count)),
@@ -495,12 +507,11 @@ fn state_fields(state: &RepoState) -> Vec<(&'static str, String)> {
         ),
         (
             "upstream",
-            known(
-                state
-                    .upstream
-                    .as_known()
-                    .map(|upstream| upstream.as_ref().map_or_else(|| "none".to_owned(), upstream_text)),
-            ),
+            known(state.upstream.as_known().map(|upstream| {
+                upstream
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), upstream_text)
+            })),
         ),
         (
             "default_branch",
@@ -566,7 +577,12 @@ pub fn render_scan(result: &ScanResult, dry_run: bool) -> String {
         )
     };
     for issue in &result.errors {
-        let _ = writeln!(text, "cannot read {}: {}", issue.path.display(), issue.message);
+        let _ = writeln!(
+            text,
+            "cannot read {}: {}",
+            issue.path.display(),
+            issue.message
+        );
     }
     text
 }
@@ -681,9 +697,15 @@ mod tests {
             (Some("."), RepoArg::Path(CWD.into())),
             (Some("./a/../b"), RepoArg::Path("/home/me/src/b".into())),
             (Some("../x"), RepoArg::Path("/home/me/x".into())),
-            (Some(".hidden"), RepoArg::Path("/home/me/src/.hidden".into())),
+            (
+                Some(".hidden"),
+                RepoArg::Path("/home/me/src/.hidden".into()),
+            ),
             (Some("~"), RepoArg::Path("/home/me".into())),
-            (Some("~/perso/loom"), RepoArg::Path("/home/me/perso/loom".into())),
+            (
+                Some("~/perso/loom"),
+                RepoArg::Path("/home/me/perso/loom".into()),
+            ),
             (
                 Some("work/loom"),
                 RepoArg::SlugOrPath {
@@ -716,7 +738,11 @@ mod tests {
             ("/../a", "/a"),
             ("/", "/"),
         ] {
-            assert_eq!(normalize(Path::new(path)), PathBuf::from(expected), "{path}");
+            assert_eq!(
+                normalize(Path::new(path)),
+                PathBuf::from(expected),
+                "{path}"
+            );
         }
     }
 
@@ -827,10 +853,12 @@ mod tests {
             ))
         };
         let found = |root: &str| {
-            find_by_path(&repos, Path::new(root), canonical)
-                .map(|repo| repo.identity.slug.clone())
+            find_by_path(&repos, Path::new(root), canonical).map(|repo| repo.identity.slug.clone())
         };
-        assert_eq!(found("/home/me/perso/loom").as_deref(), Some("personal/loom"));
+        assert_eq!(
+            found("/home/me/perso/loom").as_deref(),
+            Some("personal/loom")
+        );
         assert_eq!(
             found("/private/home/me/work/loom").as_deref(),
             Some("work/loom")
@@ -996,7 +1024,10 @@ mod tests {
     #[test]
     fn slugs_are_percent_encoded_per_segment() {
         assert_eq!(encode_segment("a b%/é"), "a%20b%25%2F%C3%A9");
-        assert_eq!(repo_api_path("personal/loom-2"), "/v1/repos/personal/loom-2");
+        assert_eq!(
+            repo_api_path("personal/loom-2"),
+            "/v1/repos/personal/loom-2"
+        );
         assert_eq!(repo_api_path("work/my repo"), "/v1/repos/work/my%20repo");
     }
 }

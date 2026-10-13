@@ -202,7 +202,11 @@ impl Store {
     /// # Errors
     ///
     /// [`StoreError`] when a write fails; nothing is changed then.
-    pub fn replace_all(&mut self, repos: &[RepoIdentity], now: Timestamp) -> Result<(), StoreError> {
+    pub fn replace_all(
+        &mut self,
+        repos: &[RepoIdentity],
+        now: Timestamp,
+    ) -> Result<(), StoreError> {
         let _span = debug_span!("store.replace_all", repos = repos.len()).entered();
         repos::replace_all(&mut self.conn, repos, now)
     }

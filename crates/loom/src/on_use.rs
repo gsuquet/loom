@@ -66,7 +66,9 @@ fn register(layout: &Layout, started: Instant, parent: Span) {
         debug!("loomd is not running: no registration on use");
         return;
     }
-    let root: Option<PathBuf> = logical_cwd().ok().and_then(|cwd| find_root(&cwd).ok().flatten());
+    let root: Option<PathBuf> = logical_cwd()
+        .ok()
+        .and_then(|cwd| find_root(&cwd).ok().flatten());
     let Some(root) = root else {
         return;
     };

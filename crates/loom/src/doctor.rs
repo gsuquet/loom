@@ -86,7 +86,11 @@ pub fn roots(config: &Config, home: &Path) -> Vec<Root> {
 }
 
 /// One `warn` per root that does not exist (`exists` tells), or one `ok`.
-pub fn roots_checks(roots: &[Root], exists: impl Fn(&Path) -> bool, config: &Path) -> Vec<DoctorCheck> {
+pub fn roots_checks(
+    roots: &[Root],
+    exists: impl Fn(&Path) -> bool,
+    config: &Path,
+) -> Vec<DoctorCheck> {
     let missing: Vec<DoctorCheck> = roots
         .iter()
         .filter(|root| !exists(&root.path))
@@ -127,17 +131,16 @@ pub fn roots_checks(roots: &[Root], exists: impl Fn(&Path) -> bool, config: &Pat
 /// detail.
 #[must_use]
 pub fn contexts_check(config: &Config, home: &Path, config_path: &Path) -> DoctorCheck {
-    let entries: Vec<(&ContextName, &str, PathBuf)> = config
-        .contexts
-        .iter()
-        .flat_map(|(name, context)| {
-            context
-                .matching
-                .paths
-                .iter()
-                .map(move |entry| (name, entry.get_ref().as_str(), entry.get_ref().expand(home)))
-        })
-        .collect();
+    let entries: Vec<(&ContextName, &str, PathBuf)> =
+        config
+            .contexts
+            .iter()
+            .flat_map(|(name, context)| {
+                context.matching.paths.iter().map(move |entry| {
+                    (name, entry.get_ref().as_str(), entry.get_ref().expand(home))
+                })
+            })
+            .collect();
     let mut ties = Vec::new();
     let mut nested = Vec::new();
     for (index, (a_context, a_written, a_path)) in entries.iter().enumerate() {
@@ -151,9 +154,13 @@ pub fn contexts_check(config: &Config, home: &Path, config_path: &Path) -> Docto
                     a_path.display()
                 ));
             } else if a_path.starts_with(b_path) {
-                nested.push(format!("{a_written} ({a_context}) inside {b_written} ({b_context})"));
+                nested.push(format!(
+                    "{a_written} ({a_context}) inside {b_written} ({b_context})"
+                ));
             } else if b_path.starts_with(a_path) {
-                nested.push(format!("{b_written} ({b_context}) inside {a_written} ({a_context})"));
+                nested.push(format!(
+                    "{b_written} ({b_context}) inside {a_written} ({a_context})"
+                ));
             }
         }
     }
@@ -212,7 +219,10 @@ pub fn unassigned_check(repos: &[RepoSummary], home: Option<&Path>, config: &Pat
     };
     let count = unassigned.len();
     let detail = if count == 1 {
-        format!("1 repository has no context: {}", example.identity.path.display())
+        format!(
+            "1 repository has no context: {}",
+            example.identity.path.display()
+        )
     } else {
         format!(
             "{count} repositories have no context, such as {}",
@@ -266,8 +276,12 @@ pub fn agent_check(
         (CheckStatus::Warn, "no indexed remote uses SSH yet")
     };
     let fix = match platform {
-        Some(ServicePlatform::Linux) => "from a shell where `ssh-add -l` works, give the agent socket to the systemd user manager, then restart loomd:\n  systemctl --user import-environment SSH_AUTH_SOCK\n  systemctl --user restart loomd.service\nan agent with a fixed socket (such as the ssh-agent.socket user unit) survives new sessions",
-        Some(ServicePlatform::Macos) => "loomd gets SSH_AUTH_SOCK from the launchd session; restart it:\n  launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd\nwhen loomd was not started by the service, stop it and run `loom status` from a shell where `ssh-add -l` works",
+        Some(ServicePlatform::Linux) => {
+            "from a shell where `ssh-add -l` works, give the agent socket to the systemd user manager, then restart loomd:\n  systemctl --user import-environment SSH_AUTH_SOCK\n  systemctl --user restart loomd.service\nan agent with a fixed socket (such as the ssh-agent.socket user unit) survives new sessions"
+        }
+        Some(ServicePlatform::Macos) => {
+            "loomd gets SSH_AUTH_SOCK from the launchd session; restart it:\n  launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd\nwhen loomd was not started by the service, stop it and run `loom status` from a shell where `ssh-add -l` works"
+        }
         None => "start loomd from a shell where `ssh-add -l` works",
     };
     with_fix(
@@ -292,13 +306,20 @@ pub fn home_check(daemon: Option<&Path>, local: Option<&Path>) -> DoctorCheck {
                 format!(
                     "loomd expands `~` to {}, this shell to {}",
                     daemon.display(),
-                    local.map_or_else(|| "nothing (HOME unset)".to_owned(), |local| local.display().to_string())
+                    local.map_or_else(
+                        || "nothing (HOME unset)".to_owned(),
+                        |local| local.display().to_string()
+                    )
                 ),
             ),
             "run loomd with the same HOME as your shell (restart it, or fix the environment of the service)",
         ),
         (None, _) => with_fix(
-            check("home", CheckStatus::Warn, "HOME is not set in loomd's environment"),
+            check(
+                "home",
+                CheckStatus::Warn,
+                "HOME is not set in loomd's environment",
+            ),
             "set HOME in the environment of loomd, then restart it",
         ),
     }
@@ -330,15 +351,9 @@ impl SshTarget {
     /// Arguments of `ssh` for a non-interactive check of this target.
     #[must_use]
     pub fn ssh_args(&self) -> Vec<String> {
-        let mut args: Vec<String> = [
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=5",
-            "-T",
-        ]
-        .map(str::to_owned)
-        .to_vec();
+        let mut args: Vec<String> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T"]
+            .map(str::to_owned)
+            .to_vec();
         if let Some(port) = self.port {
             args.push("-p".to_owned());
             args.push(port.to_string());
@@ -448,7 +463,11 @@ pub fn ssh_check(target: &SshTarget, run: &SshRun) -> DoctorCheck {
     if let Some(greeting) = GREETINGS
         .iter()
         .find(|greeting| lower.contains(*greeting))
-        .and_then(|greeting| lines.iter().find(|line| line.to_lowercase().contains(greeting)))
+        .and_then(|greeting| {
+            lines
+                .iter()
+                .find(|line| line.to_lowercase().contains(greeting))
+        })
     {
         return check(name, CheckStatus::Ok, format!("authenticated: {greeting}"));
     }
@@ -460,7 +479,11 @@ pub fn ssh_check(target: &SshTarget, run: &SshRun) -> DoctorCheck {
         Some(0) => check(name, CheckStatus::Ok, "connected"),
         Some(255) => with_fix(check(name, CheckStatus::Fail, last), fix),
         Some(code) => with_fix(
-            check(name, CheckStatus::Warn, format!("exited with code {code}: {last}")),
+            check(
+                name,
+                CheckStatus::Warn,
+                format!("exited with code {code}: {last}"),
+            ),
             fix,
         ),
         None => with_fix(
@@ -480,7 +503,11 @@ pub fn ssh_check(target: &SshTarget, run: &SshRun) -> DoctorCheck {
 pub fn render(report: &DoctorReport) -> String {
     let mut text = String::new();
     for check in &report.checks {
-        let _ = writeln!(text, "{:<4}  {}: {}", check.status, check.check, check.detail);
+        let _ = writeln!(
+            text,
+            "{:<4}  {}: {}",
+            check.status, check.check, check.detail
+        );
         if let Some(fix) = &check.fix {
             for (index, line) in fix.lines().enumerate() {
                 let label = if index == 0 { "fix: " } else { "     " };
@@ -523,11 +550,21 @@ mod tests {
         assert_eq!(written, ["~/src", "/srv", "~/a"]);
         assert_eq!(found[2].path, PathBuf::from("/home/me/a"));
 
-        let checks = roots_checks(&found, |path| path != Path::new("/home/me/a"), Path::new(CONFIG));
+        let checks = roots_checks(
+            &found,
+            |path| path != Path::new("/home/me/a"),
+            Path::new(CONFIG),
+        );
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, CheckStatus::Warn);
         assert_eq!(checks[0].detail, "~/a (match.paths of a) does not exist");
-        assert!(checks[0].fix.as_deref().unwrap().contains("[contexts.a] match.paths"));
+        assert!(
+            checks[0]
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("[contexts.a] match.paths")
+        );
 
         let checks = roots_checks(&found, |_| true, Path::new(CONFIG));
         assert_eq!(checks[0].status, CheckStatus::Ok);
@@ -541,7 +578,13 @@ mod tests {
         );
         let result = contexts_check(&tie, Path::new(HOME), Path::new(CONFIG));
         assert_eq!(result.status, CheckStatus::Fail);
-        assert!(result.detail.contains("`~/work` (a) and `/home/me/work/` (b) are the same directory /home/me/work"), "{}", result.detail);
+        assert!(
+            result.detail.contains(
+                "`~/work` (a) and `/home/me/work/` (b) are the same directory /home/me/work"
+            ),
+            "{}",
+            result.detail
+        );
         // Another home: no tie.
         assert_eq!(
             contexts_check(&tie, Path::new("/Users/me"), Path::new(CONFIG)).status,
@@ -558,7 +601,8 @@ mod tests {
             "2 contexts, no overlapping match.paths; nested, the longest prefix wins: ~/work/b (b) inside ~/work (a)"
         );
 
-        let overrides = config("[repos.\"~/x\"]\nupdate = \"off\"\n[repos.\"/home/me/x\"]\nupdate = \"ff\"\n");
+        let overrides =
+            config("[repos.\"~/x\"]\nupdate = \"off\"\n[repos.\"/home/me/x\"]\nupdate = \"ff\"\n");
         let result = contexts_check(&overrides, Path::new(HOME), Path::new(CONFIG));
         assert_eq!(result.status, CheckStatus::Fail);
 
@@ -609,7 +653,10 @@ mod tests {
             "2 repositories have no context, such as /home/me/src/tool"
         );
         let fix = result.fix.unwrap();
-        assert!(fix.contains("[contexts.<name>]\n  match.paths = [\"~/src\"]"), "{fix}");
+        assert!(
+            fix.contains("[contexts.<name>]\n  match.paths = [\"~/src\"]"),
+            "{fix}"
+        );
         assert!(fix.contains(CONFIG));
 
         let result = unassigned_check(&repos[..1], None, Path::new(CONFIG));
@@ -636,7 +683,12 @@ mod tests {
         let unset = diagnostics(SshAgentSocket::Unset);
         let linux = agent_check(&unset, Some(ServicePlatform::Linux), true);
         assert_eq!(linux.status, CheckStatus::Fail);
-        assert!(linux.fix.unwrap().contains("systemctl --user import-environment SSH_AUTH_SOCK"));
+        assert!(
+            linux
+                .fix
+                .unwrap()
+                .contains("systemctl --user import-environment SSH_AUTH_SOCK")
+        );
         let macos = agent_check(&unset, Some(ServicePlatform::Macos), false);
         assert_eq!(macos.status, CheckStatus::Warn);
         assert!(macos.fix.unwrap().contains("launchctl kickstart -k"));
@@ -675,11 +727,20 @@ mod tests {
     #[test]
     fn ssh_targets_from_remote_urls() {
         let cases = [
-            ("git@github.com:gsuquet/loom.git", target("git", "github.com", None)),
+            (
+                "git@github.com:gsuquet/loom.git",
+                target("git", "github.com", None),
+            ),
             ("gh-work:org/repo.git", target("git", "gh-work", None)),
             ("me@host.example:repo", target("me", "host.example", None)),
-            ("ssh://git@gitlab.example:2222/g/r.git", target("git", "gitlab.example", Some(2222))),
-            ("ssh://gitlab.example/g/r", target("git", "gitlab.example", None)),
+            (
+                "ssh://git@gitlab.example:2222/g/r.git",
+                target("git", "gitlab.example", Some(2222)),
+            ),
+            (
+                "ssh://gitlab.example/g/r",
+                target("git", "gitlab.example", None),
+            ),
             ("git+ssh://u@h/r", target("u", "h", None)),
             ("ssh://git@[::1]:22/r", target("git", "::1", Some(22))),
             ("ssh://git@[::1]/r", target("git", "::1", None)),
@@ -707,11 +768,23 @@ mod tests {
                 &["git@github.com:c/d.git", "ssh://git@gitlab.example:2222/e"],
             ),
         ];
-        let targets: Vec<String> = ssh_targets(&repos).iter().map(ToString::to_string).collect();
+        let targets: Vec<String> = ssh_targets(&repos)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert_eq!(targets, ["git@github.com", "git@gitlab.example:2222"]);
         assert_eq!(
             target("git", "h", Some(2222)).unwrap().ssh_args(),
-            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T", "-p", "2222", "git@h"]
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-T",
+                "-p",
+                "2222",
+                "git@h"
+            ]
         );
     }
 
@@ -735,11 +808,20 @@ mod tests {
         assert_eq!(github.status, CheckStatus::Ok);
         assert_eq!(github.check, "ssh git@github.com");
         assert!(github.detail.starts_with("authenticated: Hi me!"));
-        assert_eq!(run(Some(0), "Welcome to GitLab, @me!\n").status, CheckStatus::Ok);
+        assert_eq!(
+            run(Some(0), "Welcome to GitLab, @me!\n").status,
+            CheckStatus::Ok
+        );
         assert_eq!(run(Some(0), "").detail, "connected");
-        let denied = run(Some(255), "git@github.com: Permission denied (publickey).\n");
+        let denied = run(
+            Some(255),
+            "git@github.com: Permission denied (publickey).\n",
+        );
         assert_eq!(denied.status, CheckStatus::Fail);
-        assert_eq!(denied.detail, "git@github.com: Permission denied (publickey).");
+        assert_eq!(
+            denied.detail,
+            "git@github.com: Permission denied (publickey)."
+        );
         assert!(denied.fix.unwrap().contains("ssh -T git@github.com"));
         assert_eq!(run(Some(1), "shell refused\n").status, CheckStatus::Warn);
         assert_eq!(run(None, "").status, CheckStatus::Fail);
@@ -767,7 +849,10 @@ mod tests {
             render(&report),
             "ok    roots: 2 roots exist\nwarn  unassigned: 1 repository has no context: /x\n      fix: add\n             snippet\n"
         );
-        assert_eq!(tilde(Path::new("/home/me/src"), Some(Path::new(HOME))), "~/src");
+        assert_eq!(
+            tilde(Path::new("/home/me/src"), Some(Path::new(HOME))),
+            "~/src"
+        );
         assert_eq!(tilde(Path::new("/home/me"), Some(Path::new(HOME))), "~");
         assert_eq!(tilde(Path::new("/srv"), Some(Path::new(HOME))), "/srv");
     }

@@ -232,9 +232,8 @@ mod tests {
 
     #[test]
     fn agent_socket_states() {
-        let socket = |value: Option<&str>, kind: Option<bool>| {
-            agent_socket(value.map(OsStr::new), |_| kind)
-        };
+        let socket =
+            |value: Option<&str>, kind: Option<bool>| agent_socket(value.map(OsStr::new), |_| kind);
         assert_eq!(socket(None, Some(true)), SshAgentSocket::Unset);
         assert_eq!(socket(Some(""), Some(true)), SshAgentSocket::Unset);
         assert_eq!(
@@ -261,7 +260,11 @@ mod tests {
     fn scan_query_defaults_and_rejects_unknown_parameters() {
         let parse = |text: &str| serde_json::from_str::<ScanQuery>(text);
         assert_eq!(parse("{}").unwrap(), ScanQuery::default());
-        assert!(parse(r#"{"rebuild": true, "dry_run": true}"#).unwrap().rebuild);
+        assert!(
+            parse(r#"{"rebuild": true, "dry_run": true}"#)
+                .unwrap()
+                .rebuild
+        );
         assert!(parse(r#"{"force": true}"#).is_err());
     }
 

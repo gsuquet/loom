@@ -96,10 +96,9 @@ impl Client {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<T, ClientError> {
-        let body = body
-            .map(serde_json::to_vec)
-            .transpose()
-            .map_err(|error| ClientError::Protocol(format!("cannot encode the request: {error}")))?;
+        let body = body.map(serde_json::to_vec).transpose().map_err(|error| {
+            ClientError::Protocol(format!("cannot encode the request: {error}"))
+        })?;
         self.call(Method::POST, path, body).await
     }
 
