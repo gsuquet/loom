@@ -13,14 +13,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{CommandFactory as _, FromArgMatches as _};
-use loom::cli::{Cli, Command, GlobalArgs, ServiceCommand, VERSION_INFO, command_path};
+use loom::cli::{
+    Cli, Command, GlobalArgs, RepoCommand, ServiceCommand, SyncArgs, VERSION_INFO, command_path,
+};
 use loom::conventions::{Exit, use_color, write_out};
 use loom::loomd_path::loomd_candidates;
+use loom::repo::render_sync;
 use loom::service::{
     ServicePaths, ServiceSpec, format_status, opt_out_message, render_unit, unit_path,
 };
 use loom::status::{render_human, version_mismatch};
-use loom_api::{ServicePlatform, StatusResponse, VersionInfo};
+use loom_api::{ServicePlatform, StatusResponse, SyncRequest, SyncResult, VersionInfo};
 use loom_config::config::{Config, OtlpEndpoint, TelemetryConfig, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
 use loom_config::layout::{Layout, MAX_SOCKET_PATH_BYTES, check_socket_path};
@@ -33,6 +36,11 @@ use tracing::field::Empty;
 use tracing::{info_span, warn};
 
 use crate::client::{Client, ClientError};
+
+/// Path of the update endpoint.
+const REPOS_SYNC_PATH: &str = "/v1/repos/sync";
+/// Longest wait for `loom repo sync`: every fetch of the index may take its timeout.
+const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_hours(1);
 
 fn main() -> ExitCode {
     // Usage errors exit with code 2, `--help` and `--version` with 0 (clap).
@@ -148,6 +156,9 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Upgrade(args) => print(&upgrade::upgrade(&VERSION_INFO, args, &layout()?)?),
         Command::Rollback(args) => print(&upgrade::rollback(&VERSION_INFO, args, &layout()?)?),
         Command::Service { command } => run_service(command),
+        Command::Repo {
+            command: RepoCommand::Sync(args),
+        } => repo_sync(args),
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;
             let supervisor = watchdog_supervisor(&layout);
@@ -209,6 +220,35 @@ fn status(json: bool, no_start: bool) -> Result<()> {
         text
     } else {
         render_human(&status)
+    };
+    write_out(&mut io::stdout().lock(), &text).into_diagnostic()
+}
+
+/// `loom repo sync`: updates repositories through loomd, starting it first when needed.
+fn repo_sync(args: &SyncArgs) -> Result<()> {
+    let layout = layout()?;
+    check_socket_path(&layout.socket, MAX_SOCKET_PATH_BYTES).into_diagnostic()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .into_diagnostic()
+        .wrap_err("cannot start the async runtime")?;
+    let request = SyncRequest {
+        repos: args.repos.clone(),
+        dry_run: args.dry_run,
+    };
+    let result: SyncResult = runtime.block_on(async {
+        query_or_start(&layout, false).await?;
+        Client::new(layout.socket.clone())
+            .with_timeout(SYNC_TIMEOUT)
+            .post(REPOS_SYNC_PATH, &request)
+            .await
+            .map_err(|error| miette!("{error}"))
+    })?;
+    let text = if args.json {
+        serde_json::to_string_pretty(&result).into_diagnostic()? + "\n"
+    } else {
+        render_sync(&result)
     };
     write_out(&mut io::stdout().lock(), &text).into_diagnostic()
 }

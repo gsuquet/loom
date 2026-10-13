@@ -177,6 +177,56 @@ loom rollback [OPTIONS]
 
 Global options apply.
 
+### `loom repo`
+
+Work with the repositories of the index
+
+```text
+loom repo [OPTIONS] <COMMAND>
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom repo sync`
+
+Update repositories now, as loomd does on its schedule: fetch the primary remote, then fast-forward only when no local work can be affected.
+
+Ignores the schedule and the backoff of unreachable hosts; follows the update policy of each repository. Prints one line per repository: its slug and what happened.
+
+```text
+loom repo sync [OPTIONS] [REPO]...
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<REPO>` |  |  | Slugs of the repositories to update (`<context>/<name>`, as `loom repo ls` shows them); every repository of the index when none is given |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--dry-run` |  |  | Print what each update would do, decided from the state read now; fetch nothing, change nothing |
+| `--json` |  |  | Print the result as JSON (`SyncResult` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom repo help`
+
+Print this message or the help of the given subcommand(s)
+
+```text
+loom repo help [COMMAND]
+```
+
 ### `loom help`
 
 Print this message or the help of the given subcommand(s)

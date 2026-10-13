@@ -86,6 +86,12 @@ pub enum Command {
     /// Restore the previous version: the highest version kept in `<loom home>/versions/` other
     /// than the running one.
     Rollback(RollbackArgs),
+    /// Work with the repositories of the index.
+    Repo {
+        /// Repository command to run.
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
     /// Internal: started by loomd from the saved previous version after an auto-upgrade;
     /// waits for the new loomd and rolls back when it does not answer (ADR-0011).
     #[command(name = "__upgrade-watchdog", hide = true)]
@@ -165,6 +171,33 @@ fn parse_release_version(text: &str) -> Result<Version, String> {
         .ok_or_else(|| format!("expected X.Y.Z or X.Y.Z-dev.N, got `{text}`"))
 }
 
+/// `loom repo` commands.
+#[derive(Debug, Subcommand)]
+pub enum RepoCommand {
+    /// Update repositories now, as loomd does on its schedule: fetch the primary remote, then
+    /// fast-forward only when no local work can be affected.
+    ///
+    /// Ignores the schedule and the backoff of unreachable hosts; follows the update policy of
+    /// each repository. Prints one line per repository: its slug and what happened.
+    Sync(SyncArgs),
+}
+
+/// Options of `loom repo sync`.
+#[derive(Debug, clap::Args)]
+pub struct SyncArgs {
+    /// Slugs of the repositories to update (`<context>/<name>`, as `loom repo ls` shows them);
+    /// every repository of the index when none is given.
+    #[arg(value_name = "REPO")]
+    pub repos: Vec<String>,
+    /// Print what each update would do, decided from the state read now; fetch nothing, change
+    /// nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the result as JSON (`SyncResult` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// `loom service` commands.
 #[derive(Debug, Subcommand)]
 pub enum ServiceCommand {
@@ -205,7 +238,7 @@ pub fn command_path(matches: &ArgMatches) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, ReleaseChannel, ServiceCommand, command_path};
+    use super::{Cli, Command, ReleaseChannel, RepoCommand, ServiceCommand, command_path};
     use clap::error::ErrorKind;
     use clap::{ColorChoice, CommandFactory, Parser};
 
@@ -276,6 +309,7 @@ mod tests {
             | Command::Status { .. }
             | Command::Upgrade(_)
             | Command::Rollback(_)
+            | Command::Repo { .. }
             | Command::UpgradeWatchdog(_) => {
                 panic!("not a service command: {args:?}")
             }
@@ -296,6 +330,40 @@ mod tests {
             parse(&["loom", "service", "status", "--json"]),
             ServiceCommand::Status { json: true }
         ));
+    }
+
+    #[test]
+    fn repo_sync_parses() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Command::Repo {
+                command: RepoCommand::Sync(args),
+            } => args,
+            Command::Version { .. }
+            | Command::Status { .. }
+            | Command::Service { .. }
+            | Command::Upgrade(_)
+            | Command::Rollback(_)
+            | Command::UpgradeWatchdog(_) => panic!("not repo sync: {args:?}"),
+        };
+        let all = parse(&["loom", "repo", "sync"]);
+        assert!(all.repos.is_empty() && !all.dry_run && !all.json);
+        let some = parse(&[
+            "loom",
+            "repo",
+            "sync",
+            "-n",
+            "personal/a",
+            "work/b",
+            "--json",
+        ]);
+        assert_eq!(some.repos, ["personal/a", "work/b"]);
+        assert!(some.dry_run && some.json);
+        assert!(parse(&["loom", "repo", "sync", "--dry-run"]).dry_run);
+        let missing = Cli::try_parse_from(["loom", "repo"]).unwrap_err();
+        assert_eq!(
+            missing.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
     }
 
     #[test]
