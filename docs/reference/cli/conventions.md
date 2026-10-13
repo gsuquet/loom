@@ -371,7 +371,7 @@ JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `cu
 
 ## `loom repo`
 
-`loom repo` reads and changes the repository index of loomd through the [API](../api.md#repositories). `ls`, `show`, `scan`, `register` (without `-n`) and `forget` start loomd as [`loom status`](#starting-loomd) does when it is not running, then wait for its scan on start, so that the index they read is complete. `doctor` and `register -n` never start it.
+`loom repo` reads and changes the repository index of loomd through the [API](../api.md#repositories). `ls`, `show`, `scan`, `register` (without `-n` or `--on-use`) and `forget` start loomd as [`loom status`](#starting-loomd) does when it is not running, then wait for its scan on start, so that the index they read is complete. `doctor`, `register -n` and `register --on-use` never start it.
 
 ### Repository argument
 
@@ -398,7 +398,7 @@ Error: `loom` names several repositories; give one of:
 
 ### Registration on use
 
-Every `loom` command run inside a git repository, except `repo show`, `repo register`, `repo forget`, `repo scan --rebuild` and the internal watchdog, sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory, on a thread of its own: loomd registers it when the index does not have it, and sets its `last_used`. The command waits for it at most 50 ms after it started, and never fails because of it. Nothing is sent when the socket file does not exist; loomd is never started for it. `loom repo show` sets `last_used` the same way.
+Every `loom` command run inside a git repository, except `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `shell-init` and the internal watchdog, sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory, on a thread of its own: loomd registers it when the index does not have it, and sets its `last_used`. The command waits for it at most 50 ms after it started, and never fails because of it. Nothing is sent when the socket file does not exist; loomd is never started for it. `loom repo show` sets `last_used` the same way. `loom repo register --on-use --background`, run by the [shell integration](#loom-shell-init), sends the same request for its `<PATH>` (default: the current directory).
 
 ### `loom repo ls`
 
@@ -465,6 +465,10 @@ error:          untracked: time budget of 2s exceeded
 
 `register [<PATH>]` (default: the current directory) finds the repository root at or above the path and registers it: `registered <slug>: <path>`. `-n`: `would register <root>`, without contacting loomd. `--json`: [`RepoSummary`](../schemas/repo_summary.json).
 
+`register --on-use` sends the request as a [registration on use](#registration-on-use) (`on_use: true`): an indexed repository is left as it is and only its `last_used` is set; one not in the index is registered. It never starts loomd and fails when loomd is not running. Human output: `used <slug>: <path>`.
+
+`register --on-use --background` is the registration on use itself: it waits for loomd at most 50 ms after it started, prints nothing on stdout or stderr (whatever `-v` asks), and exits with `0` in every case: loomd not running (no socket file), not answering in time, no git repository at or above the path, invalid configuration. Only usage errors exit with `2`. `--background` requires `--on-use` and cannot be combined with `-n` or `--json`.
+
 `forget <REPO>` removes the repository from the index without confirmation: `forgot <slug>: <path>`. `-n`: `would forget <slug>: <path>`. `--json`: the removed [`RepoSummary`](../schemas/repo_summary.json). A scan adds a repository under a root back; `register` adds any repository back.
 
 ### `loom repo doctor`
@@ -505,9 +509,27 @@ fail  ssh git@gitlab.example: git@gitlab.example: Permission denied (publickey).
 
 | Code | Cases |
 | --- | --- |
-| `0` | Success, including `-n`; `doctor` without any `fail`. |
-| `1` | loomd cannot be started or answers with an error; `<REPO>` not found, ambiguous, not inside a git repository, or (for `forget`) not in the index; `register` outside a git repository; `--rebuild` refused or cancelled; `doctor` with at least one `fail` (after printing the report: `Error: 1 check failed`, `Error: <n> checks failed`). |
+| `0` | Success, including `-n`; `doctor` without any `fail`; `register --on-use --background` always. |
+| `1` | loomd cannot be started, is not running (`register --on-use`), or answers with an error; `<REPO>` not found, ambiguous, not inside a git repository, or (for `forget`) not in the index; `register` outside a git repository; `--rebuild` refused or cancelled; `doctor` with at least one `fail` (after printing the report: `Error: 1 check failed`, `Error: <n> checks failed`). |
 | `2` | Usage error: missing subcommand or `forget` argument, `--json` with `--format`, unknown `--format`. |
+
+## `loom shell-init`
+
+`loom shell-init <SHELL>` prints, on stdout, a script to evaluate in the shell's startup file (`eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`). The script is fixed text embedded in the binary; the command reads no configuration, never contacts loomd, and sends no [registration on use](#registration-on-use). Setup: [shell integration](../../how-to-guides/shell-integration.md).
+
+When evaluated, the script does nothing when `command -v loom` finds no `loom`. Otherwise it installs a hook that runs `loom repo register --on-use --background` for the current directory, at most once per directory (`$PWD`, symbolic links kept) per shell session:
+
+| Shell | Hook | Runs |
+| --- | --- | --- |
+| `zsh` | `_loom_chpwd`, added to `chpwd_functions` with `add-zsh-hook`; directories seen in the associative array `_loom_seen`. | When the script is evaluated (the start directory), then on each directory change. |
+| `bash` (3.2 or later) | `__loom_prompt`, appended to `PROMPT_COMMAND` on a line of its own (an existing value is kept; evaluating the script twice adds it once); directories seen in the string `__loom_seen`, last directory in `__loom_pwd`. | At each prompt where `$PWD` differs from the previous prompt's, the first prompt included. Returns the exit status it was called with. |
+
+The hook starts `loom` detached (zsh `&!`, bash `( … & )`), with stdin, stdout and stderr on `/dev/null`: no job is created, nothing is printed, and the prompt does not wait. It runs no `git`: `loom` finds the repository root at or above the directory, and does nothing outside a repository. When `loom` is no longer on `PATH`, the hook fails silently.
+
+| Code | Cases |
+| --- | --- |
+| `0` | The script is printed. |
+| `2` | Missing or unsupported shell. |
 
 ## Build-time variables
 
