@@ -20,7 +20,7 @@
 | Focus | `loom go <id>` / `g`: set active, cd to the repo or worktree. One focus task per context, machine-local; delegated tasks run in the background | CLI + shell integration |
 | Note | `loom log "…"` attaches to the focus task | CLI |
 | Delegate | `d` -> suggested template -> readiness check -> pack preview (editable) -> budget -> run starts | TUI |
-| Watch | Run view: live stream, attach/detach, send a message, cancel | TUI |
+| Watch | Run page: live stream, attach/detach, send a message, take over, cancel | TUI |
 | Approve | Approval queue: proposed action + diff + gate results + cost; approve, reject with a reason (feeds metrics), edit, approve all of a class | TUI |
 | Create a ticket | `n` from the template in `$EDITOR`, or `N` with the ticket-writer agent; drafts view; `P` publishes after lint and preview | TUI + editor |
 | Edit a ticket | `e` opens the issue mirror in `$EDITOR`; `p` shows the diff against remote and pushes | TUI + editor |
@@ -29,19 +29,51 @@
 
 ### TUI views
 
+Three kinds of screens ([ADR-0014](../adr/0014-tui-architecture.md)):
+
+- **Queues**: lists of things to act on, one component, reached from the tab bar (number keys). A preview pane shows the selected item; under about 120 columns, or with `|`, it is hidden.
+- **Object pages**: full screen with their own tabs and keys, opened with `enter`.
+- **Modals**: pickers, the `:` command palette (every view, action and context, fuzzy), confirmation with a diff before any push.
+
 ```
-┌ Today ─────────────── all contexts ▾ ─ inbox 4 · approvals 2 · runs 3 ┐
-│ ● p0 [company-a] Investigation  checkout 5xx spike         due 11:00 │
-│ ● p1 [company-a] Bug            login timeout mobile       active    │
-│ ◐ p1 [company-b] Review         !412 auth refactor         agent ▸   │
-│ ○ p2 [personal]  Chore          renew certs                due fri   │
-├ Runs ───────────────────────────────────────────────────────────────┤
-│ ▸ reviewer@3  !412   stage review   2m14  $0.41  streaming…         │
-│ ⚠ implementer@5 CORE-1042  needs clarification (2 questions)        │
-└ a accept  d delegate  g go  e edit  p push  / search  ? help ────────┘
+ 1 Today 12 │ 2 Inbox 4 │ 3 Waiting 3 │ 4 Runs 2 │ 5 Approvals 1     ● personal ● company-a ● company-b
+┌ Today · all contexts ─────────────────┬ k3q7 Login timeout on mobile checkout ──────────┐
+│▸● p1 company-a Bug   Login timeout m… │ bug · active · p1 · due 15 oct · company-a       │
+│ ● p0 company-a Inv   Checkout 5xx sp… │ repo company-a/checkout · parent h8w2 Hardening  │
+│ ◐ p1 company-b Rev   !412 auth refac… │──────────────────────────────────────────────────│
+│ ○ p2 personal  Chore Renew certs      │ ## Symptoms                                      │
+│ ○ p2 company-b Admin Timesheet Oct    │ Mobile users time out after 30 s on payment…     │
+└ enter open  g go  c done  z snooze  @ context  + new  : palette  / search  ? help ───────┘
 ```
 
-Views: Today (priority list), Inbox, Runs, Approvals, Task detail, Review, Journal, Search.
+| Queue | Version | Preview |
+| --- | --- | --- |
+| Today, Inbox, Waiting | v0.3 | task overview |
+| Review (MRs to review) | v0.4 | changed files, threads, agent findings |
+| Outbox (drafts, issue edits, unpushed reviews; `↑` marks unpushed items in every queue) | v0.5 | diff against the remote |
+| Runs | v0.7 | stage strip, cost, stream tail |
+| Approvals | v0.7 | proposed action, diff, gate results, cost |
+| Pipelines | v0.10 | stage strip per task (`plan ✓ implement ▸ review · fix · preflight`) |
+
+Object pages: Task (below), Review (below; `enter` on a Review task opens it), Run, Journal.
+
+Keys are layered: global (`1`–`9`, `:`, `/`, `?`, `q`), then the current view, then an open modal; `?` lists the current layer. In queues: `@` picks the context filter (all or one), `+` creates a task in the selected context, `g` sets the focus and quits so that the shell function from `loom shell-init` changes directory to the task's repo.
+
+The TUI follows loomd's change events (SSE) instead of polling. Colors are the terminal's 16 ANSI colors, so the TUI follows the terminal theme; context colors are chosen among them.
+
+### Run page (v0.7)
+
+```
+┌ Run reviewer@3 · !412 auth refactor · company-b · 2m14 · $0.41 ┐
+│ plan ✓  review ▸  report ·                                     │
+│ ▸ read src/auth/jwt.rs (88 lines)                              │
+│ ▸ tool logs_search "token expired" -> 12 hits                  │
+│ │ The expiry check uses `<`, so a token expiring this second…  │
+│ ⚑ finding issue (blocking) src/auth/jwt.rs:41                  │
+└ m message  T take over  x cancel  esc detach ──────────────────┘
+```
+
+Attach is structured: the page renders the run's stream; `m` sends a message mid-run when the runtime supports it; `T` (take over) stops the run and opens a shell in its worktree; `esc` detaches and the run continues. No pseudo-terminal.
 
 Nothing requires leaving the TUI to read: every task, issue, MR, run and file is inspectable in place, archived ones included (read-only). `$EDITOR` stays available, never required.
 
