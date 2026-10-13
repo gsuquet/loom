@@ -7,5 +7,6 @@ pub mod conventions;
 pub mod doctor;
 pub mod loomd_path;
 pub mod repo;
+pub mod search;
 pub mod service;
 pub mod status;

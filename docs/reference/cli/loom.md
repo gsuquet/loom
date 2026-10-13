@@ -329,6 +329,32 @@ Print this message or the help of the given subcommand(s)
 loom repo help [COMMAND]
 ```
 
+### `loom search`
+
+Search the indexed repositories by name, slug, path, remote URL, context or branch.
+
+Every word of the query must start a word of the repository (case and diacritics ignored). Results are ranked: exact name, then name prefix, then slug, then the other fields; then most recently used first. `-c` keeps one context. Starts loomd when it is not running.
+
+```text
+loom search [OPTIONS] <QUERY>...
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<QUERY>` |  |  | Words to search for, joined with spaces (quoting the query is optional) |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--limit <N>` |  | `20` | Most results to print |
+| `--json` |  |  | Print the results as JSON (`SearchResults` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
 ### `loom help`
 
 Print this message or the help of the given subcommand(s)

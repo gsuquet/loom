@@ -3,6 +3,7 @@
 mod client;
 mod on_use;
 mod repo_cmd;
+mod search_cmd;
 mod service_cmd;
 mod start;
 mod upgrade;
@@ -164,7 +165,8 @@ const fn registers_on_use(command: &Command) -> bool {
             RepoCommand::Ls(_) | RepoCommand::Doctor(_) => true,
         },
         Command::UpgradeWatchdog(_) => false,
-        Command::Version { .. }
+        Command::Search(_)
+        | Command::Version { .. }
         | Command::Status { .. }
         | Command::Service { .. }
         | Command::Upgrade(_)
@@ -180,6 +182,7 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Rollback(args) => print(&upgrade::rollback(&VERSION_INFO, args, &layout()?)?),
         Command::Service { command } => run_service(command),
         Command::Repo { command } => repo_cmd::run(command, &cli.global, layout()?),
+        Command::Search(args) => search_cmd::run(args, &cli.global, &layout()?),
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;
             let supervisor = watchdog_supervisor(&layout);
