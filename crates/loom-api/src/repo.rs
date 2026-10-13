@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ContextAssignment;
+use crate::{ContextAssignment, Timestamp};
 
 /// Forge hosting a remote (`[forges."<host>"] kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -121,6 +121,58 @@ pub struct RepoIdentity {
     /// Forge of the primary remote's host, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge: Option<ForgeKind>,
+}
+
+/// A repository of the index: its identity and how loom knows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RepoSummary {
+    /// Identity, its fields inlined.
+    #[serde(flatten)]
+    pub identity: RepoIdentity,
+    /// Added by `POST /v1/repos/register`: a scan never removes it while it exists on disk.
+    pub registered: bool,
+    /// Last time the repository was used, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used: Option<Timestamp>,
+}
+
+/// Repositories of the index, sorted by slug.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RepoList {
+    /// The repositories.
+    pub repos: Vec<RepoSummary>,
+}
+
+/// Body of `POST /v1/repos/register`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterRequest {
+    /// Absolute path of the repository or of a directory inside it.
+    pub path: PathBuf,
+}
+
+/// Outcome of a scan of the repository roots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScanResult {
+    /// Repositories added to the index.
+    pub added: u64,
+    /// Repositories whose identity changed (remotes, context, forge or slug).
+    pub updated: u64,
+    /// Repositories removed from the index: no longer on disk.
+    pub removed: u64,
+    /// Paths that could not be read; the repositories below them are kept as they were.
+    pub errors: Vec<ScanIssue>,
+    /// Duration of the scan, in whole milliseconds.
+    pub duration_ms: u64,
+}
+
+/// A path a scan could not read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScanIssue {
+    /// The root, directory or repository.
+    pub path: PathBuf,
+    /// What went wrong, in English.
+    pub message: String,
 }
 
 #[cfg(test)]

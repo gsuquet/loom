@@ -18,8 +18,41 @@
 | Method | Path | Success | Body |
 | --- | --- | --- | --- |
 | `GET` | `/v1/status` | `200` | [`StatusResponse`](#statusresponse) |
+| `GET` | `/v1/repos` | `200` | [`RepoList`](#repolist) |
+| `GET` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary) |
+| `DELETE` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary) of the removed repository |
+| `POST` | `/v1/repos/scan` | `200` | [`ScanResult`](#scanresult) |
+| `POST` | `/v1/repos/register` | `200` | [`RepoSummary`](#reposummary) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state.
+
+### Repositories
+
+The repository index is `<loom home>/index.db` (see [configuration](configuration.md#indexdb)). `loomd` scans when it starts and on `POST /v1/repos/scan`; reads never wait for a scan and return the index before or after it, never a part of it.
+
+`GET /v1/repos` query parameters, both optional; an empty value is ignored, any other parameter is an `invalid_request`:
+
+| Parameter | Content |
+| --- | --- |
+| `context` | Only the repositories of this context. A context name (the rule of `-c`), or `unassigned`. |
+| `query` | Only the repositories whose name, slug, path, remote URLs or context contain this text, ASCII case ignored. Plain substring: `%` and `_` match themselves. |
+
+Repositories are sorted by slug.
+
+`/v1/repos/{context}/{name}` addresses a repository by its slug `<context>/<name>`, the two parts as two path segments (`/v1/repos/personal/loom-2` for the slug `personal/loom-2`). Characters outside the URL path syntax are percent-encoded.
+
+`POST /v1/repos/scan` walks the roots (`[repos] roots`, then every `match.paths`, `~` expanded with `HOME`) and reads every registered repository in place, then applies the changes to the index in one transaction:
+
+- a repository found is added, or updated when its identity changed (remotes, context, forge or slug);
+- a repository no longer found under a scanned root is removed, unless an error hides it (an unreadable directory above it, an unreadable `.git` or config); the repositories under other roots are kept;
+- a registered repository is kept while its `.git` exists, even deeper than `max_depth`, excluded, or outside the roots, and removed once its `.git` is gone;
+- contexts are recomputed for every repository, so slugs follow a rule change.
+
+Scans run one at a time. A scan request made while a scan runs waits for that scan and receives its result. Registration and removal requests wait for a running scan.
+
+`POST /v1/repos/register` takes a [`RegisterRequest`](#registerrequest). The repository is the path itself or its nearest ancestor with a `.git` entry (directory, file or symbolic link); symbolic links in the path are kept. It is identified like a scanned repository, added or updated, and marked `registered`. A repository already indexed keeps its slug while its context and name do not change; otherwise it gets `<context>/<name>`, or the lowest free `<context>/<name>-N` (N ≥ 2).
+
+`DELETE /v1/repos/{context}/{name}` removes the repository from the index, registered or not. A scan adds a repository found under a root again.
 
 ### Errors
 
@@ -29,10 +62,20 @@ Every error response has an [`ApiError`](#apierror) body.
 | --- | --- | --- |
 | No endpoint at the path | `404` | `not_found` |
 | Endpoint exists, method not accepted | `405` (with an `allow` header) | `invalid_request` |
+| No repository with the slug of `/v1/repos/{context}/{name}` | `404` | `not_found` |
+| Invalid query parameter, unknown parameter or invalid `context` | `400` | `invalid_request` |
+| Register: body not a valid `RegisterRequest`, path not absolute or with a `..` component, no repository at or above the path, or a repository whose `.git` or config cannot be read | `400` | `invalid_request` |
+| The index cannot be read or written | `500` | `internal` |
 | The daemon cannot read its clock as a timestamp | `500` | `internal` |
+| The daemon stops before answering a scan, register or remove request | `503` | `unavailable` |
 
 ```bash
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/status
+curl --unix-socket ~/.loom/run/loomd.sock 'http://loomd/v1/repos?context=personal&query=loom'
+curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/repos/scan
+curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
+  -d '{"path": "/home/me/src/tool"}' http://loomd/v1/repos/register
+curl --unix-socket ~/.loom/run/loomd.sock -X DELETE http://loomd/v1/repos/unassigned/tool
 ```
 
 ## Types
@@ -45,7 +88,11 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `ApiVersion` | [`schemas/api_version.json`](schemas/api_version.json) |
 | `ContextAssignment` | [`schemas/context_assignment.json`](schemas/context_assignment.json) (not returned by any endpoint or command yet) |
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
-| `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (not returned by any endpoint or command yet) |
+| `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
+| `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
+| `RepoList` | [`schemas/repo_list.json`](schemas/repo_list.json) |
+| `RepoSummary` | [`schemas/repo_summary.json`](schemas/repo_summary.json) |
+| `ScanResult` | [`schemas/scan_result.json`](schemas/scan_result.json) |
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
 | `UpdateState` | [`schemas/update_state.json`](schemas/update_state.json) (file `state/update.json`, see [configuration](configuration.md#state)) |
 | `VersionInfo` | [`schemas/version_info.json`](schemas/version_info.json) |
@@ -64,7 +111,7 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 
 | Message | Unknown fields |
 | --- | --- |
-| Request | Rejected (`#[serde(deny_unknown_fields)]`). No request type exists yet. |
+| Request | Rejected (`#[serde(deny_unknown_fields)]`): `RegisterRequest`, and the query parameters of `GET /v1/repos`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
 Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`) are rejected.
@@ -141,6 +188,56 @@ Every field is required, except `update`.
 | `pending` | object \| `null` | `pending` of the state: `from`, `to`, `started_at`. |
 | `failed_versions` | list of strings | `failed_versions` of the state. |
 | `last_result` | object \| `null` | `last_result` of the state, tagged by `kind` ([kinds](configuration.md#state)). |
+
+### `RepoSummary`
+
+A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.json) (`path`, `name`, `slug`, `context`, `remotes`, `primary_remote`, `forge`), inlined, plus:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `registered` | boolean | Added by `POST /v1/repos/register`: scans keep it while its `.git` exists. |
+| `last_used` | `Timestamp` or absent | Last time the repository was used. Never set by this version. |
+
+```json
+{
+  "path": "/home/me/perso/loom",
+  "name": "loom",
+  "slug": "personal/loom",
+  "context": { "rule": "path", "context": "personal", "prefix": "~/perso" },
+  "remotes": [
+    {
+      "name": "origin",
+      "url": "git@github.com:gsuquet/loom.git",
+      "location": { "host": "github.com", "path": "gsuquet/loom" }
+    }
+  ],
+  "primary_remote": "origin",
+  "forge": "github",
+  "registered": false
+}
+```
+
+### `RepoList`
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `repos` | list of [`RepoSummary`](#reposummary) | The repositories, sorted by slug. |
+
+### `RegisterRequest`
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `path` | path | Absolute path of the repository or of a directory inside it. `.` components and a trailing `/` are ignored; `..` is rejected. |
+
+### `ScanResult`
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `added` | integer (u64) | Repositories added to the index. |
+| `updated` | integer (u64) | Repositories whose identity changed (remotes, context, forge or slug). |
+| `removed` | integer (u64) | Repositories removed from the index. |
+| `errors` | list of objects | Paths that could not be read: `path`, `message`. The repositories they hide are kept unchanged. A repository whose path is not valid UTF-8 is reported here and not indexed. |
+| `duration_ms` | integer (u64) | Duration of the scan, in whole milliseconds. |
 
 ### `ApiError`
 

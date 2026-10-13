@@ -18,6 +18,7 @@
 )]
 
 mod common;
+mod isolation;
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -161,6 +162,7 @@ impl Env {
         let mut command = Command::new(program);
         command
             .env("LOOM_HOME", self.home.path())
+            .envs(isolation::isolated_env(self.home.path()))
             .env("LOOM_RELEASES_URL", &self.api.url)
             .env("LOOM_UPDATE_PUBKEY", &self.signer.public)
             .env("LOOM_UPDATE_CHECK_INTERVAL", "1s")

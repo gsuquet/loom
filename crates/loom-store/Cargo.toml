@@ -1,0 +1,27 @@
+[package]
+name = "loom-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `RepoIdentity`, `RepoSummary` and the other types stored and returned.
+loom-api.workspace = true
+# `ScanDiff`, the changes a scan applies.
+loom-repo.workspace = true
+# SQLite, bundled: one known version with FTS5 and JSON on every platform (ADR-0012).
+rusqlite.workspace = true
+# Remotes and context assignments are stored as JSON columns.
+serde_json.workspace = true
+thiserror.workspace = true
+# Debug spans around each store operation.
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

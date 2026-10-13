@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use globset::{GlobSet, GlobSetBuilder};
 use loom_api::RepoIdentity;
+use loom_config::config::{Config, Spanned};
 use loom_config::repos::{ExcludePattern, ForgeConfig, ForgeHost};
 use thiserror::Error;
 
@@ -244,6 +245,117 @@ pub fn scan(roots: &[PathBuf], options: &ScanOptions<'_>) -> ScanReport {
         .sort_by(|a, b| a.identity.path.cmp(&b.identity.path));
     report.errors.sort_by(|a, b| a.path().cmp(b.path()));
     report
+}
+
+/// Directories [`scan`] walks for `config`: `[repos] roots`, then the `match.paths` of every
+/// context, with `~` expanded to `home`, each once, in that order. Pure.
+#[must_use]
+pub fn scan_roots(config: &Config, home: &Path) -> Vec<PathBuf> {
+    let paths = config.repos.roots.iter().chain(
+        config
+            .contexts
+            .values()
+            .flat_map(|context| context.matching.paths.iter().map(Spanned::get_ref)),
+    );
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        let path = path.expand(home);
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
+/// [`scan()`] of `roots`, plus the registered repositories at `registered` (absolute repository
+/// roots) the walk does not report, read in place: those deeper than `max_depth`, excluded,
+/// or outside the roots.
+///
+/// Returns the report and the roots to give [`crate::diff`]: `roots` and every registered
+/// path. A registered repository still on disk is thus re-identified (its context follows the
+/// rules), one gone from disk is removed, and one that cannot be read is kept.
+#[must_use]
+pub fn scan_with_registered(
+    roots: &[PathBuf],
+    registered: &[PathBuf],
+    options: &ScanOptions<'_>,
+) -> (ScanReport, Vec<PathBuf>) {
+    let mut report = scan(roots, options);
+    let reported: HashSet<PathBuf> = report
+        .repos
+        .iter()
+        .map(|repo| repo.identity.path.clone())
+        .collect();
+    let missing: Vec<PathBuf> = registered
+        .iter()
+        .filter(|path| !reported.contains(*path))
+        .cloned()
+        .collect();
+    let extra = read_repos(&missing, options);
+    report.repos.extend(extra.repos);
+    report.errors.extend(extra.errors);
+    report
+        .repos
+        .sort_by(|a, b| a.identity.path.cmp(&b.identity.path));
+    report.errors.sort_by(|a, b| a.path().cmp(b.path()));
+    let mut scanned = roots.to_vec();
+    scanned.extend(registered.iter().cloned());
+    (report, scanned)
+}
+
+/// Reads the repositories whose roots are `paths`, without walking.
+///
+/// A path without a `.git` entry (or that does not exist) is absent from the report; one
+/// whose `.git` cannot be examined is reported as an error. Repositories and errors are sorted
+/// by path.
+#[must_use]
+pub fn read_repos(paths: &[PathBuf], options: &ScanOptions<'_>) -> ScanReport {
+    let mut report = ScanReport::default();
+    for path in paths {
+        match fs::symlink_metadata(path.join(".git")) {
+            Ok(metadata) => read_repo(path, metadata.file_type(), options, &mut report),
+            Err(error) if is_absent(&error) => {}
+            Err(error) => report.errors.push(ScanError::GitDir {
+                path: path.clone(),
+                reason: error.to_string(),
+            }),
+        }
+    }
+    report
+        .repos
+        .sort_by(|a, b| a.identity.path.cmp(&b.identity.path));
+    report.errors.sort_by(|a, b| a.path().cmp(b.path()));
+    report
+}
+
+/// The root of the repository holding `path`.
+///
+/// That is `path` itself or its nearest ancestor with a `.git` entry (directory, file or
+/// symbolic link, as [`scan()`] detects them); `None` when no ancestor has one. Ancestors are
+/// taken lexically: symbolic links in `path` are kept.
+///
+/// # Errors
+///
+/// The error of the first `.git` lookup that fails for another reason than absence, such as a
+/// permission denied.
+pub fn find_root(path: &Path) -> io::Result<Option<PathBuf>> {
+    for dir in path.ancestors() {
+        match fs::symlink_metadata(dir.join(".git")) {
+            Ok(_) => return Ok(Some(dir.to_path_buf())),
+            Err(error) if is_absent(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
+/// Whether `error` means that the path does not exist: missing, or a component that is not a
+/// directory.
+fn is_absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
 }
 
 /// A directory to examine: its path under the configured root, relative to the root, level.

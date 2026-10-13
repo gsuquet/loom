@@ -3,8 +3,11 @@
 use assert_cmd::Command;
 use loom_api::VersionInfo;
 
+/// `HOME` under the integration tests' directory: no test inherits the real home.
 fn loomd() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("loomd"))
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("loomd"));
+    command.env("HOME", env!("CARGO_TARGET_TMPDIR"));
+    command
 }
 
 #[test]

@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 mod common;
+mod isolation;
 
 use common::{FakeApi, RELEASES, Signer, archive, stub_binaries, write_stubs};
 
@@ -86,6 +87,7 @@ impl Env {
         Command::new(self.install.path().join("loom"))
             .args(args)
             .env("LOOM_HOME", self.home.path())
+            .envs(isolation::isolated_env(self.home.path()))
             .env("LOOM_RELEASES_URL", &self.api.url)
             .env("LOOM_UPDATE_PUBKEY", &self.signer.public)
             .env_remove("LOOM_GITHUB_TOKEN")
@@ -473,6 +475,7 @@ fn the_release_key_rejects_a_signature_from_another_key() {
     let output = Command::new(env.install.path().join("loom"))
         .args(["upgrade", "--channel", "stable"])
         .env("LOOM_HOME", env.home.path())
+        .envs(isolation::isolated_env(env.home.path()))
         .env("LOOM_RELEASES_URL", &env.api.url)
         .env_remove("LOOM_UPDATE_PUBKEY")
         .env_remove("LOOM_GITHUB_TOKEN")
@@ -490,6 +493,7 @@ fn token_is_sent_as_a_bearer() {
     let output = Command::new(env.install.path().join("loom"))
         .args(["upgrade", "--channel", "stable", "--check"])
         .env("LOOM_HOME", env.home.path())
+        .envs(isolation::isolated_env(env.home.path()))
         .env("LOOM_RELEASES_URL", &env.api.url)
         .env("LOOM_GITHUB_TOKEN", "test-token")
         .env_remove("GITHUB_TOKEN")

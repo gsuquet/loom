@@ -36,6 +36,10 @@ pub fn check(staged_dir: &Path, expected: &Version, timeout: Duration) -> Result
     command
         .arg("--loom-home")
         .arg(home.path().join("home"))
+        // The user home is thrown away too: loomd scans `~/perso`, `~/work` and the context
+        // paths at start, and a pre-flight must never walk the real home.
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
@@ -125,13 +129,38 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// Bounds a hang only: `check` returns as soon as the staged loomd exits, so a loaded
+    /// machine (first exec of a fresh script, parallel tests) must not turn a slow start into a
+    /// timeout.
+    const NO_TIMEOUT_EXPECTED: Duration = Duration::from_secs(120);
+
     #[test]
     fn a_loomd_that_exits_is_rejected_with_its_stderr() {
         let dir = tempfile::tempdir().unwrap();
         loomd(dir.path(), "echo 'Error: boom' >&2; exit 1");
-        let error = check(dir.path(), &Version::new(1, 0, 0), Duration::from_secs(5)).unwrap_err();
+        let error = check(dir.path(), &Version::new(1, 0, 0), NO_TIMEOUT_EXPECTED).unwrap_err();
         assert!(error.contains("exited"), "{error}");
         assert!(error.contains("Error: boom"), "{error}");
+    }
+
+    #[test]
+    fn the_user_home_is_the_throwaway_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        loomd(
+            dir.path(),
+            "echo \"HOME=$HOME XDG_CONFIG_HOME=$XDG_CONFIG_HOME\" >&2; exit 1",
+        );
+        let error = check(dir.path(), &Version::new(1, 0, 0), NO_TIMEOUT_EXPECTED).unwrap_err();
+        let line = error.split(": ").last().unwrap_or_default();
+        let home = line
+            .strip_prefix("HOME=")
+            .and_then(|rest| rest.split(' ').next())
+            .unwrap_or_else(|| panic!("{error}"));
+        assert!(home.contains(HOME_PREFIX), "{error}");
+        assert!(
+            line.contains(&format!("XDG_CONFIG_HOME={home}/.config")),
+            "{error}"
+        );
     }
 
     #[test]
@@ -155,7 +184,7 @@ mod tests {
     #[test]
     fn a_missing_loomd_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let error = check(dir.path(), &Version::new(1, 0, 0), Duration::from_secs(1)).unwrap_err();
+        let error = check(dir.path(), &Version::new(1, 0, 0), NO_TIMEOUT_EXPECTED).unwrap_err();
         assert!(error.contains("cannot start"), "{error}");
     }
 

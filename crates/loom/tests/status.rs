@@ -18,7 +18,11 @@ use loom_api::{ApiError, ApiVersion, ErrorCode, StatusResponse, Timestamp, Versi
 use serde_json::Value;
 use tempfile::TempDir;
 
+mod isolation;
+
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// `START_TIMEOUT` of `loom`: how long it waits for a started loomd to answer.
+const START_WINDOW: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
 
 fn loom_bin() -> PathBuf {
@@ -51,10 +55,11 @@ fn log(home: &Path) -> PathBuf {
     home.join("log/loomd.log")
 }
 
-/// Runs `loom --color=never <args>` with `LOOM_HOME` set to `home`.
+/// Runs `loom --color=never <args>` with `LOOM_HOME` and `HOME` set to `home`.
 fn loom(home: &Path, args: &[&str]) -> Output {
     Command::new(loom_bin())
         .env("LOOM_HOME", home)
+        .envs(isolation::isolated_env(home))
         .env_remove("NO_COLOR")
         .arg("--color=never")
         .args(args)
@@ -193,6 +198,18 @@ fn starts_loomd_when_absent_then_reuses_it() {
     assert_eq!(mode(&log(home.path())), 0o600);
 }
 
+/// Guard: the `loomd` a test starts through `loom` scans under the test's home, never under
+/// the real one.
+#[test]
+fn started_loomd_scans_only_the_test_home() {
+    let home = short_home();
+    let _guard = DaemonGuard { home: home.path() };
+    let output = loom(home.path(), &["status"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let roots = isolation::logged_scan_roots(&fs::read_to_string(log(home.path())).unwrap());
+    isolation::assert_isolated(&roots, home.path());
+}
+
 #[test]
 fn json_output_validates_against_the_schema() {
     let home = short_home();
@@ -242,12 +259,16 @@ fn start_failure_names_the_log_and_shows_its_end() {
     fs::write(&config, "# loom\n\nunknown_key = 1\n").unwrap();
 
     let started = Instant::now();
-    let output = loom(home.path(), &["status"]);
+    let output = loom(home.path(), &["status", "-v"]);
     let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(1));
-    // Nobody holds the lock: no wait for the 5 s start window.
-    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
     let text = stderr(&output);
+    // Nobody holds the lock: `loom` fails as soon as loomd exits, without waiting for the
+    // start window. The time bound is only a backstop against a wait for the whole window
+    // plus slack: the first exec of freshly built binaries (macOS scans them) can alone take
+    // seconds before the window even starts.
+    assert!(text.contains("nobody holds the lock"), "{text}");
+    assert!(elapsed < START_WINDOW * 2, "took {elapsed:?}");
     assert!(text.contains("cannot start loomd"), "{text}");
     assert!(
         text.contains(&*log(home.path()).to_string_lossy()),

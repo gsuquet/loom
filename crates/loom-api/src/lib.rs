@@ -23,7 +23,10 @@ pub use context::{
     CONTEXT_NAME_MAX_LEN, ContextAssignment, ContextName, ContextNameError, UNASSIGNED,
 };
 pub use error::{ApiError, ErrorCode};
-pub use repo::{ForgeKind, Remote, RemoteUrl, RepoIdentity, RepoUpdatePolicy};
+pub use repo::{
+    ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,
+    RepoUpdatePolicy, ScanIssue, ScanResult,
+};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;

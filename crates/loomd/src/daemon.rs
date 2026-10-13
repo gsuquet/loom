@@ -11,20 +11,28 @@ use std::time::SystemTime;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{Method, StatusCode, Uri};
 use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
-use axum::routing::get;
-use loom_api::{ApiError, ApiVersion, StatusResponse, Timestamp, UpdateState};
+use axum::routing::{get, post};
+use loom_api::{
+    ApiError, ApiVersion, RegisterRequest, RepoList, StatusResponse, Timestamp, UpdateState,
+};
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
 use loom_config::layout::{
     Layout, MAX_SOCKET_PATH_BYTES, RUN_DIR_MODE, RUN_FILE_MODE, check_socket_path,
     lock_taken_message, parse_lock_pid,
 };
+use loom_store::RepoFilter;
 use loom_update::auto;
-use loomd::api::{STATUS_PATH, clock_error, method_not_allowed, not_found, status_at, timestamp};
+use loomd::api::{
+    REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, RepoQuery, STATUS_PATH,
+    clock_error, invalid_request, method_not_allowed, not_found, register_path, repo_filter, slug,
+    status_at, timestamp,
+};
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
 use loomd::hooks;
@@ -36,6 +44,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
+use crate::repos::{self, Failure, RepoHandle};
 use crate::updater::{self, Settings};
 
 /// What the daemon reads before it changes anything.
@@ -95,6 +104,13 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     // Held, and the lock with it, until the process exits.
     let _lock = acquire_lock(&layout.lock)?;
     remove_stale_socket(&layout.socket)?;
+    // `~` of `[repos]` and `[contexts]` is the user's home, not the loom home.
+    let user_home = env::home_dir().ok_or_else(|| {
+        miette!("cannot find the user's home directory (HOME) to expand `~` in the configuration")
+    })?;
+    // Opened under the lock: this daemon is the only writer of the index.
+    let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home)
+        .wrap_err("cannot start the repository index")?;
 
     let base = StatusResponse {
         api_version: ApiVersion::CURRENT,
@@ -128,9 +144,11 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         settings,
         update_state: layout.update_state.clone(),
         running: Version::parse(&VERSION_INFO.version).ok(),
+        repos: repo_handle,
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     updater.stop();
+    index.stop();
     served
 }
 
@@ -161,6 +179,8 @@ struct App {
     /// `state/update.json`, read at each status request: the watchdog writes it too.
     update_state: PathBuf,
     running: Option<Version>,
+    /// The repository index.
+    repos: RepoHandle,
 }
 
 /// Reads the configuration, and whether the file is missing: a missing file gives the
@@ -309,6 +329,10 @@ async fn serve(
 fn router(app: App) -> Router {
     Router::new()
         .route(STATUS_PATH, get(status))
+        .route(REPOS_PATH, get(list_repos))
+        .route(REPOS_SCAN_PATH, post(scan_repos))
+        .route(REPOS_REGISTER_PATH, post(register_repo))
+        .route(REPO_PATH, get(get_repo).delete(forget_repo))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -334,6 +358,76 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         app.running.as_ref(),
     ));
     Json(status).into_response()
+}
+
+async fn list_repos(
+    State(app): State<Arc<App>>,
+    query: Result<Query<RepoQuery>, QueryRejection>,
+) -> Response {
+    let filter = query
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|Query(query)| repo_filter(query));
+    let (context, query) = match filter {
+        Ok(filter) => filter,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    respond(
+        app.repos
+            .list(RepoFilter { context, query })
+            .await
+            .map(|repos| RepoList { repos }),
+    )
+}
+
+async fn get_repo(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<(String, String)>, PathRejection>,
+) -> Response {
+    match path {
+        Ok(UrlPath((context, name))) => respond(app.repos.get(slug(&context, &name)).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+async fn forget_repo(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<(String, String)>, PathRejection>,
+) -> Response {
+    match path {
+        Ok(UrlPath((context, name))) => respond(app.repos.forget(slug(&context, &name)).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+async fn scan_repos(State(app): State<Arc<App>>) -> Response {
+    respond(app.repos.scan().await)
+}
+
+async fn register_repo(
+    State(app): State<Arc<App>>,
+    body: Result<Json<RegisterRequest>, JsonRejection>,
+) -> Response {
+    let path = body
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|Json(request)| register_path(&request.path));
+    match path {
+        Ok(path) => respond(app.repos.register(path).await),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+/// `200` with the JSON of `result`, or its error.
+fn respond<T: serde::Serialize>(result: Result<T, Failure>) -> Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err((status, error)) => error_response(status, error),
+    }
 }
 
 async fn fallback_not_found(uri: Uri) -> Response {

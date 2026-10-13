@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RegisterRequest",
+  "description": "Body of `POST /v1/repos/register`.",
+  "type": "object",
+  "properties": {
+    "path": {
+      "description": "Absolute path of the repository or of a directory inside it.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "path"
+  ]
+}

@@ -10,10 +10,11 @@ use std::path::PathBuf;
 
 use loom_api::{
     ApiError, ApiVersion, Channel, ChannelSource, ChosenChannel, ContextAssignment, ContextName,
-    DaemonRestart, ErrorCode, ForgeKind, InstallReport, PendingUpgrade, Profile, Remote, RemoteUrl,
-    RepoIdentity, RollbackReport, ServicePlatform, ServiceStatus, StatusResponse, Timestamp,
-    UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpgradeDecision,
-    UpgradeReport, UpgradeSkipReason, UpgradeSource, VersionInfo,
+    DaemonRestart, ErrorCode, ForgeKind, InstallReport, PendingUpgrade, Profile, RegisterRequest,
+    Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary, RollbackReport, ScanIssue, ScanResult,
+    ServicePlatform, ServiceStatus, StatusResponse, Timestamp, UpdateChannel, UpdatePolicyMode,
+    UpdateResult, UpdateState, UpdateStatus, UpgradeDecision, UpgradeReport, UpgradeSkipReason,
+    UpgradeSource, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -26,8 +27,12 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("api_version", schema_for!(ApiVersion)),
         ("context_assignment", schema_for!(ContextAssignment)),
         ("error_code", schema_for!(ErrorCode)),
+        ("register_request", schema_for!(RegisterRequest)),
         ("repo_identity", schema_for!(RepoIdentity)),
+        ("repo_list", schema_for!(RepoList)),
+        ("repo_summary", schema_for!(RepoSummary)),
         ("rollback_report", schema_for!(RollbackReport)),
+        ("scan_result", schema_for!(ScanResult)),
         ("service_platform", schema_for!(ServicePlatform)),
         ("service_status", schema_for!(ServiceStatus)),
         ("status_response", schema_for!(StatusResponse)),
@@ -404,7 +409,75 @@ fn repo_samples_validate_against_their_schema() {
         })
         .unwrap(),
     );
+    let used = Timestamp::from_unix_secs(1_791_792_000).unwrap();
+    let summaries = vec![
+        RepoSummary {
+            identity: repo_identity(ContextAssignment::Unassigned),
+            registered: false,
+            last_used: None,
+        },
+        RepoSummary {
+            identity: repo_identity(ContextAssignment::Default {
+                context: "personal".parse().unwrap(),
+            }),
+            registered: true,
+            last_used: Some(used),
+        },
+    ];
+    for summary in &summaries {
+        errors.extend(violations(summary).unwrap());
+    }
+    errors.extend(violations(&RepoList { repos: summaries }).unwrap());
+    errors.extend(violations(&RepoList { repos: vec![] }).unwrap());
+    errors.extend(
+        violations(&RegisterRequest {
+            path: "/home/me/src/x".into(),
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&ScanResult {
+            added: 2,
+            updated: 1,
+            removed: 0,
+            errors: vec![ScanIssue {
+                path: "/home/me/work/locked".into(),
+                message: "cannot read directory /home/me/work/locked: permission denied".to_owned(),
+            }],
+            duration_ms: 42,
+        })
+        .unwrap(),
+    );
     assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+#[test]
+fn repo_summary_inlines_the_identity() {
+    let summary = RepoSummary {
+        identity: repo_identity(ContextAssignment::Unassigned),
+        registered: true,
+        last_used: None,
+    };
+    let value = serde_json::to_value(&summary).unwrap();
+    assert_eq!(value["slug"], "unassigned/loom");
+    assert_eq!(value["registered"], true);
+    assert!(value.get("last_used").is_none());
+    // A client reading only the identity reads a summary.
+    let identity: RepoIdentity = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(identity, summary.identity);
+    let back: RepoSummary = serde_json::from_value(value).unwrap();
+    assert_eq!(back, summary);
+}
+
+#[test]
+fn register_request_rejects_unknown_fields() {
+    let error = serde_json::from_value::<RegisterRequest>(json!({ "path": "/x", "force": true }));
+    assert!(error.is_err());
+    let schema = serde_json::to_value(schema_for!(RegisterRequest)).unwrap();
+    assert!(!jsonschema::is_valid(
+        &schema,
+        &json!({ "path": "/x", "force": true })
+    ));
 }
 
 #[test]
