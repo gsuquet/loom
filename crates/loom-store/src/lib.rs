@@ -161,7 +161,8 @@ impl Store {
 
     /// Adds or updates `identity` as a registered repository, at `now`, in one transaction.
     /// Its slug is made unique against the index, keeping its current one while its context
-    /// and name do not change.
+    /// and name do not change. `used`: also sets `last_used` to `now` in the same transaction
+    /// (registration on use).
     ///
     /// # Errors
     ///
@@ -170,9 +171,10 @@ impl Store {
         &mut self,
         identity: RepoIdentity,
         now: Timestamp,
+        used: bool,
     ) -> Result<RepoSummary, StoreError> {
         let _span = debug_span!("store.register", path = %identity.path.display()).entered();
-        repos::register(&mut self.conn, identity, now)
+        repos::register(&mut self.conn, identity, now, used)
     }
 
     /// Removes the repository with `slug`; `None` when there is none.

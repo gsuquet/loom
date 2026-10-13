@@ -428,7 +428,7 @@ fn register_keeps_the_flag_across_scans_until_forget() {
 
     // A new registered repository with the same base slug gets a suffix.
     let summary = store
-        .register(repo("/elsewhere/x", "p", "p/x", &[]), at(2))
+        .register(repo("/elsewhere/x", "p", "p/x", &[]), at(2), false)
         .unwrap();
     assert_eq!(summary.identity.slug, "p/x-2");
     assert!(summary.registered);
@@ -439,7 +439,7 @@ fn register_keeps_the_flag_across_scans_until_forget() {
 
     // Registering a scanned repository flags it and keeps its slug.
     let summary = store
-        .register(repo("/w/x", "p", "p/x", &[]), at(3))
+        .register(repo("/w/x", "p", "p/x", &[]), at(3), false)
         .unwrap();
     assert_eq!(summary.identity.slug, "p/x");
     assert!(summary.registered);
@@ -908,7 +908,7 @@ fn replace_all_drops_everything_else() {
         .apply_scan(&added(vec![repo("/w/x", "p", "p/x", &[])]), at(1))
         .unwrap();
     store
-        .register(repo("/elsewhere/y", "p", "p/y", &[]), at(2))
+        .register(repo("/elsewhere/y", "p", "p/y", &[]), at(2), false)
         .unwrap();
     store.set_last_used(Path::new("/w/x"), at(3)).unwrap();
     store
@@ -1167,4 +1167,18 @@ fn version_2_database_migrates_its_search_table() {
     assert_eq!(fts_orphans(&path), (0, 0));
     let reader = Reader::open(&path).unwrap();
     assert_eq!(found(&reader, "viet dev", None), ["p/viet"]);
+}
+
+#[test]
+fn registration_on_use_sets_last_used_in_the_same_write() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&db(&dir)).unwrap();
+    let summary = store
+        .register(repo("/elsewhere/z", "p", "p/z", &[]), at(7), true)
+        .unwrap();
+    assert_eq!(summary.last_used, Some(at(7)));
+    let plain = store
+        .register(repo("/elsewhere/w", "p", "p/w", &[]), at(8), false)
+        .unwrap();
+    assert_eq!(plain.last_used, None);
 }

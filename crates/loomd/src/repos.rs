@@ -821,14 +821,11 @@ impl Worker {
         // The path came from JSON: valid UTF-8, as the store requires.
         let summary = self
             .store
-            .register(repo.identity, now()?)
+            .register(repo.identity, now()?, on_use)
             .map_err(|error| store_failure(&error))?;
         span.record("slug", summary.identity.slug.as_str());
         info!(slug = %summary.identity.slug, path = %summary.identity.path.display(), "repository registered");
         self.refresher.enqueue(summary.identity.path.clone());
-        if on_use {
-            return self.mark_used(&summary.identity.path);
-        }
         Ok(summary)
     }
 
