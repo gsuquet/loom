@@ -9,6 +9,7 @@ mod context;
 mod error;
 mod repo;
 mod repo_state;
+mod repo_update;
 mod service;
 mod status;
 mod timestamp;
@@ -29,6 +30,10 @@ pub use repo::{
     RepoUpdatePolicy, ScanIssue, ScanResult,
 };
 pub use repo_state::{MaybeKnown, RepoHead, RepoOperation, RepoState, Untracked, Upstream};
+pub use repo_update::{
+    LastUpdate, PlannedAction, RepoSync, SkipReason, StateField, SyncOutcome, SyncRequest,
+    SyncResult, UpdateOutcome, UpdateStep,
+};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use timestamp::Timestamp;

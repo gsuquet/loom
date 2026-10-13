@@ -17,7 +17,7 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_api::{RepoIdentity, RepoState, RepoSummary, Timestamp};
+use loom_api::{LastUpdate, RepoIdentity, RepoState, RepoSummary, Timestamp};
 use loom_repo::ScanDiff;
 use rusqlite::{Connection, OpenFlags};
 use thiserror::Error;
@@ -212,6 +212,34 @@ impl Store {
     pub fn save_state(&mut self, path: &Path, state: &RepoState) -> Result<bool, StoreError> {
         let _span = debug_span!("store.save_state", path = %path.display()).entered();
         repos::save_state(&self.conn, path, state)
+    }
+}
+
+impl Store {
+    /// Replaces the last update of the repository at `path` with `update` and, when given, its
+    /// state with `state`, in one transaction. Returns `false`, changing nothing, when no
+    /// repository has this path (removed since the update started).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails (nothing is changed then), or the path is not valid
+    /// UTF-8.
+    pub fn save_update(
+        &mut self,
+        path: &Path,
+        update: &LastUpdate,
+        state: Option<&RepoState>,
+    ) -> Result<bool, StoreError> {
+        let _span = debug_span!("store.save_update", path = %path.display()).entered();
+        let tx = self.conn.transaction()?;
+        if !repos::save_update(&tx, path, update)? {
+            return Ok(false);
+        }
+        if let Some(state) = state {
+            repos::save_state(&tx, path, state)?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 }
 

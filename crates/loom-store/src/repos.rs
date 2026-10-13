@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
-    ContextAssignment, ForgeKind, MaybeKnown, Remote, RepoIdentity, RepoState, RepoSummary,
-    Timestamp,
+    ContextAssignment, ForgeKind, LastUpdate, MaybeKnown, Remote, RepoIdentity, RepoState,
+    RepoSummary, Timestamp,
 };
 use loom_repo::{ScanDiff, assign_unique_slugs};
 use rusqlite::{Connection, OptionalExtension as _, Row, TransactionBehavior, params};
@@ -24,14 +24,15 @@ pub struct RepoFilter {
     pub query: Option<String>,
 }
 
-/// Columns of [`read_row`], from `repos r LEFT JOIN repo_state s`.
+/// Columns of [`read_row`], from `repos r LEFT JOIN repo_state s LEFT JOIN repo_update u`.
 const COLUMNS: &str = "r.path, r.name, r.slug, r.assignment, r.remotes, r.primary_remote, \
                        r.forge, r.registered, r.last_used, s.refreshed_at, s.head, s.dirty, \
                        s.untracked, s.operation, s.upstream, s.default_branch, s.last_commit, \
-                       s.last_fetch, s.error";
+                       s.last_fetch, s.error, u.last_update";
 
 /// The tables [`COLUMNS`] come from.
-const FROM: &str = "repos r LEFT JOIN repo_state s ON s.repo_id = r.id";
+const FROM: &str = "repos r LEFT JOIN repo_state s ON s.repo_id = r.id \
+                    LEFT JOIN repo_update u ON u.repo_id = r.id";
 
 /// Repositories matching `filter`, sorted by slug, in one statement (one snapshot).
 pub fn list(conn: &Connection, filter: &RepoFilter) -> Result<Vec<RepoSummary>, StoreError> {
@@ -91,6 +92,25 @@ pub fn save_state(conn: &Connection, path: &Path, state: &RepoState) -> Result<b
             encode(&state.last_fetch)?,
             state.error,
         ],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Stores `update` as the last update of the repository at `path`, replacing the previous one.
+/// Returns `false`, changing nothing, when no repository has this path (removed since).
+pub fn save_update(
+    conn: &Connection,
+    path: &Path,
+    update: &LastUpdate,
+) -> Result<bool, StoreError> {
+    let json =
+        serde_json::to_string(update).map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    let changed = conn.execute(
+        "INSERT INTO repo_update (repo_id, time, last_update) \
+         SELECT id, ?2, ?3 FROM repos WHERE path = ?1 \
+         ON CONFLICT (repo_id) DO UPDATE SET \
+             time = excluded.time, last_update = excluded.last_update",
+        params![text(path)?, unix(update.time)?, json],
     )?;
     Ok(changed > 0)
 }
@@ -247,6 +267,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<RepoSummary, StoreError>> 
         last_fetch: row.get(17)?,
         error: row.get(18)?,
     };
+    let last_update: Option<String> = row.get(19)?;
     Ok(build(
         path,
         name,
@@ -258,6 +279,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<RepoSummary, StoreError>> 
         registered,
         last_used,
         state,
+        last_update.as_deref(),
     ))
 }
 
@@ -319,6 +341,7 @@ fn build(
     registered: bool,
     last_used: Option<i64>,
     state: StateColumns,
+    last_update: Option<&str>,
 ) -> Result<RepoSummary, StoreError> {
     let corrupt = |what: &str, error: &dyn std::fmt::Display| {
         StoreError::Corrupt(format!("{what} of {slug}: {error}"))
@@ -339,6 +362,10 @@ fn build(
     let state = state
         .build()
         .map_err(|error| StoreError::Corrupt(format!("{error} of {slug}")))?;
+    let last_update: Option<LastUpdate> = last_update
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| corrupt("last_update", &error))?;
     Ok(RepoSummary {
         identity: RepoIdentity {
             path: PathBuf::from(path),
@@ -352,6 +379,7 @@ fn build(
         registered,
         last_used,
         state,
+        last_update,
     })
 }
 
