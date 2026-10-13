@@ -27,6 +27,9 @@ pub struct ScanDiff {
 /// above it, or its own unreadable `.git` or config). Slugs are made unique over every
 /// repository kept, scanned or not, with [`assign_unique_slugs`] and the previous slugs, so
 /// that a slug never changes while its repository's context and name do not.
+///
+/// Registered repositories are scanned in place by [`crate::scan_with_registered`], which
+/// returns their paths among `scanned_roots`: kept while on disk, removed once gone.
 #[must_use]
 pub fn diff(previous: &[RepoIdentity], scanned_roots: &[PathBuf], report: &ScanReport) -> ScanDiff {
     let scanned = |path: &Path| scanned_roots.iter().any(|root| path.starts_with(root));

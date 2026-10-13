@@ -12,7 +12,9 @@ use std::process::Command;
 use loom_api::ForgeKind;
 use loom_config::config::{Config, parse_config};
 use loom_repo::scan::{Exclusions, Head, ScanError, ScanReport};
-use loom_repo::{ContextRules, ScanOptions, diff, scan};
+use loom_repo::{
+    ContextRules, ScanOptions, diff, find_root, read_repos, scan, scan_roots, scan_with_registered,
+};
 use tempfile::TempDir;
 
 /// Runs git in `dir`, isolated from the user's and the system's configuration.
@@ -68,6 +70,24 @@ fn run(roots: &[PathBuf], config_text: &str, max_depth: u32) -> ScanReport {
         resolve_alias: &|_| None,
     };
     scan(roots, &options)
+}
+
+/// [`scan_with_registered`] with `config_text`: the report and the roots for `diff`.
+fn run_registered(
+    roots: &[PathBuf],
+    registered: &[PathBuf],
+    config_text: &str,
+    max_depth: u32,
+) -> (ScanReport, Vec<PathBuf>) {
+    let (config, rules) = config(config_text);
+    let options = ScanOptions {
+        max_depth,
+        exclusions: Exclusions::new(&config.repos.exclude).unwrap(),
+        rules: &rules,
+        forges: &config.forges,
+        resolve_alias: &|_| None,
+    };
+    scan_with_registered(roots, registered, &options)
 }
 
 /// Reported paths relative to `root`.
@@ -333,4 +353,161 @@ fn removal_is_reported_only_when_its_root_is_rescanned() {
     assert_eq!(removed, [&work.join("lib")]);
     assert_eq!(changes.added, []);
     assert_eq!(changes.updated, []);
+}
+
+#[test]
+fn registered_repositories_are_kept_and_reidentified_by_scans() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("root");
+    let deep = root.join("a/b/c/d/deep");
+    let excluded = root.join("archive/old");
+    let outside = tmp.path().join("outside/repo");
+    let gone = tmp.path().join("outside/gone");
+    for repo in [&deep, &excluded, &outside] {
+        fake_repo(repo);
+    }
+    fake_repo(&root.join("walked"));
+    let registered = [deep.clone(), excluded.clone(), outside.clone(), gone];
+    let roots = [root.clone()];
+    let text = "[repos]\nexclude = [\"archive\"]\n";
+
+    // Without registration, the walk finds only `walked`.
+    assert_eq!(found(&run(&roots, text, 3), &root), ["walked"]);
+
+    let (report, scanned) = run_registered(&roots, &registered, text, 3);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let first = diff(&[], &scanned, &report);
+    let added: Vec<_> = first.added.iter().map(|repo| repo.path.clone()).collect();
+    assert_eq!(
+        added,
+        [
+            outside.clone(),
+            deep.clone(),
+            excluded.clone(),
+            root.join("walked")
+        ]
+    );
+    assert_eq!(first.removed, []);
+
+    // A rule change re-identifies a registered repository the walk does not reach.
+    let outside_dir = tmp.path().join("outside");
+    let text_with_context = format!(
+        "{text}[contexts.side]\nmatch.paths = [\"{}\"]\n",
+        outside_dir.display()
+    );
+    let (report, scanned) = run_registered(&roots, &registered, &text_with_context, 3);
+    let second = diff(&first.added, &scanned, &report);
+    let updated: Vec<_> = second
+        .updated
+        .iter()
+        .map(|repo| (repo.path.clone(), repo.slug.clone()))
+        .collect();
+    assert_eq!(updated, [(outside, "side/repo".to_owned())]);
+    assert_eq!(second.removed, []);
+    assert_eq!(second.added, []);
+
+    // A registered repository gone from disk is removed; one that cannot be read is kept.
+    fs::remove_dir_all(&deep).unwrap();
+    fs::remove_dir_all(excluded.join(".git")).unwrap();
+    fs::write(excluded.join(".git"), "not a pointer\n").unwrap();
+    let (report, scanned) = run_registered(&roots, &registered, text, 3);
+    let third = diff(&first.added, &scanned, &report);
+    let removed: Vec<_> = third.removed.iter().map(|repo| repo.path.clone()).collect();
+    assert_eq!(removed, [deep]);
+    assert!(
+        matches!(&report.errors[..], [ScanError::GitDir { path, .. }] if *path == excluded),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn registered_repository_found_by_the_walk_is_read_once() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("root");
+    fake_repo(&root.join("x"));
+    let (report, scanned) = run_registered(std::slice::from_ref(&root), &[root.join("x")], "", 4);
+    assert_eq!(found(&report, &root), ["x"]);
+    assert_eq!(scanned, [root.clone(), root.join("x")]);
+}
+
+#[test]
+fn read_repos_reads_roots_in_place() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    fake_repo(&repo);
+    fake_repo(&repo.join("nested"));
+    let (config, rules) = config("");
+    let options = ScanOptions {
+        max_depth: 0,
+        exclusions: Exclusions::new(&config.repos.exclude).unwrap(),
+        rules: &rules,
+        forges: &config.forges,
+        resolve_alias: &|_| None,
+    };
+    let report = read_repos(
+        &[
+            repo.clone(),
+            tmp.path().join("missing"),
+            tmp.path().to_path_buf(),
+        ],
+        &options,
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let paths: Vec<_> = report
+        .repos
+        .iter()
+        .map(|r| r.identity.path.clone())
+        .collect();
+    assert_eq!(paths, [repo]);
+}
+
+#[test]
+fn find_root_walks_up_to_the_repository() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    fake_repo(&repo);
+    fs::create_dir_all(repo.join("src/deep")).unwrap();
+    assert_eq!(
+        find_root(&repo.join("src/deep")).unwrap(),
+        Some(repo.clone())
+    );
+    assert_eq!(find_root(&repo).unwrap(), Some(repo.clone()));
+    // A path below a file, or that does not exist, still finds the repository above it.
+    fs::write(repo.join("file"), "").unwrap();
+    assert_eq!(find_root(&repo.join("file/x")).unwrap(), Some(repo.clone()));
+    assert_eq!(
+        find_root(&repo.join("missing")).unwrap(),
+        Some(repo.clone())
+    );
+    // A `.git` file (worktree, submodule) marks a root too.
+    let sub = repo.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join(".git"), "gitdir: ../.git\n").unwrap();
+    assert_eq!(find_root(&sub).unwrap(), Some(sub));
+
+    let plain = tmp.path().join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    // The temporary directory itself is outside any repository.
+    if find_root(tmp.path()).unwrap().is_none() {
+        assert_eq!(find_root(&plain).unwrap(), None);
+    }
+}
+
+#[test]
+fn scan_roots_are_the_roots_then_the_context_paths() {
+    let (config, _) = config(
+        "[repos]\nroots = [\"~/perso\", \"/srv\"]\n\
+         [contexts.a]\nmatch.paths = [\"~/work/a\", \"/srv\"]\n\
+         [contexts.b]\nmatch.paths = [\"~/perso/b/\"]\n",
+    );
+    assert_eq!(
+        scan_roots(&config, Path::new("/home/me")),
+        [
+            PathBuf::from("/home/me/perso"),
+            PathBuf::from("/srv"),
+            PathBuf::from("/home/me/work/a"),
+            PathBuf::from("/home/me/perso/b"),
+        ]
+    );
 }

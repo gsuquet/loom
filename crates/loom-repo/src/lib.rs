@@ -17,4 +17,6 @@ pub use diff::{ScanDiff, diff};
 pub use forge::detect_forge;
 pub use identity::{assign_unique_slugs, identify};
 pub use remote::{RemoteUrlError, parse_remote_url, primary_remote, redact_url, remote};
-pub use scan::{ScanOptions, ScanReport, scan};
+pub use scan::{
+    ScanOptions, ScanReport, find_root, read_repos, scan, scan_roots, scan_with_registered,
+};
