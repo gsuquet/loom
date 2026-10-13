@@ -29,7 +29,7 @@ Loom keeps everything I have to do in one prioritized list, across all my contex
 
 ## Project status
 
-Rewrite from scratch, before v0.1. Nothing is installable yet. The design lives in [docs/design/](docs/design/) and the plan in the [roadmap](docs/roadmap.md).
+[v0.2.0](https://github.com/gsuquet/loom/releases/tag/v0.2.0) installs, runs `loomd` as a user service, keeps itself up to date, and indexes the git repositories of the machine: contexts, repo cards, `loom search`, automatic fetch and fast-forward. v0.3 (tasks and TUI) is in progress on the `dev` channel. What ships is in the [changelog](CHANGELOG.md); the design lives in [docs/design/](docs/design/) and the plan in the [roadmap](docs/roadmap.md).
 
 ## Who this project is for
 
@@ -43,7 +43,15 @@ Software engineers and consultants who juggle several contexts (clients, employe
 
 ## Instructions for using Loom
 
-Loom is not released yet. From v0.1.0, `loom` and `loomd` install on macOS and Linux with the install script: see [Install loom](docs/how-to-guides/install.md).
+Install `loom` and `loomd` into `~/.local/bin` (macOS and Linux, arm64 and x86_64), then run `loomd` as a user service:
+
+```bash
+curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh | sh
+loom service install
+loom status
+```
+
+Define your contexts in `~/.loom/config.toml` ([configure contexts](docs/how-to-guides/configure-contexts.md)), check them with `loom repo doctor`, and register the repositories the shell enters with `eval "$(loom shell-init zsh)"` ([shell integration](docs/how-to-guides/shell-integration.md)).
 
 To work on Loom:
 
@@ -54,8 +62,6 @@ mise install
 mise run check
 ```
 
-Configuration and usage instructions will be added as features ship.
-
 ## Contributing guidelines
 
 Read the [Contributing Guide](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md) and, for coding agents, [AGENTS.md](AGENTS.md).
@@ -65,8 +71,9 @@ Read the [Contributing Guide](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CO
 Organized with the [Diátaxis](https://diataxis.fr/) framework:
 
 * **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [style guide](docs/reference/style-guide.md). File formats are added as features ship.
-* **How-to guides:** [install loom](docs/how-to-guides/install.md).
-* **Explanation, tutorials:** written as features ship.
+* **How-to guides:** [install loom](docs/how-to-guides/install.md), [run loomd as a service](docs/how-to-guides/run-loomd-as-a-service.md), [upgrade and roll back](docs/how-to-guides/upgrade-and-roll-back.md), [configure contexts](docs/how-to-guides/configure-contexts.md), [shell integration](docs/how-to-guides/shell-integration.md), [local traces](docs/how-to-guides/local-traces.md).
+* **Explanation:** [auto-upgrade](docs/explanation/auto-upgrade.md), [repository updates](docs/explanation/repo-updates.md).
+* **Tutorials:** written as features ship (from v0.3).
 
 Design and planning, outside Diátaxis (target behavior, not shipped behavior):
 
