@@ -248,6 +248,7 @@ mod tests {
             socket_path: socket.to_path_buf(),
             config_path: "/home/me/.loom/config.toml".into(),
             update: None,
+            disk: None,
         }
     }
 

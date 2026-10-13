@@ -546,7 +546,7 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
             return vec![check(
                 "loomd",
                 CheckStatus::Warn,
-                "not running: the index, loomd's environment, the remotes and the updates are not checked"
+                "not running: the disk usage, the index, loomd's environment, the remotes and the updates are not checked"
                     .to_owned(),
                 Some("`loom status` starts it; `loom service install` keeps it running"),
             )];
@@ -562,6 +562,22 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
         ),
         None,
     )];
+    match &status.disk {
+        Some(disk) => checks.extend(doctor::disk_checks(
+            disk,
+            &status.loom_home,
+            &status.daemon.version,
+        )),
+        None => checks.push(check(
+            "disk",
+            CheckStatus::Warn,
+            format!(
+                "loomd {} cannot report the disk usage of the loom home",
+                status.daemon.version
+            ),
+            Some("restart loomd with the version of this loom"),
+        )),
+    }
     let repos = match list(&client, None).await {
         Ok(repos) => repos,
         Err(error) => {
