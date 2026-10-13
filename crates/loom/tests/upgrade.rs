@@ -21,7 +21,10 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::Mutex;
 
-use loom_api::{DaemonRestart, RollbackReport, UpgradeDecision, UpgradeReport, VersionInfo};
+use loom_api::{
+    Channel, DaemonRestart, RollbackReport, UpdateChannel, UpdateState, UpgradeDecision,
+    UpgradeReport, UpgradeSource, VersionInfo,
+};
 use loom_update::release::release_target;
 use loom_update::verify::sha256_hex;
 use serde_json::{Value, json};
@@ -771,4 +774,121 @@ fn failed_versions_are_skipped_unless_pinned() {
     let report = upgrade_report(&env.loom(&["upgrade", "--version", NEW, "--json"]));
     assert_eq!(report.decision, apply(NEW));
     assert_eq!(env.installed(), stub_binaries(NEW).map(|(_, data)| data));
+}
+
+// --- remembered channel -------------------------------------------------------------------
+
+fn state(env: &Env) -> UpdateState {
+    fs::read(env.home.path().join("state/update.json"))
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .unwrap_or_default()
+}
+
+fn chosen(env: &Env) -> Option<UpdateChannel> {
+    state(env).channel.map(|chosen| chosen.name)
+}
+
+const fn release_channel(report: &UpgradeReport) -> Option<Channel> {
+    match &report.source {
+        UpgradeSource::Release { channel, .. } => *channel,
+        UpgradeSource::Local { .. } => None,
+    }
+}
+
+/// A dev build above the stable release: the dev channel picks it, stable picks `NEW`.
+fn publish_dev_and_stable(env: &Env) {
+    let list = json!([
+        env.release("99.1.0-dev.3", Tamper::None),
+        { "tag_name": format!("v{NEW}"), "draft": false, "assets": [] },
+    ]);
+    env.api
+        .route(&format!("{RELEASES}?per_page=30"), 200, list.to_string());
+    env.publish_latest(NEW, Tamper::None);
+}
+
+#[test]
+fn check_remembers_the_channel_for_the_next_upgrade() {
+    let env = Env::new();
+    publish_dev_and_stable(&env);
+
+    let report = upgrade_report(&env.loom(&["upgrade", "--channel", "dev", "--check", "--json"]));
+    assert_eq!(report.decision, apply("99.1.0-dev.3"));
+    assert_eq!(chosen(&env), Some(UpdateChannel::Dev));
+    assert!(state(&env).channel.unwrap().chosen_at.unix_secs() > 0);
+
+    // Without --channel: the remembered one, not the build channel (the test build is local
+    // and has none).
+    let report = upgrade_report(&env.loom(&["upgrade", "--check", "--json"]));
+    assert_eq!(release_channel(&report), Some(Channel::Dev));
+    assert_eq!(report.decision, apply("99.1.0-dev.3"));
+    assert_eq!(chosen(&env), Some(UpdateChannel::Dev), "kept");
+
+    // `[update] channel` takes precedence, and choosing another channel warns about it.
+    let config = env.home.path().join("config.toml");
+    fs::write(&config, "[update]\nchannel = \"stable\"\n").unwrap();
+    let report = upgrade_report(&env.loom(&["upgrade", "--check", "--json"]));
+    assert_eq!(release_channel(&report), Some(Channel::Stable));
+    let output = env.loom(&["upgrade", "--channel", "dev", "--check"]);
+    assert_success(&output);
+    assert!(
+        stderr(&output).contains("takes precedence over the chosen channel dev"),
+        "{}",
+        stderr(&output)
+    );
+    fs::remove_file(&config).unwrap();
+
+    // An upgrade with --channel remembers it too.
+    let report = upgrade_report(&env.loom(&["upgrade", "--channel", "stable", "--json"]));
+    assert_eq!(report.decision, apply(NEW));
+    assert_eq!(chosen(&env), Some(UpdateChannel::Stable));
+}
+
+#[test]
+fn up_to_date_remembers_the_channel() {
+    let env = Env::new();
+    env.api.route(
+        &format!("{RELEASES}?per_page=30"),
+        200,
+        json!([{ "tag_name": format!("v{}", env.current), "assets": [] }]).to_string(),
+    );
+    let report = upgrade_report(&env.loom(&["upgrade", "--channel", "dev", "--json"]));
+    assert_eq!(report.decision, UpgradeDecision::UpToDate);
+    assert_eq!(chosen(&env), Some(UpdateChannel::Dev));
+}
+
+#[test]
+fn dry_run_version_and_failures_do_not_remember_the_channel() {
+    let env = Env::new();
+    publish_dev_and_stable(&env);
+    env.publish_tag("98.0.0");
+    write_state(
+        &env,
+        &json!({ "failed_versions": ["0.0.1"], "later": true }),
+    );
+
+    let report = upgrade_report(&env.loom(&["upgrade", "--channel", "dev", "-n", "--json"]));
+    assert_eq!(report.decision, apply("99.1.0-dev.3"));
+    assert_eq!(chosen(&env), None, "--dry-run changes nothing");
+
+    let output = env.loom(&["upgrade", "--version", "98.0.0", "--check"]);
+    assert_success(&output);
+    assert_eq!(chosen(&env), None, "--version is not a channel");
+
+    env.api
+        .route(&format!("{RELEASES}?per_page=30"), 500, "boom");
+    assert_failure(
+        &env.loom(&["upgrade", "--channel", "dev", "--check"]),
+        "HTTP 500",
+    );
+    assert_eq!(chosen(&env), None, "a failed command records nothing");
+
+    // Recording keeps the rest of the state, fields of other versions included.
+    assert_success(&env.loom(&["upgrade", "--channel", "stable", "--check"]));
+    let state = state(&env);
+    assert_eq!(state.failed_versions, ["0.0.1"]);
+    assert_eq!(state.other.get("later"), Some(&json!(true)));
+    assert_eq!(
+        state.channel.map(|chosen| chosen.name),
+        Some(UpdateChannel::Stable)
+    );
 }

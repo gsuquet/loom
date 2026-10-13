@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "UpdateState",
-  "description": "Content of `<loom home>/state/update.json`. Every field may be missing (an empty state),\nand unknown fields are ignored, so binaries of different versions share the file.",
+  "description": "Content of `<loom home>/state/update.json`.\n\nEvery field may be missing (an empty state). Unknown fields are accepted and kept when the\nfile is rewritten, so binaries of different versions share the file.",
   "type": "object",
   "properties": {
     "available": {
@@ -9,6 +9,18 @@
       "type": [
         "string",
         "null"
+      ],
+      "default": null
+    },
+    "channel": {
+      "description": "Release channel chosen explicitly with `loom upgrade --channel`: used when\n`[update] channel` is not set, instead of the build channel.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ChosenChannel"
+        },
+        {
+          "type": "null"
+        }
       ],
       "default": null
     },
@@ -57,7 +69,26 @@
       "default": null
     }
   },
+  "additionalProperties": true,
   "$defs": {
+    "ChosenChannel": {
+      "description": "A release channel chosen explicitly, and when.",
+      "type": "object",
+      "properties": {
+        "chosen_at": {
+          "description": "Instant it was chosen.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "name": {
+          "description": "The channel.",
+          "$ref": "#/$defs/UpdateChannel"
+        }
+      },
+      "required": [
+        "name",
+        "chosen_at"
+      ]
+    },
     "PendingUpgrade": {
       "description": "An upgrade in progress.",
       "type": "object",
@@ -86,6 +117,21 @@
       "type": "string",
       "format": "date-time",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "UpdateChannel": {
+      "description": "Release channel loomd follows (`[update] channel`).",
+      "oneOf": [
+        {
+          "description": "Tagged releases only.",
+          "type": "string",
+          "const": "stable"
+        },
+        {
+          "description": "Tagged releases and dev prereleases.",
+          "type": "string",
+          "const": "dev"
+        }
+      ]
     },
     "UpdateResult": {
       "description": "Outcome of a check or an upgrade.",

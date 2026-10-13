@@ -39,8 +39,12 @@ fn update_fields(update: &UpdateStatus) -> Vec<(&'static str, String)> {
         _ if update.policy == loom_api::UpdatePolicyMode::Off => "off".to_owned(),
         None => format!("{}, no channel: not checked", update.policy),
         Some(channel) => format!(
-            "{}, channel {channel}, every {}",
+            "{}, channel {channel}{}, every {}",
             update.policy,
+            // Absent from a daemon older than the field.
+            update
+                .channel_source
+                .map_or_else(String::new, |source| format!(" ({source})")),
             format_duration(Duration::from_secs(update.check_interval_secs))
         ),
     };
@@ -140,8 +144,8 @@ fn short_commit(commit: &str) -> &str {
 mod tests {
     use super::{render_human, result_text, version_mismatch};
     use loom_api::{
-        ApiVersion, Channel, PendingUpgrade, Profile, StatusResponse, Timestamp, UpdateChannel,
-        UpdatePolicyMode, UpdateResult, UpdateStatus, VersionInfo,
+        ApiVersion, Channel, ChannelSource, PendingUpgrade, Profile, StatusResponse, Timestamp,
+        UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateStatus, VersionInfo,
     };
 
     fn info(version: &str, commit: &str) -> VersionInfo {
@@ -179,6 +183,7 @@ mod tests {
         UpdateStatus {
             policy: UpdatePolicyMode::Auto,
             channel: Some(UpdateChannel::Stable),
+            channel_source: Some(ChannelSource::Build),
             check_interval_secs: 21_600,
             last_check: Some(at()),
             available: None,
@@ -197,7 +202,7 @@ mod tests {
         assert!(
             render_human(&status).ends_with(
                 "config_path: /home/me/.loom/config.toml\n\
-                 updates:     auto, channel stable, every 6h\n\
+                 updates:     auto, channel stable (build), every 6h\n\
                  last_check:  2026-10-12T08:00:00Z\n\
                  available:   none\n\
                  failed:      none\n\
@@ -260,6 +265,28 @@ mod tests {
                 ..update()
             }),
             "updates:     notify, no channel: not checked"
+        );
+        for (source, name) in [
+            (ChannelSource::Config, "config"),
+            (ChannelSource::Chosen, "chosen"),
+            (ChannelSource::Build, "build"),
+        ] {
+            assert_eq!(
+                line(UpdateStatus {
+                    channel: Some(UpdateChannel::Dev),
+                    channel_source: Some(source),
+                    ..update()
+                }),
+                format!("updates:     auto, channel dev ({name}), every 6h")
+            );
+        }
+        // A daemon older than `channel_source`.
+        assert_eq!(
+            line(UpdateStatus {
+                channel_source: None,
+                ..update()
+            }),
+            "updates:     auto, channel stable, every 6h"
         );
     }
 

@@ -23,11 +23,15 @@ mod isolation;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use common::{Collector, FakeApi, RELEASES, Signer, archive_of, string_attribute, stub_binaries};
-use loom_api::{StatusResponse, UpdatePolicyMode, UpdateResult, UpdateState, VersionInfo};
+use loom_api::{
+    ChannelSource, StatusResponse, UpdateChannel, UpdatePolicyMode, UpdateResult, UpdateState,
+    VersionInfo,
+};
 use loom_update::release::release_target;
 use loom_update::verify::sha256_hex;
 use opentelemetry_proto::tonic::trace::v1::Span;
@@ -51,10 +55,15 @@ fn built(name: &str) -> PathBuf {
 
 /// `loom` and `loomd` wrappers reporting `NEW`, `exec`-ing the built binaries.
 fn wrappers(extra_env: &str) -> [(&'static str, Vec<u8>); 2] {
+    wrappers_of(NEW, extra_env)
+}
+
+/// `loom` and `loomd` wrappers reporting `version`, `exec`-ing the built binaries.
+fn wrappers_of(version: &str, extra_env: &str) -> [(&'static str, Vec<u8>); 2] {
     ["loom", "loomd"].map(|name| {
         let env = if name == "loomd" { extra_env } else { "" };
         let script = format!(
-            "#!/bin/sh\nexport LOOM_TEST_BUILD_VERSION={NEW}\n{env}exec '{}' \"$@\"\n",
+            "#!/bin/sh\nexport LOOM_TEST_BUILD_VERSION={version}\n{env}exec '{}' \"$@\"\n",
             built(name).display()
         );
         (name, script.into_bytes())
@@ -70,6 +79,9 @@ struct Env {
     current: String,
     daemon: Option<Child>,
     log: PathBuf,
+    next_asset_id: AtomicUsize,
+    /// `LOOM_TEST_BUILD_VERSION` of the commands; a wrapper of a release sets its own.
+    build_version: Option<String>,
 }
 
 impl Env {
@@ -95,32 +107,55 @@ impl Env {
             current: VersionInfo::current().version,
             daemon: None,
             log,
+            next_asset_id: AtomicUsize::new(0),
+            build_version: None,
         }
     }
 
     /// Publishes `NEW` as the latest stable release, made of `binaries`.
     fn publish(&self, binaries: [(&'static str, Vec<u8>); 2]) {
+        let release = self.release(NEW, binaries);
+        self.api
+            .route(&format!("{RELEASES}/latest"), 200, release.to_string());
+    }
+
+    /// Publishes `releases` as the release list the dev channel reads.
+    fn publish_list(&self, releases: &[serde_json::Value]) {
+        self.api.route(
+            &format!("{RELEASES}?per_page=30"),
+            200,
+            serde_json::Value::from(releases.to_vec()).to_string(),
+        );
+    }
+
+    /// Serves the assets of release `version`, made of `binaries`, and returns its JSON.
+    fn release(&self, version: &str, binaries: [(&'static str, Vec<u8>); 2]) -> serde_json::Value {
         let target = release_target(&VersionInfo::current().target);
-        let archive_name = format!("loom-{NEW}-{target}.tar.gz");
+        let archive_name = format!("loom-{version}-{target}.tar.gz");
         let archive = archive_of(binaries);
         let sums = format!("{}  {archive_name}\n", sha256_hex(&archive));
         let signature = self.signer.sign(sums.as_bytes());
         let mut assets = Vec::new();
-        for (id, (name, data)) in [
+        for (name, data) in [
             ("SHA256SUMS".to_owned(), sums.into_bytes()),
             ("SHA256SUMS.minisig".to_owned(), signature),
             (archive_name, archive),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        ] {
+            let id = self.next_asset_id.fetch_add(1, Ordering::Relaxed);
             self.api
                 .route(&format!("{RELEASES}/assets/{id}"), 200, data);
             assets.push(json!({ "id": id, "name": name }));
         }
-        let release = json!({ "tag_name": format!("v{NEW}"), "draft": false, "assets": assets });
-        self.api
-            .route(&format!("{RELEASES}/latest"), 200, release.to_string());
+        json!({ "tag_name": format!("v{version}"), "draft": false, "assets": assets })
+    }
+
+    /// Makes the installed binaries report `version` (test hook passed by [`Self::command`]).
+    ///
+    /// Not wrappers: an upgrade replaces the directory of the running `loomd`, which for a
+    /// wrapper is the directory of the built binaries it `exec`s.
+    fn report_version(&mut self, version: &str) {
+        self.build_version = Some(version.to_owned());
+        version.clone_into(&mut self.current);
     }
 
     fn command(&self, program: &Path) -> Command {
@@ -132,8 +167,11 @@ impl Env {
             .env("LOOM_UPDATE_PUBKEY", &self.signer.public)
             .env("LOOM_UPDATE_CHECK_INTERVAL", "1s")
             .env("LOOM_UPDATE_HEALTH_DEADLINE", "6s")
-            .env_remove("LOOM_TEST_BUILD_VERSION")
             .env_remove("LOOM_TEST_FAIL_UNLESS_HOME_PREFIX")
+            .env(
+                "LOOM_TEST_BUILD_VERSION",
+                self.build_version.as_deref().unwrap_or(""),
+            )
             .env_remove("LOOM_GITHUB_TOKEN")
             .env_remove("GITHUB_TOKEN")
             .env_remove("NO_COLOR")
@@ -390,12 +428,80 @@ fn notify_records_the_available_release_and_status_shows_it() {
     let text = String::from_utf8_lossy(&human.stdout);
     assert!(text.contains(&format!("\navailable:   {NEW}\n")), "{text}");
     assert!(
-        text.contains("\nupdates:     notify, channel stable, every 1s\n"),
+        text.contains("\nupdates:     notify, channel stable (config), every 1s\n"),
         "{text}"
     );
 
     assert_eq!(env.asset_requests(), 0, "nothing downloaded");
     assert_eq!(env.installed(), before);
+}
+
+/// The bug of a real install: installed on the dev channel, auto-upgraded to a stable release
+/// (above the dev build under the dev rule), then stuck on stable because the new build's
+/// channel became the default. The chosen channel is remembered, so the next check still
+/// follows dev and picks a higher dev build.
+///
+/// The test binaries are `local` builds: without the remembered channel, the stable release
+/// would not check at all (a real stable build would check stable); either way it would never
+/// reach the dev build.
+///
+/// The next dev build is made of stubs failing the pre-flight: its check is the proof, and a
+/// second swap would replace the built binaries the stable wrappers `exec`.
+#[test]
+fn a_chosen_dev_channel_survives_an_upgrade_to_a_stable_release() {
+    const DEV: &str = "1.0.0-dev.5";
+    const STABLE: &str = "1.0.0";
+    const NEXT_DEV: &str = "1.1.0-dev.1";
+    let mut env = Env::new("[update]\npolicy = \"auto\"\n");
+    env.report_version(DEV);
+    let stable = env.release(STABLE, wrappers_of(STABLE, ""));
+    env.publish_list(std::slice::from_ref(&stable));
+
+    // `install.sh --channel dev` runs this after installing.
+    let output = env.loom(&["upgrade", "--channel", "dev", "--check", "--quiet"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        env.state().channel.map(|chosen| chosen.name),
+        Some(UpdateChannel::Dev)
+    );
+
+    env.start_loomd();
+    env.wait_for(
+        |env| {
+            matches!(
+                env.state().last_result,
+                Some(UpdateResult::Upgraded { ref to, .. }) if to == STABLE
+            )
+        },
+        "the upgrade to the stable release",
+    );
+    env.wait_for(
+        |env| {
+            env.status()
+                .is_some_and(|status| status.daemon.version == STABLE)
+        },
+        "the stable loomd to answer",
+    );
+    let update = env.status().unwrap().update.unwrap();
+    assert_eq!(update.channel, Some(UpdateChannel::Dev));
+    assert_eq!(update.channel_source, Some(ChannelSource::Chosen));
+
+    let next = env.release(NEXT_DEV, stub_binaries(NEXT_DEV));
+    env.publish_list(&[next, stable]);
+    env.wait_for(
+        |env| env.state().failed_versions == [NEXT_DEV],
+        "the stable loomd to pick the next dev build",
+    );
+    assert_eq!(
+        env.status().unwrap().daemon.version,
+        STABLE,
+        "nothing swapped"
+    );
+    assert_eq!(
+        env.state().channel.map(|chosen| chosen.name),
+        Some(UpdateChannel::Dev),
+        "still remembered"
+    );
 }
 
 #[test]

@@ -73,6 +73,7 @@ check_interval = "6h"   # at least 10m
 
 - `policy` default: `auto` for release builds (channel `stable` or `dev`), `notify` for local builds. The issue's goal is that installed releases keep themselves current; a local build is a developer's binary, often inside a cargo `target/` directory, that an automatic install would overwrite. The default is a function of the build channel only, so it stays a one-line rule.
 - `channel` default: the build channel; a local build has none, so without `channel` it never checks (effectively off, no network).
+  - Amended 2026-10-13: the default is the channel last chosen with `loom upgrade --channel` (or `install.sh --channel`), kept in `state/update.json`, then the build channel; otherwise a `dev` install auto-upgraded to a stable release lost the dev channel for good.
 - `check_interval`: a duration string made of `<integer><unit>` parts, units `s`, `m`, `h`, `d` (`"6h"`, `"1h30m"`), at least 10 minutes, validated when the file is parsed. Default 6 h.
 - Scheduling is a pure function `next_check(last_check, started_at, interval, jitter, random)`: `last_check + interval ± 10 %`, but never earlier than `started_at + min(5 min, interval) ± 10 %`, so a restart never checks at boot. The random number is drawn by the binary (`std::hash::RandomState`), not by the function.
 - `off` never builds an HTTP client.

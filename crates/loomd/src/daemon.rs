@@ -163,7 +163,8 @@ fn update_settings(config: &Config) -> Settings {
     let build = VERSION_INFO.channel;
     Settings {
         policy: auto::effective_policy(config.update.policy, build),
-        channel: auto::effective_channel(config.update.channel, build),
+        configured_channel: config.update.channel,
+        build_channel: build,
         interval: hook(hooks::CHECK_INTERVAL_ENV)
             .unwrap_or_else(|| config.update.check_interval.get()),
         deadline: hook(hooks::HEALTH_DEADLINE_ENV).unwrap_or(auto::HEALTH_DEADLINE),
@@ -348,10 +349,11 @@ async fn status(State(app): State<Arc<App>>) -> Response {
         warn!(%error, "cannot read the update state");
         UpdateState::default()
     });
+    let channel = app.settings.channel(&state);
     status.update = Some(auto::status(
         state,
         app.settings.policy,
-        app.settings.channel,
+        channel,
         app.settings.interval,
         app.running.as_ref(),
     ));
