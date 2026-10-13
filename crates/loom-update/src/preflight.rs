@@ -125,11 +125,16 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// Bounds a hang only: `check` returns as soon as the staged loomd exits, so a loaded
+    /// machine (first exec of a fresh script, parallel tests) must not turn a slow start into a
+    /// timeout.
+    const NO_TIMEOUT_EXPECTED: Duration = Duration::from_secs(120);
+
     #[test]
     fn a_loomd_that_exits_is_rejected_with_its_stderr() {
         let dir = tempfile::tempdir().unwrap();
         loomd(dir.path(), "echo 'Error: boom' >&2; exit 1");
-        let error = check(dir.path(), &Version::new(1, 0, 0), Duration::from_secs(5)).unwrap_err();
+        let error = check(dir.path(), &Version::new(1, 0, 0), NO_TIMEOUT_EXPECTED).unwrap_err();
         assert!(error.contains("exited"), "{error}");
         assert!(error.contains("Error: boom"), "{error}");
     }
@@ -155,7 +160,7 @@ mod tests {
     #[test]
     fn a_missing_loomd_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let error = check(dir.path(), &Version::new(1, 0, 0), Duration::from_secs(1)).unwrap_err();
+        let error = check(dir.path(), &Version::new(1, 0, 0), NO_TIMEOUT_EXPECTED).unwrap_err();
         assert!(error.contains("cannot start"), "{error}");
     }
 
