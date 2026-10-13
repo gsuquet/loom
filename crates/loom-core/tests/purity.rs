@@ -2,7 +2,7 @@
 //!
 //! The sources are embedded at compile time; a new module must be added to `SOURCES`.
 
-const SOURCES: [(&str, &str); 11] = [
+const SOURCES: &[(&str, &str)] = &[
     ("Cargo.toml", include_str!("../Cargo.toml")),
     ("src/lib.rs", include_str!("../src/lib.rs")),
     ("src/command.rs", include_str!("../src/command.rs")),
@@ -16,7 +16,7 @@ const SOURCES: [(&str, &str); 11] = [
     ("src/timestamp.rs", include_str!("../src/timestamp.rs")),
 ];
 
-const FORBIDDEN: [&str; 18] = [
+const FORBIDDEN: &[&str] = &[
     "std::fs",
     "std::process",
     "std::net",
@@ -39,7 +39,7 @@ const FORBIDDEN: [&str; 18] = [
 
 #[test]
 fn the_crate_has_no_io_clock_randomness_or_async_runtime() {
-    for (file, source) in SOURCES {
+    for &(file, source) in SOURCES {
         for token in FORBIDDEN {
             assert!(!source.contains(token), "{file} uses `{token}`");
         }
