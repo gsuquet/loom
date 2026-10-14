@@ -30,6 +30,9 @@ rustix = { workspace = true, features = ["system"] }
 # Running version for the update decision.
 semver.workspace = true
 serde.workspace = true
+# Bodies of the task endpoints are checked key by key before they are read (`NewTask` flattens
+# its kind and status, so serde cannot reject unknown keys), and error details are JSON.
+serde_json.workspace = true
 # `sync`: the updater thread asks the server to stop after an upgrade (oneshot channel).
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
@@ -38,7 +41,6 @@ tracing.workspace = true
 assert_cmd.workspace = true
 jsonschema.workspace = true
 schemars.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

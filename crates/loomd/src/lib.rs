@@ -10,5 +10,6 @@ pub mod exit;
 pub mod hooks;
 pub mod repo_update;
 pub mod schedule;
+pub mod task_api;
 pub mod task_index;
 pub mod trace;
