@@ -16,13 +16,14 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Instant;
 
-use loom_api::{ContextName, ReindexResult, TaskId, Timestamp};
+use loom_api::{BackupOutcome, BackupReport, ContextName, ReindexResult, TaskId, Timestamp};
 use loom_core::{Actor, Event, Kind, MachineId, NewTask, Origin, Relations, Status};
 use loom_store::files::FileStore;
 use loom_store::tasks::{TaskIndex, Tasks};
 use loomd::backup::commit_message;
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, StoreCommits};
+use serde_json::json;
 use tempfile::TempDir;
 
 mod common;
@@ -39,6 +40,27 @@ impl Sandbox {
     /// A loom home and a user home under `/tmp` (the macOS `$TMPDIR` is too long for a socket
     /// path), the user's git identity in `~/.gitconfig`.
     fn new() -> Self {
+        Self::with_config(CONFIG)
+    }
+
+    /// With a bare `remote.git` as the backup remote of `work`.
+    fn with_remote() -> Self {
+        let sandbox = Self::new();
+        let remote = sandbox.remote();
+        git(
+            &sandbox.user_home(),
+            sandbox.dir.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        fs::write(
+            sandbox.loom_home().join("config.toml"),
+            format!("{CONFIG}store.backup.remote = \"{}\"\n", remote.display()),
+        )
+        .unwrap();
+        sandbox
+    }
+
+    fn with_config(config: &str) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("loomd-backup-")
             .tempdir_in("/tmp")
@@ -46,7 +68,7 @@ impl Sandbox {
         let sandbox = Self { dir };
         fs::create_dir_all(sandbox.loom_home()).unwrap();
         fs::create_dir_all(sandbox.user_home()).unwrap();
-        fs::write(sandbox.loom_home().join("config.toml"), CONFIG).unwrap();
+        fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
         fs::write(
             sandbox.gitconfig(),
             "[user]\n\tname = Store Owner\n\temail = owner@example.invalid\n",
@@ -61,6 +83,15 @@ impl Sandbox {
 
     fn user_home(&self) -> PathBuf {
         self.dir.path().join("u")
+    }
+
+    fn remote(&self) -> PathBuf {
+        self.dir.path().join("remote.git")
+    }
+
+    /// `POST /v1/tasks/sync` with `body`.
+    fn sync(&self, body: &serde_json::Value) -> common::HttpResponse {
+        request(&self.socket(), "POST", "/v1/tasks/sync", Some(body))
     }
 
     fn gitconfig(&self) -> PathBuf {
@@ -553,5 +584,92 @@ fn hooks_never_block_a_commit() {
     let subjects = sandbox.wait_for_commits(2);
     assert_eq!(subjects[1], format!("edited({id}): title"));
     assert_eq!(sandbox.git(&["status", "--porcelain"]), "");
+    daemon.stop();
+}
+
+#[test]
+fn loom_sync_pushes_and_reports_a_divergence() {
+    let sandbox = Sandbox::with_remote();
+    let id = create_task(&sandbox, "Before");
+    let daemon = sandbox.start();
+
+    let report: BackupReport = ok(&sandbox.sync(&json!({})));
+    assert_eq!(report.contexts.len(), 1);
+    let work = &report.contexts[0];
+    assert_eq!(work.context, context("work"));
+    assert_eq!(
+        work.remote.as_deref(),
+        Some(sandbox.remote().to_str().unwrap())
+    );
+    // The sync at start may have pushed already.
+    let outcome = &work.last_sync.as_ref().unwrap().outcome;
+    assert!(
+        matches!(
+            outcome,
+            BackupOutcome::Pushed { commits: 1 } | BackupOutcome::UpToDate
+        ),
+        "{outcome:?}"
+    );
+    let head = sandbox.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        git(
+            &sandbox.user_home(),
+            &sandbox.remote(),
+            &["rev-parse", "main"]
+        ),
+        head
+    );
+
+    // Another machine pushed, this one edited: diverged, nothing merged.
+    let other = sandbox.dir.path().join("other");
+    git(
+        &sandbox.user_home(),
+        sandbox.dir.path(),
+        &[
+            "clone",
+            "-q",
+            sandbox.remote().to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
+    fs::write(other.join("note.txt"), "elsewhere\n").unwrap();
+    git(&sandbox.user_home(), &other, &["add", "note.txt"]);
+    git(
+        &sandbox.user_home(),
+        &other,
+        &["commit", "-q", "-m", "elsewhere"],
+    );
+    git(
+        &sandbox.user_home(),
+        &other,
+        &["push", "-q", "origin", "main"],
+    );
+    sandbox.hand_edit(&id, "title = \"Before\"", "title = \"After\"");
+    sandbox.wait_for_commits(2);
+    let local = sandbox.git(&["rev-parse", "HEAD"]);
+
+    let report: BackupReport = ok(&sandbox.sync(&json!({ "context": "work" })));
+    assert_eq!(
+        report.contexts[0].last_sync.as_ref().unwrap().outcome,
+        BackupOutcome::Diverged {
+            local: 1,
+            remote: 1
+        }
+    );
+    assert_eq!(sandbox.git(&["rev-parse", "HEAD"]), local);
+    assert!(!sandbox.store().join("note.txt").exists());
+
+    // The state stays readable without a sync.
+    let state: BackupReport = ok(&request(&sandbox.socket(), "GET", "/v1/tasks/backup", None));
+    assert_ne!(state.machine, "");
+    assert!(state.contexts[0].failed());
+
+    let unknown = sandbox.sync(&json!({ "context": "nope" }));
+    assert_eq!(unknown.status, 400, "{}", unknown.body);
+    assert!(
+        unknown.body.contains("no context `nope`"),
+        "{}",
+        unknown.body
+    );
     daemon.stop();
 }

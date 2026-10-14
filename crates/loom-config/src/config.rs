@@ -33,6 +33,9 @@ pub struct Config {
     /// `[repos]` table: discovery, fetch schedule and per-repository settings.
     #[serde(default)]
     pub repos: ReposConfig,
+    /// `[tasks]` table: the context stores.
+    #[serde(default)]
+    pub tasks: TasksConfig,
     /// `[telemetry]` table: export of traces for diagnosing loom.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
@@ -72,11 +75,13 @@ pub struct Stores {
     pub not_held: Vec<ContextName>,
 }
 
-/// Where a context store is.
+/// Where a context store is and where it is backed up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSettings {
     /// Root of the store (see [`Config::store_paths`]).
     pub path: PathBuf,
+    /// `store.backup.remote`, `None` when the store is not pushed anywhere.
+    pub remote: Option<String>,
 }
 
 impl Config {
@@ -92,10 +97,65 @@ impl Config {
                 continue;
             }
             if let Some(path) = paths.remove(name) {
-                stores.held.insert(name.clone(), StoreSettings { path });
+                let remote = context
+                    .store
+                    .backup
+                    .as_ref()
+                    .map(|backup| backup.remote.get_ref().as_str().to_owned());
+                stores
+                    .held
+                    .insert(name.clone(), StoreSettings { path, remote });
             }
         }
         stores
+    }
+}
+
+/// Shortest `[tasks] sync_interval` accepted.
+pub const MIN_SYNC_INTERVAL: Duration = Duration::from_mins(1);
+/// Default `[tasks] sync_interval`.
+pub const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_mins(15);
+
+/// `[tasks]` table: the context stores.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TasksConfig {
+    /// `sync_interval`: time between two pushes and pulls of each store with a backup remote.
+    pub sync_interval: SyncInterval,
+}
+
+/// `[tasks] sync_interval`: a duration of at least [`MIN_SYNC_INTERVAL`], written as text
+/// (`"15m"`). Default [`DEFAULT_SYNC_INTERVAL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncInterval(Duration);
+
+impl SyncInterval {
+    /// The duration.
+    #[must_use]
+    pub const fn get(self) -> Duration {
+        self.0
+    }
+}
+
+impl Default for SyncInterval {
+    fn default() -> Self {
+        Self(DEFAULT_SYNC_INTERVAL)
+    }
+}
+
+impl<'de> Deserialize<'de> for SyncInterval {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let text = String::deserialize(deserializer)?;
+        let duration = parse_duration(&text)
+            .map_err(|error| D::Error::custom(format!("sync_interval: {error}")))?;
+        if duration < MIN_SYNC_INTERVAL {
+            return Err(D::Error::custom(format!(
+                "sync_interval `{text}` is shorter than the minimum {}",
+                format_duration(MIN_SYNC_INTERVAL)
+            )));
+        }
+        Ok(Self(duration))
     }
 }
 
@@ -270,7 +330,8 @@ struct Invalid {
 }
 
 /// Checks across keys: contexts named by `default_context` and `[repos."<path>"] context`
-/// exist, no `match.paths`, `match.hosts` or `store.path` entry is in two contexts, no
+/// exist, no `match.paths`, `match.hosts`, `store.path` or `store.backup.remote` entry is in
+/// two contexts, no
 /// repository path is given twice.
 fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let check_defined = |name: &Spanned<ContextName>, key: &str| {
@@ -318,7 +379,22 @@ fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let mut paths = BTreeMap::new();
     let mut hosts = BTreeMap::new();
     let mut stores = BTreeMap::new();
+    let mut remotes = BTreeMap::new();
     for (name, context) in &config.contexts {
+        // Two stores pushed to one repository would diverge at once.
+        if let Some(backup) = &context.store.backup
+            && let Some((other, first)) =
+                remotes.insert(backup.remote.get_ref().as_str(), (name, &backup.remote))
+        {
+            return Err(tie(
+                text,
+                "store.backup.remote",
+                &backup.remote,
+                name,
+                first,
+                other,
+            ));
+        }
         if let Some(path) = &context.store.path
             && let Some((other, first)) = stores.insert(path.get_ref().normalized(), (name, path))
         {
@@ -381,8 +457,8 @@ pub(crate) fn location(text: &str, offset: usize) -> Location {
 #[cfg(test)]
 mod tests {
     use super::{
-        CheckInterval, Config, DEFAULT_CHECK_INTERVAL, Daemon, Location, OtlpEndpoint, Spanned,
-        StoreSettings, TelemetryConfig, Update, location, parse_config,
+        CheckInterval, Config, DEFAULT_CHECK_INTERVAL, DEFAULT_SYNC_INTERVAL, Daemon, Location,
+        OtlpEndpoint, Spanned, StoreSettings, TelemetryConfig, Update, location, parse_config,
     };
     use crate::repos::{
         ConfigPath, ContextConfig, DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_INTERVAL,
@@ -819,12 +895,7 @@ kind = "gitlab"
                 "unknown field `globs`",
             ),
             ("[contexts.a]\nstore = 1\n", 2, 9, "invalid type"),
-            (
-                "[contexts.a]\nstore.backup = 1\n",
-                2,
-                7,
-                "unknown field `backup`",
-            ),
+            ("[contexts.a]\nstore.backup = 1\n", 2, 16, "invalid type"),
             (
                 "[contexts.a]\nstore.path = \"stores\"\n",
                 2,
@@ -1010,8 +1081,81 @@ kind = "gitlab"
     }
 
     #[test]
+    fn sync_interval_defaults_to_15_minutes_with_a_minimum_of_1() {
+        assert_eq!(
+            Config::default().tasks.sync_interval.get(),
+            DEFAULT_SYNC_INTERVAL
+        );
+        assert_eq!(DEFAULT_SYNC_INTERVAL, Duration::from_mins(15));
+        let config = parse_config("[tasks]\nsync_interval = \"5m\"\n", Path::new(PATH)).unwrap();
+        assert_eq!(config.tasks.sync_interval.get(), Duration::from_mins(5));
+        assert_rejected(
+            "[tasks]\nsync_interval = \"30s\"\n",
+            2,
+            17,
+            "sync_interval `30s` is shorter than the minimum 1m",
+        );
+        assert_rejected("[tasks]\nfoo = 1\n", 2, 1, "unknown field `foo`");
+    }
+
+    #[test]
+    fn backup_remotes_and_machines_are_read_and_checked() {
+        let text = "[contexts.work]\nmachines = [\"laptop\", \"tower\"]\nstore.backup.remote = \"git@example.com:me/work-store.git\"\n[contexts.home]\n";
+        let config = parse_config(text, Path::new(PATH)).unwrap();
+        let work = &config.contexts[&"work".parse::<ContextName>().unwrap()];
+        assert_eq!(
+            work.store
+                .backup
+                .as_ref()
+                .map(|backup| backup.remote.get_ref().as_str()),
+            Some("git@example.com:me/work-store.git")
+        );
+        assert!(work.held_by(&"laptop".parse().unwrap()));
+        assert!(!work.held_by(&"server".parse().unwrap()));
+        let home = &config.contexts[&"home".parse::<ContextName>().unwrap()];
+        assert!(home.held_by(&"server".parse().unwrap()));
+
+        assert_rejected("[contexts.a]\nmachines = []\n", 2, 12, "machines is empty");
+        assert_rejected(
+            "[contexts.a]\nmachines = [\"my laptop\"]\n",
+            2,
+            12,
+            "machines: invalid machine name `my laptop`",
+        );
+        assert_rejected(
+            "[contexts.a]\nstore.backup.remote = \"--upload-pack=x\"\n",
+            2,
+            23,
+            "starts with `-`",
+        );
+        assert_rejected(
+            "[contexts.a]\nstore.backup.remote = \"\"\n",
+            2,
+            23,
+            "store.backup.remote: empty",
+        );
+        assert_rejected(
+            "[contexts.a]\nstore.backup.branch = \"x\"\n",
+            2,
+            14,
+            "unknown field `branch`",
+        );
+    }
+
+    #[test]
+    fn a_backup_remote_of_two_contexts_is_rejected() {
+        let text = "[contexts.a]\nstore.backup.remote = \"/srv/s.git\"\n[contexts.b]\nstore.backup.remote = \"/srv/s.git\"\n";
+        assert_rejected(
+            text,
+            4,
+            23,
+            "store.backup.remote `/srv/s.git` of context `b` is also `/srv/s.git` of context `a` (line 2, column 23)",
+        );
+    }
+
+    #[test]
     fn stores_keep_the_contexts_this_machine_holds() {
-        let text = "[contexts.personal]\n[contexts.work]\nmachines = [\"laptop\"]\n[contexts.lab]\nmachines = [\"tower\"]\n";
+        let text = "[contexts.personal]\n[contexts.work]\nmachines = [\"laptop\"]\nstore.backup.remote = \"/srv/work.git\"\n[contexts.lab]\nmachines = [\"tower\"]\n";
         let config = parse_config(text, Path::new(PATH)).unwrap();
         let name = |name: &str| name.parse::<ContextName>().unwrap();
         let stores = config.stores(Path::new("/l"), Path::new("/h"), &"laptop".parse().unwrap());
@@ -1022,12 +1166,14 @@ kind = "gitlab"
                     name("personal"),
                     StoreSettings {
                         path: PathBuf::from("/l/contexts/personal"),
+                        remote: None,
                     }
                 ),
                 (
                     name("work"),
                     StoreSettings {
                         path: PathBuf::from("/l/contexts/work"),
+                        remote: Some("/srv/work.git".to_owned()),
                     }
                 ),
             ])

@@ -21,8 +21,8 @@ use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use loom_api::{
-    ApiError, ApiVersion, ContextName, DaemonDiagnostics, RegisterRequest, RepoList, SearchKind,
-    SearchResults, StatusResponse, SyncRequest, Timestamp, UpdateState,
+    ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, RegisterRequest, RepoList,
+    SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -37,9 +37,10 @@ use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH,
     REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery,
-    SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_PATH,
-    TASKS_REINDEX_PATH, agent_socket, clock_error, home_value, invalid_request, method_not_allowed,
-    not_found, register_path, repo_filter, search_request, slug, status_at, timestamp,
+    SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH,
+    TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value,
+    invalid_request, method_not_allowed, not_found, register_path, repo_filter, search_request,
+    slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
@@ -58,6 +59,7 @@ use tracing::{debug, info, warn};
 
 use crate::disk_usage::DiskCache;
 use crate::repos::{self, Failure, RepoHandle};
+use crate::sync::{self as store_sync, SyncHandle};
 use crate::tasks::{self, TaskHandle};
 use crate::updater::{self, Settings};
 
@@ -149,6 +151,15 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         MachineId(machine.as_str().to_owned()),
     )
     .wrap_err("cannot start the task store")?;
+    let (sync_thread, sync_handle) = store_sync::start(
+        store_sync::Stores {
+            machine: machine.as_str().to_owned(),
+            held: stores.held,
+            not_held: stores.not_held,
+        },
+        config.tasks.sync_interval.get(),
+        task_handle.clone(),
+    )?;
 
     let base = StatusResponse {
         api_version: ApiVersion::CURRENT,
@@ -185,11 +196,13 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         running: Version::parse(&VERSION_INFO.version).ok(),
         repos: repo_handle,
         tasks: task_handle,
+        sync: sync_handle,
         layout: layout.clone(),
         disk: DiskCache::default(),
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     updater.stop();
+    sync_thread.stop();
     task_store.stop();
     index.stop();
     served
@@ -226,6 +239,8 @@ struct App {
     repos: RepoHandle,
     /// The task store.
     tasks: TaskHandle,
+    /// The sync of the context stores with their backup remotes.
+    sync: SyncHandle,
     /// Paths under the loom home.
     layout: Layout,
     /// Last disk usage of the loom home, a new process starts without one.
@@ -424,6 +439,8 @@ fn router(app: App) -> Router {
         .route(TASK_ACTION_PATH, post(task_action))
         .route(TASK_EVENTS_PATH, get(task_events))
         .route(TASK_UNDO_PATH, post(undo_task))
+        .route(TASKS_BACKUP_PATH, get(backup_report))
+        .route(TASKS_SYNC_PATH, post(sync_stores))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -700,6 +717,25 @@ fn local_today() -> loom_api::Date {
         cfg!(debug_assertions),
         || jiff::Zoned::now().date(),
     )
+}
+
+/// The backup state of every context store held here.
+async fn backup_report(State(app): State<Arc<App>>) -> Response {
+    respond(app.sync.report(None).await)
+}
+
+/// Syncs the context stores with their backup remotes, then answers with their state.
+async fn sync_stores(
+    State(app): State<Arc<App>>,
+    body: Result<Json<BackupRequest>, JsonRejection>,
+) -> Response {
+    match body {
+        Ok(Json(request)) => respond(app.sync.sync(request.context).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
 }
 
 /// `git ls-remote` of each remote endpoint of the index, in loomd's environment.

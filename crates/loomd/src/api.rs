@@ -40,6 +40,10 @@ pub const TASK_ACTION_PATH: &str = "/v1/tasks/{id}/actions/{action}";
 pub const TASK_EVENTS_PATH: &str = "/v1/tasks/{id}/events";
 /// Route of the undo of the last change of a task.
 pub const TASK_UNDO_PATH: &str = "/v1/tasks/{id}/undo";
+/// Path of the backup state of the context stores.
+pub const TASKS_BACKUP_PATH: &str = "/v1/tasks/backup";
+/// Path of the sync of the context stores with their backup remotes.
+pub const TASKS_SYNC_PATH: &str = "/v1/tasks/sync";
 
 /// Query parameters of `POST /v1/repos/scan`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

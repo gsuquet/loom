@@ -8,6 +8,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use loom::backup::BACKUP_PATH;
 use loom::cli::{
     GlobalArgs, RepoCommand, RepoDoctorArgs, RepoForgetArgs, RepoListFormat, RepoLsArgs,
     RepoRegisterArgs, RepoScanArgs, RepoShowArgs, RepoSyncArgs, VERSION_INFO,
@@ -21,8 +22,9 @@ use loom::repo::{
 };
 use loom::status::version_mismatch;
 use loom_api::{
-    CheckStatus, ContextAssignment, ContextName, DaemonDiagnostics, DoctorCheck, DoctorReport,
-    RegisterRequest, RemoteCheckResult, RepoList, RepoSummary, ScanResult, SyncRequest, SyncResult,
+    BackupReport, CheckStatus, ContextAssignment, ContextName, DaemonDiagnostics, DoctorCheck,
+    DoctorReport, RegisterRequest, RemoteCheckResult, RepoList, RepoSummary, ScanResult,
+    SyncRequest, SyncResult,
 };
 use loom_config::config::Config;
 use loom_config::layout::{Layout, MAX_SOCKET_PATH_BYTES, check_socket_path};
@@ -546,7 +548,7 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
             return vec![check(
                 "loomd",
                 CheckStatus::Warn,
-                "not running: the disk usage, the index, loomd's environment, the remotes and the updates are not checked"
+                "not running: the disk usage, the index, loomd's environment, the remotes, the updates and the backups are not checked"
                     .to_owned(),
                 Some("`loom status` starts it; `loom service install` keeps it running"),
             )];
@@ -618,20 +620,40 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
             None,
         )),
     }
+    checks.extend(remote_checks(&client, &status.daemon.version).await);
+    checks.extend(doctor::updates_checks(&repos));
+    checks.extend(backup_checks(env, &client, &status.daemon.version).await);
+    checks
+}
+
+/// One check per remote endpoint, reached by loomd's own git.
+async fn remote_checks(client: &Client, version: &str) -> Vec<DoctorCheck> {
     match client
         .with_timeout(REMOTE_CHECK_TIMEOUT)
         .post::<RemoteCheckResult>(REMOTE_CHECK_PATH, None::<&()>)
         .await
     {
-        Ok(result) => checks.extend(doctor::remote_checks(&result)),
-        Err(ClientError::Api { status: 404, .. }) => checks.push(check(
+        Ok(result) => doctor::remote_checks(&result),
+        Err(ClientError::Api { status: 404, .. }) => vec![check(
             "remote",
             CheckStatus::Warn,
-            format!("loomd {} cannot check the remotes", status.daemon.version),
+            format!("loomd {version} cannot check the remotes"),
             Some("restart loomd with the version of this loom"),
-        )),
-        Err(error) => checks.push(check("remote", CheckStatus::Fail, error.to_string(), None)),
+        )],
+        Err(error) => vec![check("remote", CheckStatus::Fail, error.to_string(), None)],
     }
-    checks.extend(doctor::updates_checks(&repos));
-    checks
+}
+
+/// The `machine` and `backup <context>` checks, from loomd's backup state.
+async fn backup_checks(env: &Env<'_>, client: &Client, version: &str) -> Vec<DoctorCheck> {
+    match client.get::<BackupReport>(BACKUP_PATH).await {
+        Ok(report) => doctor::backup_checks(&report, env.home.as_deref()),
+        Err(ClientError::Api { status: 404, .. }) => vec![check(
+            "backup",
+            CheckStatus::Warn,
+            format!("loomd {version} cannot report the backup of the context stores"),
+            Some("restart loomd with the version of this loom"),
+        )],
+        Err(error) => vec![check("backup", CheckStatus::Fail, error.to_string(), None)],
+    }
 }

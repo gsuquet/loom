@@ -7,6 +7,7 @@ mod repo_cmd;
 mod search_cmd;
 mod service_cmd;
 mod start;
+mod sync_cmd;
 mod upgrade;
 mod watchdog;
 
@@ -180,6 +181,7 @@ const fn registers_on_use(command: &Command) -> bool {
         Command::ShellInit(_) | Command::UpgradeWatchdog(_) => false,
         Command::Search(_)
         | Command::Reindex(_)
+        | Command::Sync(_)
         | Command::Version { .. }
         | Command::Status { .. }
         | Command::Service { .. }
@@ -212,6 +214,7 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Repo { command } => repo_cmd::run(command, &cli.global, layout()?),
         Command::Search(args) => search_cmd::run(args, &cli.global, &layout()?),
         Command::Reindex(args) => reindex_cmd::run(args, &layout()?),
+        Command::Sync(args) => sync_cmd::run(args, &cli.global, &layout()?),
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;
             let supervisor = watchdog_supervisor(&layout);
