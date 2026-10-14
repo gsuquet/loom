@@ -2182,6 +2182,7 @@ dependencies = [
  "assert_cmd",
  "axum",
  "clap",
+ "jiff",
  "jsonschema",
  "loom-api",
  "loom-config",

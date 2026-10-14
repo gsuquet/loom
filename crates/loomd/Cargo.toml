@@ -10,6 +10,9 @@ publish.workspace = true
 [dependencies]
 axum.workspace = true
 clap.workspace = true
+# The local date of the priority list: the system time zone (`TZ`, `/etc/localtime`) and the
+# zoneinfo files, read at each ranked list. jiff is already compiled for loom-core.
+jiff = { workspace = true, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 loom-api.workspace = true
 loom-config.workspace = true
 # Origin of the events loomd records (actor, machine) and its random source.
@@ -30,6 +33,9 @@ rustix = { workspace = true, features = ["system"] }
 # Running version for the update decision.
 semver.workspace = true
 serde.workspace = true
+# Bodies of the task endpoints are checked key by key before they are read (`NewTask` flattens
+# its kind and status, so serde cannot reject unknown keys), and error details are JSON.
+serde_json.workspace = true
 # `sync`: the updater thread asks the server to stop after an upgrade (oneshot channel).
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
@@ -38,7 +44,6 @@ tracing.workspace = true
 assert_cmd.workspace = true
 jsonschema.workspace = true
 schemars.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

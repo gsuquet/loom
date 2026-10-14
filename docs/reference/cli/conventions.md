@@ -68,6 +68,8 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | `LOOM_UPDATE_CHECK_INTERVAL` | Test hook, debug builds only: duration (`"1s"`) replacing `[update] check_interval` in `loomd`, without its 10 min minimum. An invalid value is logged and ignored. Ignored by release builds. |
 | `LOOM_UPDATE_HEALTH_DEADLINE` | Test hook, debug builds only: duration replacing the 60 s deadline of the auto-upgrade watchdog. Ignored by release builds. |
 | `LOOM_TEST_BUILD_VERSION` | Test hook, debug builds only: version reported by `loom` and `loomd` (`--version`, `loom version`, `/v1/status`) instead of the build's. Ignored by release builds. |
+| `LOOM_TEST_TODAY` | Test hook, debug builds only: date (`YYYY-MM-DD`) of the priority list of `loomd` (`GET /v1/tasks?ranked=true`) instead of the local date. An invalid value is ignored. Ignored by release builds. |
+| `TZ` | Time zone of the local date of the priority list in `loomd`; `/etc/localtime` when unset, UTC when neither can be read. |
 | `LOOM_TEST_FAIL_UNLESS_HOME_PREFIX` | Test hook, debug builds only: `loomd` exits with code `1` at start when its loom home path does not start with this text. Ignored by release builds. |
 | `OTEL_SDK_DISABLED` | `true` (any case): no traces are exported, even with `[telemetry] enabled = true`. See [`[telemetry]`](../configuration.md#telemetry). |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Traces endpoint, used as given, when `[telemetry] otlp_endpoint` is not set. |

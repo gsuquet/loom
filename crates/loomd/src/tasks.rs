@@ -7,8 +7,14 @@
 //!   reconciled the same way. A change loomd made itself has the hash the index holds and is
 //!   skipped.
 //! - `POST /v1/tasks/reindex` reconciles every task, then rebuilds the task rows from the files.
+//! - Creations, changes and undos of the API run here too, one at a time: two requests on one
+//!   task never interleave, and none is lost. Their events are of the actor `user`. Event logs
+//!   are read here, so that a read never sees an append in progress.
+//! - The other reads (list, one task) go through a read connection to the index, on a
+//!   blocking thread, without waiting for the task thread.
 //!
-//! Decisions are in `loom_store` and `loomd::task_index`; this module does the I/O.
+//! Decisions are in `loom_store`, `loomd::task_index` and `loomd::task_api`; this module does
+//! the I/O.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -20,11 +26,15 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
-use loom_api::{ContextName, ReindexResult, TaskId, Timestamp};
+use loom_api::{
+    ContextName, Date, NewTask, ReindexResult, TaskDetail, TaskEvents, TaskId, TaskList, Timestamp,
+};
 use loom_core::{Actor, MachineId, Origin, RandomSource};
 use loom_store::files::FileStore;
-use loom_store::tasks::{Reconciled, TaskFailure, TaskIndex, Tasks};
+use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskIndex, Tasks};
+use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
+use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
 use loomd::task_index::{failed_files, reindex_result, task_of_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
@@ -40,6 +50,27 @@ type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 enum Command {
     Reindex {
         reply: Reply<ReindexResult>,
+        parent: Span,
+    },
+    Create {
+        new: Box<NewTask>,
+        reply: Reply<TaskDetail>,
+        parent: Span,
+    },
+    Apply {
+        id: TaskId,
+        command: loom_core::Command,
+        reply: Reply<TaskDetail>,
+        parent: Span,
+    },
+    Undo {
+        id: TaskId,
+        reply: Reply<TaskDetail>,
+        parent: Span,
+    },
+    Events {
+        id: TaskId,
+        reply: Reply<TaskEvents>,
         parent: Span,
     },
     /// Reconcile every task: at start, and when the watcher may have missed events.
@@ -60,11 +91,12 @@ pub struct TaskStore {
     watcher: Option<RecommendedWatcher>,
 }
 
-/// What the API handlers use: the command channel, and whether the reconciliation on start is
-/// over.
+/// What the API handlers use: the command channel, the index for reads, and whether the
+/// reconciliation on start is over.
 #[derive(Clone)]
 pub struct TaskHandle {
     commands: mpsc::Sender<Command>,
+    db: PathBuf,
     ready: watch::Receiver<bool>,
 }
 
@@ -97,6 +129,10 @@ pub fn start(
             actor: Actor::File,
             machine_id: machine_id(),
         },
+        user: Origin {
+            actor: Actor::User,
+            machine_id: machine_id(),
+        },
         random: OsRandom::open(),
     };
     info!(
@@ -116,7 +152,11 @@ pub fn start(
             thread,
             watcher,
         },
-        TaskHandle { commands, ready },
+        TaskHandle {
+            commands,
+            db: db.to_path_buf(),
+            ready,
+        },
     ))
 }
 
@@ -265,6 +305,69 @@ impl TaskHandle {
 
     /// Rebuilds the tasks index from the files.
     pub async fn reindex(&self) -> Result<ReindexResult, Failure> {
+        self.send(|reply, parent| Command::Reindex { reply, parent })
+            .await
+    }
+
+    /// Creates a task.
+    pub async fn create(&self, new: NewTask) -> Result<TaskDetail, Failure> {
+        self.send(|reply, parent| Command::Create {
+            new: Box::new(new),
+            reply,
+            parent,
+        })
+        .await
+    }
+
+    /// Applies `command` to the task with `id`.
+    pub async fn apply(
+        &self,
+        id: TaskId,
+        command: loom_core::Command,
+    ) -> Result<TaskDetail, Failure> {
+        self.send(|reply, parent| Command::Apply {
+            id,
+            command,
+            reply,
+            parent,
+        })
+        .await
+    }
+
+    /// Reverts the last change of the task with `id`.
+    pub async fn undo(&self, id: TaskId) -> Result<TaskDetail, Failure> {
+        self.send(|reply, parent| Command::Undo { id, reply, parent })
+            .await
+    }
+
+    /// The event log of the task with `id`.
+    pub async fn events(&self, id: TaskId) -> Result<TaskEvents, Failure> {
+        self.send(|reply, parent| Command::Events { id, reply, parent })
+            .await
+    }
+
+    /// The tasks `filter` keeps, ranked on `today` when it asks so.
+    pub async fn list(&self, filter: TaskFilter, today: Date) -> Result<TaskList, Failure> {
+        self.read(move |rows| Ok(task_list(&rows, &filter, today)))
+            .await
+    }
+
+    /// The task whose ID starts with `prefix`.
+    pub async fn get(&self, prefix: String) -> Result<TaskDetail, Failure> {
+        self.read(move |rows| {
+            let ids: Vec<TaskId> = rows.iter().map(|row| row.id.clone()).collect();
+            resolve(&prefix, &rows).map(|row| task_detail(row, &ids))
+        })
+        .await
+    }
+
+    /// The ID of the task whose ID starts with `prefix`.
+    pub async fn resolve(&self, prefix: String) -> Result<TaskId, Failure> {
+        self.read(move |rows| resolve(&prefix, &rows).map(|row| row.id.clone()))
+            .await
+    }
+
+    async fn send<T>(&self, command: impl FnOnce(Reply<T>, Span) -> Command) -> Result<T, Failure> {
         let (reply, answer) = oneshot::channel();
         let stopped = || {
             (
@@ -273,13 +376,40 @@ impl TaskHandle {
             )
         };
         self.commands
-            .send(Command::Reindex {
-                reply,
-                parent: Span::current(),
-            })
+            .send(command(reply, Span::current()))
             .map_err(|_| stopped())?;
         answer.await.map_err(|_| stopped())?
     }
+
+    /// `decide` on every indexed task, read in one snapshot on a blocking thread.
+    async fn read<T: Send + 'static>(
+        &self,
+        decide: impl FnOnce(Vec<IndexedTask>) -> Result<T, Failure> + Send + 'static,
+    ) -> Result<T, Failure> {
+        let db = self.db.clone();
+        let read = tokio::task::spawn_blocking(move || {
+            Reader::open(&db)
+                .and_then(|reader| reader.tasks(None))
+                .map(decide)
+        })
+        .await;
+        match read {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(index_failure(&error)),
+            Err(error) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                internal(format!("index read failed: {error}")),
+            )),
+        }
+    }
+}
+
+fn index_failure(error: &StoreError) -> Failure {
+    warn!(%error, "cannot read the tasks index");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        internal(error.to_string()),
+    )
 }
 
 struct Worker {
@@ -288,6 +418,8 @@ struct Worker {
     stores: BTreeMap<ContextName, PathBuf>,
     /// Who hand edits are recorded as: the actor `file`, on this machine.
     origin: Origin,
+    /// Who the changes of the API are recorded as: the actor `user`, on this machine.
+    user: Origin,
     random: OsRandom,
     /// Set once the reconciliation on start is over, then dropped.
     ready: Option<watch::Sender<bool>>,
@@ -300,6 +432,23 @@ impl Worker {
             match command {
                 Command::Reindex { reply, parent } => {
                     let _ = reply.send(self.reindex(&parent));
+                }
+                Command::Create { new, reply, parent } => {
+                    let _ = reply.send(self.create(*new, &parent));
+                }
+                Command::Apply {
+                    id,
+                    command,
+                    reply,
+                    parent,
+                } => {
+                    let _ = reply.send(self.apply(&id, command, &parent));
+                }
+                Command::Undo { id, reply, parent } => {
+                    let _ = reply.send(self.undo(&id, &parent));
+                }
+                Command::Events { id, reply, parent } => {
+                    let _ = reply.send(self.events(&id, &parent));
                 }
                 Command::ReconcileAll => {
                     self.reconcile_all();
@@ -346,6 +495,60 @@ impl Worker {
                 ))
             }
         }
+    }
+
+    fn create(&mut self, new: NewTask, parent: &Span) -> Result<TaskDetail, Failure> {
+        let _span = info_span!(parent: parent, "tasks.create", context = %new.context).entered();
+        let task = self
+            .tasks
+            .create(new, now(), &self.user, &mut self.random)
+            .map_err(|error| refused(&error))?;
+        info!(id = %task.id, context = %task.context, "task created");
+        self.detail(&task.id)
+    }
+
+    fn apply(
+        &mut self,
+        id: &TaskId,
+        command: loom_core::Command,
+        parent: &Span,
+    ) -> Result<TaskDetail, Failure> {
+        let _span = info_span!(parent: parent, "tasks.apply", %id).entered();
+        self.tasks
+            .apply(id, command, now(), &self.user, &mut self.random)
+            .map_err(|error| refused(&error))?;
+        debug!(%id, "task changed");
+        self.detail(id)
+    }
+
+    fn undo(&mut self, id: &TaskId, parent: &Span) -> Result<TaskDetail, Failure> {
+        let _span = info_span!(parent: parent, "tasks.undo", %id).entered();
+        self.tasks
+            .undo(id, now(), &self.user, &mut self.random)
+            .map_err(|error| refused(&error))?;
+        info!(%id, "task change undone");
+        self.detail(id)
+    }
+
+    fn events(&self, id: &TaskId, parent: &Span) -> Result<TaskEvents, Failure> {
+        let _span = info_span!(parent: parent, "tasks.events", %id).entered();
+        let log = self.tasks.events(id).map_err(|error| refused(&error))?;
+        Ok(TaskEvents {
+            id: id.clone(),
+            events: log.events,
+            skipped: log.skipped,
+        })
+    }
+
+    /// The response of task `id`, as just indexed.
+    fn detail(&mut self, id: &TaskId) -> Result<TaskDetail, Failure> {
+        let index = self.tasks.index();
+        let row = index
+            .get(id)
+            .map_err(|error| index_failure(&error))?
+            .ok_or_else(|| refused(&TaskError::NotFound(id.clone())))?;
+        let ids = index.ids().map_err(|error| index_failure(&error))?;
+        Ok(task_detail(&row, &ids))
     }
 
     /// Reconciles every task; a task that fails is logged with its path and skipped. Returns
@@ -395,6 +598,15 @@ impl Worker {
     }
 }
 
+/// The problem of a refused task operation; failures of the daemon are logged.
+fn refused(error: &TaskError) -> Failure {
+    let problem = task_problem(error);
+    if problem.0.is_server_error() {
+        warn!(%error, "task operation failed");
+    }
+    problem
+}
+
 fn log_reconciled(id: &TaskId, reconciled: &Reconciled) {
     match reconciled {
         Reconciled::Unchanged => {}
@@ -425,7 +637,15 @@ mod tests {
     fn handle() -> (TaskHandle, watch::Sender<bool>) {
         let (commands, _) = mpsc::channel();
         let (sender, ready) = watch::channel(false);
-        (TaskHandle { commands, ready }, sender)
+        let db = std::path::PathBuf::new();
+        (
+            TaskHandle {
+                commands,
+                db,
+                ready,
+            },
+            sender,
+        )
     }
 
     fn wait(handle: &TaskHandle, timeout: Duration) -> bool {
