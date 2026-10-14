@@ -75,7 +75,7 @@ fn service_usage_errors() {
         .assert()
         .code(2);
     loom(sandbox.path())
-        .args(["service", "restart"])
+        .args(["service", "reload"])
         .assert()
         .code(2);
 }
@@ -223,4 +223,37 @@ fn manager_failure_exits_1_with_its_stderr() {
     let assert = host.loom(&["service", "install"]).code(1);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(stderr.contains("Bootstrap failed: 5"), "{stderr}");
+}
+
+#[test]
+fn restart_goes_through_the_service_manager_and_waits_for_a_new_loomd() {
+    let host = FakeHost::new();
+    host.loom(&["service", "install"]).success();
+    host.take_changes();
+
+    // The fake manager starts no loomd: the restart waits for one, then fails.
+    let started = std::time::Instant::now();
+    let failed = host.loom(&["service", "restart"]).code(1);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(15));
+    let stderr = String::from_utf8_lossy(&failed.get_output().stderr).into_owned();
+    let via = if cfg!(target_os = "macos") {
+        "launchd"
+    } else {
+        "systemd"
+    };
+    assert!(
+        stderr.contains("no new loomd answered on ")
+            && stderr.contains(&format!("within 15 s of the restart via {via}")),
+        "{stderr}"
+    );
+    let expected = if cfg!(target_os = "macos") {
+        vec!["launchctl kickstart -k gui/501/io.github.gsuquet.loomd".to_owned()]
+    } else {
+        vec![
+            "systemctl --user reset-failed loomd.service".to_owned(),
+            "systemctl --user restart loomd.service".to_owned(),
+        ]
+    };
+    // No `kill`: the manager owns the process.
+    assert_eq!(host.take_changes(), expected);
 }

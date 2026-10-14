@@ -9,7 +9,7 @@ use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_api::{ServicePlatform, ServiceStatus};
+use loom_api::{DaemonRestartReport, RestartVia, ServicePlatform, ServiceStatus};
 use thiserror::Error;
 
 /// launchd label of the service.
@@ -563,6 +563,71 @@ pub fn opt_out_message(config: &Path) -> String {
     )
 }
 
+/// How `loom service restart` restarts loomd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartPlan {
+    /// The service manager restarts it with [`recover_commands`]: it owns the process, so
+    /// nothing races with launchd `KeepAlive` or systemd `Restart=always`.
+    Manager(Manager),
+    /// No service: `SIGTERM` to the loomd holding the lock, then a detached start.
+    Signal,
+    /// No service and no loomd: a detached start.
+    Start,
+}
+
+impl RestartPlan {
+    /// What the report says restarted loomd.
+    #[must_use]
+    pub const fn via(self) -> RestartVia {
+        match self {
+            Self::Manager(Manager::Launchd { .. }) => RestartVia::Launchd,
+            Self::Manager(Manager::Systemd) => RestartVia::Systemd,
+            Self::Signal => RestartVia::Signal,
+            Self::Start => RestartVia::Start,
+        }
+    }
+}
+
+/// The plan of `loom service restart`: `service` is the manager of the user service when it is
+/// installed for this loom home and loaded, `running` whether a loomd holds the lock.
+#[must_use]
+pub const fn plan_restart(service: Option<Manager>, running: bool) -> RestartPlan {
+    match (service, running) {
+        // `kickstart -k` and `systemctl restart` start a stopped service as well.
+        (Some(manager), _) => RestartPlan::Manager(manager),
+        (None, true) => RestartPlan::Signal,
+        (None, false) => RestartPlan::Start,
+    }
+}
+
+/// Whether the loomd that answers with `pid` is a new one: not the `previous` loomd.
+#[must_use]
+pub fn is_new_daemon(previous: Option<u32>, pid: u32) -> bool {
+    previous != Some(pid)
+}
+
+/// Text of `loom service restart`.
+#[must_use]
+pub fn format_restart(report: &DaemonRestartReport) -> String {
+    report.previous_pid.map_or_else(
+        || {
+            format!(
+                "loomd was not running: started (pid {}, {}) in {} ms\n",
+                report.pid, report.version, report.elapsed_ms
+            )
+        },
+        |previous| {
+            format!(
+                "loomd restarted (pid {previous} -> {}, {}, via {}) in {} ms\n",
+                report.pid,
+                report.version,
+                report.via.as_str(),
+                report.elapsed_ms
+            )
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -572,7 +637,8 @@ mod tests {
         recover_commands, render_plist, render_systemd_unit, render_unit, systemctl_is_active,
         systemctl_is_enabled, unit_path, unit_serves_home,
     };
-    use loom_api::{ServicePlatform, ServiceStatus};
+    use super::{RestartPlan, format_restart, is_new_daemon, plan_restart};
+    use loom_api::{DaemonRestartReport, RestartVia, ServicePlatform, ServiceStatus};
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
@@ -1092,5 +1158,66 @@ WantedBy=default.target
         let message = opt_out_message(Path::new("/home/me/.loom/config.toml"));
         assert!(message.contains("[daemon] service = false"), "{message}");
         assert!(message.contains("/home/me/.loom/config.toml"), "{message}");
+    }
+
+    #[test]
+    fn a_loaded_service_is_restarted_by_its_manager_running_or_not() {
+        let launchd = Manager::Launchd { uid: 501 };
+        for running in [true, false] {
+            assert_eq!(
+                plan_restart(Some(launchd), running),
+                RestartPlan::Manager(launchd)
+            );
+            assert_eq!(
+                plan_restart(Some(Manager::Systemd), running),
+                RestartPlan::Manager(Manager::Systemd)
+            );
+        }
+        assert_eq!(RestartPlan::Manager(launchd).via(), RestartVia::Launchd);
+        assert_eq!(
+            RestartPlan::Manager(Manager::Systemd).via(),
+            RestartVia::Systemd
+        );
+    }
+
+    #[test]
+    fn without_a_service_loomd_is_signalled_or_started() {
+        assert_eq!(plan_restart(None, true), RestartPlan::Signal);
+        assert_eq!(plan_restart(None, false), RestartPlan::Start);
+        assert_eq!(RestartPlan::Signal.via(), RestartVia::Signal);
+        assert_eq!(RestartPlan::Start.via(), RestartVia::Start);
+    }
+
+    #[test]
+    fn only_another_pid_is_a_new_daemon() {
+        assert!(is_new_daemon(None, 812));
+        assert!(is_new_daemon(Some(812), 9431));
+        assert!(!is_new_daemon(Some(812), 812));
+    }
+
+    #[test]
+    fn restart_text_names_both_pids_or_says_started() {
+        let report = DaemonRestartReport {
+            was_running: true,
+            previous_pid: Some(812),
+            pid: 9431,
+            version: "0.3.0-dev.12".to_owned(),
+            via: RestartVia::Launchd,
+            elapsed_ms: 640,
+        };
+        assert_eq!(
+            format_restart(&report),
+            "loomd restarted (pid 812 -> 9431, 0.3.0-dev.12, via launchd) in 640 ms\n"
+        );
+        let started = DaemonRestartReport {
+            was_running: false,
+            previous_pid: None,
+            via: RestartVia::Start,
+            ..report
+        };
+        assert_eq!(
+            format_restart(&started),
+            "loomd was not running: started (pid 9431, 0.3.0-dev.12) in 640 ms\n"
+        );
     }
 }

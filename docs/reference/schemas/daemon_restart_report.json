@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DaemonRestartReport",
+  "description": "Output of `loom service restart`.",
+  "type": "object",
+  "properties": {
+    "elapsed_ms": {
+      "description": "Milliseconds from the start of the restart to the first answer of the new loomd.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "pid": {
+      "description": "PID of the loomd that answers now.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "previous_pid": {
+      "description": "PID of the loomd that was running, `null` when none was.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "version": {
+      "description": "Version of the loomd that answers now.",
+      "type": "string"
+    },
+    "via": {
+      "description": "Who restarted or started loomd.",
+      "$ref": "#/$defs/RestartVia"
+    },
+    "was_running": {
+      "description": "A loomd held the lock of the loom home when the command started.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "was_running",
+    "pid",
+    "version",
+    "via",
+    "elapsed_ms"
+  ],
+  "$defs": {
+    "RestartVia": {
+      "description": "Who restarted (or started) loomd for `loom service restart`.",
+      "oneOf": [
+        {
+          "description": "The launchd user agent: `launchctl kickstart -k`.",
+          "type": "string",
+          "const": "launchd"
+        },
+        {
+          "description": "The systemd user unit: `systemctl --user restart`.",
+          "type": "string",
+          "const": "systemd"
+        },
+        {
+          "description": "No service: `SIGTERM` to the loomd holding the lock, then a new loomd started detached.",
+          "type": "string",
+          "const": "signal"
+        },
+        {
+          "description": "No service and no loomd running: a new loomd started detached.",
+          "type": "string",
+          "const": "start"
+        }
+      ]
+    }
+  }
+}
