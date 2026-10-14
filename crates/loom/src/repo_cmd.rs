@@ -205,14 +205,43 @@ fn canonical(path: &Path) -> Option<PathBuf> {
 /// The context `match.paths` gives the current directory, when the configuration can be
 /// read.
 fn cwd_rule(env: &Env<'_>) -> Option<ContextAssignment> {
-    let home = env.home.as_deref()?;
-    let config = load_config(&env.layout.config)
+    directory_rule(&env.layout, &env.cwd, env.home.as_deref())
+}
+
+/// What the context rules give the directory `dir` itself, when the configuration can be
+/// read.
+fn directory_rule(layout: &Layout, dir: &Path, home: Option<&Path>) -> Option<ContextAssignment> {
+    let home = home?;
+    let config = load_config(&layout.config)
         .map_err(|error| debug!(%error, "configuration ignored for disambiguation"))
         .ok()?;
     let rules = ContextRules::new(&config, home)
         .map_err(|error| debug!(%error, "context rules ignored for disambiguation"))
         .ok()?;
-    Some(rules.assign(&env.cwd, None))
+    Some(rules.assign(dir, None))
+}
+
+/// The context assignments of the current directory: the one of the indexed repository
+/// holding it, and the one the rules give the directory itself (`match.paths`, then
+/// `default_context`).
+///
+/// # Errors
+///
+/// When the current directory cannot be read or loomd cannot list the repositories.
+pub async fn cwd_assignments(
+    layout: &Layout,
+    client: &Client,
+) -> Result<(Option<ContextAssignment>, Option<ContextAssignment>)> {
+    let cwd = logical_cwd().into_diagnostic()?;
+    let home = env::home_dir().filter(|home| !home.as_os_str().is_empty());
+    let repo = match find_root(&cwd).ok().flatten() {
+        Some(root) => {
+            let repos = list(client, None).await?;
+            find_by_path(&repos, &root, canonical).map(|repo| repo.identity.context.clone())
+        }
+        None => None,
+    };
+    Ok((repo, directory_rule(layout, &cwd, home.as_deref())))
 }
 
 async fn resolve(env: &Env<'_>, client: &Client, arg: Option<&str>) -> Result<Resolved> {

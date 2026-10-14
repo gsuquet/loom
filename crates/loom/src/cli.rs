@@ -10,6 +10,8 @@ use loom_api::{
 };
 use semver::Version;
 
+use crate::task::{FormatArg, ImportanceArg, KindArg};
+
 /// Build information, computed once for `--version` and `loom version`;
 /// `LOOM_TEST_BUILD_VERSION` replaces the version in a debug build (test hook).
 pub static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(|| {
@@ -109,6 +111,22 @@ pub enum Command {
     /// recently used. `-c` keeps one context, `--type` one kind. Starts loomd when it is not
     /// running.
     Search(SearchArgs),
+    /// Capture a task: in the inbox, unless `--ready`.
+    ///
+    /// The context is the first of: `-c`, `LOOM_CONTEXT`, the context of the repository of the
+    /// current directory, its `match.paths` prefix, `default_context`. The kind is `chore`
+    /// unless `--kind` is given; the importance, the default of the kind. Starts loomd when it
+    /// is not running.
+    Add(AddArgs),
+    /// List the priority list of a context, or its tasks with a status.
+    ///
+    /// The context is resolved as for `loom add`; `--all-contexts` lists every context. The
+    /// priority list holds the ready and active tasks, and the waiting ones whose date has
+    /// come, in priority order. Starts loomd when it is not running.
+    Ls(LsArgs),
+    /// Show a task: its fields and notes. `ID` is a task ID or a unique prefix of one, of any
+    /// context.
+    Show(ShowArgs),
     /// Rebuild the tasks index from the task files of every context store.
     ///
     /// The files are the source of truth: rows of tasks whose directory is gone are dropped,
@@ -250,6 +268,96 @@ pub struct SearchArgs {
     /// Print the results as JSON (`SearchResults` schema).
     #[arg(long)]
     pub json: bool,
+}
+
+/// Options of `loom add`.
+#[derive(Debug, clap::Args)]
+pub struct AddArgs {
+    /// Title, words joined with spaces (quoting it is optional).
+    #[arg(value_name = "TITLE", required = true, num_args = 1..)]
+    pub title: Vec<String>,
+    /// Kind of the task.
+    #[arg(long, value_enum, default_value = "chore")]
+    pub kind: KindArg,
+    /// Format of a `content` task.
+    #[arg(long, value_enum)]
+    pub format: Option<FormatArg>,
+    /// Importance; the default of the kind when absent (p1 for bug, investigation, support and
+    /// review; p3 for chore, research and learning; p2 otherwise).
+    #[arg(long, value_enum)]
+    pub importance: Option<ImportanceArg>,
+    /// Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`.
+    #[arg(long, value_name = "DATE")]
+    pub due: Option<String>,
+    /// Parent task: an ID or a unique prefix of one.
+    #[arg(long, value_name = "ID")]
+    pub parent: Option<String>,
+    /// Skip the inbox: the task is ready.
+    #[arg(long)]
+    pub ready: bool,
+    /// Print the created task as JSON (`TaskDetail` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom ls`.
+#[derive(Debug, clap::Args)]
+pub struct LsArgs {
+    /// List every context.
+    #[arg(long)]
+    pub all_contexts: bool,
+    /// The tasks with this status, sorted by ID, instead of the priority list.
+    #[arg(long, value_enum)]
+    pub status: Option<StatusArg>,
+    /// Add a `WHY` column: the rule that placed each task after the previous one.
+    #[arg(long, conflicts_with = "status")]
+    pub why: bool,
+    /// Print the list as JSON (`TaskList` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom show`.
+#[derive(Debug, clap::Args)]
+pub struct ShowArgs {
+    /// Task ID, or a unique prefix of one.
+    #[arg(value_name = "ID")]
+    pub id: String,
+    /// Print the task as JSON (`TaskDetail` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Statuses accepted by `loom ls --status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum StatusArg {
+    /// To triage.
+    Inbox,
+    /// Triaged, in the priority list.
+    Ready,
+    /// Being worked on.
+    Active,
+    /// Blocked on someone or something.
+    Waiting,
+    /// Finished.
+    Done,
+    /// Dropped.
+    Cancelled,
+}
+
+impl StatusArg {
+    /// Name of the status in the API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inbox => "inbox",
+            Self::Ready => "ready",
+            Self::Active => "active",
+            Self::Waiting => "waiting",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 /// Kind of results kept by `loom search --type`.
@@ -586,6 +694,9 @@ mod tests {
             | Command::Rollback(_)
             | Command::Repo { .. }
             | Command::Search(_)
+            | Command::Add(_)
+            | Command::Ls(_)
+            | Command::Show(_)
             | Command::Reindex(_)
             | Command::Sync(_)
             | Command::ShellInit(_)
