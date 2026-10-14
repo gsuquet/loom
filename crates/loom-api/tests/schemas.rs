@@ -17,12 +17,12 @@ use loom_api::{
 use loom_api::{
     ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
     Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment, ContextBackup,
-    ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart, DiskUsage, DoctorCheck,
-    DoctorReport, ErrorCode, ForgeKind, InstallReport, LastUpdate, MaybeKnown, PendingUpgrade,
-    PlannedAction, Profile, RegisterRequest, ReindexResult, Remote, RemoteCheck,
-    RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl, RepoHead,
-    RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
+    ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart, DaemonRestartReport,
+    DiskUsage, DoctorCheck, DoctorReport, ErrorCode, ForgeKind, InstallReport, LastUpdate,
+    MaybeKnown, PendingUpgrade, PlannedAction, Profile, RegisterRequest, ReindexResult, Remote,
+    RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl,
+    RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
+    RepoUpdatePolicy, RestartVia, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
     SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
     StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField, Timestamp,
     Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState,
@@ -43,6 +43,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("backup_request", schema_for!(BackupRequest)),
         ("context_assignment", schema_for!(ContextAssignment)),
         ("daemon_diagnostics", schema_for!(DaemonDiagnostics)),
+        ("daemon_restart_report", schema_for!(DaemonRestartReport)),
         ("doctor_report", schema_for!(DoctorReport)),
         ("error_code", schema_for!(ErrorCode)),
         ("illegal_transition", schema_for!(IllegalTransition)),
@@ -290,6 +291,24 @@ fn samples_validate_against_their_schema() {
         })
         .unwrap(),
     );
+    for (previous_pid, via) in [
+        (Some(812), RestartVia::Launchd),
+        (Some(812), RestartVia::Systemd),
+        (Some(812), RestartVia::Signal),
+        (None, RestartVia::Start),
+    ] {
+        errors.extend(
+            violations(&DaemonRestartReport {
+                was_running: previous_pid.is_some(),
+                previous_pid,
+                pid: 9431,
+                version: "0.3.0-dev.12".to_owned(),
+                via,
+                elapsed_ms: 640,
+            })
+            .unwrap(),
+        );
+    }
     errors.extend(violations(&ErrorCode::VersionMismatch).unwrap());
     errors.extend(violations(&ApiError::new(ErrorCode::Unavailable, "shutting down")).unwrap());
     errors.extend(

@@ -40,6 +40,20 @@ running:   yes
 
 `running: no` with `loaded: yes` means the service manager knows the service but `loomd` is not running: read the logs. For scripts, `loom service status --json` prints the same fields as JSON.
 
+## Restart loomd
+
+After a change to `config.toml`:
+
+```bash
+loom service restart
+```
+
+```text
+loomd restarted (pid 812 -> 9431, 0.3.0, via launchd) in 640 ms
+```
+
+The configuration is checked first: when it is invalid, loomd is left running. The service manager restarts loomd (`launchctl kickstart -k` on macOS, `systemctl --user restart` on Linux), and the command returns once the new loomd answers. It fails, naming the step and the log, when the new loomd does not answer within 15 s.
+
 ## Read the logs
 
 - macOS: `<loom home>/log/loomd.log`, for example:

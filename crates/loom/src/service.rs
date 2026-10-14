@@ -9,7 +9,7 @@ use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_api::{ServicePlatform, ServiceStatus};
+use loom_api::{DaemonRestartReport, RestartVia, ServicePlatform, ServiceStatus};
 use thiserror::Error;
 
 /// launchd label of the service.
@@ -563,6 +563,93 @@ pub fn opt_out_message(config: &Path) -> String {
     )
 }
 
+/// How `loom service restart` restarts loomd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartPlan {
+    /// The service manager restarts it with [`recover_commands`]: it owns the process, so
+    /// nothing races with launchd `KeepAlive` or systemd `Restart=always`.
+    Manager(Manager),
+    /// The service is loaded but not running, and a loomd holds the lock: one started outside
+    /// the service (by a `loom` command while the service was down). It gets `SIGTERM` first,
+    /// since the service's own loomd would fail on the lock, then the manager starts the
+    /// service.
+    Takeover(Manager),
+    /// No service: `SIGTERM` to the loomd holding the lock, then a detached start.
+    Signal,
+    /// No service and no loomd: a detached start.
+    Start,
+}
+
+impl RestartPlan {
+    /// What the report says restarted loomd.
+    #[must_use]
+    pub const fn via(self) -> RestartVia {
+        match self {
+            Self::Manager(Manager::Launchd { .. }) | Self::Takeover(Manager::Launchd { .. }) => {
+                RestartVia::Launchd
+            }
+            Self::Manager(Manager::Systemd) | Self::Takeover(Manager::Systemd) => {
+                RestartVia::Systemd
+            }
+            Self::Signal => RestartVia::Signal,
+            Self::Start => RestartVia::Start,
+        }
+    }
+}
+
+/// The plan of `loom service restart`.
+///
+/// `service` is the manager of the user service when it is installed for this loom home and
+/// loaded, with whether the manager reports it running; `lock_held`, whether a loomd holds
+/// the lock.
+#[must_use]
+pub const fn plan_restart(service: Option<(Manager, bool)>, lock_held: bool) -> RestartPlan {
+    match (service, lock_held) {
+        (Some((manager, false)), true) => RestartPlan::Takeover(manager),
+        // `kickstart -k` and `systemctl restart` start a stopped service as well.
+        (Some((manager, _)), _) => RestartPlan::Manager(manager),
+        (None, true) => RestartPlan::Signal,
+        (None, false) => RestartPlan::Start,
+    }
+}
+
+/// Whether the loomd that answers with `pid` is a new one: not the `previous` loomd.
+#[must_use]
+pub fn is_new_daemon(previous: Option<u32>, pid: u32) -> bool {
+    previous != Some(pid)
+}
+
+/// Text of `loom service restart`.
+#[must_use]
+pub fn format_restart(report: &DaemonRestartReport) -> String {
+    let via = report.via.as_str();
+    if report.was_running {
+        // Running, but its PID not in the lock yet: `?`.
+        let previous = report
+            .previous_pid
+            .map_or_else(|| "?".to_owned(), |pid| pid.to_string());
+        format!(
+            "loomd restarted (pid {previous} -> {}, {}, via {via}) in {} ms\n",
+            report.pid, report.version, report.elapsed_ms
+        )
+    } else {
+        format!(
+            "loomd was not running: started (pid {}, {}, via {via}) in {} ms\n",
+            report.pid, report.version, report.elapsed_ms
+        )
+    }
+}
+
+/// A timeout of `loom service restart` for the tests: `value` in milliseconds when `allowed`
+/// (debug builds), otherwise `default`.
+#[must_use]
+pub fn test_timeout(value: Option<&str>, allowed: bool, default: Duration) -> Duration {
+    value
+        .filter(|_| allowed)
+        .and_then(|text| text.parse().ok())
+        .map_or(default, Duration::from_millis)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -572,9 +659,11 @@ mod tests {
         recover_commands, render_plist, render_systemd_unit, render_unit, systemctl_is_active,
         systemctl_is_enabled, unit_path, unit_serves_home,
     };
-    use loom_api::{ServicePlatform, ServiceStatus};
+    use super::{RestartPlan, format_restart, is_new_daemon, plan_restart, test_timeout};
+    use loom_api::{DaemonRestartReport, RestartVia, ServicePlatform, ServiceStatus};
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     const MACOS_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1092,5 +1181,103 @@ WantedBy=default.target
         let message = opt_out_message(Path::new("/home/me/.loom/config.toml"));
         assert!(message.contains("[daemon] service = false"), "{message}");
         assert!(message.contains("/home/me/.loom/config.toml"), "{message}");
+    }
+
+    #[test]
+    fn a_loaded_service_is_restarted_by_its_manager() {
+        let launchd = Manager::Launchd { uid: 501 };
+        // Running, or stopped with the lock free (crashed, or stopped by hand).
+        for (service_running, lock_held) in [(true, true), (false, false)] {
+            assert_eq!(
+                plan_restart(Some((launchd, service_running)), lock_held),
+                RestartPlan::Manager(launchd)
+            );
+            assert_eq!(
+                plan_restart(Some((Manager::Systemd, service_running)), lock_held),
+                RestartPlan::Manager(Manager::Systemd)
+            );
+        }
+        assert_eq!(RestartPlan::Manager(launchd).via(), RestartVia::Launchd);
+        assert_eq!(
+            RestartPlan::Manager(Manager::Systemd).via(),
+            RestartVia::Systemd
+        );
+    }
+
+    #[test]
+    fn a_loomd_outside_the_loaded_service_is_stopped_before_the_manager_restarts() {
+        // The service is not running but a loomd holds the lock: one a `loom` command started
+        // while the service was down. The service's own start would fail on the lock.
+        let launchd = Manager::Launchd { uid: 501 };
+        assert_eq!(
+            plan_restart(Some((launchd, false)), true),
+            RestartPlan::Takeover(launchd)
+        );
+        assert_eq!(RestartPlan::Takeover(launchd).via(), RestartVia::Launchd);
+        assert_eq!(
+            RestartPlan::Takeover(Manager::Systemd).via(),
+            RestartVia::Systemd
+        );
+    }
+
+    #[test]
+    fn without_a_service_loomd_is_signalled_or_started() {
+        assert_eq!(plan_restart(None, true), RestartPlan::Signal);
+        assert_eq!(plan_restart(None, false), RestartPlan::Start);
+        assert_eq!(RestartPlan::Signal.via(), RestartVia::Signal);
+        assert_eq!(RestartPlan::Start.via(), RestartVia::Start);
+    }
+
+    #[test]
+    fn only_another_pid_is_a_new_daemon() {
+        assert!(is_new_daemon(None, 812));
+        assert!(is_new_daemon(Some(812), 9431));
+        assert!(!is_new_daemon(Some(812), 812));
+    }
+
+    #[test]
+    fn restart_text_follows_was_running_and_always_names_who() {
+        let report = DaemonRestartReport {
+            was_running: true,
+            previous_pid: Some(812),
+            pid: 9431,
+            version: "0.3.0-dev.12".to_owned(),
+            via: RestartVia::Launchd,
+            elapsed_ms: 640,
+        };
+        assert_eq!(
+            format_restart(&report),
+            "loomd restarted (pid 812 -> 9431, 0.3.0-dev.12, via launchd) in 640 ms\n"
+        );
+        // Running, its PID not in the lock yet.
+        let unknown = DaemonRestartReport {
+            previous_pid: None,
+            ..report.clone()
+        };
+        assert_eq!(
+            format_restart(&unknown),
+            "loomd restarted (pid ? -> 9431, 0.3.0-dev.12, via launchd) in 640 ms\n"
+        );
+        let stopped_service = DaemonRestartReport {
+            was_running: false,
+            previous_pid: None,
+            ..report
+        };
+        assert_eq!(
+            format_restart(&stopped_service),
+            "loomd was not running: started (pid 9431, 0.3.0-dev.12, via launchd) in 640 ms\n"
+        );
+    }
+
+    #[test]
+    fn test_timeouts_are_honored_by_debug_builds_only() {
+        let default = Duration::from_secs(10);
+        assert_eq!(
+            test_timeout(Some("250"), true, default),
+            Duration::from_millis(250)
+        );
+        assert_eq!(test_timeout(Some("250"), false, default), default);
+        assert_eq!(test_timeout(Some("soon"), true, default), default);
+        assert_eq!(test_timeout(None, true, default), default);
     }
 }

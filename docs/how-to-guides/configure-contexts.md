@@ -28,24 +28,11 @@ Before you start: `loom` and `loomd` are installed. The configuration is `<loom 
 
 3. Restart loomd: it reads the configuration only when it starts, then scans and assigns every repository again.
 
-   - Service on macOS:
+   ```bash
+   loom service restart
+   ```
 
-     ```bash
-     launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd
-     ```
-
-   - Service on Linux:
-
-     ```bash
-     systemctl --user restart loomd.service
-     ```
-
-   - Without the service, stop loomd (its PID is in `run/loomd.lock`), then start it:
-
-     ```bash
-     kill "$(cat ~/.loom/run/loomd.lock)"
-     loom status
-     ```
+   It checks `config.toml` first: when the file is invalid, it prints the error and loomd keeps running with the previous configuration. With the service installed, its manager restarts loomd; without it, loomd is stopped and started again.
 
    An invalid configuration stops loomd: `loom status` then prints the error and the end of `log/loomd.log`.
 
