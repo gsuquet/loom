@@ -375,6 +375,13 @@ fn an_unreadable_task_is_reported_and_the_others_indexed() {
     let daemon = sandbox.start();
 
     let result = sandbox.reindex();
+    // Read the index before restoring the mode: the watcher reindexes the task as soon as it
+    // sees the change (inotify reports it at once on Linux).
+    let ids: Vec<String> = sandbox
+        .indexed()
+        .into_iter()
+        .map(|task| task.id.to_string())
+        .collect();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(result.tasks, 1);
     assert_eq!(result.failed.len(), 1, "{result:?}");
@@ -382,11 +389,6 @@ fn an_unreadable_task_is_reported_and_the_others_indexed() {
         result.failed[0].path.ends_with("tasks/bbbbbbbb"),
         "{result:?}"
     );
-    let ids: Vec<String> = sandbox
-        .indexed()
-        .into_iter()
-        .map(|task| task.id.to_string())
-        .collect();
     assert_eq!(ids, ["aaaaaaaa"]);
     daemon.stop();
 }
