@@ -9,7 +9,7 @@ use std::os::unix::fs::{
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use axum::Json;
 use axum::Router;
@@ -62,10 +62,6 @@ use crate::repos::{self, Failure, RepoHandle};
 use crate::sync::{self as store_sync, SyncHandle};
 use crate::tasks::{self, TaskHandle};
 use crate::updater::{self, Settings};
-
-/// How long a search that covers tasks waits for the reconciliation on start before it answers
-/// from the tasks indexed so far.
-const TASKS_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the daemon reads before it changes anything.
 pub struct Setup {
@@ -498,7 +494,7 @@ async fn search(
     match request {
         Ok(request) => {
             if request.kind != Some(SearchKind::Repo)
-                && !app.tasks.wait_ready(TASKS_READY_TIMEOUT).await
+                && !app.tasks.wait_ready(tasks::READY_TIMEOUT).await
             {
                 warn!("tasks still being indexed: the search may miss some");
             }
