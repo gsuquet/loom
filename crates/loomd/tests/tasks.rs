@@ -14,7 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use loom_api::{
-    ContextName, ReindexResult, SearchResult, SearchResults, TaskId, TaskSearchField, Timestamp,
+    ContextName, ReindexResult, SearchResult, SearchResults, TaskId, TaskList, TaskSearchField,
+    Timestamp,
 };
 use loom_core::{Actor, Kind, MachineId, NewTask, Origin, Relations, Status};
 use loom_store::Reader;
@@ -481,6 +482,30 @@ fn task_md_with(id: &str, context: &str, title: &str, status: &str, key: &str) -
     format!(
         "+++\nid = \"{id}\"\ntitle = \"{title}\"\nkind = \"chore\"\ncontext = \"{context}\"\nstatus = \"{status}\"\nimportance = \"p3\"\ncreated = 2026-10-12T09:14:00Z\n\n[[links]]\nrole = \"origin\"\nprovider = \"jira\"\nkey = \"{key}\"\n+++\n\n## Notes\n"
     )
+}
+
+#[test]
+fn task_reads_wait_for_the_tasks_indexed_on_start() {
+    const TASKS: usize = 500;
+    let sandbox = Sandbox::new();
+    let ids: Vec<String> = (0..TASKS).map(|n| format!("{n:08}")).collect();
+    for id in &ids {
+        sandbox.write_task("work", id, &task_md(id, "work", "Indexed on start"));
+    }
+    let daemon = sandbox.start();
+
+    // No reindex: the first reads wait for the reconciliation instead of a partial index.
+    let list: TaskList = ok(&request(&sandbox.socket(), "GET", "/v1/tasks", None));
+    assert_eq!(list.tasks.len(), TASKS);
+    let newest = &ids[TASKS - 1];
+    let response = request(
+        &sandbox.socket(),
+        "GET",
+        &format!("/v1/tasks/{newest}"),
+        None,
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    daemon.stop();
 }
 
 #[test]

@@ -53,6 +53,10 @@ use crate::repos::Failure;
 
 type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 
+/// How long a read of the tasks index (a search that covers tasks, a list, a task, an ID prefix)
+/// waits for the reconciliation on start before it answers from the tasks indexed so far.
+pub const READY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A request to the task thread, with the span of the API request that sent it.
 enum Command {
     Reindex {
@@ -287,7 +291,7 @@ impl TaskStore {
 }
 
 impl TaskHandle {
-    /// Waits, at most `timeout`, for the reconciliation on start, so that a search does not
+    /// Waits, at most `timeout`, for the reconciliation on start, so that a read does not
     /// answer from a tasks index still being filled. `false` when it is not over yet; the
     /// caller goes on with the index as it is.
     pub async fn wait_ready(&self, timeout: Duration) -> bool {
@@ -382,6 +386,9 @@ impl TaskHandle {
         &self,
         decide: impl FnOnce(Vec<IndexedTask>) -> Result<T, Failure> + Send + 'static,
     ) -> Result<T, Failure> {
+        if !self.wait_ready(READY_TIMEOUT).await {
+            warn!("tasks still being indexed: the answer may miss some");
+        }
         let db = self.db.clone();
         let read = tokio::task::spawn_blocking(move || {
             Reader::open(&db)
