@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 # `RepoIdentity`, `RepoSummary` and the other types stored and returned.
 loom-api.workspace = true
+# Tasks, events, `task.md` and `events.jsonl` formats: what the task store reads and writes.
+loom-core.workspace = true
 # `ScanDiff`, the changes a scan applies.
 loom-repo.workspace = true
 # SQLite, bundled: one known version with FTS5 and JSON on every platform (ADR-0012).
@@ -17,6 +19,9 @@ rusqlite.workspace = true
 # Remotes, context assignments and state fields are stored as JSON columns.
 serde.workspace = true
 serde_json.workspace = true
+# Content hash of each `task.md`, to tell a hand edit from loomd's own write (already used by
+# loom-update).
+sha2.workspace = true
 thiserror.workspace = true
 # Debug spans around each store operation.
 tracing.workspace = true

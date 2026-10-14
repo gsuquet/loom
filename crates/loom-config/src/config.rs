@@ -40,6 +40,28 @@ pub struct Config {
     pub update: Update,
 }
 
+impl Config {
+    /// The root of each context store: `store.path` with `~` expanded to `user_home`, or
+    /// `<loom_home>/contexts/<name>` when it is not set.
+    #[must_use]
+    pub fn store_paths(
+        &self,
+        loom_home: &Path,
+        user_home: &Path,
+    ) -> BTreeMap<ContextName, PathBuf> {
+        self.contexts
+            .iter()
+            .map(|(name, context)| {
+                let path = context.store.path.as_ref().map_or_else(
+                    || loom_home.join("contexts").join(name.as_str()),
+                    |path| path.get_ref().expand(user_home),
+                );
+                (name.clone(), path)
+            })
+            .collect()
+    }
+}
+
 /// `[daemon]` table: how `loomd` runs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -211,8 +233,8 @@ struct Invalid {
 }
 
 /// Checks across keys: contexts named by `default_context` and `[repos."<path>"] context`
-/// exist, no `match.paths` or `match.hosts` entry is in two contexts, no repository path is
-/// given twice.
+/// exist, no `match.paths`, `match.hosts` or `store.path` entry is in two contexts, no
+/// repository path is given twice.
 fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let check_defined = |name: &Spanned<ContextName>, key: &str| {
         if name.get_ref().is_unassigned() {
@@ -255,10 +277,16 @@ fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     }
 
     // The same entry in two contexts would tie: neither is longer. Host paths ignore ASCII case,
-    // as their matching does.
+    // as their matching does. Two contexts cannot share a store.
     let mut paths = BTreeMap::new();
     let mut hosts = BTreeMap::new();
+    let mut stores = BTreeMap::new();
     for (name, context) in &config.contexts {
+        if let Some(path) = &context.store.path
+            && let Some((other, first)) = stores.insert(path.get_ref().normalized(), (name, path))
+        {
+            return Err(tie(text, "store.path", path, name, first, other));
+        }
         for path in &context.matching.paths {
             if let Some((other, first)) = paths.insert(path.get_ref().normalized(), (name, path))
                 && other != name
@@ -324,7 +352,8 @@ mod tests {
         DEFAULT_MAX_DEPTH, DEFAULT_ROOTS, ForgeHost, ReposConfig,
     };
     use loom_api::{ContextName, ForgeKind, RepoUpdatePolicy, UpdateChannel, UpdatePolicyMode};
-    use std::path::Path;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     const PATH: &str = "/home/me/.loom/config.toml";
@@ -752,7 +781,19 @@ kind = "gitlab"
                 7,
                 "unknown field `globs`",
             ),
-            ("[contexts.a]\nstore = 1\n", 2, 1, "unknown field `store`"),
+            ("[contexts.a]\nstore = 1\n", 2, 9, "invalid type"),
+            (
+                "[contexts.a]\nstore.backup = 1\n",
+                2,
+                7,
+                "unknown field `backup`",
+            ),
+            (
+                "[contexts.a]\nstore.path = \"stores\"\n",
+                2,
+                14,
+                "store.path: invalid path `stores`",
+            ),
             ("[contexts.a]\nupdate = \"pull\"\n", 2, 10, "pull"),
         ];
         for (text, line, column, needle) in cases {
@@ -867,6 +908,49 @@ kind = "gitlab"
         // Host paths ignore case, as their matching does.
         let text = "[contexts.a]\nmatch.hosts = [\"github.com/Me\"]\n[contexts.b]\nmatch.hosts = [\"github.com/me\"]\n";
         assert_rejected(text, 4, 16, "also `github.com/Me` of context `a`");
+    }
+
+    #[test]
+    fn a_store_path_of_two_contexts_is_rejected() {
+        let text = "[contexts.a]\nstore.path = \"~/s\"\n[contexts.b]\nstore.path = \"~/s/\"\n";
+        assert_rejected(
+            text,
+            4,
+            14,
+            "store.path `~/s/` of context `b` is also `~/s` of context `a` (line 2, column 14)",
+        );
+    }
+
+    #[test]
+    fn store_paths_default_under_the_loom_home() {
+        let text = "[contexts.personal]\n[contexts.work]\nstore.path = \"~/stores/work\"\n[contexts.client]\nstore.path = \"/srv/./client/\"\n";
+        let config = parse_config(text, Path::new(PATH)).unwrap();
+        let name = |name: &str| name.parse::<ContextName>().unwrap();
+        assert_eq!(
+            config.contexts[&name("work")]
+                .store
+                .path
+                .as_ref()
+                .map(|path| path.get_ref().as_str()),
+            Some("~/stores/work")
+        );
+        let paths = config.store_paths(Path::new("/home/me/.loom"), Path::new("/home/me"));
+        assert_eq!(
+            paths,
+            BTreeMap::from([
+                (name("client"), PathBuf::from("/srv/client")),
+                (
+                    name("personal"),
+                    PathBuf::from("/home/me/.loom/contexts/personal")
+                ),
+                (name("work"), PathBuf::from("/home/me/stores/work")),
+            ])
+        );
+        assert!(
+            Config::default()
+                .store_paths(Path::new("/l"), Path::new("/h"))
+                .is_empty()
+        );
     }
 
     #[test]

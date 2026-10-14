@@ -55,7 +55,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
-| `[contexts.<name>] match.paths`, `match.hosts`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[forges."<host>"] kind` | | | See [contexts and repositories](#contexts-and-repositories). |
@@ -122,6 +122,7 @@ kind = "gitlab"
 | `[contexts.<name>] match.paths` | array of strings: paths | none | At least one entry when given. Each entry is absolute, `~` or starts with `~/`; `..` is not allowed. |
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A trailing `/` is ignored. |
 | `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no git command. |
+| `[contexts.<name>] store.path` | string: path | `<loom home>/contexts/<name>` | Root of the context's task store. Same path rules as `match.paths`; `~` is the user's home, not the loom home. Two contexts cannot have the same `store.path`. |
 | `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
 | `[repos] max_depth` | integer | `4` | 0 to 4294967295. Deepest directory level examined below each root, the root being level 0. |
 | `[repos] exclude` | array of strings: glob patterns | `[]` | Each pattern is not empty and is a valid glob (`*`, `?`, `**`, `[…]`, `{a,b}`). A pattern without `/` matches a directory name at any depth (`archive`, `*-old`); a pattern with `/` matches the whole directory path relative to its root, with `/` separators (`clients/old`, `**/fixtures`). A matching directory is not walked. Hidden directories and `node_modules`, `vendor`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__` are always excluded. |
@@ -135,7 +136,7 @@ kind = "gitlab"
 
 Paths are compared as written, after removing `.` components and repeated or trailing `/`; `~` is kept unexpanded for this check.
 
-The same `match.paths` entry in two contexts is rejected, and so is the same `match.hosts` entry (path segments compared without ASCII case). The error is at the second entry and names the location of the first:
+The same `match.paths` entry in two contexts is rejected, and so is the same `match.hosts` entry (path segments compared without ASCII case) and the same `store.path`. The error is at the second entry and names the location of the first:
 
 ```text
 Error: invalid configuration /home/me/.loom/config.toml:5:16: match.paths `~/work/` of context `company-b` is also `~/work` of context `company-a` (line 2, column 16): an entry can belong to one context only
