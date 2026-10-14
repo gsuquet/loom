@@ -31,7 +31,7 @@ rustix = { workspace = true, features = ["system"] }
 semver.workspace = true
 serde.workspace = true
 # `sync`: the updater thread asks the server to stop after an upgrade (oneshot channel).
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

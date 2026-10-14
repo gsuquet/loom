@@ -5,7 +5,9 @@ use std::sync::LazyLock;
 
 use clap::builder::RangedU64ValueParser;
 use clap::{ArgAction, ArgGroup, ArgMatches, ColorChoice, Parser, Subcommand, ValueEnum};
-use loom_api::{ContextName, DEFAULT_SEARCH_LIMIT, TEST_BUILD_VERSION_ENV, VersionInfo};
+use loom_api::{
+    ContextName, DEFAULT_SEARCH_LIMIT, SearchKind, TEST_BUILD_VERSION_ENV, VersionInfo,
+};
 use semver::Version;
 
 /// Build information, computed once for `--version` and `loom version`;
@@ -104,7 +106,8 @@ pub enum Command {
     /// tasks, then done and cancelled tasks. Among tasks: the query as a link key
     /// (`CORE-1042`), then every word in the title, then most recently changed. Among
     /// repositories: exact name, then name prefix, then slug, then the other fields; then most
-    /// recently used. `-c` keeps one context. Starts loomd when it is not running.
+    /// recently used. `-c` keeps one context, `--type` one kind. Starts loomd when it is not
+    /// running.
     Search(SearchArgs),
     /// Rebuild the tasks index from the task files of every context store.
     ///
@@ -223,9 +226,32 @@ pub struct SearchArgs {
         value_parser = RangedU64ValueParser::<usize>::new().range(1..),
     )]
     pub limit: usize,
+    /// Only results of this kind.
+    #[arg(long = "type", value_name = "TYPE", value_enum)]
+    pub kind: Option<SearchType>,
     /// Print the results as JSON (`SearchResults` schema).
     #[arg(long)]
     pub json: bool,
+}
+
+/// Kind of results kept by `loom search --type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SearchType {
+    /// Tasks only.
+    Task,
+    /// Repositories only.
+    Repo,
+}
+
+impl SearchType {
+    /// The kind of results it keeps.
+    #[must_use]
+    pub const fn kind(self) -> SearchKind {
+        match self {
+            Self::Task => SearchKind::Task,
+            Self::Repo => SearchKind::Repo,
+        }
+    }
 }
 
 /// `loom repo` commands.
@@ -429,9 +455,10 @@ pub fn command_path(matches: &ArgMatches) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, ReleaseChannel, ServiceCommand, command_path};
+    use super::{Cli, Command, ReleaseChannel, SearchType, ServiceCommand, command_path};
     use clap::error::ErrorKind;
     use clap::{ColorChoice, CommandFactory, Parser};
+    use loom_api::SearchKind;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -490,6 +517,17 @@ mod tests {
         assert_eq!(args.query, ["x"]);
         assert_eq!(args.limit, 3);
         assert!(args.json);
+        assert_eq!(args.kind, None);
+        let kind = |value: &str| parse(&["loom", "search", "x", "--type", value]);
+        assert_eq!(
+            kind("task").unwrap().kind.map(SearchType::kind),
+            Some(SearchKind::Task)
+        );
+        assert_eq!(
+            kind("repo").unwrap().kind.map(SearchType::kind),
+            Some(SearchKind::Repo)
+        );
+        assert_eq!(kind("note").unwrap_err(), ErrorKind::InvalidValue);
         assert_eq!(
             parse(&["loom", "search"]).unwrap_err(),
             ErrorKind::MissingRequiredArgument

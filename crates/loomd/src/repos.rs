@@ -476,7 +476,12 @@ impl RepoHandle {
     /// through a read connection.
     pub async fn search(&self, request: SearchRequest) -> Result<Vec<SearchResult>, Failure> {
         self.read(move |reader| {
-            reader.search(&request.q, request.context.as_deref(), None, request.limit)
+            reader.search(
+                &request.q,
+                request.context.as_deref(),
+                request.kind,
+                request.limit,
+            )
         })
         .await
     }

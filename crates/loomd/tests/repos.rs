@@ -262,6 +262,11 @@ fn search_ranks_and_filters_over_the_api() {
     assert_eq!(search("/v1/search?q=%22loom%22%20OR"), Vec::<String>::new());
     assert_eq!(search("/v1/search?q="), Vec::<String>::new());
 
+    assert_eq!(
+        search("/v1/search?q=loom&type=repo&context="),
+        search("/v1/search?q=loom")
+    );
+    assert_eq!(search("/v1/search?q=loom&type=task"), Vec::<String>::new());
     let results = repos("/v1/search?q=company");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].name, "tool");
@@ -275,6 +280,8 @@ fn search_ranks_and_filters_over_the_api() {
         "/v1/search?q=x&limit=-1",
         "/v1/search?q=x&context=Not/A/Context",
         "/v1/search?q=x&sort=name",
+        "/v1/search?q=x&type=note",
+        "/v1/search?q=x&type=Repo",
     ] {
         assert_api_error(
             &sandbox.request("GET", path, None),

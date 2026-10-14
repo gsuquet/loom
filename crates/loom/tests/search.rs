@@ -1,5 +1,6 @@
 //! `loom search` end to end: fixture repositories under a temporary `HOME`, `loom` started as
-//! a process against the `loomd` it starts. Includes the latency budget on 1,000 repositories.
+//! a process against the `loomd` it starts, task files written in its context stores. Includes
+//! the latency budget on 1,000 repositories and 5,000 tasks.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,7 +14,7 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{RepoList, SearchField, SearchResult, SearchResults};
+use loom_api::{RepoList, SearchField, SearchResult, SearchResults, TaskSearchField};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -25,6 +26,8 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// Repositories of the latency test.
 const REPOS: usize = 1_000;
+/// Tasks of the latency test.
+const TASKS: usize = 5_000;
 /// Timed runs of `loom search` per scenario.
 const RUNS: usize = 60;
 /// p95 above which the latency test fails. The target is 100 ms; a shared CI runner running a
@@ -105,6 +108,18 @@ impl Sandbox {
         String::from_utf8(output.stdout).unwrap()
     }
 
+    /// Writes `task.md` of task `id` in the store of `context` (`<loom home>/contexts/<context>`).
+    fn write_task(&self, context: &str, id: &str, text: &str) {
+        let dir = self
+            .loom_home()
+            .join("contexts")
+            .join(context)
+            .join("tasks")
+            .join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("task.md"), text).unwrap();
+    }
+
     fn search(&self, args: &[&str]) -> SearchResults {
         let mut full = vec!["search", "--json"];
         full.extend_from_slice(args);
@@ -160,6 +175,30 @@ fn valid<T: DeserializeOwned + schemars::JsonSchema>(text: &str) -> T {
         .collect();
     assert!(errors.is_empty(), "schema violations: {errors:?}\n{text}");
     serde_json::from_value(value).unwrap()
+}
+
+/// A `task.md` of task `id` in `context`, with `status` and the origin link keys `keys`.
+fn task_md(id: &str, context: &str, title: &str, status: &str, keys: &[&str]) -> String {
+    let mut text = format!(
+        "+++\nid = \"{id}\"\ntitle = \"{title}\"\nkind = \"chore\"\ncontext = \"{context}\"\nstatus = \"{status}\"\nimportance = \"p3\"\ncreated = 2026-10-12T09:14:00Z\n"
+    );
+    for key in keys {
+        write!(
+            text,
+            "\n[[links]]\nrole = \"origin\"\nprovider = \"jira\"\nkey = \"{key}\"\n"
+        )
+        .unwrap();
+    }
+    text + "+++\n\n## Notes\n"
+}
+
+/// A task ID for `index`: 8 characters of the ID alphabet (lowercase Crockford base32).
+fn task_id(index: usize) -> String {
+    const ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    (0..8)
+        .rev()
+        .map(|digit| char::from(ALPHABET[(index >> (5 * digit)) % 32]))
+        .collect()
 }
 
 /// The slug of each repository, `task:<id>` for each task, in order.
@@ -237,6 +276,80 @@ fn search_prints_ranked_results_as_a_table_or_json() {
     assert_eq!(output.status.code(), Some(2));
 }
 
+#[test]
+fn search_finds_tasks_by_key_ranked_around_the_repositories() {
+    let sandbox = Sandbox::new();
+    let perso = sandbox.home().join("perso");
+    fake_repo(&perso.join("checkout"), &[]);
+    sandbox.write_task(
+        "personal",
+        "aaaaaaaa",
+        &task_md("aaaaaaaa", "personal", "Checkout shipped", "done", &[]),
+    );
+    sandbox.write_task(
+        "personal",
+        "bbbbbbbb",
+        &task_md(
+            "bbbbbbbb",
+            "personal",
+            "Login timeout on mobile checkout",
+            "active",
+            &["CORE-1042", "!88"],
+        ),
+    );
+    sandbox.write_task(
+        "work",
+        "cccccccc",
+        &task_md("cccccccc", "work", "Checkout idea", "inbox", &[]),
+    );
+    sandbox.write_task("work", "dddddddd", "+++\nbroken checkout\n+++\n");
+
+    // Starts loomd, which indexes the task files before the search answers.
+    assert_eq!(
+        slugs(&sandbox.search(&["checkout"])),
+        [
+            "task:bbbbbbbb",
+            "personal/checkout",
+            "task:cccccccc",
+            "task:dddddddd",
+            "task:aaaaaaaa",
+        ]
+    );
+    for key in ["CORE-1042", "core-1042", "!88"] {
+        let found = sandbox.search(&[key]);
+        assert_eq!(slugs(&found)[0], "task:bbbbbbbb", "{key}");
+        let SearchResult::Task(task) = &found.results[0] else {
+            panic!("{found:?}");
+        };
+        assert_eq!(task.link_keys, ["CORE-1042", "!88"]);
+        assert!(task.matched_fields.contains(&TaskSearchField::LinkKeys));
+    }
+    assert_eq!(
+        slugs(&sandbox.search(&["--type", "repo", "checkout"])),
+        ["personal/checkout"]
+    );
+    assert_eq!(
+        slugs(&sandbox.search(&["--type", "task", "-c", "work", "checkout"])),
+        ["task:cccccccc", "task:dddddddd"]
+    );
+
+    let table = sandbox.ok(&["search", "checkout"]);
+    let perso = perso.display();
+    assert_eq!(
+        table,
+        format!(
+            "TYPE  ITEM               CONTEXT   STATUS   MATCHED         DETAIL\n\
+             task  bbbbbbbb           personal  active   title           Login timeout on mobile checkout (CORE-1042, !88)\n\
+             repo  personal/checkout  personal           name,slug,path  {perso}/checkout\n\
+             task  cccccccc           work      inbox    title           Checkout idea\n\
+             task  dddddddd           work      invalid  notes\n\
+             task  aaaaaaaa           personal  done     title           Checkout shipped\n"
+        )
+    );
+    let output = sandbox.loom_in(&sandbox.home(), &["search", "x", "--type", "note"]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
 /// Durations at the 50th and 95th percentiles.
 fn percentiles(mut durations: Vec<Duration>) -> (Duration, Duration) {
     durations.sort();
@@ -264,14 +377,14 @@ fn time_runs(sandbox: &Sandbox, cwd: &Path, commands: &[&[&str]]) -> (Duration, 
     percentiles(durations)
 }
 
-#[test]
-fn search_answers_within_budget_on_1000_repositories() {
-    const WORDS: [&str; 8] = [
-        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-    ];
-    let sandbox = Sandbox::new();
-    let perso = sandbox.home().join("perso");
-    let started = Instant::now();
+/// Words of the latency fixtures: each repository and task holds one, in turn.
+const WORDS: [&str; 8] = [
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+];
+
+/// [`REPOS`] repositories under `perso` and [`TASKS`] task files, half in each context, their
+/// statuses in turn.
+fn latency_fixtures(sandbox: &Sandbox, perso: &Path) {
     for index in 0..REPOS {
         let word = WORDS[index % WORDS.len()];
         let url = format!("https://github.com/me/{word}-service-{index}.git");
@@ -280,12 +393,45 @@ fn search_answers_within_budget_on_1000_repositories() {
             &[("origin", url.as_str())],
         );
     }
-    eprintln!("fixtures: {REPOS} repositories in {:?}", started.elapsed());
+    let statuses = ["active", "ready", "inbox", "done", "waiting"];
+    for index in 0..TASKS {
+        let word = WORDS[index % WORDS.len()];
+        let context = if index % 2 == 0 { "personal" } else { "work" };
+        let id = task_id(index);
+        let key = format!("OPS-{index}");
+        let title = format!("{word} task {index}");
+        let status = statuses[index % statuses.len()];
+        sandbox.write_task(
+            context,
+            &id,
+            &task_md(&id, context, &title, status, &[&key]),
+        );
+    }
+}
 
-    // Starts loomd, waits for its scan, then for the states of every repository, so that the
-    // timed runs do not compete with the state threads.
+#[test]
+fn search_answers_within_budget_on_1000_repositories_and_5000_tasks() {
+    let sandbox = Sandbox::new();
+    let perso = sandbox.home().join("perso");
+    let started = Instant::now();
+    latency_fixtures(&sandbox, &perso);
+    eprintln!(
+        "fixtures: {REPOS} repositories, {TASKS} tasks in {:?}",
+        started.elapsed()
+    );
+
+    // Starts loomd, waits for its scan and the tasks indexed on start, then for the states of
+    // every repository, so that the timed runs do not compete with the state threads.
     let started = Instant::now();
     assert_eq!(sandbox.search(&["zzz"]).results.len(), 0);
+    let limit = TASKS.to_string();
+    assert_eq!(
+        sandbox
+            .search(&["--type", "task", "--limit", &limit, "task"])
+            .results
+            .len(),
+        TASKS
+    );
     let deadline = Instant::now() + TIMEOUT;
     loop {
         let list: RepoList = serde_json::from_str(&sandbox.ok(&["repo", "ls", "--json"])).unwrap();
@@ -306,11 +452,15 @@ fn search_answers_within_budget_on_1000_repositories() {
     }
     eprintln!("index ready in {:?}", started.elapsed());
 
-    // `alpha` matches 125 repositories, `service` all of them, `echo 0420` one.
-    let searches: [&[&str]; 5] = [
+    // `alpha` matches 125 repositories and 625 tasks, `service` every repository, `task` every
+    // task, `echo 0420` one repository, `OPS-4242` one task by its key.
+    let searches: [&[&str]; 8] = [
         &["search", "alpha"],
         &["search", "service"],
+        &["search", "task"],
         &["search", "echo", "0420"],
+        &["search", "OPS-4242"],
+        &["search", "--type", "task", "golf"],
         &["search", "github me"],
         &["search", "zzz"],
     ];
@@ -319,6 +469,17 @@ fn search_answers_within_budget_on_1000_repositories() {
         slugs(&sandbox.search(&["echo", "0420"])),
         ["personal/echo-0420"]
     );
+    assert_eq!(
+        slugs(&sandbox.search(&["OPS-4242"]))[0],
+        format!("task:{}", task_id(4242))
+    );
+    // Active, ready and waiting tasks come before the repositories.
+    let alpha = slugs(&sandbox.search(&["alpha", "--limit", "500"]));
+    assert!(
+        alpha[..375].iter().all(|item| item.starts_with("task:")),
+        "{alpha:?}"
+    );
+    assert!(alpha[375].starts_with("personal/"), "{alpha:?}");
 
     // Outside a repository, then inside one (registration on use runs). `loom version`, which
     // starts like every command but sends no request of its own, is the baseline.
@@ -335,7 +496,7 @@ fn search_answers_within_budget_on_1000_repositories() {
         let (base_p50, base_p95) = time_runs(&sandbox, &cwd, &[&["version"]]);
         let (p50, p95) = time_runs(&sandbox, &cwd, &searches);
         eprintln!(
-            "loom search ({profile}, {REPOS} repositories, {RUNS} runs, {scenario}): \
+            "loom search ({profile}, {REPOS} repositories, {TASKS} tasks, {RUNS} runs, {scenario}): \
              p50 {:.1} ms, p95 {:.1} ms; loom version: p50 {:.1} ms, p95 {:.1} ms",
             ms(p50),
             ms(p95),
