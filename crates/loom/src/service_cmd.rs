@@ -159,19 +159,29 @@ pub fn supervisor(
     home: &Path,
     runner: &mut impl CommandRunner,
 ) -> Result<Supervisor> {
+    Ok(match loaded_service(target, home, runner)? {
+        Some((manager, _)) => Supervisor::Service(manager),
+        None => Supervisor::Unsupervised,
+    })
+}
+
+/// The manager of the user service of the loom home `home` when it is installed for this home
+/// and loaded, with what the manager reports (`running` included). `None` without running
+/// any command when there is no service file, or one for another loom home.
+pub fn loaded_service(
+    target: &Target,
+    home: &Path,
+    runner: &mut impl CommandRunner,
+) -> Result<Option<(Manager, ManagerState)>> {
     let Some(content) = read_current(&target.paths.unit)? else {
-        return Ok(Supervisor::Unsupervised);
+        return Ok(None);
     };
     if !unit_serves_home(target.platform, &content, home).into_diagnostic()? {
-        return Ok(Supervisor::Unsupervised);
+        return Ok(None);
     }
     let manager = manager(target.platform, runner)?;
     let state = query_state(manager, runner)?;
-    Ok(if state.loaded {
-        Supervisor::Service(manager)
-    } else {
-        Supervisor::Unsupervised
-    })
+    Ok(state.loaded.then_some((manager, state)))
 }
 
 /// Whether the watchdog starts loomd itself when nobody holds the lock: only without a

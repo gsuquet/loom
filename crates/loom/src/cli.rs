@@ -455,6 +455,18 @@ pub enum ServiceCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Restart loomd and wait for the new one to answer, so a change to `config.toml` takes
+    /// effect.
+    ///
+    /// The configuration is checked first: when it is invalid, loomd is left running. A loaded
+    /// user service is restarted by its manager (`launchctl kickstart -k`, `systemctl --user
+    /// restart`); otherwise loomd gets `SIGTERM`, then a new one is started. Starts loomd when
+    /// it is not running.
+    Restart {
+        /// Print the report as JSON (`DaemonRestartReport` schema).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The command line's command path, such as `loom status`: `loom` followed by each

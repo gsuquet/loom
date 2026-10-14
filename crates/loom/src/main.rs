@@ -4,6 +4,7 @@ mod client;
 mod on_use;
 mod reindex_cmd;
 mod repo_cmd;
+mod restart_cmd;
 mod search_cmd;
 mod service_cmd;
 mod start;
@@ -344,6 +345,11 @@ fn run_service(command: &ServiceCommand) -> Result<()> {
         }
         ServiceCommand::Uninstall { dry_run } => {
             service_cmd::uninstall(&target, &mut runner, *dry_run)?
+        }
+        ServiceCommand::Restart { json } => {
+            // Before anything else: an invalid configuration would stop the new loomd.
+            load_config(&layout.config)?;
+            restart_cmd::run(&target, &layout, &mut runner, *json)?
         }
         ServiceCommand::Status { json } => {
             let status = service_cmd::status(&target, &mut runner)?;

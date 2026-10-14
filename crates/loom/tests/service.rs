@@ -75,24 +75,38 @@ fn service_usage_errors() {
         .assert()
         .code(2);
     loom(sandbox.path())
-        .args(["service", "restart"])
+        .args(["service", "reload"])
         .assert()
         .code(2);
 }
 
 /// Fake `id`, `launchctl`, `systemctl` and `loomd`, alone on `PATH`. Each logs its arguments
-/// to `calls.log`; loading creates `loaded`, unloading removes it, queries read it.
+/// to `calls.log`; loading creates `loaded` and `running`, unloading removes them, queries
+/// read them.
 const FAKE_MANAGER: &str = r#"#!/bin/sh
 dir=$(cd "${0%/*}" && pwd)
 echo "${0##*/} $*" >> "$dir/calls.log"
 case "${0##*/} $*" in
   "id -u") echo 501 ;;
-  "launchctl print"*|"systemctl --user is-enabled"*|"systemctl --user is-active"*)
-    if [ -e "$dir/loaded" ]; then echo "	state = running"; else exit 3; fi ;;
-  "launchctl bootstrap"*|"systemctl --user enable --now"*) : > "$dir/loaded" ;;
-  "launchctl bootout"*|"systemctl --user disable --now"*) /bin/rm -f "$dir/loaded" ;;
+  "launchctl print"*)
+    [ -e "$dir/loaded" ] || exit 3
+    if [ -e "$dir/running" ]; then echo "	state = running"; else echo "	state = not running"; fi ;;
+  "systemctl --user is-enabled"*) [ -e "$dir/loaded" ] || exit 3 ;;
+  "systemctl --user is-active"*) [ -e "$dir/running" ] || exit 3 ;;
+  "launchctl bootstrap"*|"systemctl --user enable --now"*) : > "$dir/loaded"; : > "$dir/running" ;;
+  "launchctl bootout"*|"systemctl --user disable --now"*) /bin/rm -f "$dir/loaded" "$dir/running" ;;
 esac
 "#;
+
+/// `kill` on `PATH`: logs its arguments to `calls.log`, then runs the real one.
+const LOGGING_KILL: &str = r#"#!/bin/sh
+dir=$(cd "${0%/*}" && pwd)
+echo "kill $*" >> "$dir/calls.log"
+exec /bin/kill "$@"
+"#;
+
+/// Test hook of `loom service restart`: how long it waits for a new loomd, in milliseconds.
+const ANSWER_TIMEOUT_ENV: &str = "LOOM_TEST_RESTART_ANSWER_TIMEOUT_MS";
 
 struct FakeHost {
     sandbox: TempDir,
@@ -109,11 +123,22 @@ impl FakeHost {
             fs::write(&path, FAKE_MANAGER).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
+        let kill = bin.join("kill");
+        fs::write(&kill, LOGGING_KILL).unwrap();
+        fs::set_permissions(&kill, fs::Permissions::from_mode(0o755)).unwrap();
         Self { sandbox }
     }
 
     fn loom(&self, args: &[&str]) -> assert_cmd::assert::Assert {
         loom(self.sandbox.path()).args(args).assert()
+    }
+
+    /// `loom service restart`, waiting at most half a second for a new loomd.
+    fn restart(&self) -> assert_cmd::assert::Assert {
+        loom(self.sandbox.path())
+            .env(ANSWER_TIMEOUT_ENV, "500")
+            .args(["service", "restart"])
+            .assert()
     }
 
     /// Commands that change state run since the last call (read-only queries left out).
@@ -223,4 +248,65 @@ fn manager_failure_exits_1_with_its_stderr() {
     let assert = host.loom(&["service", "install"]).code(1);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(stderr.contains("Bootstrap failed: 5"), "{stderr}");
+}
+
+fn manager_restart_commands() -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        vec!["launchctl kickstart -k gui/501/io.github.gsuquet.loomd".to_owned()]
+    } else {
+        vec![
+            "systemctl --user reset-failed loomd.service".to_owned(),
+            "systemctl --user restart loomd.service".to_owned(),
+        ]
+    }
+}
+
+fn restart_failure(assert: &assert_cmd::assert::Assert) -> String {
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    let via = if cfg!(target_os = "macos") {
+        "launchd"
+    } else {
+        "systemd"
+    };
+    assert!(
+        stderr.contains("no new loomd answered on ")
+            && stderr.contains(&format!("within 0.5 s of the restart via {via}")),
+        "{stderr}"
+    );
+    stderr
+}
+
+#[test]
+fn restart_goes_through_the_service_manager_and_waits_for_a_new_loomd() {
+    let host = FakeHost::new();
+    host.loom(&["service", "install"]).success();
+    host.take_changes();
+
+    // The fake manager starts no loomd: the restart waits for one, then fails.
+    restart_failure(&host.restart().code(1));
+    // No `kill`: the manager owns the process.
+    assert_eq!(host.take_changes(), manager_restart_commands());
+}
+
+#[test]
+fn restart_stops_a_loomd_running_outside_the_service_first() {
+    let host = FakeHost::new();
+    host.loom(&["service", "install"]).success();
+    // The service is down (loaded, not running) and a `loom` command started a loomd itself,
+    // which holds the lock the service's loomd would need.
+    fs::remove_file(host.sandbox.path().join("empty-path/running")).unwrap();
+    host.loom(&["status"]).success();
+    let lock = host.sandbox.path().join("loom/run/loomd.lock");
+    let outside: u32 = fs::read_to_string(&lock).unwrap().trim().parse().unwrap();
+    host.take_changes();
+
+    restart_failure(&host.restart().code(1));
+    let mut expected = vec![format!("kill -TERM {outside}")];
+    expected.extend(manager_restart_commands());
+    assert_eq!(host.take_changes(), expected);
+    let file = fs::File::open(&lock).unwrap();
+    assert!(
+        file.try_lock().is_ok(),
+        "the loomd outside the service still runs"
+    );
 }

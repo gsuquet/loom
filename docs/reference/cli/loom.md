@@ -127,6 +127,25 @@ loom service status [OPTIONS]
 
 Global options apply.
 
+### `loom service restart`
+
+Restart loomd and wait for the new one to answer, so a change to `config.toml` takes effect.
+
+The configuration is checked first: when it is invalid, loomd is left running. A loaded user service is restarted by its manager (`launchctl kickstart -k`, `systemctl --user restart`); otherwise loomd gets `SIGTERM`, then a new one is started. Starts loomd when it is not running.
+
+```text
+loom service restart [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the report as JSON (`DaemonRestartReport` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
 ### `loom service help`
 
 Print this message or the help of the given subcommand(s)

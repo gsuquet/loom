@@ -59,7 +59,7 @@ pub use search::{
     DEFAULT_SEARCH_LIMIT, RepoMatch, SearchField, SearchKind, SearchResult, SearchResults,
     TaskMatch, TaskSearchField,
 };
-pub use service::{ServicePlatform, ServiceStatus};
+pub use service::{DaemonRestartReport, RestartVia, ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
 pub use task::{
     AmbiguousPrefix, IllegalTransition, TaskActionName, TaskActionRequest, TaskCandidate,
