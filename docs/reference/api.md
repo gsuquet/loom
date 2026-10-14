@@ -28,6 +28,13 @@
 | `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
 | `POST` | `/v1/diagnostics/remote-check` | `200` | [`RemoteCheckResult`](#remotecheckresult) |
 | `POST` | `/v1/tasks/reindex` | `200` | [`ReindexResult`](#reindexresult) |
+| `GET` | `/v1/tasks` | `200` | [`TaskList`](#tasklist) |
+| `POST` | `/v1/tasks` | `200` | [`TaskDetail`](#taskdetail) of the new task; takes a [`NewTask`](#newtask) |
+| `GET` | `/v1/tasks/{id}` | `200` | [`TaskDetail`](#taskdetail) |
+| `PATCH` | `/v1/tasks/{id}` | `200` | [`TaskDetail`](#taskdetail) after the edit; takes a [`TaskEdit`](#taskedit) |
+| `POST` | `/v1/tasks/{id}/actions/{action}` | `200` | [`TaskDetail`](#taskdetail) after the action; takes a [`TaskActionRequest`](#taskactionrequest) or no body |
+| `GET` | `/v1/tasks/{id}/events` | `200` | [`TaskEvents`](#taskevents) |
+| `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state. `disk` is the last measure of the loom home while it is fresh, otherwise a new one ([cache](#diskusage)).
 
@@ -146,6 +153,37 @@ The tasks are files in the context stores (see [configuration](configuration.md#
 
 `POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction, and answers with a [`ReindexResult`](#reindexresult) once it is written. Rows of tasks whose directory is gone are dropped; an invalid `task.md` is indexed read-only and listed, never rewritten. Before the rebuild, every task is reconciled: a hand edit not recorded yet gets its `edited` event first, so a reindex may append events, and the rebuild never hides an edit. The repositories of the index are left as they are. A task whose files cannot be read (permissions, I/O), or a store whose `tasks/` cannot be listed, by the reconciliation or by the rebuild, is listed in `failed` and keeps the row it had; the other tasks are indexed. Only a failure to write the index answers `500 internal`, the index then unchanged.
 
+#### Task endpoints
+
+`{id}` is a task ID or a prefix of one, read as Crockford base32: case ignored, `i` and `l` read as `1`, `o` as `0`, 1 to 8 characters. It is resolved against every indexed task, of every context. A prefix several tasks start with is an `ambiguous_prefix` error listing them; `/v1/tasks/reindex` is the reindex endpoint, never a task.
+
+Reads (`GET /v1/tasks`, `GET /v1/tasks/{id}`) use a read connection to the index and never wait for a write. Creations, edits, actions, undos and event reads run on the task thread, one at a time, after the hand edits and reindexes queued before them: two requests on one task never interleave and none is lost. Their events have the actor `user` and the machine of `loomd` (its host name). A request that changes nothing (pin a pinned task, edit a field to its value) writes nothing and answers the task as it is.
+
+`GET /v1/tasks` query parameters, all optional; an empty `context` or `status` is ignored, any other parameter is an `invalid_request`:
+
+| Parameter | Content |
+| --- | --- |
+| `context` | Only the tasks of this context. A context without a store gives an empty list. |
+| `status` | Only the tasks with this status: `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled`. Tasks with an invalid `task.md` or an unknown status are left out. |
+| `ranked` | `true`: the priority list, in its order, each task with its `rank`. `false` (default): every task, sorted by ID. |
+
+The priority list holds the `ready` and `active` tasks, and the `waiting` tasks whose `until` is today or past; `inbox`, `done`, `cancelled`, unknown statuses and invalid files are never in it. Order, each rule breaking the ties of the previous one: pinned first; overdue or due today first, earliest due date first; importance, `p0` first; due date, earliest first, none last; oldest `created` first; ID. "Today" is the local date of `loomd` (`TZ`, otherwise `/etc/localtime`), read at each request. With `context` or `status`, the list is the priority list of the tasks they keep.
+
+`{action}` of `POST /v1/tasks/{id}/actions/{action}`:
+
+| Action | Body | Change |
+| --- | --- | --- |
+| `inbox`, `ready`, `active`, `done`, `cancelled` | none | Moves the task to this status. |
+| `waiting` | `on`, `until`, both optional | Moves the task to `waiting` (or changes what it waits on and until when). |
+| `pin`, `unpin` | none | Pins or unpins the task. |
+| `log_note` | `text`, required | Logs a note as a `note_logged` event. |
+
+An open status (`inbox`, `ready`, `active`, `waiting`) can move to any other one, `waiting` to `waiting` too; `done` and `cancelled` only to `ready`. Any other action name is a `not_found`. An empty body (or only whitespace) is no body; a field the action does not take is an `invalid_request`.
+
+`POST /v1/tasks/{id}/undo` reverts the last change of the task (an edit, a status change, a pin, a hand edit or an undo; notes and the creation are not changes) by appending an `undone` event with the inverse changes. Undoing an undo redoes the change. `loomd` computes the inverse from the task's log; the request has no body.
+
+`GET /v1/tasks/{id}/events` answers the event log of the task as `events.jsonl` holds it, with the lines this version cannot replay listed apart.
+
 ### Errors
 
 Every error response has an [`ApiError`](#apierror) body.
@@ -158,9 +196,19 @@ Every error response has an [`ApiError`](#apierror) body.
 | Sync: body not a valid `SyncRequest` | `400` | `invalid_request` |
 | Invalid query parameter, unknown parameter, invalid `context`, or `refresh`, `rebuild` or `dry_run` neither `true` nor `false` | `400` | `invalid_request` |
 | Register: body not a valid `RegisterRequest`, path not absolute or with a `..` component, no repository at or above the path, or a repository whose `.git` or config cannot be read | `400` | `invalid_request` |
+| Task: `{id}` not 1 to 8 Crockford base32 characters | `400` | `invalid_request` |
+| Task: no task ID starts with `{id}` | `404` | `not_found` |
+| Task: several task IDs start with `{id}` | `400` | `ambiguous_prefix`, `details`: [`AmbiguousPrefix`](#problem-details) |
+| Task: body not a valid `NewTask`, `TaskEdit` or `TaskActionRequest` (unknown field, missing `text`, field the action does not take), empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status` or `ranked` | `400` | `invalid_request` |
+| Task: unknown `{action}` | `404` | `not_found` |
+| Task: change of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
+| Task: status change the transitions forbid | `409` | `illegal_transition`, `details`: [`IllegalTransition`](#problem-details) |
+| Task: undo of a change whose field changed since (a hand edit not recorded yet) | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) |
+| Task: undo of a task without a change | `409` | `nothing_to_undo` |
+| Task: the task files cannot be read or written | `500` | `internal` |
 | The index cannot be read or written | `500` | `internal` |
 | The daemon cannot read its clock as a timestamp | `500` | `internal` |
-| The daemon stops before answering a scan, register, remove, refresh or sync request | `503` | `unavailable` |
+| The daemon stops before answering a scan, register, remove, refresh, sync, reindex or task write request | `503` | `unavailable` |
 
 ```bash
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/status
@@ -175,6 +223,15 @@ curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/
 curl --unix-socket ~/.loom/run/loomd.sock -X POST 'http://loomd/v1/repos/scan?dry_run=true'
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/diagnostics
 curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/diagnostics/remote-check
+curl --unix-socket ~/.loom/run/loomd.sock 'http://loomd/v1/tasks?ranked=true&context=work'
+curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
+  -d '{"title": "Review the API", "kind": "review", "context": "work", "status": "inbox"}' \
+  http://loomd/v1/tasks
+curl --unix-socket ~/.loom/run/loomd.sock -X PATCH -H 'content-type: application/json' \
+  -d '{"due": "2026-10-20", "importance": "p0"}' http://loomd/v1/tasks/k3q
+curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
+  -d '{"on": "Alice"}' http://loomd/v1/tasks/k3q/actions/waiting
+curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/tasks/k3q/undo
 ```
 
 ## Types
@@ -230,10 +287,10 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 
 | Message | Unknown fields |
 | --- | --- |
-| Request | Rejected (`#[serde(deny_unknown_fields)]`): `RegisterRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}` and `POST /v1/repos/scan`. |
+| Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan` and `GET /v1/tasks`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`) are rejected.
+Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`) are rejected, except the `kind`, `format` and `status` of a task, which a newer version may write: the task is then read-only.
 
 ### Scalar encodings
 
@@ -540,6 +597,115 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 | --- | --- | --- |
 | `path` | path | The task directory, or the `tasks/` directory of a store that could not be listed. |
 | `error` | string | What failed, with the file when it is an I/O error. |
+
+### `TaskList`
+
+Answer of `GET /v1/tasks`.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `tasks` | list of `TaskSummary` | The tasks the query keeps: sorted by ID, or the priority list with `ranked=true` (see [task endpoints](#task-endpoints)). |
+
+`TaskSummary`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `id` | string | Task ID: 8 lowercase Crockford base32 characters. |
+| `prefix` | string | Shortest prefix of `id` no other task ID starts with, across every context (not only the listed tasks). |
+| `context` | string | Context of the store holding the task. |
+| `task` | `Task` \| `null` | The task, as `task.md` holds it, `updated` being the time of its last event; `null` when `task.md` is invalid. Fields: `id`, `title`, `kind` and `format`, `context`, `status`, `waiting_on` and `waiting_until`, `importance`, `due`, `pinned`, `links`, `relations`, `created`, `updated` (see the [task file](task-file.md)). |
+| `read_only` | `TaskReadOnly`, optional | Why the task cannot be changed; absent when it can. |
+| `rank` | object, optional | With `ranked=true` only: `position` (from 1) and `reason`, the rule that placed the task after the previous one: `first`, `pinned`, `urgent`, `importance`, `due_date`, `age`, `id`. |
+
+`TaskReadOnly`, tagged by `reason`, with the name or the error in `value`: `unknown_kind`, `unknown_content_format`, `unknown_status` (written by a newer version of loom), `invalid_file` (why `task.md` cannot be read).
+
+### `TaskDetail`
+
+Answer of `GET /v1/tasks/{id}` and of every task write: the fields of `TaskSummary` (without `rank`), and:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `body` | string | The notes after the frontmatter; the whole file when `task.md` is invalid. |
+| `actions` | list of `Action` | What the task accepts, empty when it is read-only: `{"action": "set_status", "status": …}` for each status it can move to, then `{"action": "edit"}` (`PATCH`), `{"action": "pin"}` or `{"action": "unpin"}`, `{"action": "log_note"}`. |
+
+### `TaskEvents`
+
+Answer of `GET /v1/tasks/{id}/events`.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `id` | string | Task ID. |
+| `events` | list of `EventRecord` | The events, in log order: `v`, `id`, `at`, `actor` (tagged by `type`: `user`, `file`, `daemon`, `agent` with `name`), `machine_id`, and the event tagged by `type`: `created` (`task`), `edited` (`changes`), `status_changed` (`from`, `to`), `note_logged` (`text`), `undone` (`of`, `changes`). Each change has `field`, `from` and `to`. |
+| `skipped` | list of objects | Lines not replayed (newer schema version, unknown type, invalid): `line`, `raw`, `reason`. |
+
+### `NewTask`
+
+Body of `POST /v1/tasks`.
+
+| Field | Type | Required | Content |
+| --- | --- | --- | --- |
+| `title` | string | yes | Not blank. |
+| `kind` | string | yes | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview`, `learning`. |
+| `format` | string | no | `content` only: `talk`, `article`, `training`, `workshop`. |
+| `context` | string | yes | A context with a task store. |
+| `status` | string | yes | Initial status, usually `inbox`. |
+| `waiting_on`, `waiting_until` | string, date | no | `waiting` only. |
+| `importance` | string | no | `p0` to `p3`; default by kind: `p1` for bug, investigation, support, review; `p3` for chore, research, learning; `p2` otherwise. |
+| `due` | date | no | Due date. |
+| `pinned` | boolean | no | Default `false`. |
+| `links`, `relations` | list, object | no | As in the [task file](task-file.md). |
+
+The ID is drawn by `loomd`, free across every context.
+
+### `TaskEdit`
+
+Body of `PATCH /v1/tasks/{id}`: the fields to change, each optional; an absent field is left as it is.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `title` | string | Not blank. |
+| `kind` | object | `{"kind": …, "format": …}`, as in `NewTask`; the importance is kept. |
+| `importance` | string | `p0` to `p3`. |
+| `due` | date \| `null` | `null` removes it. |
+| `links` | list | Replaces every link. |
+| `relations` | object | Replaces every relation. |
+
+The status and the pin are changed by [actions](#task-endpoints); `status` or `pinned` in the body is an `invalid_request`.
+
+### `TaskActionRequest`
+
+Body of `POST /v1/tasks/{id}/actions/{action}`, optional.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `on` | string, optional | `waiting` only: what or whom the task waits on. |
+| `until` | date, optional | `waiting` only: hidden from the priority list until this date. |
+| `text` | string | `log_note` only, required: the note, not blank. |
+
+### Problem details
+
+`details` of the task errors:
+
+| Code | Type | Content |
+| --- | --- | --- |
+| `ambiguous_prefix` | `AmbiguousPrefix` | `prefix` (normalized), `candidates`: `id`, `context` and `title` (empty for an invalid file) of every task whose ID starts with it, sorted by ID. |
+| `read_only` | `TaskReadOnly` | See [`TaskList`](#tasklist). |
+| `illegal_transition` | `IllegalTransition` | `from` and `to`, status names. |
+| `conflict` | `UndoConflict` | `field`: the field that no longer has the value the undo expects. |
+
+```json
+{
+  "code": "ambiguous_prefix",
+  "message": "`k3` matches 2 tasks",
+  "details": {
+    "prefix": "k3",
+    "candidates": [
+      { "id": "k3q7zm2a", "context": "work", "title": "Review the API" },
+      { "id": "k3r0a1b2", "context": "home", "title": "Book the train" }
+    ]
+  }
+}
+```
 
 ### `RegisterRequest`
 

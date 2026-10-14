@@ -10,6 +10,9 @@ publish.workspace = true
 [dependencies]
 axum.workspace = true
 clap.workspace = true
+# The local date of the priority list: the system time zone (`TZ`, `/etc/localtime`) and the
+# zoneinfo files, read at each ranked list. jiff is already compiled for loom-core.
+jiff = { workspace = true, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 loom-api.workspace = true
 loom-config.workspace = true
 # Origin of the events loomd records (actor, machine) and its random source.

@@ -30,6 +30,16 @@ pub const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
 pub const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
 /// Path of the tasks reindex: the tasks index rebuilt from the files of every context store.
 pub const TASKS_REINDEX_PATH: &str = "/v1/tasks/reindex";
+/// Path of the task list and of task creation.
+pub const TASKS_PATH: &str = "/v1/tasks";
+/// Route of one task, by ID or ID prefix.
+pub const TASK_PATH: &str = "/v1/tasks/{id}";
+/// Route of an action on a task.
+pub const TASK_ACTION_PATH: &str = "/v1/tasks/{id}/actions/{action}";
+/// Route of the event log of a task.
+pub const TASK_EVENTS_PATH: &str = "/v1/tasks/{id}/events";
+/// Route of the undo of the last change of a task.
+pub const TASK_UNDO_PATH: &str = "/v1/tasks/{id}/undo";
 
 /// Query parameters of `POST /v1/repos/scan`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

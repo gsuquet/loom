@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 use axum::Json;
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{Method, StatusCode, Uri};
@@ -34,13 +35,17 @@ use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH,
     REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery,
-    SearchQuery, TASKS_REINDEX_PATH, agent_socket, clock_error, home_value, invalid_request,
-    method_not_allowed, not_found, register_path, repo_filter, search_request, slug, status_at,
-    timestamp,
+    SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_PATH,
+    TASKS_REINDEX_PATH, agent_socket, clock_error, home_value, invalid_request, method_not_allowed,
+    not_found, register_path, repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
 use loomd::hooks;
+use loomd::task_api::{
+    TEST_TODAY_ENV, TaskListQuery, action_command, action_name_of, action_request, new_task,
+    task_edit, task_filter, today,
+};
 use loomd::trace::request_span;
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
 use semver::Version;
@@ -361,6 +366,11 @@ fn router(app: App) -> Router {
         .route(DIAGNOSTICS_PATH, get(diagnostics))
         .route(REMOTE_CHECK_PATH, post(remote_check))
         .route(TASKS_REINDEX_PATH, post(reindex_tasks))
+        .route(TASKS_PATH, get(list_tasks).post(create_task))
+        .route(TASK_PATH, get(get_task).patch(edit_task))
+        .route(TASK_ACTION_PATH, post(task_action))
+        .route(TASK_EVENTS_PATH, get(task_events))
+        .route(TASK_UNDO_PATH, post(undo_task))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -492,6 +502,144 @@ async fn diagnostics() -> Response {
 /// The tasks index rebuilt from the files; the repositories are left as they are.
 async fn reindex_tasks(State(app): State<Arc<App>>) -> Response {
     respond(app.tasks.reindex().await)
+}
+
+async fn list_tasks(
+    State(app): State<Arc<App>>,
+    query: Result<Query<TaskListQuery>, QueryRejection>,
+) -> Response {
+    let filter = query
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|Query(query)| task_filter(query));
+    match filter {
+        Ok(filter) => respond(app.tasks.list(filter, local_today()).await),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+async fn create_task(
+    State(app): State<Arc<App>>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let new = body
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|Json(body)| new_task(body));
+    match new {
+        Ok(new) => respond(app.tasks.create(new).await),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+
+async fn get_task(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+) -> Response {
+    match path {
+        Ok(UrlPath(prefix)) => respond(app.tasks.get(prefix).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+async fn edit_task(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let request = path
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|UrlPath(prefix)| {
+            let body = body.map_err(|rejection| invalid_request(rejection.body_text()))?;
+            Ok((prefix, task_edit(body.0)?))
+        });
+    let (prefix, edit) = match request {
+        Ok(request) => request,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    respond(
+        resolve_then(&app, prefix, |id| {
+            app.tasks.apply(id, loom_core::Command::Edit(edit))
+        })
+        .await,
+    )
+}
+
+async fn task_action(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<(String, String)>, PathRejection>,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    let (prefix, action) = match path {
+        Ok(UrlPath(path)) => path,
+        Err(rejection) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                invalid_request(rejection.body_text()),
+            );
+        }
+    };
+    // An action that does not exist is a path no endpoint serves.
+    let Some(action) = action_name_of(&action) else {
+        return error_response(StatusCode::NOT_FOUND, not_found(uri.path()));
+    };
+    let command = match action_request(&body).and_then(|request| action_command(action, request)) {
+        Ok(command) => command,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    respond(resolve_then(&app, prefix, |id| app.tasks.apply(id, command)).await)
+}
+
+async fn task_events(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+) -> Response {
+    match path {
+        Ok(UrlPath(prefix)) => respond(resolve_then(&app, prefix, |id| app.tasks.events(id)).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+/// Reverts the last change of the task: loomd computes the compensating change from its log;
+/// the request has no body.
+async fn undo_task(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+) -> Response {
+    match path {
+        Ok(UrlPath(prefix)) => respond(resolve_then(&app, prefix, |id| app.tasks.undo(id)).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+/// Resolves the task ID `prefix`, then runs `then` on the ID.
+async fn resolve_then<T, F>(
+    app: &App,
+    prefix: String,
+    then: impl FnOnce(loom_api::TaskId) -> F,
+) -> Result<T, Failure>
+where
+    F: Future<Output = Result<T, Failure>>,
+{
+    let id = app.tasks.resolve(prefix).await?;
+    then(id).await
+}
+
+/// The date of the priority list: the local date, or `LOOM_TEST_TODAY` in a debug build.
+fn local_today() -> loom_api::Date {
+    today(
+        env::var(TEST_TODAY_ENV).ok().as_deref(),
+        cfg!(debug_assertions),
+        || jiff::Zoned::now().date(),
+    )
 }
 
 /// `git ls-remote` of each remote endpoint of the index, in loomd's environment.
