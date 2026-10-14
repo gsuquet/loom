@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BackupReport",
+  "description": "The backup state of the context stores of this machine.",
+  "type": "object",
+  "properties": {
+    "contexts": {
+      "description": "Each store held here, sorted by context; after a sync, only the ones synced.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ContextBackup"
+      }
+    },
+    "machine": {
+      "description": "This machine: the `id` of `machine.toml`.",
+      "type": "string"
+    },
+    "not_held": {
+      "description": "Contexts whose `machines` does not name this machine: not loaded, never synced here.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ContextName"
+      }
+    }
+  },
+  "required": [
+    "machine",
+    "contexts",
+    "not_held"
+  ],
+  "$defs": {
+    "BackupOutcome": {
+      "description": "What a sync did.",
+      "oneOf": [
+        {
+          "description": "The store and its remote hold the same commits.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "up_to_date"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Local commits were pushed.",
+          "type": "object",
+          "properties": {
+            "commits": {
+              "description": "Commits pushed.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "pushed"
+            }
+          },
+          "required": [
+            "kind",
+            "commits"
+          ]
+        },
+        {
+          "description": "The store was fast-forwarded to the remote.",
+          "type": "object",
+          "properties": {
+            "commits": {
+              "description": "Commits pulled.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "pulled"
+            }
+          },
+          "required": [
+            "kind",
+            "commits"
+          ]
+        },
+        {
+          "description": "The store and its remote both have commits the other lacks: nothing was merged, pushed\nor pulled. Fixed by hand.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "diverged"
+            },
+            "local": {
+              "description": "Commits only in the store.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "remote": {
+              "description": "Commits only on the remote.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "local",
+            "remote"
+          ]
+        },
+        {
+          "description": "The remote refused the push: the commits stay local.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "push_rejected"
+            },
+            "stderr_tail": {
+              "description": "The end of git's standard error, at most 2,000 bytes.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "stderr_tail"
+          ]
+        },
+        {
+          "description": "A step failed or timed out.",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "What went wrong.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            },
+            "stderr_tail": {
+              "description": "The end of git's standard error, at most 2,000 bytes.",
+              "type": "string"
+            },
+            "step": {
+              "description": "The step.",
+              "$ref": "#/$defs/BackupStep"
+            }
+          },
+          "required": [
+            "kind",
+            "step",
+            "error",
+            "stderr_tail"
+          ]
+        }
+      ]
+    },
+    "BackupStep": {
+      "description": "A step of a sync.",
+      "oneOf": [
+        {
+          "description": "Committing the changes not committed yet, or creating the repository.",
+          "type": "string",
+          "const": "commit"
+        },
+        {
+          "description": "Setting the `backup` remote of the repository.",
+          "type": "string",
+          "const": "remote"
+        },
+        {
+          "description": "`git fetch`.",
+          "type": "string",
+          "const": "fetch"
+        },
+        {
+          "description": "Comparing the store with the remote.",
+          "type": "string",
+          "const": "compare"
+        },
+        {
+          "description": "`git push`.",
+          "type": "string",
+          "const": "push"
+        },
+        {
+          "description": "`git merge --ff-only`.",
+          "type": "string",
+          "const": "fast_forward"
+        }
+      ]
+    },
+    "BackupSync": {
+      "description": "One sync of a store with its backup remote.",
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "description": "What happened.",
+          "$ref": "#/$defs/BackupOutcome"
+        },
+        "time": {
+          "description": "When it ended.",
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "time",
+        "outcome"
+      ]
+    },
+    "ContextBackup": {
+      "description": "The backup state of one context store.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "The context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "last_sync": {
+          "description": "The last sync since loomd started; `null` before the first one or without a remote.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackupSync"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "description": "Root of its store.",
+          "type": "string"
+        },
+        "remote": {
+          "description": "`store.backup.remote`, a password in it replaced with `***`; `null` when the store is\nnot pushed anywhere.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uncommitted": {
+          "description": "Why the last commit of the store failed; `null` when every change is committed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "context",
+        "path"
+      ]
+    },
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "Timestamp": {
+      "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

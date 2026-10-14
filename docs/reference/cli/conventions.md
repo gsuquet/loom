@@ -504,6 +504,10 @@ warn  updates: remote not found (6): work/a, work/b, work/c, …
       fix: the project was moved or deleted upstream, or access to it was lost: update the remote (`git remote set-url`), or forget the clone (`loom repo forget <slug>`)
 warn  updates: local changes (1): personal/notes
       fix: commit, stash or discard them, then `loom repo sync <slug>`
+ok    machine: this machine is `laptop`; contexts held elsewhere, not loaded here: lab
+ok    backup personal: ~/.loom/contexts/personal and git@github.com:me/personal-store.git: pushed 1 commit
+fail  backup work: ~/.loom/contexts/work and /srv/work-store.git: diverged: 1 local and 2 remote commits (nothing merged)
+      fix: loom never merges a store: in ~/.loom/contexts/work, `git fetch backup`, then merge or rebase onto backup/main by hand, then `loom sync -c work`
 ```
 
 | Check | Status |
@@ -520,6 +524,8 @@ warn  updates: local changes (1): personal/notes
 | `ssh-agent` | `SSH_AUTH_SOCK` in loomd's environment ([`GET /v1/diagnostics`](../api.md#daemondiagnostics)): `ok` when it is a socket; otherwise `fail` when an indexed remote uses SSH, `warn` when none does. The fix depends on the platform (systemd: `systemctl --user import-environment SSH_AUTH_SOCK`, then restart; launchd: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`). `warn` when loomd is older than this endpoint. |
 | `home` | `warn` when loomd's `HOME` differs from the one of `loom`: `~` in the configuration then expands elsewhere. |
 | `remote <endpoint> (<scheme>, via <slug>)` | One per distinct endpoint and scheme of the primary remotes of the index, from [`POST /v1/diagnostics/remote-check`](../api.md#remote-check): loomd runs `git -C <repo> ls-remote --exit-code <primary remote> HEAD` in one repository of the endpoint, with the environment, git configuration (`core.sshCommand`, `includeIf`, credential helpers) and non-interactive settings of its updates. Endpoint: `<user>@<host>[:<port>]` for SSH (user `git` when the URL has none, an SSH alias as written), `<scheme>://<host>[:<port>]` for HTTP(S) and `git://`, the URL of a local or other remote. Scheme: `ssh`, `https`, `http`, `git`, `local`, `other`. `ok` (`reachable`) when the remote answers, even without `HEAD`; `fail` otherwise, with the last line of git's error output that is not git's generic `Could not read from remote repository` text as detail, and the fix of the kind of failure: SSH authentication (agent, `core.sshCommand`, host key), HTTPS authentication (credential helper, or switch the remote to SSH), not found (update the remote or forget the clone), network (no answer within 20 s, name resolution, connection: network or VPN), other (run the same `git ls-remote` in a terminal). One `ok` when no repository has a remote; `warn` when loomd is older than the endpoint. |
+| `machine` | `ok`, naming this machine (the `id` of [`machine.toml`](../configuration.md#machinetoml)) and the contexts whose `machines` does not name it ([`GET /v1/tasks/backup`](../api.md#tasks)). `warn` when loomd is older than this endpoint. |
+| `backup <context>` | One per context store held here. Without `store.backup.remote`: `ok` (commits stay local). Before the first sync since loomd started: `ok`. After a sync that left the store and its remote equal (`up to date`, `pushed`, `pulled`): `ok`. `fail` when they diverged, or when the remote refused the push (the commits stay local), with the fix. `warn` when a step failed (`commit`, `remote`, `fetch`, `compare`, `push`, `fast-forward`), or when changes of the store are not committed, with git's error. |
 | `updates` | The last update of every repository ([`last_update`](../api.md#lastupdate)), skips asked for (`policy_off`, `no_remote`) left out: one `warn` per reason, as `<reason> (<count>): <slug>, <slug>, <slug>, …` (at most 3 slugs, sorted), with its fix. Reasons, in this order: `fetch refused by SSH`, `fetch without HTTPS credential`, `remote not found`, `remote unreachable`, `fetch failed` (a failed fetch, classified from git's error output as for `remote`), `fast-forward failed`, `default branch move failed`, `repository unreadable`, `repository busy`, `state unknown`, `operation in progress`, `local changes`, `HEAD detached`, `branch without commit`, `branch without upstream`, `diverged from upstream`, `fast-forward refused by git`, `default branch diverged`. One `ok` when there is none. |
 
 `--json`: [`DoctorReport`](../schemas/doctor_report.json): `checks`, each with `check`, `status` (`ok`, `warn`, `fail`), `detail` and `fix` (absent when there is nothing to fix).
@@ -531,6 +537,35 @@ warn  updates: local changes (1): personal/notes
 | `0` | Success, including `-n`; `doctor` without any `fail`; `register --on-use --background` always. |
 | `1` | loomd cannot be started, is not running (`register --on-use`), or answers with an error; `<REPO>` not found, ambiguous, not inside a git repository, or (for `forget`) not in the index; `register` outside a git repository; `--rebuild` refused or cancelled; `doctor` with at least one `fail` (after printing the report: `Error: 1 check failed`, `Error: <n> checks failed`). |
 | `2` | Usage error: missing subcommand or `forget` argument, `--json` with `--format`, unknown `--format`. |
+
+## `loom sync`
+
+Syncs the [context stores](../configuration.md#store-backup) held on this machine with their `store.backup.remote` through loomd ([`POST /v1/tasks/sync`](../api.md#tasks)), every store that has one, or the store of the context `-c` names. Starts loomd when it is not running. Waits for every sync, at most 600 s. Prints one line per store synced, `<context>: <outcome>`, and the changes not committed:
+
+```text
+personal: pushed 2 commits
+work: diverged: 1 local and 2 remote commits (nothing merged)
+  uncommitted changes: git commit failed: exit status: 1: …
+```
+
+| Outcome | Meaning |
+| --- | --- |
+| `up to date` | The store and its remote hold the same commits. |
+| `pushed <n> commits` | The local commits were pushed. |
+| `pulled <n> commits` | The store was fast-forwarded to the remote. |
+| `diverged: <n> local and <m> remote commits (nothing merged)` | Both sides have commits the other lacks: nothing was pushed, pulled or merged. |
+| `push rejected, commits kept local: <git error>` | The remote refused the push. |
+| `<step> failed: <error>` | A step failed: `commit`, `remote`, `fetch`, `compare`, `push`, `fast-forward`. |
+
+`No context store has a store.backup.remote.` when no store held here has one.
+
+`--json`: [`BackupReport`](../schemas/backup_report.json), the stores synced only.
+
+| Code | Cases |
+| --- | --- |
+| `0` | Every store synced is equal to its remote and has its changes committed. |
+| `1` | A store is not synced (after printing the report: `Error: 1 context store is not synced: …`); `-c` names a context without `store.backup.remote`, not held on this machine, or unknown; loomd cannot be started or answers with an error. |
+| `2` | Usage error. |
 
 ### `loom repo sync`
 

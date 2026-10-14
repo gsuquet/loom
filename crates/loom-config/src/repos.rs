@@ -70,6 +70,65 @@ pub struct ContextStore {
     /// `store.path`: root of the context store; `None` for `<loom home>/contexts/<name>`.
     #[serde(default, deserialize_with = "store_path")]
     pub path: Option<Spanned<ConfigPath>>,
+    /// `store.backup` table: where the store's git repository is pushed; `None` keeps the
+    /// commits local.
+    #[serde(default)]
+    pub backup: Option<StoreBackup>,
+}
+
+/// `store.backup` table of a context.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoreBackup {
+    /// `store.backup.remote`: URL or path of the git repository the store is pushed to and
+    /// pulled from.
+    pub remote: Spanned<BackupRemote>,
+}
+
+/// `store.backup.remote`: a git URL or path, as `git remote add` takes it. Not empty, no
+/// whitespace, not starting with `-` (git would read an option).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupRemote(String);
+
+impl BackupRemote {
+    /// The URL, as written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for BackupRemote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for BackupRemote {
+    type Error = String;
+
+    fn try_from(url: String) -> Result<Self, Self::Error> {
+        if url.is_empty() {
+            return Err("store.backup.remote: empty".to_owned());
+        }
+        if url.starts_with('-') {
+            return Err(format!(
+                "store.backup.remote `{url}`: starts with `-`, git would read an option"
+            ));
+        }
+        if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(format!(
+                "store.backup.remote `{url}`: whitespace and control characters are not allowed"
+            ));
+        }
+        Ok(Self(url))
+    }
+}
+
+impl<'de> Deserialize<'de> for BackupRemote {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
 }
 
 fn store_path<'de, D: Deserializer<'de>>(
