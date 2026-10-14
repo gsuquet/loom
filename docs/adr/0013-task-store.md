@@ -42,6 +42,7 @@ Constraints found while planning:
 ## Clarifications
 
 - 2026-10-13 (#71): `toml_edit` was not yet a dependency, contrary to the Context section; #71 adds it (`parse` and `display` only), sharing its parser crates with `toml`. `task.md` stores no `updated` key: the time of the last change is the `at` of the last event, so an edit on one machine does not conflict with an edit of another field elsewhere.
+- 2026-10-14 (#78): git commands on context stores run with `commit.gpgsign=false`, `tag.gpgsign=false` and `core.hooksPath=/dev/null`. Unlike the user's repositories (ADR-0008), a store is loom-owned data: the user's signing and hooks would only block backups from a daemon.
 
 ## Consequences
 

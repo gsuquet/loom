@@ -15,7 +15,8 @@ use loom_api::{
     TaskReadOnly, TaskSummary, UndoConflict,
 };
 use loom_api::{
-    ApiError, ApiVersion, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
+    ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
+    Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment, ContextBackup,
     ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart, DiskUsage, DoctorCheck,
     DoctorReport, ErrorCode, ForgeKind, InstallReport, LastUpdate, MaybeKnown, PendingUpgrade,
     PlannedAction, Profile, RegisterRequest, ReindexResult, Remote, RemoteCheck,
@@ -38,6 +39,8 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("api_error", schema_for!(ApiError)),
         ("ambiguous_prefix", schema_for!(AmbiguousPrefix)),
         ("api_version", schema_for!(ApiVersion)),
+        ("backup_report", schema_for!(BackupReport)),
+        ("backup_request", schema_for!(BackupRequest)),
         ("context_assignment", schema_for!(ContextAssignment)),
         ("daemon_diagnostics", schema_for!(DaemonDiagnostics)),
         ("doctor_report", schema_for!(DoctorReport)),
@@ -1126,4 +1129,64 @@ fn task_requests_and_problems_validate_against_their_schema() {
     );
     errors.extend(violations(&ErrorCode::AmbiguousPrefix).unwrap());
     assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+#[test]
+fn backup_samples_validate_against_their_schema() {
+    let at = Timestamp::from_unix_secs(1_760_000_000).unwrap();
+    let outcomes = [
+        BackupOutcome::UpToDate,
+        BackupOutcome::Pushed { commits: 2 },
+        BackupOutcome::Pulled { commits: 1 },
+        BackupOutcome::Diverged {
+            local: 3,
+            remote: 1,
+        },
+        BackupOutcome::PushRejected {
+            stderr_tail: " ! [rejected] HEAD -> main (fetch first)\n".to_owned(),
+        },
+        BackupOutcome::Failed {
+            step: BackupStep::Fetch,
+            error: "exit status: 128".to_owned(),
+            stderr_tail: "fatal: unable to access\n".to_owned(),
+        },
+    ];
+    let contexts = outcomes
+        .into_iter()
+        .map(|outcome| ContextBackup {
+            context: "work".parse().unwrap(),
+            path: "/home/me/.loom/contexts/work".into(),
+            remote: Some("https://me:***@example.com/store.git".to_owned()),
+            uncommitted: Some("commit failed: exit status: 1".to_owned()),
+            last_sync: Some(BackupSync { time: at, outcome }),
+        })
+        .chain([ContextBackup {
+            context: "home".parse().unwrap(),
+            path: "/home/me/.loom/contexts/home".into(),
+            remote: None,
+            uncommitted: None,
+            last_sync: None,
+        }])
+        .collect();
+    let mut errors = violations(&BackupReport {
+        machine: "laptop".to_owned(),
+        contexts,
+        not_held: vec!["lab".parse().unwrap()],
+    })
+    .unwrap();
+    errors.extend(violations(&BackupRequest::default()).unwrap());
+    errors.extend(
+        violations(&BackupRequest {
+            context: Some("work".parse().unwrap()),
+        })
+        .unwrap(),
+    );
+    assert!(errors.is_empty(), "schema violations: {errors:?}");
+
+    let schema = serde_json::to_value(schema_for!(BackupRequest)).unwrap();
+    assert!(jsonschema::is_valid(&schema, &json!({})));
+    assert!(!jsonschema::is_valid(
+        &schema,
+        &json!({ "contexts": ["work"] })
+    ));
 }

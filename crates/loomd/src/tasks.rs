@@ -40,7 +40,7 @@ use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
 use loomd::backup::{catch_up_message, commit_message, hand_edit_message, removed_message};
 use loomd::repo_update::GitRunner;
-use loomd::store_git::{Committed, GitError, StoreCommits};
+use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
 use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
 use loomd::task_index::{failed_files, reindex_result, task_of_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -90,6 +90,21 @@ enum Command {
     Changed {
         context: ContextName,
         id: TaskId,
+    },
+    /// Before a sync: create the store's repository if needed, commit every change.
+    PrepareSync {
+        context: ContextName,
+        reply: mpsc::Sender<Result<(), GitError>>,
+    },
+    /// A sync fast-forwards the store to the commit `to`.
+    FastForward {
+        context: ContextName,
+        to: String,
+        reply: mpsc::Sender<Result<(), GitError>>,
+    },
+    /// The stores whose changes are not all committed, with the last failure.
+    Pending {
+        reply: oneshot::Sender<BTreeMap<ContextName, String>>,
     },
     Stop,
 }
@@ -291,6 +306,49 @@ impl TaskStore {
 }
 
 impl TaskHandle {
+    /// Runs `step` of a sync of the store of `context` on the task thread, and waits for it:
+    /// called by the sync thread.
+    ///
+    /// # Errors
+    ///
+    /// The git failure, or a failure when the task thread is stopping.
+    pub fn sync_step(&self, context: &ContextName, step: LocalStep<'_>) -> Result<(), GitError> {
+        let (reply, answer) = mpsc::channel();
+        let command = match step {
+            LocalStep::Prepare => Command::PrepareSync {
+                context: context.clone(),
+                reply,
+            },
+            LocalStep::FastForward { to } => Command::FastForward {
+                context: context.clone(),
+                to: to.to_owned(),
+                reply,
+            },
+        };
+        let stopped = || GitError {
+            step: "sync",
+            error: "loomd is stopping".to_owned(),
+            stderr_tail: String::new(),
+        };
+        self.commands.send(command).map_err(|_| stopped())?;
+        answer.recv().map_err(|_| stopped())?
+    }
+
+    /// The stores whose changes are not all committed, with the last failure.
+    pub async fn pending(&self) -> Result<BTreeMap<ContextName, String>, Failure> {
+        let (reply, answer) = oneshot::channel();
+        let stopped = || {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                unavailable("loomd is stopping"),
+            )
+        };
+        self.commands
+            .send(Command::Pending { reply })
+            .map_err(|_| stopped())?;
+        answer.await.map_err(|_| stopped())
+    }
+
     /// Waits, at most `timeout`, for the reconciliation on start, so that a read does not
     /// answer from a tasks index still being filled. `false` when it is not over yet; the
     /// caller goes on with the index as it is.
@@ -463,6 +521,24 @@ impl Worker {
                     }
                 }
                 Command::Changed { context, id } => self.reconcile(&context, &id),
+                Command::PrepareSync { context, reply } => {
+                    let _ = reply.send(
+                        self.commits
+                            .prepare_sync(&context, &catch_up_message(&context)),
+                    );
+                }
+                Command::FastForward { context, to, reply } => {
+                    let _ = reply.send(self.commits.fast_forward(&context, &to));
+                }
+                Command::Pending { reply } => {
+                    let _ = reply.send(
+                        self.commits
+                            .pending()
+                            .iter()
+                            .map(|(context, error)| (context.clone(), error.to_string()))
+                            .collect(),
+                    );
+                }
                 Command::Stop => return,
             }
         }

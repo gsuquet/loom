@@ -6,9 +6,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
-    CheckStatus, ContextName, DaemonDiagnostics, DiskUsage, DoctorCheck, DoctorReport, RemoteCheck,
-    RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RepoSummary,
-    ServicePlatform, SkipReason, SshAgentSocket, UpdateOutcome, UpdateStep,
+    BackupOutcome, BackupReport, BackupStep, CheckStatus, ContextBackup, ContextName,
+    DaemonDiagnostics, DiskUsage, DoctorCheck, DoctorReport, RemoteCheck, RemoteCheckOutcome,
+    RemoteCheckResult, RemoteProblem, RemoteScheme, RepoSummary, ServicePlatform, SkipReason,
+    SshAgentSocket, UpdateOutcome, UpdateStep,
 };
 use loom_config::config::Config;
 use loom_repo::{ContextRules, classify_remote_failure, remote_endpoint};
@@ -761,6 +762,215 @@ pub fn render(report: &DoctorReport) -> String {
         }
     }
     text
+}
+
+/// The `machine` check and one `backup <context>` check per store held here: a divergence or a
+/// refused push fails, a failed step or uncommitted changes warn.
+#[must_use]
+pub fn backup_checks(report: &BackupReport, home: Option<&Path>) -> Vec<DoctorCheck> {
+    let mut detail = format!("this machine is `{}`", report.machine);
+    if !report.not_held.is_empty() {
+        let names: Vec<&str> = report.not_held.iter().map(ContextName::as_str).collect();
+        let _ = write!(
+            detail,
+            "; contexts held elsewhere, not loaded here: {}",
+            names.join(", ")
+        );
+    }
+    let mut checks = vec![check("machine", CheckStatus::Ok, detail)];
+    checks.extend(
+        report
+            .contexts
+            .iter()
+            .map(|context| backup_check(context, home)),
+    );
+    checks
+}
+
+fn backup_check(context: &ContextBackup, home: Option<&Path>) -> DoctorCheck {
+    let name = format!("backup {}", context.context);
+    let path = tilde(&context.path, home);
+    let Some(remote) = &context.remote else {
+        return match &context.uncommitted {
+            Some(error) => uncommitted(&name, error),
+            None => check(
+                name,
+                CheckStatus::Ok,
+                format!("{path}: commits stay local, no store.backup.remote"),
+            ),
+        };
+    };
+    let Some(sync) = &context.last_sync else {
+        return match &context.uncommitted {
+            Some(error) => uncommitted(&name, error),
+            None => check(
+                name,
+                CheckStatus::Ok,
+                format!("{path}: not synced with {remote} since loomd started"),
+            ),
+        };
+    };
+    let detail = format!("{path} and {remote}: {}", sync.outcome);
+    match &sync.outcome {
+        BackupOutcome::UpToDate | BackupOutcome::Pushed { .. } | BackupOutcome::Pulled { .. } => {
+            match &context.uncommitted {
+                Some(error) => uncommitted(&name, error),
+                None => check(name, CheckStatus::Ok, detail),
+            }
+        }
+        BackupOutcome::Diverged { .. } => with_fix(
+            check(name, CheckStatus::Fail, detail),
+            format!(
+                "loom never merges a store: in {path}, `git fetch backup`, then merge or rebase onto backup/main by hand, then `loom sync -c {}`",
+                context.context
+            ),
+        ),
+        BackupOutcome::PushRejected { .. } => with_fix(
+            check(name, CheckStatus::Fail, detail),
+            format!(
+                "the commits are kept in {path}: check that {remote} accepts pushes to main (access, protected branch, hooks), then `loom sync -c {}`",
+                context.context
+            ),
+        ),
+        BackupOutcome::Failed { step, .. } => {
+            let fix = match step {
+                BackupStep::Commit | BackupStep::FastForward => format!(
+                    "commit the changes of {path} by hand (`git status` there shows them; check the git identity and a leftover `.git/index.lock`), then `loom sync -c {}`",
+                    context.context
+                ),
+                BackupStep::Remote | BackupStep::Fetch | BackupStep::Compare | BackupStep::Push => {
+                    format!(
+                        "check that loomd reaches {remote} (network, SSH agent, credentials), then `loom sync -c {}`",
+                        context.context
+                    )
+                }
+            };
+            with_fix(check(name, CheckStatus::Warn, detail), fix)
+        }
+    }
+}
+
+fn uncommitted(name: &str, error: &str) -> DoctorCheck {
+    with_fix(
+        check(
+            name,
+            CheckStatus::Warn,
+            format!("changes not committed: {error}"),
+        ),
+        "fix the cause (git identity, a lock held by another git process); the next change or `loom sync` commits them",
+    )
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use loom_api::{
+        BackupOutcome, BackupReport, BackupStep, BackupSync, CheckStatus, ContextBackup, Timestamp,
+    };
+
+    use super::backup_checks;
+
+    fn context(outcome: Option<BackupOutcome>, uncommitted: Option<&str>) -> ContextBackup {
+        ContextBackup {
+            context: "work".parse().unwrap(),
+            path: "/home/me/.loom/contexts/work".into(),
+            remote: Some("/srv/work.git".to_owned()),
+            uncommitted: uncommitted.map(str::to_owned),
+            last_sync: outcome.map(|outcome| BackupSync {
+                time: Timestamp::EPOCH,
+                outcome,
+            }),
+        }
+    }
+
+    fn checks(contexts: Vec<ContextBackup>) -> Vec<super::DoctorCheck> {
+        backup_checks(
+            &BackupReport {
+                machine: "desk".to_owned(),
+                contexts,
+                not_held: vec!["lab".parse().unwrap()],
+            },
+            Some(std::path::Path::new("/home/me")),
+        )
+    }
+
+    #[test]
+    fn the_machine_and_the_contexts_held_elsewhere_are_named() {
+        let checks = checks(Vec::new());
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].check, "machine");
+        assert_eq!(
+            checks[0].detail,
+            "this machine is `desk`; contexts held elsewhere, not loaded here: lab"
+        );
+    }
+
+    #[test]
+    fn a_divergence_fails_and_names_the_context() {
+        let checks = checks(vec![context(
+            Some(BackupOutcome::Diverged {
+                local: 1,
+                remote: 2,
+            }),
+            None,
+        )]);
+        let backup = &checks[1];
+        assert_eq!(backup.check, "backup work");
+        assert_eq!(backup.status, CheckStatus::Fail);
+        assert_eq!(
+            backup.detail,
+            "~/.loom/contexts/work and /srv/work.git: diverged: 1 local and 2 remote commits (nothing merged)"
+        );
+        assert!(
+            backup
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("`loom sync -c work`"),
+            "{backup:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_push_fails_and_other_problems_warn() {
+        let status = |outcome, uncommitted| checks(vec![context(outcome, uncommitted)])[1].status;
+        assert_eq!(
+            status(
+                Some(BackupOutcome::PushRejected {
+                    stderr_tail: String::new()
+                }),
+                None
+            ),
+            CheckStatus::Fail
+        );
+        assert_eq!(
+            status(
+                Some(BackupOutcome::Failed {
+                    step: BackupStep::Fetch,
+                    error: "exit status: 128".to_owned(),
+                    stderr_tail: String::new(),
+                }),
+                None
+            ),
+            CheckStatus::Warn
+        );
+        assert_eq!(
+            status(
+                Some(BackupOutcome::Pushed { commits: 1 }),
+                Some("git commit failed")
+            ),
+            CheckStatus::Warn
+        );
+        assert_eq!(
+            status(Some(BackupOutcome::Pushed { commits: 1 }), None),
+            CheckStatus::Ok
+        );
+        assert_eq!(status(None, None), CheckStatus::Ok);
+        let mut local = context(None, None);
+        local.remote = None;
+        let check = &checks(vec![local])[1];
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert!(check.detail.contains("commits stay local"), "{check:?}");
+    }
 }
 
 #[cfg(test)]

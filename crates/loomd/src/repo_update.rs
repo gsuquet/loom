@@ -374,6 +374,13 @@ pub(crate) struct Git<'a> {
 }
 
 impl<'a> Git<'a> {
+    /// git in `workdir` for commands that reach a remote: `GIT_SSH_COMMAND` set to
+    /// [`BATCH_SSH_COMMAND`] unless the user configured an SSH command. `git_dir` is for the
+    /// logs.
+    pub(crate) fn remote(runner: &'a GitRunner, workdir: &'a Path, git_dir: &Path) -> Self {
+        Self::new(runner, workdir, git_dir)
+    }
+
     /// git in `workdir` for local commands only: no SSH command is read or set.
     pub(crate) const fn local(runner: &'a GitRunner, workdir: &'a Path) -> Self {
         Self {
