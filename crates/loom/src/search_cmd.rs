@@ -1,6 +1,6 @@
 //! `loom search`: queries loomd. The request and the output are built in `loom::search`.
 
-use loom::cli::{GlobalArgs, SearchArgs};
+use loom::cli::{GlobalArgs, SearchArgs, SearchType};
 use loom::search::{render_results, search_api_path};
 use loom_api::SearchResults;
 use loom_config::layout::Layout;
@@ -18,7 +18,12 @@ pub fn run(args: &SearchArgs, global: &GlobalArgs, layout: &Layout) -> Result<()
         .into_diagnostic()?;
     let found: SearchResults = runtime.block_on(async {
         let client = connect(layout, true).await?;
-        let path = search_api_path(&args.query, global.context.as_ref(), args.limit);
+        let path = search_api_path(
+            &args.query,
+            global.context.as_ref(),
+            args.kind.map(SearchType::kind),
+            args.limit,
+        );
         client.get(&path).await.map_err(|error| api_error(&error))
     })?;
     let text = if args.json {

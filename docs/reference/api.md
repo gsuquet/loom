@@ -116,12 +116,13 @@ Except on `?refresh=true`, states are read in the background by at most 4 thread
 
 ### Search
 
-`GET /v1/search` searches the tasks of the context stores and the repositories of the index. Query parameters; an empty `context` is ignored, any other parameter is an `invalid_request`:
+`GET /v1/search` searches the tasks of the context stores and the repositories of the index. Query parameters; an empty `context` or `type` is ignored, any other parameter is an `invalid_request`:
 
 | Parameter | Content |
 | --- | --- |
 | `q` | Required. The query: words separated by whitespace. |
 | `context` | Only the results of this context. A context name (the rule of `-c`), or `unassigned` (repositories only). |
+| `type` | Only the results of this kind: `task` or `repo`. |
 | `limit` | Most results returned, at least `1`. Default `20`. |
 
 Matching:
@@ -152,7 +153,7 @@ Within the repositories, by these keys, in order:
 3. Full-text relevance (SQLite FTS5 `bm25`), most relevant first.
 4. Slug.
 
-The ranking is computed on every match, then cut to `limit`. Repositories and tasks are read in one snapshot of the index.
+The ranking is computed on every match, then cut to `limit`. Repositories and tasks are read in one snapshot of the index. While `loomd` reconciles the tasks with the index after it starts, a search that covers tasks waits for the end of it (at most 10 s, then answers from the tasks indexed so far).
 
 ### Tasks
 

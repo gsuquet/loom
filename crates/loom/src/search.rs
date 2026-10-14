@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use loom_api::{ContextName, SearchResult};
+use loom_api::{ContextName, SearchKind, SearchResult};
 
 use crate::repo::encode_segment;
 
@@ -12,16 +12,24 @@ pub const SEARCH_PATH: &str = "/v1/search";
 /// Status column of a task whose `task.md` is invalid.
 const INVALID: &str = "invalid";
 
-/// API path and query of a search for `words` (joined with spaces), in `context` when given,
-/// at most `limit` results.
+/// API path and query of a search for `words` (joined with spaces), in `context` and of `kind`
+/// when given, at most `limit` results.
 #[must_use]
-pub fn search_api_path(words: &[String], context: Option<&ContextName>, limit: usize) -> String {
+pub fn search_api_path(
+    words: &[String],
+    context: Option<&ContextName>,
+    kind: Option<SearchKind>,
+    limit: usize,
+) -> String {
     let mut path = format!(
         "{SEARCH_PATH}?q={}&limit={limit}",
         encode_segment(&words.join(" "))
     );
     if let Some(context) = context {
         let _ = write!(path, "&context={}", encode_segment(context.as_str()));
+    }
+    if let Some(kind) = kind {
+        let _ = write!(path, "&type={kind}");
     }
     path
 }
@@ -96,7 +104,7 @@ pub fn render_results(results: &[SearchResult]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use loom_api::{RepoMatch, SearchField, SearchResult, TaskMatch, TaskSearchField};
+    use loom_api::{RepoMatch, SearchField, SearchKind, SearchResult, TaskMatch, TaskSearchField};
 
     use super::{render_results, search_api_path};
 
@@ -133,13 +141,21 @@ mod tests {
     fn api_path_encodes_the_query() {
         let words = ["lo".to_owned(), "a&b=c".to_owned(), "é".to_owned()];
         assert_eq!(
-            search_api_path(&words, None, 20),
+            search_api_path(&words, None, None, 20),
             "/v1/search?q=lo%20a%26b%3Dc%20%C3%A9&limit=20"
         );
         let context = "work".parse().unwrap();
         assert_eq!(
-            search_api_path(&["x".to_owned()], Some(&context), 3),
+            search_api_path(&["x".to_owned()], Some(&context), None, 3),
             "/v1/search?q=x&limit=3&context=work"
+        );
+        assert_eq!(
+            search_api_path(&["!88".to_owned()], None, Some(SearchKind::Task), 3),
+            "/v1/search?q=%2188&limit=3&type=task"
+        );
+        assert_eq!(
+            search_api_path(&["x".to_owned()], Some(&context), Some(SearchKind::Repo), 1),
+            "/v1/search?q=x&limit=1&context=work&type=repo"
         );
     }
 
