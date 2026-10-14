@@ -3,9 +3,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
-    ContextAssignment, LastUpdate, MaybeKnown, Remote, RepoHead, RepoIdentity, RepoState,
-    RepoUpdatePolicy, SearchField, SearchKind, SkipReason, Timestamp, Untracked, UpdateOutcome,
-    Upstream,
+    ContextAssignment, LastUpdate, MaybeKnown, Remote, RepoHead, RepoIdentity, RepoMatch,
+    RepoState, RepoUpdatePolicy, SearchField, SearchKind, SearchResult, SkipReason, Timestamp,
+    Untracked, UpdateOutcome, Upstream,
 };
 use loom_repo::ScanDiff;
 use rusqlite::Connection;
@@ -938,11 +938,28 @@ fn replace_all_drops_everything_else() {
     assert_eq!(fts_orphans(&db(&dir)), (0, 0));
 }
 
+/// The repositories found by `query`, in context `context`, best first, at most `limit`;
+/// every result must be a repository.
+fn repo_matches(
+    reader: &Reader,
+    query: &str,
+    context: Option<&str>,
+    limit: usize,
+) -> Vec<RepoMatch> {
+    reader
+        .search(query, context, None, limit)
+        .unwrap()
+        .into_iter()
+        .map(|result| match result {
+            SearchResult::Repo(repo) => repo,
+            SearchResult::Task(task) => panic!("unexpected task {}", task.id),
+        })
+        .collect()
+}
+
 /// Slugs found by `query`, in context `context`, best first.
 fn found(reader: &Reader, query: &str, context: Option<&str>) -> Vec<String> {
-    reader
-        .search(query, context, 100)
-        .unwrap()
+    repo_matches(reader, query, context, 100)
         .into_iter()
         .map(|result| result.slug)
         .collect()
@@ -995,7 +1012,7 @@ fn search_ranks_exact_name_then_name_prefix_then_slug_then_other_fields() {
         ["p/loom", "p/loom-api", "loom/tool", "p/inner"]
     );
 
-    let results = reader.search("loom", None, 100).unwrap();
+    let results = repo_matches(&reader, "loom", None, 100);
     let fields: Vec<Vec<SearchField>> = results
         .iter()
         .map(|result| result.matched_fields.clone())
@@ -1009,7 +1026,13 @@ fn search_ranks_exact_name_then_name_prefix_then_slug_then_other_fields() {
             vec![SearchField::Path],
         ]
     );
-    assert!(results.iter().all(|result| result.kind == SearchKind::Repo));
+    assert!(
+        reader
+            .search("loom", None, None, 100)
+            .unwrap()
+            .iter()
+            .all(|result| result.kind() == SearchKind::Repo)
+    );
     assert!(results.iter().all(|result| result.score.is_finite()));
     assert_eq!(results[3].name, "inner");
     assert_eq!(results[3].context, "p");
@@ -1056,7 +1079,7 @@ fn search_terms_are_prefixes_that_must_all_match() {
     assert_eq!(found(&reader, "loom zzz", None), Vec::<String>::new());
     assert_eq!(found(&reader, "wid", None), ["p/widget"]);
     // Remote URLs are searched.
-    let results = reader.search("gadget", None, 100).unwrap();
+    let results = repo_matches(&reader, "gadget", None, 100);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].slug, "p/widget");
     assert_eq!(results[0].matched_fields, [SearchField::Remotes]);
@@ -1073,7 +1096,7 @@ fn search_folds_case_and_diacritics() {
     for query in ["cafe creme", "CAFÉ", "Crème", "café-crè", "cafe"] {
         assert_eq!(found(&reader, query, None), ["p/cafe"], "{query}");
     }
-    let results = reader.search("cafe creme", None, 1).unwrap();
+    let results = repo_matches(&reader, "cafe creme", None, 1);
     assert_eq!(results[0].name, "Café-Crème");
     // Several diacritics on one letter (`remove_diacritics 2`).
     store
@@ -1111,14 +1134,12 @@ fn search_keeps_one_context_and_the_limit() {
     let (_store, reader) = search_index(&dir);
     assert_eq!(found(&reader, "loom", Some("loom")), ["loom/tool"]);
     assert_eq!(found(&reader, "loom", Some("nope")), Vec::<String>::new());
-    let first: Vec<String> = reader
-        .search("loom", None, 2)
-        .unwrap()
+    let first: Vec<String> = repo_matches(&reader, "loom", None, 2)
         .into_iter()
         .map(|result| result.slug)
         .collect();
     assert_eq!(first, ["p/loom", "p/loom-api"]);
-    assert_eq!(reader.search("loom", None, 0).unwrap(), []);
+    assert_eq!(repo_matches(&reader, "loom", None, 0), []);
 }
 
 #[test]
@@ -1130,7 +1151,7 @@ fn search_finds_the_branch() {
             .save_state(Path::new("/w/tool"), &state_on("feature-ünïcode", 3))
             .unwrap()
     );
-    let results = reader.search("feature unicode", None, 10).unwrap();
+    let results = repo_matches(&reader, "feature unicode", None, 10);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].slug, "loom/tool");
     assert_eq!(results[0].matched_fields, [SearchField::Branch]);

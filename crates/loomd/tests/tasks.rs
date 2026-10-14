@@ -13,7 +13,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{ContextName, ReindexResult, TaskId, Timestamp};
+use loom_api::{
+    ContextName, ReindexResult, SearchResult, SearchResults, TaskId, TaskSearchField, Timestamp,
+};
 use loom_core::{Actor, Kind, MachineId, NewTask, Origin, Relations, Status};
 use loom_store::Reader;
 use loom_store::files::FileStore;
@@ -471,5 +473,70 @@ fn contexts_held_by_other_machines_are_not_loaded() {
         .map(|task| task.id.to_string())
         .collect();
     assert_eq!(ids, ["bbbbbbbb"]);
+    daemon.stop();
+}
+
+/// A `task.md` of task `id` in `context`, with `status` and a Jira origin `key`.
+fn task_md_with(id: &str, context: &str, title: &str, status: &str, key: &str) -> String {
+    format!(
+        "+++\nid = \"{id}\"\ntitle = \"{title}\"\nkind = \"chore\"\ncontext = \"{context}\"\nstatus = \"{status}\"\nimportance = \"p3\"\ncreated = 2026-10-12T09:14:00Z\n\n[[links]]\nrole = \"origin\"\nprovider = \"jira\"\nkey = \"{key}\"\n+++\n\n## Notes\n"
+    )
+}
+
+#[test]
+fn search_finds_the_tasks_indexed_on_start_ranked_by_status() {
+    let sandbox = Sandbox::new();
+    sandbox.write_task(
+        "work",
+        "aaaaaaaa",
+        &task_md_with("aaaaaaaa", "work", "Pay invoice", "done", "PAY-1"),
+    );
+    sandbox.write_task(
+        "work",
+        "bbbbbbbb",
+        &task_md_with("bbbbbbbb", "work", "Pay rent", "inbox", "PAY-2"),
+    );
+    sandbox.write_task(
+        "home",
+        "cccccccc",
+        &task_md_with("cccccccc", "home", "Pay taxes", "active", "PAY-3"),
+    );
+    let daemon = sandbox.start();
+
+    // No reindex: the first search waits for the tasks indexed on start.
+    let search = |path: &str| -> Vec<String> {
+        let found: SearchResults = ok(&request(&sandbox.socket(), "GET", path, None));
+        found
+            .results
+            .into_iter()
+            .map(|result| match result {
+                SearchResult::Task(task) => task.id.to_string(),
+                SearchResult::Repo(repo) => repo.slug,
+            })
+            .collect()
+    };
+    assert_eq!(
+        search("/v1/search?q=pay"),
+        ["cccccccc", "bbbbbbbb", "aaaaaaaa"]
+    );
+    // `PAY-2` is the words `pay` and `2`: only its task holds both.
+    assert_eq!(search("/v1/search?q=PAY-2&type=task"), ["bbbbbbbb"]);
+    assert_eq!(search("/v1/search?q=pay&context=home"), ["cccccccc"]);
+    assert_eq!(search("/v1/search?q=pay&type=repo"), Vec::<String>::new());
+
+    let found: SearchResults = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        "/v1/search?q=pay-3",
+        None,
+    ));
+    let SearchResult::Task(task) = &found.results[0] else {
+        panic!("{found:?}");
+    };
+    assert_eq!(task.context, context("home"));
+    assert_eq!(task.title, "Pay taxes");
+    assert_eq!(task.status.as_deref(), Some("active"));
+    assert_eq!(task.link_keys, ["PAY-3"]);
+    assert_eq!(task.matched_fields, [TaskSearchField::LinkKeys]);
     daemon.stop();
 }

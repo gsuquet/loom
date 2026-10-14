@@ -28,7 +28,9 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_api::{LastUpdate, RepoIdentity, RepoState, RepoSummary, SearchResult, Timestamp};
+use loom_api::{
+    LastUpdate, RepoIdentity, RepoState, RepoSummary, SearchKind, SearchResult, Timestamp,
+};
 use loom_core::{ContextName, TaskId};
 use loom_repo::ScanDiff;
 use rusqlite::{Connection, OpenFlags};
@@ -326,20 +328,22 @@ impl Reader {
         repos::get(&self.conn, slug)
     }
 
-    /// The repositories matching `query`, only those of `context` when given, best first, at
-    /// most `limit`, read in one snapshot. See [`search`] for the query syntax and the ranking.
+    /// The repositories and tasks matching `query`, only those of `context` and of `kind` when
+    /// given, best first, at most `limit`, read in one snapshot. See [`search`] for the query
+    /// syntax and the ranking.
     ///
     /// # Errors
     ///
-    /// [`StoreError`] when a query fails.
+    /// [`StoreError`] when a query fails or a task row is invalid.
     pub fn search(
         &self,
         query: &str,
         context: Option<&str>,
+        kind: Option<SearchKind>,
         limit: usize,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        let _span = debug_span!("store.search", context, limit).entered();
-        search::search(&self.conn, query, context, limit)
+        let _span = debug_span!("store.search", context, kind = ?kind, limit).entered();
+        search::search(&self.conn, query, context, kind, limit)
     }
 
     /// The indexed task with `id`.
@@ -363,12 +367,12 @@ impl Reader {
         tasks::list(&self.conn, context)
     }
 
-    /// IDs of the tasks whose title, notes or link keys match `query` (the syntax of
-    /// [`search`]), only those of `context` when given, most relevant first, at most `limit`.
+    /// IDs of the tasks whose title, notes or link keys match `query`, only those of `context`
+    /// when given, in the order of [`Reader::search`], at most `limit`.
     ///
     /// # Errors
     ///
-    /// [`StoreError`] when the query fails.
+    /// [`StoreError`] when the query fails or a task row is invalid.
     pub fn search_tasks(
         &self,
         query: &str,
@@ -376,7 +380,20 @@ impl Reader {
         limit: usize,
     ) -> Result<Vec<TaskId>, StoreError> {
         let _span = debug_span!("store.search_tasks", limit).entered();
-        tasks::search(&self.conn, query, context, limit)
+        let results = search::search(
+            &self.conn,
+            query,
+            context.map(ContextName::as_str),
+            Some(SearchKind::Task),
+            limit,
+        )?;
+        Ok(results
+            .into_iter()
+            .filter_map(|result| match result {
+                SearchResult::Task(task) => Some(task.id),
+                SearchResult::Repo(_) => None,
+            })
+            .collect())
     }
 }
 

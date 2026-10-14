@@ -72,7 +72,7 @@ Organized with the [Diátaxis](https://diataxis.fr/) framework:
 
 * **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [task files](docs/reference/task-file.md) (`task.md`, `events.jsonl`), [style guide](docs/reference/style-guide.md). File formats are added as features ship.
 * **How-to guides:** [install loom](docs/how-to-guides/install.md), [run loomd as a service](docs/how-to-guides/run-loomd-as-a-service.md), [upgrade and roll back](docs/how-to-guides/upgrade-and-roll-back.md), [configure contexts](docs/how-to-guides/configure-contexts.md), [shell integration](docs/how-to-guides/shell-integration.md), [local traces](docs/how-to-guides/local-traces.md).
-* **Explanation:** [auto-upgrade](docs/explanation/auto-upgrade.md), [repository updates](docs/explanation/repo-updates.md), [task store](docs/explanation/task-store.md).
+* **Explanation:** [auto-upgrade](docs/explanation/auto-upgrade.md), [repository updates](docs/explanation/repo-updates.md), [task store](docs/explanation/task-store.md), [search](docs/explanation/search.md).
 * **Tutorials:** written as features ship (from v0.3).
 
 Design and planning, outside Diátaxis (target behavior, not shipped behavior):
