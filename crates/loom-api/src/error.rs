@@ -46,6 +46,16 @@ pub enum ErrorCode {
     Unavailable,
     /// The daemon failed while handling a valid request: a bug or an unexpected I/O failure.
     Internal,
+    /// A task ID prefix matches several tasks; `details` lists them.
+    AmbiguousPrefix,
+    /// The task cannot be changed: unknown kind, format or status, or an invalid `task.md`.
+    ReadOnly,
+    /// The task cannot move from its status to the requested one.
+    IllegalTransition,
+    /// An undo found a field changed since the change it reverts.
+    Conflict,
+    /// The task has no change to undo.
+    NothingToUndo,
 }
 
 impl ErrorCode {
@@ -58,6 +68,11 @@ impl ErrorCode {
             Self::VersionMismatch => "version_mismatch",
             Self::Unavailable => "unavailable",
             Self::Internal => "internal",
+            Self::AmbiguousPrefix => "ambiguous_prefix",
+            Self::ReadOnly => "read_only",
+            Self::IllegalTransition => "illegal_transition",
+            Self::Conflict => "conflict",
+            Self::NothingToUndo => "nothing_to_undo",
         }
     }
 }
@@ -73,12 +88,17 @@ mod tests {
     use super::{ApiError, ErrorCode};
     use serde_json::json;
 
-    const ALL_CODES: [ErrorCode; 5] = [
+    const ALL_CODES: [ErrorCode; 10] = [
         ErrorCode::InvalidRequest,
         ErrorCode::NotFound,
         ErrorCode::VersionMismatch,
         ErrorCode::Unavailable,
         ErrorCode::Internal,
+        ErrorCode::AmbiguousPrefix,
+        ErrorCode::ReadOnly,
+        ErrorCode::IllegalTransition,
+        ErrorCode::Conflict,
+        ErrorCode::NothingToUndo,
     ];
 
     #[test]

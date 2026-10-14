@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskReadOnly",
+  "description": "Why a task cannot be changed. Also the `details` of a `read_only` error.",
+  "oneOf": [
+    {
+      "description": "A kind written by a newer version of loom.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "const": "unknown_kind"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "value"
+      ]
+    },
+    {
+      "description": "A content format written by a newer version of loom.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "const": "unknown_content_format"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "value"
+      ]
+    },
+    {
+      "description": "A status written by a newer version of loom.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "const": "unknown_status"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "value"
+      ]
+    },
+    {
+      "description": "`task.md` cannot be read: why, with the line when known.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "const": "invalid_file"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "value"
+      ]
+    }
+  ]
+}

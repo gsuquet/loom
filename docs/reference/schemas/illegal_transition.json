@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IllegalTransition",
+  "description": "`details` of an `illegal_transition` error.",
+  "type": "object",
+  "properties": {
+    "from": {
+      "description": "Current status.",
+      "$ref": "#/$defs/StatusName"
+    },
+    "to": {
+      "description": "Requested status.",
+      "$ref": "#/$defs/StatusName"
+    }
+  },
+  "required": [
+    "from",
+    "to"
+  ],
+  "$defs": {
+    "StatusName": {
+      "description": "Name of a known [`Status`], without the details of `waiting`.",
+      "oneOf": [
+        {
+          "description": "[`Status::Inbox`].",
+          "type": "string",
+          "const": "inbox"
+        },
+        {
+          "description": "[`Status::Ready`].",
+          "type": "string",
+          "const": "ready"
+        },
+        {
+          "description": "[`Status::Active`].",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "[`Status::Waiting`].",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "[`Status::Done`].",
+          "type": "string",
+          "const": "done"
+        },
+        {
+          "description": "[`Status::Cancelled`].",
+          "type": "string",
+          "const": "cancelled"
+        }
+      ]
+    }
+  }
+}

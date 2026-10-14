@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskActionRequest",
+  "description": "Body of `POST /v1/tasks/{id}/actions/{action}`, optional; each field belongs to one action.",
+  "type": "object",
+  "properties": {
+    "on": {
+      "description": "`waiting` only: what or whom the task waits on.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "text": {
+      "description": "`log_note` only, required: the note.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "until": {
+      "description": "`waiting` only: hidden from the priority list until this date.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    }
+  },
+  "additionalProperties": false
+}

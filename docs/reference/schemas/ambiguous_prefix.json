@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AmbiguousPrefix",
+  "description": "`details` of an `ambiguous_prefix` error.",
+  "type": "object",
+  "properties": {
+    "candidates": {
+      "description": "Every task whose ID starts with it, sorted by ID.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TaskCandidate"
+      }
+    },
+    "prefix": {
+      "description": "The prefix, normalized (lowercase, `i` and `l` read as `1`, `o` as `0`).",
+      "type": "string"
+    }
+  },
+  "required": [
+    "prefix",
+    "candidates"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "TaskCandidate": {
+      "description": "A task an ambiguous prefix matches.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of its store.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "id": {
+          "description": "ID.",
+          "$ref": "#/$defs/TaskId"
+        },
+        "title": {
+          "description": "Title; empty when its `task.md` is invalid.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "context",
+        "title"
+      ]
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    }
+  }
+}
