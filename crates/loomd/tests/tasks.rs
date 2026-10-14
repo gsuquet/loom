@@ -7,6 +7,7 @@
 )]
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -51,6 +52,10 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
+        Self::with_config(CONFIG)
+    }
+
+    fn with_config(config: &str) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("loomd-tasks-")
             .tempdir_in("/tmp")
@@ -58,7 +63,7 @@ impl Sandbox {
         let sandbox = Self { dir };
         fs::create_dir_all(sandbox.loom_home()).unwrap();
         fs::create_dir_all(sandbox.user_home()).unwrap();
-        fs::write(sandbox.loom_home().join("config.toml"), CONFIG).unwrap();
+        fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
         sandbox
     }
 
@@ -401,6 +406,73 @@ fn the_reindex_endpoint_takes_post_only() {
     let daemon = sandbox.start();
     let response = request(&sandbox.socket(), "GET", "/v1/tasks/reindex", None);
     assert_eq!(response.status, 405, "{}", response.body);
+    daemon.stop();
+}
+
+#[test]
+fn machine_toml_is_created_at_first_start_and_names_the_events() {
+    let sandbox = Sandbox::new();
+    let machine = sandbox.loom_home().join("machine.toml");
+    let daemon = sandbox.start();
+    let text = fs::read_to_string(&machine).unwrap();
+    let id = loom_config::machine::parse_machine(&text, &machine)
+        .unwrap()
+        .id;
+    assert_ne!(id.as_str(), "");
+    assert_eq!(
+        fs::metadata(&machine).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    daemon.stop();
+
+    // Renamed by hand: the new name is used, the file is kept as it is.
+    fs::write(&machine, "id = \"desk\"\n").unwrap();
+    let id = create_task(&sandbox, "Before");
+    let daemon = sandbox.start();
+    sandbox.reindex();
+    hand_edit(&sandbox, &id, "title = \"Before\"", "title = \"After\"");
+    wait_for(&sandbox, &id, TIMEOUT, |row| row.title() == "After");
+    let log = events(&sandbox, &id);
+    assert_eq!(log[1]["machine_id"], "desk", "{log:?}");
+    assert_eq!(fs::read_to_string(&machine).unwrap(), "id = \"desk\"\n");
+    daemon.stop();
+}
+
+#[test]
+fn an_invalid_machine_toml_stops_loomd() {
+    let sandbox = Sandbox::new();
+    fs::write(sandbox.loom_home().join("machine.toml"), "name = \"x\"\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_loomd"))
+        .env("LOOM_HOME", sandbox.loom_home())
+        .env("HOME", sandbox.user_home())
+        .arg("--color=never")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("machine.toml:1:1: unknown field `name`"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn contexts_held_by_other_machines_are_not_loaded() {
+    let sandbox = Sandbox::with_config(
+        "[repos]\nroots = []\n\n[contexts.work]\nmachines = [\"desk\"]\n\n[contexts.lab]\nmachines = [\"tower\"]\n",
+    );
+    fs::write(sandbox.loom_home().join("machine.toml"), "id = \"desk\"\n").unwrap();
+    sandbox.write_task("lab", "aaaaaaaa", &task_md("aaaaaaaa", "lab", "Elsewhere"));
+    sandbox.write_task("work", "bbbbbbbb", &task_md("bbbbbbbb", "work", "Here"));
+    let daemon = sandbox.start();
+    assert_eq!(sandbox.reindex().tasks, 1);
+    let ids: Vec<String> = sandbox
+        .indexed()
+        .into_iter()
+        .map(|task| task.id.to_string())
+        .collect();
+    assert_eq!(ids, ["bbbbbbbb"]);
     daemon.stop();
 }
 

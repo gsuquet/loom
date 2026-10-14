@@ -14,6 +14,7 @@ use serde::{Deserialize, Deserializer};
 use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
+use crate::machine::MachineName;
 
 /// `[contexts.<name>]`: how repositories are matched to a context, and where its tasks live.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -28,6 +29,38 @@ pub struct ContextConfig {
     /// `store` table: the context's task store.
     #[serde(default)]
     pub store: ContextStore,
+    /// `machines`: the machines that hold the context (`machine.toml` `id`); `None` for all.
+    #[serde(default, deserialize_with = "machines")]
+    pub machines: Option<Vec<MachineName>>,
+}
+
+impl ContextConfig {
+    /// Whether the machine `machine` holds the context: `machines` is absent or names it.
+    #[must_use]
+    pub fn held_by(&self, machine: &MachineName) -> bool {
+        self.machines
+            .as_ref()
+            .is_none_or(|machines| machines.contains(machine))
+    }
+}
+
+fn machines<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<MachineName>>, D::Error> {
+    let machines = Vec::<String>::deserialize(deserializer)?;
+    if machines.is_empty() {
+        return Err(D::Error::custom(
+            "machines is empty: remove it (every machine) or give at least one machine",
+        ));
+    }
+    machines
+        .into_iter()
+        .map(|name| {
+            name.parse()
+                .map_err(|error| D::Error::custom(format!("machines: {error}")))
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
 }
 
 /// `store` table of a context.

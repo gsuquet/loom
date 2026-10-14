@@ -28,7 +28,7 @@ miette.workspace = true
 # Hand edits of `task.md`: notified within a second instead of polling every task file.
 notify.workspace = true
 # `statvfs`: free space of the volume of the loom home (already in the tree through gix and tempfile).
-# `uname`: the host name, which names the machine of the events loomd records.
+# `uname`: the host name, which names the machine in `machine.toml` at first start.
 rustix = { workspace = true, features = ["system"] }
 # Running version for the update decision.
 semver.workspace = true

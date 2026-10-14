@@ -166,7 +166,7 @@ Append-only. One JSON object per line, LF line endings; CRLF is accepted when re
 | `id` | string | Event ID, 8 Crockford base32 characters, unique within the log. |
 | `at` | string | Instant, RFC 3339 in UTC, whole seconds. |
 | `actor` | object | `{"type":"user"}` (CLI, TUI), `{"type":"file"}` (a hand edit of `task.md`, recorded by `loomd`), `{"type":"daemon"}` or `{"type":"agent","name":"<agent>"}`. |
-| `machine_id` | string | Name of the machine the event was recorded on. `loomd` writes its host name. |
+| `machine_id` | string | Name of the machine the event was recorded on: the `id` of [`machine.toml`](configuration.md#machinetoml). |
 | `type` | string | Event type, see below. |
 
 ### Event types
