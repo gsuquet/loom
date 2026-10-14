@@ -321,6 +321,31 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 
 When the watcher cannot start, `loomd` logs a warning and picks the hand edits up at its next start. When it reports lost events, every task is reconciled.
 
+### Store repository
+
+Each store is a git repository, created by `loomd` at its first commit: when the store first changes, or at start when `tasks/` holds an entry. `loomd` runs `git init --initial-branch=main` in the store root and writes, when missing:
+
+| Path | Content |
+| --- | --- |
+| `.gitattributes` | `*.jsonl merge=union` |
+| `.gitignore` | `.*.tmp` (the temporary files of atomic writes and creations) |
+
+Each change is committed right after it is written, through the `git` CLI:
+
+| Change | Staged | Commit message |
+| --- | --- | --- |
+| A task created, edited, changed by an action (status, pin, note) or undone through the [API](api.md#tasks) | `tasks/<id>/` | `<event type>(<id>): <summary>` of its first event, such as `created(k3q7zm2a): Ship it`, `status_changed(k3q7zm2a): ready -> active`, `note_logged(k3q7zm2a): Asked Alice`, `undone(k3q7zm2a): event e0000003`; `(+<n> events)` when it recorded more. A request that records no event commits nothing. |
+| A hand edit recorded as an `edited` event | `tasks/<id>/` | `edited(<id>): <fields>`, such as `edited(k3q7zm2a): title, due` |
+| A hand edit that records no event (notes, a new or invalid file) | `tasks/<id>/` | `edited(<id>): changed by hand` |
+| A task directory removed | the whole store | `removed(<id>): task directory removed` |
+| The end of a reconciliation of every task (start, lost watcher events, `loom reindex`) | the whole store | `sync(<context>): uncommitted changes` |
+
+A message is `<type>(<id>): <summary>`, the summary on one line, cut to 60 characters with `…`. Nothing staged, no commit.
+
+Every git command of a store runs in its root with `-c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=/dev/null`: store commits are never signed and run no hook (neither the store's `.git/hooks` nor a `core.hooksPath` of the user's configuration), whatever the configuration says. The rest of the user's configuration applies: identity, `init.templateDir`. Commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, no standard input), never look for a repository above the store root (`GIT_CEILING_DIRECTORIES`), and are stopped with their process group after 60 seconds.
+
+A commit that fails (no identity, a lock held by another git process) is logged as a warning: the change stays written, and the next commit of that store stages the whole store.
+
 ## `run/`
 
 Runtime files of `loomd`, in `<loom home>/run/`.

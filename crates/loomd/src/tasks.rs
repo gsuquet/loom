@@ -12,6 +12,10 @@
 //!   are read here, so that a read never sees an append in progress.
 //! - The other reads (list, one task) go through a read connection to the index, on a
 //!   blocking thread, without waiting for the task thread.
+//! - Each change is committed to the store's git repository right after it is written
+//!   (`loomd::store_git`): a hand edit recorded as an event, a task removed, and at the end of a
+//!   reconciliation of every task, whatever no other commit took. A commit that fails is logged
+//!   and the store left pending: its next commit takes every change. The write is never undone.
 //!
 //! Decisions are in `loom_store`, `loomd::task_index` and `loomd::task_api`; this module does
 //! the I/O.
@@ -29,11 +33,14 @@ use axum::http::StatusCode;
 use loom_api::{
     ContextName, Date, NewTask, ReindexResult, TaskDetail, TaskEvents, TaskId, TaskList, Timestamp,
 };
-use loom_core::{Actor, MachineId, Origin, RandomSource};
+use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
 use loom_store::files::FileStore;
 use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskIndex, Tasks};
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
+use loomd::backup::{catch_up_message, commit_message, hand_edit_message, removed_message};
+use loomd::repo_update::GitRunner;
+use loomd::store_git::{Committed, GitError, StoreCommits};
 use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
 use loomd::task_index::{failed_files, reindex_result, task_of_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -122,6 +129,7 @@ pub fn start(
     let _ = commands.send(Command::ReconcileAll);
     let worker = Worker {
         tasks: Tasks::new(files, index),
+        commits: StoreCommits::new(GitRunner::from_env(), stores.clone()),
         stores: stores.clone(),
         origin: Origin {
             actor: Actor::File,
@@ -385,6 +393,8 @@ fn index_failure(error: &StoreError) -> Failure {
 
 struct Worker {
     tasks: Tasks<FileStore>,
+    /// The git repository of each store.
+    commits: StoreCommits,
     /// Root of each context store, for the paths of the failures.
     stores: BTreeMap<ContextName, PathBuf>,
     /// Who hand edits are recorded as: the actor `file`, on this machine.
@@ -469,6 +479,7 @@ impl Worker {
             .create(new, now(), &self.user, &mut self.random)
             .map_err(|error| refused(&error))?;
         info!(id = %task.id, context = %task.context, "task created");
+        self.commit_change(&task.context, &task.id, 0);
         self.detail(&task.id)
     }
 
@@ -479,19 +490,25 @@ impl Worker {
         parent: &Span,
     ) -> Result<TaskDetail, Failure> {
         let _span = info_span!(parent: parent, "tasks.apply", %id).entered();
-        self.tasks
+        let before = self.event_count(id);
+        let task = self
+            .tasks
             .apply(id, command, now(), &self.user, &mut self.random)
             .map_err(|error| refused(&error))?;
         debug!(%id, "task changed");
+        self.commit_change(&task.context, id, before);
         self.detail(id)
     }
 
     fn undo(&mut self, id: &TaskId, parent: &Span) -> Result<TaskDetail, Failure> {
         let _span = info_span!(parent: parent, "tasks.undo", %id).entered();
-        self.tasks
+        let before = self.event_count(id);
+        let task = self
+            .tasks
             .undo(id, now(), &self.user, &mut self.random)
             .map_err(|error| refused(&error))?;
         info!(%id, "task change undone");
+        self.commit_change(&task.context, id, before);
         self.detail(id)
     }
 
@@ -503,6 +520,34 @@ impl Worker {
             events: log.events,
             skipped: log.skipped,
         })
+    }
+
+    /// Number of events in the log of task `id`; 0 when it cannot be read (the commit message
+    /// then names the first event of the log).
+    fn event_count(&self, id: &TaskId) -> usize {
+        self.tasks.events(id).map_or(0, |log| log.events.len())
+    }
+
+    /// Commits the change an API request just wrote to task `id` of `context`: the events after
+    /// the first `before` name the commit. A change that wrote no event commits nothing.
+    fn commit_change(&mut self, context: &ContextName, id: &TaskId, before: usize) {
+        let events = match self.tasks.events(id) {
+            Ok(log) => log.events,
+            Err(error) => {
+                warn!(%id, %error, "cannot read the events of a change, committed later");
+                return;
+            }
+        };
+        let new: Vec<&Event> = events
+            .iter()
+            .skip(before)
+            .map(|record| &record.event)
+            .collect();
+        let Some(message) = commit_message(id, &new) else {
+            return;
+        };
+        let result = self.commits.commit_task(context, id, &message);
+        log_commit(context, Some(id), result);
     }
 
     /// The response of task `id`, as just indexed.
@@ -529,9 +574,16 @@ impl Worker {
                 let mut edited = 0;
                 for (id, reconciled) in &report.results {
                     log_reconciled(id, reconciled);
-                    if matches!(reconciled, Reconciled::Edited(_)) {
+                    if let Reconciled::Edited(changes) = reconciled {
                         edited += 1;
+                        self.commit_edit(id, changes);
                     }
+                }
+                // New, notes-only and removed tasks, and the changes of failed commits.
+                let contexts: Vec<ContextName> = self.stores.keys().cloned().collect();
+                for context in &contexts {
+                    let result = self.commits.commit_all(context, &catch_up_message(context));
+                    log_commit(context, None, result);
                 }
                 for file in failed_files(&report.failed, &self.stores) {
                     warn!(path = %file.path.display(), error = %file.error, "cannot reconcile a task, skipped");
@@ -557,7 +609,27 @@ impl Worker {
             .tasks
             .reconcile(context, id, now, &self.origin, &mut self.random)
         {
-            Ok(reconciled) => log_reconciled(id, &reconciled),
+            Ok(reconciled) => {
+                log_reconciled(id, &reconciled);
+                let result = match &reconciled {
+                    Reconciled::Unchanged => return,
+                    Reconciled::Indexed => {
+                        self.commits
+                            .commit_task(context, id, &hand_edit_message(id))
+                    }
+                    Reconciled::Edited(changes) => {
+                        let event = Event::Edited {
+                            changes: changes.clone(),
+                        };
+                        let message =
+                            commit_message(id, &[&event]).unwrap_or_else(|| hand_edit_message(id));
+                        self.commits.commit_task(context, id, &message)
+                    }
+                    // Its directory may never have been committed: every change is taken.
+                    Reconciled::Removed => self.commits.commit_all(context, &removed_message(id)),
+                };
+                log_commit(context, Some(id), result);
+            }
             Err(error) => warn!(%context, %id, %error, "cannot reconcile a task"),
         }
     }
@@ -570,6 +642,43 @@ fn refused(error: &TaskError) -> Failure {
         warn!(%error, "task operation failed");
     }
     problem
+}
+
+impl Worker {
+    /// Commits the hand edit of `changes` recorded on task `id`, found by a reconciliation of
+    /// every task: its context is the one its index row names.
+    fn commit_edit(&mut self, id: &TaskId, changes: &[loom_core::FieldChange]) {
+        let context = match self.tasks.index().get(id) {
+            Ok(Some(row)) => row.context,
+            // Left to the commit of every change that ends the reconciliation.
+            Ok(None) => return,
+            Err(error) => {
+                warn!(%id, %error, "cannot find the context of an edited task, committed later");
+                return;
+            }
+        };
+        let event = Event::Edited {
+            changes: changes.to_vec(),
+        };
+        let message = commit_message(id, &[&event]).unwrap_or_else(|| hand_edit_message(id));
+        let result = self.commits.commit_task(&context, id, &message);
+        log_commit(&context, Some(id), result);
+    }
+}
+
+/// Logs the result of a commit of the store of `context`: a failure is a warning, the change
+/// stays written and is committed later.
+fn log_commit(context: &ContextName, id: Option<&TaskId>, result: Result<Committed, GitError>) {
+    match result {
+        Ok(Committed::Created) => debug!(%context, id = id.map(TaskId::as_str), "change committed"),
+        Ok(Committed::Nothing) => {}
+        Err(error) => warn!(
+            %context,
+            id = id.map(TaskId::as_str),
+            %error,
+            "cannot commit a change of the store: it stays written and is committed later"
+        ),
+    }
 }
 
 fn log_reconciled(id: &TaskId, reconciled: &Reconciled) {
