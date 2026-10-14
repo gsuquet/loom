@@ -15,6 +15,7 @@ mod repo_update;
 mod search;
 mod service;
 mod status;
+mod task;
 mod task_index;
 mod update;
 mod version;
@@ -35,6 +36,12 @@ pub use error::{ApiError, ErrorCode};
 pub use loom_core::{
     CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, TaskId, Timestamp, UNASSIGNED,
 };
+// The task domain, as the task endpoints send and receive it.
+pub use loom_core::{
+    Action, Actor, Change, ContentFormat, Date, Event, EventId, EventRecord, ExternalRef,
+    FieldChange, Importance, Kind, Link, MachineId, NewTask, RankReason, Relations, SkippedLine,
+    Status, StatusName, Task, TaskEdit,
+};
 pub use repo::{
     ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,
     RepoUpdatePolicy, ScanIssue, ScanResult,
@@ -47,6 +54,10 @@ pub use repo_update::{
 pub use search::{DEFAULT_SEARCH_LIMIT, SearchField, SearchKind, SearchResult, SearchResults};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
+pub use task::{
+    AmbiguousPrefix, IllegalTransition, TaskActionName, TaskActionRequest, TaskCandidate,
+    TaskDetail, TaskEvents, TaskList, TaskRank, TaskReadOnly, TaskSummary, UndoConflict,
+};
 pub use task_index::{FailedTaskFile, InvalidTaskFile, ReindexResult};
 pub use update::{
     DaemonRestart, InstallReport, RollbackReport, UpgradeDecision, UpgradeReport,

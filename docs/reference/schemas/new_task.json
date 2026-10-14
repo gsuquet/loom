@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NewTask",
+  "description": "A task to create.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "description": "Context.",
+      "$ref": "#/$defs/ContextName"
+    },
+    "due": {
+      "description": "Due date.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "format": {
+      "description": "Content only: talk, article, training or workshop.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "importance": {
+      "description": "Importance; the default of the kind when `None`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Importance"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning; any other name makes the task read-only.",
+      "type": "string"
+    },
+    "links": {
+      "description": "Links.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Link"
+      }
+    },
+    "pinned": {
+      "description": "Pinned.",
+      "type": "boolean",
+      "default": false
+    },
+    "relations": {
+      "description": "Relations.",
+      "$ref": "#/$defs/Relations",
+      "default": {
+        "blocks": [],
+        "spawned_from": []
+      }
+    },
+    "status": {
+      "description": "inbox, ready, active, waiting, done or cancelled; any other name makes the task read-only.",
+      "type": "string"
+    },
+    "title": {
+      "description": "Title.",
+      "type": "string"
+    },
+    "waiting_on": {
+      "description": "Waiting only: what or whom the task waits on.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "waiting_until": {
+      "description": "Waiting only: hidden from the priority list until this date.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    }
+  },
+  "required": [
+    "title",
+    "kind",
+    "context",
+    "status"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "ExternalRef": {
+      "description": "An item of a forge or tracker.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key at the provider, such as `CORE-1042` or `!88`.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider, such as `jira` or `gitlab`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Web URL, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "key"
+      ]
+    },
+    "Importance": {
+      "description": "Importance, p0 (highest) to p3.",
+      "oneOf": [
+        {
+          "description": "Highest.",
+          "type": "string",
+          "const": "p0"
+        },
+        {
+          "description": "High.",
+          "type": "string",
+          "const": "p1"
+        },
+        {
+          "description": "Normal.",
+          "type": "string",
+          "const": "p2"
+        },
+        {
+          "description": "Low.",
+          "type": "string",
+          "const": "p3"
+        }
+      ]
+    },
+    "Link": {
+      "description": "A link from a task to the outside, by role.",
+      "oneOf": [
+        {
+          "description": "Where the task came from (dedup key `(provider, key)`).",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "origin"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "An item that belongs to the same done condition: an MR, a CI pipeline.",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "related"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "The repository to work in, a slug of the repo index.",
+          "type": "object",
+          "properties": {
+            "repo": {
+              "description": "Repo slug, such as `company-a/checkout`.",
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "repo"
+            }
+          },
+          "required": [
+            "role",
+            "repo"
+          ]
+        }
+      ]
+    },
+    "Relations": {
+      "description": "Relations of a task to other tasks.",
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "description": "Tasks this one blocks.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "parent": {
+          "description": "The parent task: a project is a parent task.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spawned_from": {
+          "description": "Tasks this one was spawned from (a Bug spawned from a Support task).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        }
+      }
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    }
+  }
+}

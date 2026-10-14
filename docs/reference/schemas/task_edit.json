@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskEdit",
+  "description": "Fields to change; `None` leaves a field as it is.",
+  "type": "object",
+  "properties": {
+    "due": {
+      "description": "New due date; `Some(None)` (`null`) removes it.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "importance": {
+      "description": "New importance.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Importance"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "description": "New kind. The importance is kept.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Kind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "links": {
+      "description": "New links, replacing all of them.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/Link"
+      }
+    },
+    "relations": {
+      "description": "New relations, replacing all of them.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Relations"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "title": {
+      "description": "New title.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "ExternalRef": {
+      "description": "An item of a forge or tracker.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key at the provider, such as `CORE-1042` or `!88`.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider, such as `jira` or `gitlab`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Web URL, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "key"
+      ]
+    },
+    "Importance": {
+      "description": "Importance, p0 (highest) to p3.",
+      "oneOf": [
+        {
+          "description": "Highest.",
+          "type": "string",
+          "const": "p0"
+        },
+        {
+          "description": "High.",
+          "type": "string",
+          "const": "p1"
+        },
+        {
+          "description": "Normal.",
+          "type": "string",
+          "const": "p2"
+        },
+        {
+          "description": "Low.",
+          "type": "string",
+          "const": "p3"
+        }
+      ]
+    },
+    "Kind": {
+      "description": "Serialized form of [`Kind`]: `kind`, plus `format` for content.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "Content only: talk, article, training or workshop.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning; any other name makes the task read-only.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "Link": {
+      "description": "A link from a task to the outside, by role.",
+      "oneOf": [
+        {
+          "description": "Where the task came from (dedup key `(provider, key)`).",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "origin"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "An item that belongs to the same done condition: an MR, a CI pipeline.",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "related"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "The repository to work in, a slug of the repo index.",
+          "type": "object",
+          "properties": {
+            "repo": {
+              "description": "Repo slug, such as `company-a/checkout`.",
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "repo"
+            }
+          },
+          "required": [
+            "role",
+            "repo"
+          ]
+        }
+      ]
+    },
+    "Relations": {
+      "description": "Relations of a task to other tasks.",
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "description": "Tasks this one blocks.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "parent": {
+          "description": "The parent task: a project is a parent task.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spawned_from": {
+          "description": "Tasks this one was spawned from (a Bug spawned from a Support task).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        }
+      }
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    }
+  }
+}

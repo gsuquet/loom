@@ -183,13 +183,16 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 
 | Type | Schema |
 | --- | --- |
+| `AmbiguousPrefix` | [`schemas/ambiguous_prefix.json`](schemas/ambiguous_prefix.json) (`details` of `ambiguous_prefix`) |
 | `ApiError` | [`schemas/api_error.json`](schemas/api_error.json) |
 | `ApiVersion` | [`schemas/api_version.json`](schemas/api_version.json) |
 | `ContextAssignment` | [`schemas/context_assignment.json`](schemas/context_assignment.json) (in `RepoSummary`) |
 | `DaemonDiagnostics` | [`schemas/daemon_diagnostics.json`](schemas/daemon_diagnostics.json) |
 | `DoctorReport` | [`schemas/doctor_report.json`](schemas/doctor_report.json) (`loom repo doctor --json`, no endpoint) |
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
+| `IllegalTransition` | [`schemas/illegal_transition.json`](schemas/illegal_transition.json) (`details` of `illegal_transition`) |
 | `LastUpdate` | [`schemas/last_update.json`](schemas/last_update.json) (in `RepoSummary` and `SyncResult`) |
+| `NewTask` | [`schemas/new_task.json`](schemas/new_task.json) |
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
 | `ReindexResult` | [`schemas/reindex_result.json`](schemas/reindex_result.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
@@ -202,6 +205,14 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `StatusResponse` | [`schemas/status_response.json`](schemas/status_response.json) |
 | `SyncRequest` | [`schemas/sync_request.json`](schemas/sync_request.json) |
 | `SyncResult` | [`schemas/sync_result.json`](schemas/sync_result.json) |
+| `TaskActionName` | [`schemas/task_action_name.json`](schemas/task_action_name.json) (`{action}` of the action endpoint) |
+| `TaskActionRequest` | [`schemas/task_action_request.json`](schemas/task_action_request.json) |
+| `TaskDetail` | [`schemas/task_detail.json`](schemas/task_detail.json) (`Task`, `Action` inside) |
+| `TaskEdit` | [`schemas/task_edit.json`](schemas/task_edit.json) |
+| `TaskEvents` | [`schemas/task_events.json`](schemas/task_events.json) (`EventRecord` inside) |
+| `TaskList` | [`schemas/task_list.json`](schemas/task_list.json) (`TaskSummary` inside) |
+| `TaskReadOnly` | [`schemas/task_read_only.json`](schemas/task_read_only.json) (`details` of `read_only`, `read_only` of a task) |
+| `UndoConflict` | [`schemas/undo_conflict.json`](schemas/undo_conflict.json) (`details` of `conflict`) |
 | `UpdateState` | [`schemas/update_state.json`](schemas/update_state.json) (file `state/update.json`, see [configuration](configuration.md#state)) |
 | `VersionInfo` | [`schemas/version_info.json`](schemas/version_info.json) |
 
@@ -657,3 +668,8 @@ Error returned instead of a response body.
 | `version_mismatch` | The client asked for an API version the daemon does not serve. | No: upgrade the client or the daemon. |
 | `unavailable` | The daemon cannot serve the request right now: starting, shutting down, or a dependency is down. | Yes, later. |
 | `internal` | The daemon failed while handling a valid request: a bug or an unexpected I/O failure. | Not expected to help. |
+| `ambiguous_prefix` | A task ID prefix matches several tasks; `details` lists them. | With a longer prefix. |
+| `read_only` | The task cannot be changed: unknown kind, format or status, or an invalid `task.md`. | No: fix the file, or upgrade loom. |
+| `illegal_transition` | The task cannot move from its status to the requested one. | No. |
+| `conflict` | An undo found a field changed since the change it reverts. | After the hand edit is recorded, the undo reverts it instead. |
+| `nothing_to_undo` | The task has no change to undo. | No. |

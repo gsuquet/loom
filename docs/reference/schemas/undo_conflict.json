@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UndoConflict",
+  "description": "`details` of a `conflict` error: an undo whose field changed since.",
+  "type": "object",
+  "properties": {
+    "field": {
+      "description": "The field that no longer has the value the undo expects.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "field"
+  ]
+}

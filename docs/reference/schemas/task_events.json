@@ -1,0 +1,893 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskEvents",
+  "description": "Answer of `GET /v1/tasks/{id}/events`.",
+  "type": "object",
+  "properties": {
+    "events": {
+      "description": "Its events, in log order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EventRecord"
+      }
+    },
+    "id": {
+      "description": "The task.",
+      "$ref": "#/$defs/TaskId"
+    },
+    "skipped": {
+      "description": "Lines of `events.jsonl` this version does not replay, kept as written.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SkippedLine"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "events"
+  ],
+  "$defs": {
+    "Actor": {
+      "description": "Who caused an event.",
+      "oneOf": [
+        {
+          "description": "Me, through the CLI or the TUI.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "A hand edit of `task.md`, detected by loomd: a change it did not make.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "loomd on its own: sync, schedules.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "daemon"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "An agent.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Name of the agent.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ]
+        }
+      ]
+    },
+    "Change": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "type": "string"
+        },
+        "to": {
+          "description": "Value after.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Change2": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "$ref": "#/$defs/Kind"
+        },
+        "to": {
+          "description": "Value after.",
+          "$ref": "#/$defs/Kind"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Change3": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "$ref": "#/$defs/Status"
+        },
+        "to": {
+          "description": "Value after.",
+          "$ref": "#/$defs/Status"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Change4": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "$ref": "#/$defs/Importance"
+        },
+        "to": {
+          "description": "Value after.",
+          "$ref": "#/$defs/Importance"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Change5": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "to": {
+          "description": "Value after.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      }
+    },
+    "Change6": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "type": "boolean"
+        },
+        "to": {
+          "description": "Value after.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Change7": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Link"
+          }
+        },
+        "to": {
+          "description": "Value after.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Link"
+          }
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Change8": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "$ref": "#/$defs/Relations"
+        },
+        "to": {
+          "description": "Value after.",
+          "$ref": "#/$defs/Relations"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "EventId": {
+      "description": "Event ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    },
+    "EventRecord": {
+      "description": "One line of a task's event log.",
+      "type": "object",
+      "properties": {
+        "actor": {
+          "description": "Who caused it.",
+          "$ref": "#/$defs/Actor"
+        },
+        "at": {
+          "description": "When it happened.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "id": {
+          "description": "Identifier, unique within the task's log.",
+          "$ref": "#/$defs/EventId"
+        },
+        "machine_id": {
+          "description": "Where it was recorded.",
+          "$ref": "#/$defs/MachineId"
+        },
+        "v": {
+          "description": "Schema version, [`EVENT_SCHEMA_VERSION`].",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "oneOf": [
+        {
+          "description": "The task was created, as it was then.",
+          "type": "object",
+          "properties": {
+            "task": {
+              "description": "The new task.",
+              "$ref": "#/$defs/Task"
+            },
+            "type": {
+              "type": "string",
+              "const": "created"
+            }
+          },
+          "required": [
+            "type",
+            "task"
+          ]
+        },
+        {
+          "description": "Fields other than the status changed.",
+          "type": "object",
+          "properties": {
+            "changes": {
+              "description": "Each changed field, with its previous and new value.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FieldChange"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "edited"
+            }
+          },
+          "required": [
+            "type",
+            "changes"
+          ]
+        },
+        {
+          "description": "The status changed.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "status_changed"
+            }
+          },
+          "$ref": "#/$defs/Change3",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "A note was logged on the task.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "description": "The note.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "note_logged"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "description": "A previous change was reverted.",
+          "type": "object",
+          "properties": {
+            "changes": {
+              "description": "The changes made to revert it.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FieldChange"
+              }
+            },
+            "of": {
+              "description": "ID of the reverted event.",
+              "$ref": "#/$defs/EventId"
+            },
+            "type": {
+              "type": "string",
+              "const": "undone"
+            }
+          },
+          "required": [
+            "type",
+            "of",
+            "changes"
+          ]
+        }
+      ],
+      "required": [
+        "v",
+        "id",
+        "at",
+        "actor",
+        "machine_id"
+      ]
+    },
+    "ExternalRef": {
+      "description": "An item of a forge or tracker.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key at the provider, such as `CORE-1042` or `!88`.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider, such as `jira` or `gitlab`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Web URL, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "key"
+      ]
+    },
+    "FieldChange": {
+      "description": "A change of one field of a task.",
+      "oneOf": [
+        {
+          "description": "`title`.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "title"
+            }
+          },
+          "$ref": "#/$defs/Change",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`kind` and `format`.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "kind"
+            }
+          },
+          "$ref": "#/$defs/Change2",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`status` and its details.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "status"
+            }
+          },
+          "$ref": "#/$defs/Change3",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`importance`.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "importance"
+            }
+          },
+          "$ref": "#/$defs/Change4",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`due`.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "due"
+            }
+          },
+          "$ref": "#/$defs/Change5",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`pinned`.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "pinned"
+            }
+          },
+          "$ref": "#/$defs/Change6",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`links`, as a whole.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "links"
+            }
+          },
+          "$ref": "#/$defs/Change7",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`relations`, as a whole.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "relations"
+            }
+          },
+          "$ref": "#/$defs/Change8",
+          "required": [
+            "field"
+          ]
+        }
+      ]
+    },
+    "Importance": {
+      "description": "Importance, p0 (highest) to p3.",
+      "oneOf": [
+        {
+          "description": "Highest.",
+          "type": "string",
+          "const": "p0"
+        },
+        {
+          "description": "High.",
+          "type": "string",
+          "const": "p1"
+        },
+        {
+          "description": "Normal.",
+          "type": "string",
+          "const": "p2"
+        },
+        {
+          "description": "Low.",
+          "type": "string",
+          "const": "p3"
+        }
+      ]
+    },
+    "Kind": {
+      "description": "Serialized form of [`Kind`]: `kind`, plus `format` for content.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "Content only: talk, article, training or workshop.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning; any other name makes the task read-only.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "Link": {
+      "description": "A link from a task to the outside, by role.",
+      "oneOf": [
+        {
+          "description": "Where the task came from (dedup key `(provider, key)`).",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "origin"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "An item that belongs to the same done condition: an MR, a CI pipeline.",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "related"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "The repository to work in, a slug of the repo index.",
+          "type": "object",
+          "properties": {
+            "repo": {
+              "description": "Repo slug, such as `company-a/checkout`.",
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "repo"
+            }
+          },
+          "required": [
+            "role",
+            "repo"
+          ]
+        }
+      ]
+    },
+    "MachineId": {
+      "description": "Name of the machine an event was recorded on, from `~/.loom/machine.toml`.",
+      "type": "string"
+    },
+    "Relations": {
+      "description": "Relations of a task to other tasks.",
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "description": "Tasks this one blocks.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "parent": {
+          "description": "The parent task: a project is a parent task.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spawned_from": {
+          "description": "Tasks this one was spawned from (a Bug spawned from a Support task).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        }
+      }
+    },
+    "SkipReason": {
+      "description": "Why a line of `events.jsonl` is not replayed.",
+      "oneOf": [
+        {
+          "description": "Written with a newer schema version.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "const": "newer_version"
+            },
+            "v": {
+              "description": "The `v` of the line.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "reason",
+            "v"
+          ]
+        },
+        {
+          "description": "An event type this version does not know.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "The `type` of the line.",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string",
+              "const": "unknown_type"
+            }
+          },
+          "required": [
+            "reason",
+            "name"
+          ]
+        },
+        {
+          "description": "Not a valid event of this schema version.",
+          "type": "object",
+          "properties": {
+            "message": {
+              "description": "What is wrong.",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string",
+              "const": "invalid"
+            }
+          },
+          "required": [
+            "reason",
+            "message"
+          ]
+        }
+      ]
+    },
+    "SkippedLine": {
+      "description": "A line of `events.jsonl` that is not replayed.",
+      "type": "object",
+      "properties": {
+        "line": {
+          "description": "Line number, starting at 1.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "raw": {
+          "description": "The line as written, without its line ending.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it is not replayed.",
+          "$ref": "#/$defs/SkipReason"
+        }
+      },
+      "required": [
+        "line",
+        "raw",
+        "reason"
+      ]
+    },
+    "Status": {
+      "description": "Serialized form of [`Status`]: `status`, plus `waiting_on` and `waiting_until` when waiting.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "description": "inbox, ready, active, waiting, done or cancelled; any other name makes the task read-only.",
+          "type": "string"
+        },
+        "waiting_on": {
+          "description": "Waiting only: what or whom the task waits on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting_until": {
+          "description": "Waiting only: hidden from the priority list until this date.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "Task": {
+      "description": "Something I still have to do.\n\nSerialized flat: `kind` and `format` for [`Kind`], `status`, `waiting_on` and `waiting_until`\nfor [`Status`].",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "The one context the task belongs to.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "created": {
+          "description": "When the task was created.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "due": {
+          "description": "Due date, if any.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "format": {
+          "description": "Content only: talk, article, training or workshop.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Identifier, also the name of the task directory.",
+          "$ref": "#/$defs/TaskId"
+        },
+        "importance": {
+          "description": "p0 (highest) to p3.",
+          "$ref": "#/$defs/Importance"
+        },
+        "kind": {
+          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning; any other name makes the task read-only.",
+          "type": "string"
+        },
+        "links": {
+          "description": "Links to the outside: origin, related items, repository.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Link"
+          }
+        },
+        "pinned": {
+          "description": "Pinned tasks come first in the priority list.",
+          "type": "boolean",
+          "default": false
+        },
+        "relations": {
+          "description": "Relations to other tasks.",
+          "$ref": "#/$defs/Relations",
+          "default": {
+            "blocks": [],
+            "spawned_from": []
+          }
+        },
+        "status": {
+          "description": "inbox, ready, active, waiting, done or cancelled; any other name makes the task read-only.",
+          "type": "string"
+        },
+        "title": {
+          "description": "One-line title.",
+          "type": "string"
+        },
+        "updated": {
+          "description": "When the task last changed.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "waiting_on": {
+          "description": "Waiting only: what or whom the task waits on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting_until": {
+          "description": "Waiting only: hidden from the priority list until this date.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "context",
+        "status",
+        "importance",
+        "created",
+        "updated"
+      ]
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    },
+    "Timestamp": {
+      "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

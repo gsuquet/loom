@@ -48,6 +48,31 @@
           "description": "The daemon failed while handling a valid request: a bug or an unexpected I/O failure.",
           "type": "string",
           "const": "internal"
+        },
+        {
+          "description": "A task ID prefix matches several tasks; `details` lists them.",
+          "type": "string",
+          "const": "ambiguous_prefix"
+        },
+        {
+          "description": "The task cannot be changed: unknown kind, format or status, or an invalid `task.md`.",
+          "type": "string",
+          "const": "read_only"
+        },
+        {
+          "description": "The task cannot move from its status to the requested one.",
+          "type": "string",
+          "const": "illegal_transition"
+        },
+        {
+          "description": "An undo found a field changed since the change it reverts.",
+          "type": "string",
+          "const": "conflict"
+        },
+        {
+          "description": "The task has no change to undo.",
+          "type": "string",
+          "const": "nothing_to_undo"
         }
       ]
     }

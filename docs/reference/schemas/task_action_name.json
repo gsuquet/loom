@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskActionName",
+  "description": "The `{action}` of `POST /v1/tasks/{id}/actions/{action}`.",
+  "oneOf": [
+    {
+      "description": "Move to `inbox`.",
+      "type": "string",
+      "const": "inbox"
+    },
+    {
+      "description": "Move to `ready`.",
+      "type": "string",
+      "const": "ready"
+    },
+    {
+      "description": "Move to `active`.",
+      "type": "string",
+      "const": "active"
+    },
+    {
+      "description": "Move to `waiting`, with `on` and `until`.",
+      "type": "string",
+      "const": "waiting"
+    },
+    {
+      "description": "Move to `done`.",
+      "type": "string",
+      "const": "done"
+    },
+    {
+      "description": "Move to `cancelled`.",
+      "type": "string",
+      "const": "cancelled"
+    },
+    {
+      "description": "Pin.",
+      "type": "string",
+      "const": "pin"
+    },
+    {
+      "description": "Unpin.",
+      "type": "string",
+      "const": "unpin"
+    },
+    {
+      "description": "Log a note, with `text`.",
+      "type": "string",
+      "const": "log_note"
+    }
+  ]
+}

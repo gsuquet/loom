@@ -9,6 +9,12 @@ use std::fs;
 use std::path::PathBuf;
 
 use loom_api::{
+    Action, Actor, AmbiguousPrefix, Change, EventId, EventRecord, FieldChange, IllegalTransition,
+    Kind, MachineId, NewTask, RankReason, Relations, Status, StatusName, Task, TaskActionName,
+    TaskActionRequest, TaskCandidate, TaskDetail, TaskEdit, TaskEvents, TaskId, TaskList, TaskRank,
+    TaskReadOnly, TaskSummary, UndoConflict,
+};
+use loom_api::{
     ApiError, ApiVersion, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
     ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart, DiskUsage, DoctorCheck,
     DoctorReport, ErrorCode, ForgeKind, InstallReport, LastUpdate, MaybeKnown, PendingUpgrade,
@@ -29,12 +35,15 @@ use serde_json::{Value, json};
 fn schemas() -> Vec<(&'static str, Schema)> {
     vec![
         ("api_error", schema_for!(ApiError)),
+        ("ambiguous_prefix", schema_for!(AmbiguousPrefix)),
         ("api_version", schema_for!(ApiVersion)),
         ("context_assignment", schema_for!(ContextAssignment)),
         ("daemon_diagnostics", schema_for!(DaemonDiagnostics)),
         ("doctor_report", schema_for!(DoctorReport)),
         ("error_code", schema_for!(ErrorCode)),
+        ("illegal_transition", schema_for!(IllegalTransition)),
         ("last_update", schema_for!(LastUpdate)),
+        ("new_task", schema_for!(NewTask)),
         ("register_request", schema_for!(RegisterRequest)),
         ("reindex_result", schema_for!(ReindexResult)),
         ("remote_check_result", schema_for!(RemoteCheckResult)),
@@ -50,6 +59,14 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("status_response", schema_for!(StatusResponse)),
         ("sync_request", schema_for!(SyncRequest)),
         ("sync_result", schema_for!(SyncResult)),
+        ("task_action_name", schema_for!(TaskActionName)),
+        ("task_action_request", schema_for!(TaskActionRequest)),
+        ("task_detail", schema_for!(TaskDetail)),
+        ("task_edit", schema_for!(TaskEdit)),
+        ("task_events", schema_for!(TaskEvents)),
+        ("task_list", schema_for!(TaskList)),
+        ("task_read_only", schema_for!(TaskReadOnly)),
+        ("undo_conflict", schema_for!(UndoConflict)),
         ("update_state", schema_for!(UpdateState)),
         ("upgrade_report", schema_for!(UpgradeReport)),
         ("version_info", schema_for!(VersionInfo)),
@@ -928,4 +945,163 @@ fn schema_rejects_a_timestamp_with_an_offset() {
     let mut instance = serde_json::to_value(status(started_at)).unwrap();
     instance["started_at"] = Value::from("2026-10-12T10:00:00+02:00");
     assert!(!jsonschema::is_valid(&schema, &instance));
+}
+
+fn sample_task(id: &TaskId) -> Result<Task, Box<dyn Error>> {
+    Ok(Task {
+        id: id.clone(),
+        title: "Review the tasks API".to_owned(),
+        kind: Kind::Review,
+        context: "work".parse()?,
+        status: Status::Waiting {
+            on: Some("Alice".to_owned()),
+            until: Some("2026-10-20".parse()?),
+        },
+        importance: loom_api::Importance::P1,
+        due: Some("2026-10-21".parse()?),
+        pinned: true,
+        links: Vec::new(),
+        relations: Relations::default(),
+        created: Timestamp::from_unix_secs(1_791_792_000).ok_or("timestamp")?,
+        updated: Timestamp::from_unix_secs(1_791_795_600).ok_or("timestamp")?,
+    })
+}
+
+#[test]
+fn task_samples_validate_against_their_schema() {
+    let id: TaskId = "k3q7zm2a".parse().unwrap();
+    let task = sample_task(&id).unwrap();
+    let summary = TaskSummary {
+        id: id.clone(),
+        prefix: "k3".to_owned(),
+        context: task.context.clone(),
+        task: Some(task.clone()),
+        read_only: None,
+        rank: Some(TaskRank {
+            position: 1,
+            reason: RankReason::First,
+        }),
+    };
+    let invalid = TaskSummary {
+        task: None,
+        read_only: Some(TaskReadOnly::InvalidFile("line 2: invalid TOML".to_owned())),
+        rank: None,
+        ..summary.clone()
+    };
+    let mut errors = violations(&TaskList {
+        tasks: vec![summary.clone(), invalid.clone()],
+    })
+    .unwrap();
+    for summary in [summary, invalid] {
+        errors.extend(
+            violations(&TaskDetail {
+                summary,
+                body: "## Notes\n".to_owned(),
+                actions: vec![
+                    Action::SetStatus(StatusName::Ready),
+                    Action::Edit,
+                    Action::Unpin,
+                    Action::LogNote,
+                ],
+            })
+            .unwrap(),
+        );
+    }
+    let at = Timestamp::from_unix_secs(1_791_795_600).unwrap();
+    let event = |id: &str, event| EventRecord {
+        v: 1,
+        id: id.parse::<EventId>().unwrap(),
+        at,
+        actor: Actor::User,
+        machine_id: MachineId("laptop".to_owned()),
+        event,
+    };
+    errors.extend(
+        violations(&TaskEvents {
+            id,
+            events: vec![
+                event(
+                    "aaaaaaaa",
+                    loom_api::Event::Created {
+                        task: Box::new(task),
+                    },
+                ),
+                event(
+                    "bbbbbbbb",
+                    loom_api::Event::Edited {
+                        changes: vec![FieldChange::Pinned(Change {
+                            from: false,
+                            to: true,
+                        })],
+                    },
+                ),
+            ],
+            skipped: Vec::new(),
+        })
+        .unwrap(),
+    );
+    assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+#[test]
+fn task_requests_and_problems_validate_against_their_schema() {
+    let id: TaskId = "k3q7zm2a".parse().unwrap();
+    let mut errors = Vec::new();
+    errors.extend(
+        violations(&NewTask {
+            title: "Write the talk".to_owned(),
+            kind: Kind::Chore,
+            context: "work".parse().unwrap(),
+            status: Status::Inbox,
+            importance: None,
+            due: None,
+            pinned: false,
+            links: Vec::new(),
+            relations: Relations::default(),
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&TaskEdit {
+            title: Some("Renamed".to_owned()),
+            due: Some(None),
+            ..TaskEdit::default()
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&TaskActionRequest {
+            on: Some("Alice".to_owned()),
+            until: Some("2026-10-20".parse().unwrap()),
+            text: None,
+        })
+        .unwrap(),
+    );
+    errors.extend(violations(&TaskActionName::LogNote).unwrap());
+    errors.extend(
+        violations(&AmbiguousPrefix {
+            prefix: "k3".to_owned(),
+            candidates: vec![TaskCandidate {
+                id,
+                context: "work".parse().unwrap(),
+                title: "Review the tasks API".to_owned(),
+            }],
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&IllegalTransition {
+            from: StatusName::Done,
+            to: StatusName::Active,
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&UndoConflict {
+            field: "status".to_owned(),
+        })
+        .unwrap(),
+    );
+    errors.extend(violations(&ErrorCode::AmbiguousPrefix).unwrap());
+    assert!(errors.is_empty(), "schema violations: {errors:?}");
 }
