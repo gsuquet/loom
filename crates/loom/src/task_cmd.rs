@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use loom::cli::{AddArgs, GlobalArgs, LsArgs, ShowArgs};
 use loom::task::{
-    AddRequest, CONTEXT_ENV, KindArg, ResolvedContext, TEST_TODAY_ENV, kind_of, list_api_path,
-    new_task, parse_date, render_detail, render_list, resolve_context, today,
+    AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
+    context_with_parent, kind_of, list_api_path, new_task, parse_date, render_detail, render_list,
+    resolve_context, today,
 };
-use loom_api::{ContextName, Date, TaskDetail, TaskId, TaskList};
+use loom_api::{ContextName, Date, TaskDetail, TaskList};
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
 use serde::Serialize;
@@ -38,13 +39,19 @@ pub fn add(args: &AddArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
     block_on(async {
         let client = client(layout).await?;
         let resolved = context(global, layout, &client).await?;
-        let parent = match &args.parent {
-            Some(prefix) => Some(resolve_id(&client, prefix).await?),
-            None => None,
+        // A task and its parent share one context.
+        let (context, parent) = match &args.parent {
+            Some(prefix) => {
+                let parent = get(&client, prefix).await?.summary;
+                let context =
+                    context_with_parent(resolved, &parent.id, &parent.context).into_diagnostic()?;
+                (context, Some(parent.id))
+            }
+            None => (resolved.into_diagnostic()?.context, None),
         };
         let request = new_task(AddRequest {
             title: args.title.join(" "),
-            context: resolved.context,
+            context,
             kind: kind_of(args.kind, args.format),
             importance: args.importance.map(Into::into),
             due,
@@ -73,7 +80,12 @@ pub fn ls(args: &LsArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
         let context: Option<ContextName> = if args.all_contexts {
             None
         } else {
-            Some(context(global, layout, &client).await?.context)
+            Some(
+                context(global, layout, &client)
+                    .await?
+                    .into_diagnostic()?
+                    .context,
+            )
         };
         let path = list_api_path(
             context.as_ref(),
@@ -106,8 +118,14 @@ async fn client(layout: &Layout) -> Result<Client> {
     Ok(connect(layout, true).await?.with_timeout(TASK_TIMEOUT))
 }
 
-/// The context of the command, from `-c`, the environment, then the current directory.
-async fn context(global: &GlobalArgs, layout: &Layout, client: &Client) -> Result<ResolvedContext> {
+/// The context of the command, from `-c`, the environment, then the current directory. Only
+/// reading the current directory fails the command; a context that no rule gives is left to
+/// the caller.
+async fn context(
+    global: &GlobalArgs,
+    layout: &Layout,
+    client: &Client,
+) -> Result<Result<ResolvedContext, ContextError>> {
     let env_value = env::var(CONTEXT_ENV).ok();
     // The current directory is read only when `-c` and the environment give nothing.
     let (repo, rule) = if global.context.is_none() && env_value.as_deref().is_none_or(str::is_empty)
@@ -121,9 +139,10 @@ async fn context(global: &GlobalArgs, layout: &Layout, client: &Client) -> Resul
         env_value.as_deref(),
         repo.as_ref(),
         rule.as_ref(),
-    )
-    .into_diagnostic()?;
-    debug!(context = %resolved.context, source = ?resolved.source, "context resolved");
+    );
+    if let Ok(resolved) = &resolved {
+        debug!(context = %resolved.context, source = ?resolved.source, "context resolved");
+    }
     Ok(resolved)
 }
 
@@ -133,11 +152,6 @@ async fn get(client: &Client, prefix: &str) -> Result<TaskDetail> {
         .get(&format!("{TASKS_PATH}/{prefix}"))
         .await
         .map_err(|error| api_error(&error))
-}
-
-/// The ID a prefix stands for.
-async fn resolve_id(client: &Client, prefix: &str) -> Result<TaskId> {
-    Ok(get(client, prefix).await?.summary.id)
 }
 
 fn output(value: &impl Serialize, json: bool, text: impl FnOnce() -> String) -> Result<()> {

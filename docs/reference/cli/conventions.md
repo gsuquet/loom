@@ -323,11 +323,13 @@ A failing manager command:
 4. the `match.paths` prefix of the current directory;
 5. `default_context`.
 
-None: exit `1` with `no context: pass -c <name>, …`. `loom ls --all-contexts` lists every context and cannot be combined with `-c`. `loom show` takes an ID of any context.
+A repository of the current directory that is not indexed yet (a fresh clone) is registered first, so its remote decides. None: exit `1` with `no context: pass -c <name>, …`. `loom ls --all-contexts` lists every context: it ignores `LOOM_CONTEXT` (set for a whole shell) but cannot be combined with `-c` (given for this command). `loom show` takes an ID of any context.
+
+IDs (`loom show`, `--parent`) are 1 to 8 letters and digits of Crockford base32 (no `u`; `i`, `l`, `o` read as `1`, `1`, `0`); anything else is a usage error (exit `2`).
 
 ### `loom add`
 
-The title is the arguments joined with spaces. The task is `inbox`, or `ready` with `--ready`; its kind `chore` unless `--kind`; its importance, `--importance` or the default of the kind. `--due` takes `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`, relative to the local date. `--parent` takes an ID or a unique prefix. `--format` (`talk`, `article`, `training`, `workshop`) applies to `--kind content` only. Output: the shortest unique prefix, the context and the title, or the `TaskDetail` with `--json`.
+The title is the arguments joined with spaces. The task is `inbox`, or `ready` with `--ready`; its kind `chore` unless `--kind`; its importance, `--importance` or the default of the kind. `--due` takes `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`, relative to the local date. `--parent` takes an ID or a unique prefix; the task goes to the parent's context, and `-c` or `LOOM_CONTEXT` naming another context is an error. `--format` (`talk`, `article`, `training`, `workshop`) applies to `--kind content` only. Output: the shortest unique prefix, the context and the title, or the `TaskDetail` with `--json`.
 
 ### `loom ls`
 

@@ -221,6 +221,21 @@ fn directory_rule(layout: &Layout, dir: &Path, home: Option<&Path>) -> Option<Co
     Some(rules.assign(dir, None))
 }
 
+/// Registers the repository at `root` on use and returns its context; `None`, logged, when
+/// loomd refuses it.
+async fn register_for_context(client: &Client, root: PathBuf) -> Option<ContextAssignment> {
+    let request = RegisterRequest {
+        path: root,
+        on_use: true,
+    };
+    client
+        .post::<RepoSummary>(REGISTER_PATH, Some(&request))
+        .await
+        .map(|repo| repo.identity.context)
+        .map_err(|error| debug!(%error, "cannot register the repository of the current directory"))
+        .ok()
+}
+
 /// The context assignments of the current directory: the one of the indexed repository
 /// holding it, and the one the rules give the directory itself (`match.paths`, then
 /// `default_context`).
@@ -237,7 +252,12 @@ pub async fn cwd_assignments(
     let repo = match find_root(&cwd).ok().flatten() {
         Some(root) => {
             let repos = list(client, None).await?;
-            find_by_path(&repos, &root, canonical).map(|repo| repo.identity.context.clone())
+            match find_by_path(&repos, &root, canonical) {
+                Some(repo) => Some(repo.identity.context.clone()),
+                // Not indexed yet (a fresh clone, the registration on use still running):
+                // registered now, so its remote decides as it will for the index.
+                None => register_for_context(client, root).await,
+            }
         }
         None => None,
     };

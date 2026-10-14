@@ -3,8 +3,8 @@
 //! No I/O: `task_cmd` reads the environment, the configuration and the index, and calls loomd.
 
 use std::fmt::Write as _;
-use std::time::Duration;
 
+use jiff::Span;
 use loom_api::{
     ContentFormat, ContextAssignment, ContextName, Date, Importance, Kind, NewTask, RankReason,
     Relations, Status, TaskDetail, TaskId, TaskReadOnly, TaskSummary,
@@ -126,9 +126,6 @@ fn assigned(assignment: &ContextAssignment) -> Option<ResolvedContext> {
     })
 }
 
-/// Seconds in a civil day: a civil date moves by whole days.
-const SECONDS_PER_DAY: u64 = 86_400;
-
 /// A date given on the command line, relative to `today`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("invalid date {0:?}: expected YYYY-MM-DD, today, tomorrow, +<n>d (days) or +<n>w (weeks)")]
@@ -141,27 +138,108 @@ pub struct DateError(pub String);
 /// [`DateError`] for anything else, or a date out of range.
 pub fn parse_date(text: &str, today: Date) -> Result<Date, DateError> {
     let invalid = || DateError(text.to_owned());
-    let days = match text {
+    let days: i64 = match text {
         "today" => 0,
         "tomorrow" => 1,
-        _ => match text.strip_prefix('+') {
-            Some(offset) => {
-                let (count, unit) = offset.split_at(offset.len().saturating_sub(1));
-                let count: u64 = count.parse().map_err(|_| invalid())?;
-                match unit {
-                    "d" => count,
-                    "w" => count.checked_mul(7).ok_or_else(invalid)?,
-                    _ => return Err(invalid()),
-                }
+        _ => {
+            let Some(offset) = text.strip_prefix('+') else {
+                return text.parse::<Date>().map_err(|_| invalid());
+            };
+            // On the unit, never on a byte index: the text may hold any character.
+            let (count, factor) = if let Some(count) = offset.strip_suffix('d') {
+                (count, 1)
+            } else if let Some(count) = offset.strip_suffix('w') {
+                (count, 7)
+            } else {
+                return Err(invalid());
+            };
+            // Digits only: `parse` alone would take a sign (`++3d`).
+            if count.is_empty() || !count.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(invalid());
             }
-            None => return text.parse::<Date>().map_err(|_| invalid()),
-        },
+            count
+                .parse::<i64>()
+                .ok()
+                .and_then(|count| count.checked_mul(factor))
+                .ok_or_else(invalid)?
+        }
     };
-    let span = days
-        .checked_mul(SECONDS_PER_DAY)
-        .map(Duration::from_secs)
-        .ok_or_else(invalid)?;
+    let span = Span::new().try_days(days).map_err(|_| invalid())?;
     today.checked_add(span).map_err(|_| invalid())
+}
+
+/// Length of a task ID.
+const ID_LEN: usize = 8;
+
+/// Checks a task ID or ID prefix given on the command line.
+///
+/// 1 to 8 characters of Crockford base32, case ignored, `i`, `l` and `o` accepted (loomd reads
+/// them as `1`, `1` and `0`). Used as a `clap` value parser, so a bad value is a usage error.
+///
+/// # Errors
+///
+/// A message naming the value.
+pub fn task_prefix(text: &str) -> Result<String, String> {
+    let valid = (1..=ID_LEN).contains(&text.len())
+        && text.bytes().all(|byte| {
+            let byte = byte.to_ascii_lowercase();
+            byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte != b'u')
+        });
+    if valid {
+        Ok(text.to_owned())
+    } else {
+        Err(format!(
+            "{text:?} is not a task ID or prefix: 1 to {ID_LEN} letters and digits (Crockford base32, no `u`)"
+        ))
+    }
+}
+
+/// Why `loom add --parent` cannot use a context.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ParentContextError {
+    /// The context was chosen with `-c` or [`CONTEXT_ENV`] and differs from the parent's.
+    #[error(
+        "the parent {parent} is in context {parent_context}, not {chosen}: a task and its parent share one context"
+    )]
+    Mismatch {
+        /// The parent's ID.
+        parent: TaskId,
+        /// Its context.
+        parent_context: ContextName,
+        /// The context chosen explicitly.
+        chosen: ContextName,
+    },
+    /// The context of the command could not be resolved.
+    #[error(transparent)]
+    Context(#[from] ContextError),
+}
+
+/// The context of a task added with `--parent`: a task and its parent share one context.
+///
+/// A context chosen explicitly (`-c`, [`CONTEXT_ENV`]) must be the parent's; one inferred
+/// from the current directory, or none, gives way to the parent's.
+///
+/// # Errors
+///
+/// [`ParentContextError::Mismatch`] for an explicit context other than the parent's; an
+/// invalid [`CONTEXT_ENV`].
+pub fn context_with_parent(
+    resolved: Result<ResolvedContext, ContextError>,
+    parent: &TaskId,
+    parent_context: &ContextName,
+) -> Result<ContextName, ParentContextError> {
+    match resolved {
+        Ok(ResolvedContext {
+            context,
+            source: ContextSource::Flag | ContextSource::Env,
+        }) if &context != parent_context => Err(ParentContextError::Mismatch {
+            parent: parent.clone(),
+            parent_context: parent_context.clone(),
+            chosen: context,
+        }),
+        Ok(_) | Err(ContextError::Missing) => Ok(parent_context.clone()),
+        Err(error @ ContextError::InvalidEnv { .. }) => Err(error.into()),
+    }
 }
 
 /// Kinds accepted by `--kind`.
@@ -594,13 +672,82 @@ mod tests {
         assert_eq!(parse_date("tomorrow", today), Ok(date("2026-10-15")));
         assert_eq!(parse_date("+3d", today), Ok(date("2026-10-17")));
         assert_eq!(parse_date("+2w", today), Ok(date("2026-10-28")));
-        for bad in ["", "+", "+d", "+3m", "next week", "2026-13-01", "+-x"] {
+        for bad in [
+            "",
+            "+",
+            "+d",
+            "+3m",
+            "next week",
+            "2026-13-01",
+            "+-x",
+            "++3d",
+            "+-3d",
+            "+é",
+            "+3€",
+            "+99999999999999999999d",
+        ] {
             assert_eq!(
                 parse_date(bad, today),
                 Err(DateError(bad.to_owned())),
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn task_prefixes_are_crockford_base32() {
+        for good in ["k3q7", "K3Q7ZM2A", "1", "il0o"] {
+            assert_eq!(task_prefix(good), Ok(good.to_owned()), "{good}");
+        }
+        for bad in ["", "k3q7zm2a9", "a b", "a/b", "abc?x", "u", "k3é", "-1"] {
+            assert!(task_prefix(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_task_takes_the_context_of_its_parent_unless_another_is_chosen() {
+        let parent: TaskId = "k3q7zm2a".parse().unwrap();
+        let work = name("work");
+        let resolved = |context: &str, source| {
+            Ok(ResolvedContext {
+                context: name(context),
+                source,
+            })
+        };
+        // Inferred from the current directory, or missing: the parent's.
+        for source in [
+            ContextSource::Repo,
+            ContextSource::Path,
+            ContextSource::Default,
+        ] {
+            assert_eq!(
+                context_with_parent(resolved("personal", source), &parent, &work),
+                Ok(work.clone())
+            );
+        }
+        assert_eq!(
+            context_with_parent(Err(ContextError::Missing), &parent, &work),
+            Ok(work.clone())
+        );
+        // Chosen explicitly: it must be the parent's.
+        for source in [ContextSource::Flag, ContextSource::Env] {
+            assert_eq!(
+                context_with_parent(resolved("work", source), &parent, &work),
+                Ok(work.clone())
+            );
+            assert!(matches!(
+                context_with_parent(resolved("personal", source), &parent, &work),
+                Err(ParentContextError::Mismatch { .. })
+            ));
+        }
+        let invalid = ContextError::InvalidEnv {
+            value: "X".to_owned(),
+            reason: "bad".to_owned(),
+        };
+        assert_eq!(
+            context_with_parent(Err(invalid.clone()), &parent, &work),
+            Err(ParentContextError::Context(invalid))
+        );
     }
 
     #[test]

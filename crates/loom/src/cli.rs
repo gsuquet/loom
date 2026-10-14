@@ -10,7 +10,7 @@ use loom_api::{
 };
 use semver::Version;
 
-use crate::task::{FormatArg, ImportanceArg, KindArg};
+use crate::task::{FormatArg, ImportanceArg, KindArg, task_prefix};
 
 /// Build information, computed once for `--version` and `loom version`;
 /// `LOOM_TEST_BUILD_VERSION` replaces the version in a debug build (test hook).
@@ -289,8 +289,9 @@ pub struct AddArgs {
     /// Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`.
     #[arg(long, value_name = "DATE")]
     pub due: Option<String>,
-    /// Parent task: an ID or a unique prefix of one.
-    #[arg(long, value_name = "ID")]
+    /// Parent task: an ID or a unique prefix of one. The task goes to the parent's context;
+    /// `-c` or `LOOM_CONTEXT` naming another context is an error.
+    #[arg(long, value_name = "ID", value_parser = task_prefix)]
     pub parent: Option<String>,
     /// Skip the inbox: the task is ready.
     #[arg(long)]
@@ -303,7 +304,7 @@ pub struct AddArgs {
 /// Options of `loom ls`.
 #[derive(Debug, clap::Args)]
 pub struct LsArgs {
-    /// List every context.
+    /// List every context. `LOOM_CONTEXT` is ignored; `-c` is an error.
     #[arg(long)]
     pub all_contexts: bool,
     /// The tasks with this status, sorted by ID, instead of the priority list.
@@ -321,7 +322,7 @@ pub struct LsArgs {
 #[derive(Debug, clap::Args)]
 pub struct ShowArgs {
     /// Task ID, or a unique prefix of one.
-    #[arg(value_name = "ID")]
+    #[arg(value_name = "ID", value_parser = task_prefix)]
     pub id: String,
     /// Print the task as JSON (`TaskDetail` schema).
     #[arg(long)]

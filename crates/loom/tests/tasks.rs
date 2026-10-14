@@ -364,3 +364,82 @@ fn exit_codes_follow_the_cli_conventions() {
         );
     }
 }
+
+#[test]
+fn a_repository_not_indexed_yet_gets_its_context_from_its_remote() {
+    let sandbox = Sandbox::new();
+    // loomd starts and scans before the clone exists.
+    sandbox.add(&["-c", "personal", "Warm up"]);
+    let repo = sandbox.home().join("perso").join("fresh");
+    fs::create_dir_all(&repo).unwrap();
+    git(&sandbox.home(), &repo, &["init", "-q"]);
+    git(
+        &sandbox.home(),
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@gitlab.example.com:company-a/fresh.git",
+        ],
+    );
+    // Under `~/perso` (`home` by path), but the remote says `work`.
+    let task = sandbox.add_in(&repo, None, &["First task of the clone"]);
+    assert_eq!(context_of(&task), "work");
+}
+
+#[test]
+fn a_task_shares_the_context_of_its_parent() {
+    let sandbox = Sandbox::new();
+    let parent = sandbox.add(&["-c", "work", "Hardening"]);
+    let prefix = parent.summary.prefix;
+    // Inferred context (`default_context` here): the parent's wins.
+    let child = sandbox.add(&["--parent", &prefix, "Rate limits"]);
+    assert_eq!(context_of(&child), "work");
+    // Chosen explicitly: another context is refused.
+    for (context, args) in [
+        (
+            None,
+            vec!["add", "-c", "personal", "--parent", &prefix, "X"],
+        ),
+        (Some("personal"), vec!["add", "--parent", &prefix, "X"]),
+    ] {
+        let output = sandbox.run(&sandbox.home(), context, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("is in context work, not personal"),
+            "{}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
+fn malformed_ids_are_usage_errors() {
+    let sandbox = Sandbox::new();
+    for args in [
+        &["show", "a b"][..],
+        &["show", "a/b"],
+        &["show", "abc?x"],
+        &["show", "k3q7zm2a9"],
+        &["add", "--parent", "x/y", "Child"],
+    ] {
+        let output = sandbox.run(&sandbox.home(), None, args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("is not a task ID or prefix"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+}
