@@ -472,11 +472,11 @@ impl RepoHandle {
         self.read(move |reader| reader.list(&filter)).await
     }
 
-    /// The repositories matching `request`, best first, read on a blocking thread through a
-    /// read connection.
+    /// The repositories and tasks matching `request`, best first, read on a blocking thread
+    /// through a read connection.
     pub async fn search(&self, request: SearchRequest) -> Result<Vec<SearchResult>, Failure> {
         self.read(move |reader| {
-            reader.search(&request.q, request.context.as_deref(), request.limit)
+            reader.search(&request.q, request.context.as_deref(), None, request.limit)
         })
         .await
     }

@@ -14,12 +14,13 @@ use loom_api::{
     DoctorReport, ErrorCode, ForgeKind, InstallReport, LastUpdate, MaybeKnown, PendingUpgrade,
     PlannedAction, Profile, RegisterRequest, ReindexResult, Remote, RemoteCheck,
     RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl, RepoHead,
-    RepoIdentity, RepoList, RepoOperation, RepoState, RepoSummary, RepoSync, RepoUpdatePolicy,
-    RollbackReport, ScanIssue, ScanResult, SearchField, SearchKind, SearchResult, SearchResults,
-    ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse,
-    SyncOutcome, SyncRequest, SyncResult, Timestamp, Untracked, UpdateChannel, UpdateOutcome,
-    UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision,
-    UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
+    RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
+    RepoUpdatePolicy, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
+    SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
+    StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField, Timestamp,
+    Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState,
+    UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource,
+    Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -281,20 +282,7 @@ fn samples_validate_against_their_schema() {
     for report in upgrade_reports() {
         errors.extend(violations(&report).unwrap());
     }
-    errors.extend(
-        violations(&SearchResults {
-            results: vec![SearchResult {
-                kind: SearchKind::Repo,
-                slug: "personal/loom".to_owned(),
-                name: "loom".to_owned(),
-                context: "personal".to_owned(),
-                path: "/home/me/perso/loom".into(),
-                score: 1.25,
-                matched_fields: vec![SearchField::Name, SearchField::Slug, SearchField::Path],
-            }],
-        })
-        .unwrap(),
-    );
+    errors.extend(violations(&search_results().unwrap()).unwrap());
     errors.extend(
         violations(&RollbackReport {
             current_version: "0.2.0".to_owned(),
@@ -304,6 +292,40 @@ fn samples_validate_against_their_schema() {
         .unwrap(),
     );
     assert!(errors.is_empty(), "schema violations: {errors:?}");
+}
+
+/// A task, a repository and an invalid task.
+fn search_results() -> Result<SearchResults, Box<dyn Error>> {
+    Ok(SearchResults {
+        results: vec![
+            SearchResult::Task(TaskMatch {
+                id: "k3q7zm2a".parse()?,
+                context: "work".parse()?,
+                title: "Login timeout on mobile checkout".to_owned(),
+                status: Some("active".to_owned()),
+                link_keys: vec!["CORE-1042".to_owned(), "!88".to_owned()],
+                score: 3.5,
+                matched_fields: vec![TaskSearchField::LinkKeys],
+            }),
+            SearchResult::Repo(RepoMatch {
+                slug: "personal/loom".to_owned(),
+                name: "loom".to_owned(),
+                context: "personal".to_owned(),
+                path: "/home/me/perso/loom".into(),
+                score: 1.25,
+                matched_fields: vec![SearchField::Name, SearchField::Slug, SearchField::Path],
+            }),
+            SearchResult::Task(TaskMatch {
+                id: "zzzzzzzz".parse()?,
+                context: "work".parse()?,
+                title: String::new(),
+                status: None,
+                link_keys: Vec::new(),
+                score: 0.5,
+                matched_fields: vec![TaskSearchField::Notes],
+            }),
+        ],
+    })
 }
 
 fn install(daemon: DaemonRestart) -> InstallReport {

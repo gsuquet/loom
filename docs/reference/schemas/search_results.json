@@ -16,6 +16,55 @@
     "results"
   ],
   "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "RepoMatch": {
+      "description": "A repository that matches a search.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context name, `unassigned` for a repository without context.",
+          "type": "string"
+        },
+        "matched_fields": {
+          "description": "Fields holding at least one of the query terms, in column order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchField"
+          }
+        },
+        "name": {
+          "description": "Directory name of the repository.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute path of the repository.",
+          "type": "string"
+        },
+        "score": {
+          "description": "Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only\none of the ranking keys; the order of the results is the ranking.",
+          "type": "number",
+          "format": "double"
+        },
+        "slug": {
+          "description": "Slug of the repository.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "name",
+        "context",
+        "path",
+        "score",
+        "matched_fields"
+      ]
+    },
     "SearchField": {
       "description": "A searched field of a repository.",
       "oneOf": [
@@ -51,61 +100,114 @@
         }
       ]
     },
-    "SearchKind": {
-      "description": "What a search result is. Repositories only for now; tasks and notes join in v0.3.",
+    "SearchResult": {
+      "description": "One match of a search, tagged by `kind`.",
       "oneOf": [
         {
-          "description": "A repository of the index.",
-          "type": "string",
-          "const": "repo"
+          "description": "A repository: `kind` is `repo`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repo"
+            }
+          },
+          "$ref": "#/$defs/RepoMatch",
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "A task: `kind` is `task`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "task"
+            }
+          },
+          "$ref": "#/$defs/TaskMatch",
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
-    "SearchResult": {
-      "description": "One match of a search.",
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    },
+    "TaskMatch": {
+      "description": "A task that matches a search.",
       "type": "object",
       "properties": {
         "context": {
-          "description": "Context name, `unassigned` for a repository without context.",
-          "type": "string"
+          "description": "Context of its store.",
+          "$ref": "#/$defs/ContextName"
         },
-        "kind": {
-          "description": "What matched.",
-          "$ref": "#/$defs/SearchKind"
+        "id": {
+          "description": "ID of the task.",
+          "$ref": "#/$defs/TaskId"
+        },
+        "link_keys": {
+          "description": "Keys of the origin and related links, in file order.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "matched_fields": {
           "description": "Fields holding at least one of the query terms, in column order.",
           "type": "array",
           "items": {
-            "$ref": "#/$defs/SearchField"
+            "$ref": "#/$defs/TaskSearchField"
           }
-        },
-        "name": {
-          "description": "Directory name of the repository.",
-          "type": "string"
-        },
-        "path": {
-          "description": "Absolute path of the repository.",
-          "type": "string"
         },
         "score": {
           "description": "Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only\none of the ranking keys; the order of the results is the ranking.",
           "type": "number",
           "format": "double"
         },
-        "slug": {
-          "description": "Slug of the repository.",
+        "status": {
+          "description": "Status as written in `task.md`, a status of a newer loom included; `null` when\n`task.md` is invalid.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title; empty when `task.md` is invalid.",
           "type": "string"
         }
       },
       "required": [
-        "kind",
-        "slug",
-        "name",
+        "id",
         "context",
-        "path",
+        "title",
+        "link_keys",
         "score",
         "matched_fields"
+      ]
+    },
+    "TaskSearchField": {
+      "description": "A searched field of a task.",
+      "oneOf": [
+        {
+          "description": "Title; empty when `task.md` is invalid.",
+          "type": "string",
+          "const": "title"
+        },
+        {
+          "description": "The notes after the frontmatter; the whole file when `task.md` is invalid.",
+          "type": "string",
+          "const": "notes"
+        },
+        {
+          "description": "Keys of the origin and related links (`CORE-1042`, `!88`).",
+          "type": "string",
+          "const": "link_keys"
+        }
       ]
     }
   }

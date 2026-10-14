@@ -18,7 +18,6 @@ use tracing::debug_span;
 
 use crate::port::{ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskWrite};
 use crate::reconcile::{Reconciliation, decide};
-use crate::search::{expressions, terms};
 use crate::{StoreError, open_writer};
 
 /// A task as indexed: the task and its notes, or why its file is invalid.
@@ -688,29 +687,6 @@ pub(crate) fn list(
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map([context.map(ContextName::as_str)], read_row)?;
     rows.map(|row| row?).collect()
-}
-
-/// IDs of the tasks matching `query`, most relevant first (`bm25`, then ID), at most `limit`.
-pub(crate) fn search(
-    conn: &Connection,
-    query: &str,
-    context: Option<&ContextName>,
-    limit: usize,
-) -> Result<Vec<TaskId>, StoreError> {
-    let Some(expressions) = expressions(&terms(query)) else {
-        return Ok(Vec::new());
-    };
-    let mut statement = conn.prepare(
-        "SELECT t.id FROM tasks_fts JOIN tasks t ON t.key = tasks_fts.rowid \
-         WHERE tasks_fts MATCH ?1 AND (?2 IS NULL OR t.context = ?2) \
-         ORDER BY bm25(tasks_fts), t.id LIMIT ?3",
-    )?;
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let rows = statement.query_map(
-        params![expressions.all, context.map(ContextName::as_str), limit],
-        |row| row.get::<_, String>(0),
-    )?;
-    rows.map(|id| parse_id(&id?)).collect()
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{RepoList, SearchField, SearchKind, SearchResults};
+use loom_api::{RepoList, SearchField, SearchResult, SearchResults};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -162,11 +162,15 @@ fn valid<T: DeserializeOwned + schemars::JsonSchema>(text: &str) -> T {
     serde_json::from_value(value).unwrap()
 }
 
-fn slugs(results: &SearchResults) -> Vec<&str> {
+/// The slug of each repository, `task:<id>` for each task, in order.
+fn slugs(results: &SearchResults) -> Vec<String> {
     results
         .results
         .iter()
-        .map(|result| result.slug.as_str())
+        .map(|result| match result {
+            SearchResult::Repo(repo) => repo.slug.clone(),
+            SearchResult::Task(task) => format!("task:{}", task.id),
+        })
         .collect()
 }
 
@@ -188,8 +192,9 @@ fn search_prints_ranked_results_as_a_table_or_json() {
         slugs(&found),
         ["personal/loom", "personal/loom-api", "work/tool"]
     );
-    let first = &found.results[0];
-    assert_eq!(first.kind, SearchKind::Repo);
+    let SearchResult::Repo(first) = &found.results[0] else {
+        panic!("{found:?}");
+    };
     assert_eq!(first.name, "loom");
     assert_eq!(first.context, "personal");
     assert_eq!(first.path, perso.join("loom"));
@@ -212,7 +217,7 @@ fn search_prints_ranked_results_as_a_table_or_json() {
     );
     assert_eq!(
         slugs(&sandbox.search(&["\"loom\"", "OR"])),
-        Vec::<&str>::new()
+        Vec::<String>::new()
     );
 
     let table = sandbox.ok(&["search", "loom"]);
@@ -220,10 +225,10 @@ fn search_prints_ranked_results_as_a_table_or_json() {
     assert_eq!(
         table,
         format!(
-            "SLUG               MATCHED         PATH\n\
-             personal/loom      name,slug,path  {perso}/loom\n\
-             personal/loom-api  name,slug,path  {perso}/loom-api\n\
-             work/tool          remotes         {perso}/clients/tool\n"
+            "TYPE  ITEM               CONTEXT   STATUS  MATCHED         DETAIL\n\
+             repo  personal/loom      personal          name,slug,path  {perso}/loom\n\
+             repo  personal/loom-api  personal          name,slug,path  {perso}/loom-api\n\
+             repo  work/tool          work              remotes         {perso}/clients/tool\n"
         )
     );
     assert_eq!(sandbox.ok(&["search", "nothing-like-this"]), "");
