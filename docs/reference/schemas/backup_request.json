@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BackupRequest",
+  "description": "Body of `POST /v1/tasks/sync`.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "description": "The context to sync; absent: every context held here with a backup remote.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    }
+  }
+}

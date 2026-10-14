@@ -5,6 +5,7 @@
 
 mod api_version;
 mod auto_update;
+mod backup;
 mod context;
 mod disk;
 mod doctor;
@@ -24,6 +25,9 @@ pub use api_version::ApiVersion;
 pub use auto_update::{
     ChannelSource, ChosenChannel, PendingUpgrade, UpdateChannel, UpdatePolicyMode, UpdateResult,
     UpdateState, UpdateStatus,
+};
+pub use backup::{
+    BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync, ContextBackup,
 };
 pub use context::ContextAssignment;
 pub use disk::{ContextDiskUsage, DiskUsage};
