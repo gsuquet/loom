@@ -21,8 +21,8 @@ use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use loom_api::{
-    ApiError, ApiVersion, DaemonDiagnostics, RegisterRequest, RepoList, SearchKind, SearchResults,
-    StatusResponse, SyncRequest, Timestamp, UpdateState,
+    ApiError, ApiVersion, ContextName, DaemonDiagnostics, RegisterRequest, RepoList, SearchKind,
+    SearchResults, StatusResponse, SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -30,6 +30,8 @@ use loom_config::layout::{
     Layout, MAX_SOCKET_PATH_BYTES, RUN_DIR_MODE, RUN_FILE_MODE, check_socket_path,
     lock_taken_message, parse_lock_pid,
 };
+use loom_config::machine::{MachineName, parse_machine, render_machine};
+use loom_core::MachineId;
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
@@ -124,12 +126,27 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     let user_home = env::home_dir().ok_or_else(|| {
         miette!("cannot find the user's home directory (HOME) to expand `~` in the configuration")
     })?;
+    let machine = load_machine(&layout.machine)?;
+    let stores = config.stores(&layout.home, &user_home, &machine);
+    if !stores.not_held.is_empty() {
+        info!(
+            machine = %machine,
+            contexts = ?stores.not_held.iter().map(ContextName::as_str).collect::<Vec<_>>(),
+            "contexts not held on this machine are not loaded"
+        );
+    }
     // Opened under the lock: this daemon is the only writer of the index.
     let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home)
         .wrap_err("cannot start the repository index")?;
+    let store_paths = stores
+        .held
+        .iter()
+        .map(|(context, store)| (context.clone(), store.path.clone()))
+        .collect();
     let (task_store, task_handle) = tasks::start(
         &layout.index_db,
-        &config.store_paths(&layout.home, &user_home),
+        &store_paths,
+        MachineId(machine.as_str().to_owned()),
     )
     .wrap_err("cannot start the task store")?;
 
@@ -224,6 +241,38 @@ fn load_config(path: &Path) -> Result<(Config, bool)> {
         Err(error) => Err(error)
             .into_diagnostic()
             .wrap_err_with(|| format!("cannot read the configuration {}", path.display())),
+    }
+}
+
+/// The name of this machine from `machine.toml`. A missing file is created (mode 0600) with
+/// the host name; an invalid one stops loomd.
+fn load_machine(path: &Path) -> Result<MachineName> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(parse_machine(&text, path).into_diagnostic()?.id),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let host = rustix::system::uname()
+                .nodename()
+                .to_string_lossy()
+                .into_owned();
+            let id = MachineName::from_host_name(&host);
+            let created = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(RUN_FILE_MODE)
+                .open(path)
+                .and_then(|mut file| {
+                    file.write_all(render_machine(&id).as_bytes())?;
+                    file.sync_all()
+                });
+            created
+                .into_diagnostic()
+                .wrap_err_with(|| format!("cannot create {}", path.display()))?;
+            info!(path = %path.display(), machine = %id, "machine named after the host");
+            Ok(id)
+        }
+        Err(error) => Err(error)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("cannot read {}", path.display())),
     }
 }
 

@@ -330,7 +330,7 @@ fn settle(outcome: &mut UpdateOutcome, refs: &UpdateRefs) {
 
 /// A git command that did not succeed.
 #[derive(Debug)]
-enum Failure {
+pub(crate) enum Failure {
     /// It could not start, or its end could not be read.
     Run(io::Error),
     /// It did not end in time; its process group was stopped.
@@ -366,7 +366,7 @@ impl Failure {
 }
 
 /// git in one working tree.
-struct Git<'a> {
+pub(crate) struct Git<'a> {
     runner: &'a GitRunner,
     workdir: &'a Path,
     /// `GIT_SSH_COMMAND` to set, `None` when the user configured one.
@@ -374,6 +374,15 @@ struct Git<'a> {
 }
 
 impl<'a> Git<'a> {
+    /// git in `workdir` for local commands only: no SSH command is read or set.
+    pub(crate) const fn local(runner: &'a GitRunner, workdir: &'a Path) -> Self {
+        Self {
+            runner,
+            workdir,
+            ssh_command: None,
+        }
+    }
+
     fn new(runner: &'a GitRunner, workdir: &'a Path, git_dir: &Path) -> Self {
         let mut git = Self {
             runner,
@@ -533,7 +542,7 @@ impl<'a> Git<'a> {
     }
 
     /// Runs `git <args>` in the working tree; its standard output when it exits with 0.
-    fn output(&self, args: &[&OsStr], timeout: Duration) -> Result<String, Failure> {
+    pub(crate) fn output(&self, args: &[&OsStr], timeout: Duration) -> Result<String, Failure> {
         let mut command = Command::new(&self.runner.program);
         command
             .current_dir(self.workdir)

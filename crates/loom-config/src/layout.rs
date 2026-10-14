@@ -32,6 +32,8 @@ pub struct Layout {
     pub home: PathBuf,
     /// `config.toml`.
     pub config: PathBuf,
+    /// `machine.toml`: the name of this machine, created by `loomd` at first start.
+    pub machine: PathBuf,
     /// `index.db`: SQLite index of the repositories, written by `loomd` only (ADR-0012).
     pub index_db: PathBuf,
     /// `run/`: runtime files of the daemon.
@@ -72,6 +74,7 @@ impl Layout {
             log_dir,
             config: home.join("config.toml"),
             index_db: home.join("index.db"),
+            machine: home.join("machine.toml"),
             lock: run_dir.join("loomd.lock"),
             socket: run_dir.join("loomd.sock"),
             versions_dir: home.join("versions"),
@@ -143,6 +146,7 @@ mod tests {
         assert_eq!(layout.home, Path::new("/home/me/.loom"));
         assert_eq!(layout.config, Path::new("/home/me/.loom/config.toml"));
         assert_eq!(layout.index_db, Path::new("/home/me/.loom/index.db"));
+        assert_eq!(layout.machine, Path::new("/home/me/.loom/machine.toml"));
         assert_eq!(layout.run_dir, Path::new("/home/me/.loom/run"));
         assert_eq!(layout.lock, Path::new("/home/me/.loom/run/loomd.lock"));
         assert_eq!(layout.socket, Path::new("/home/me/.loom/run/loomd.sock"));
