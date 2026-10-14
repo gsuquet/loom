@@ -35,6 +35,8 @@
 | `POST` | `/v1/tasks/{id}/actions/{action}` | `200` | [`TaskDetail`](#taskdetail) after the action; takes a [`TaskActionRequest`](#taskactionrequest) or no body |
 | `GET` | `/v1/tasks/{id}/events` | `200` | [`TaskEvents`](#taskevents) |
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
+| `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
+| `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state. `disk` is the last measure of the loom home while it is fresh, otherwise a new one ([cache](#diskusage)).
 
@@ -184,6 +186,10 @@ An open status (`inbox`, `ready`, `active`, `waiting`) can move to any other one
 
 `GET /v1/tasks/{id}/events` answers the event log of the task as `events.jsonl` holds it, with the lines this version cannot replay listed apart.
 
+`GET /v1/tasks/backup` answers with the backup state of every context store held on this machine ([`BackupReport`](#backupreport)), without running git: the last commit failure and the last sync of each store since loomd started.
+
+`POST /v1/tasks/sync` with a [`BackupRequest`](#backuprequest) body syncs the stores ([store backup](configuration.md#store-backup)) and answers once every sync ended, with the stores synced. `400 invalid_request` when `context` names a context without `store.backup.remote`, one not held on this machine, or an unknown one, or when the body is invalid. A sync that fails is in the answer, not an error status.
+
 ### Errors
 
 Every error response has an [`ApiError`](#apierror) body.
@@ -252,6 +258,8 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `NewTask` | [`schemas/new_task.json`](schemas/new_task.json) |
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
 | `ReindexResult` | [`schemas/reindex_result.json`](schemas/reindex_result.json) |
+| `BackupReport` | [`schemas/backup_report.json`](schemas/backup_report.json) |
+| `BackupRequest` | [`schemas/backup_request.json`](schemas/backup_request.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
 | `RepoList` | [`schemas/repo_list.json`](schemas/repo_list.json) |
@@ -572,6 +580,36 @@ Unknown fields are rejected.
 | `path` | string | Absolute path of the repository. |
 | `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. One of the ranking keys only: the order of `results` is the ranking. |
 | `matched_fields` | list of strings | Fields holding at least one query word: `name`, `slug`, `path`, `remotes`, `context`, `branch`, in this order. |
+
+### `BackupReport`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `machine` | string | This machine: the `id` of [`machine.toml`](configuration.md#machinetoml). |
+| `contexts` | array | One object per store held here, sorted by context; after a sync, the stores synced only. |
+| `contexts[].context` | string | The context. |
+| `contexts[].path` | string | Root of its store. |
+| `contexts[].remote` | string or `null` | `store.backup.remote`, the password of a `scheme://user:password@host` URL replaced with `***`; `null` without one. |
+| `contexts[].uncommitted` | string or `null` | Why the last commit of the store failed; `null` when every change is committed. |
+| `contexts[].last_sync` | object or `null` | The last sync since loomd started: `time` (when it ended) and `outcome`; `null` before the first one or without a remote. |
+| `not_held` | array of strings | Contexts whose `machines` does not name this machine. |
+
+`outcome` is tagged by `kind`:
+
+| `kind` | Fields | Meaning |
+| --- | --- | --- |
+| `up_to_date` | | The store and its remote hold the same commits. |
+| `pushed` | `commits` | Local commits pushed. |
+| `pulled` | `commits` | The store fast-forwarded to the remote. |
+| `diverged` | `local`, `remote` | Both sides have commits the other lacks: nothing was merged, pushed or pulled. |
+| `push_rejected` | `stderr_tail` | The remote refused the push (`[rejected]` or `[remote rejected]`): the commits stay local. |
+| `failed` | `step`, `error`, `stderr_tail` | A step failed or timed out. `step`: `commit`, `remote`, `fetch`, `compare`, `push`, `fast_forward`. |
+
+### `BackupRequest`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `context` | string, optional | The context to sync; absent: every store held here with a `store.backup.remote`. Unknown fields are rejected. |
 
 ### `ReindexResult`
 

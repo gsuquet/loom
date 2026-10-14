@@ -402,6 +402,25 @@ loom reindex [OPTIONS]
 
 Global options apply.
 
+### `loom sync`
+
+Back up the context stores: push their commits to `store.backup.remote`, or fast-forward them to it.
+
+Syncs every context store held on this machine that has a `store.backup.remote`, or the one `-c` names. Changes not committed yet are committed first. A store whose remote has commits it lacks while it has commits the remote lacks has diverged: it is reported and left as it is, never merged, rebased or forced. Fails when a store is not synced. loomd also syncs at start and every `[tasks] sync_interval`. Starts loomd when it is not running.
+
+```text
+loom sync [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the result as JSON (`BackupReport` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
 ### `loom shell-init`
 
 Print the shell integration to evaluate in the shell's startup file: `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`.

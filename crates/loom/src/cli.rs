@@ -111,6 +111,16 @@ pub enum Command {
     /// recorded yet are recorded first, so a reindex may append `edited` events. The
     /// repositories of the index are left as they are. Starts loomd when it is not running.
     Reindex(ReindexArgs),
+    /// Back up the context stores: push their commits to `store.backup.remote`, or
+    /// fast-forward them to it.
+    ///
+    /// Syncs every context store held on this machine that has a `store.backup.remote`, or the
+    /// one `-c` names. Changes not committed yet are committed first. A store whose remote has
+    /// commits it lacks while it has commits the remote lacks has diverged: it is reported and
+    /// left as it is, never merged, rebased or forced. Fails when a store is not synced. loomd
+    /// also syncs at start and every `[tasks] sync_interval`. Starts loomd when it is not
+    /// running.
+    Sync(SyncArgs),
     /// Print the shell integration to evaluate in the shell's startup file:
     /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in
     /// `~/.bashrc`.
@@ -202,6 +212,14 @@ fn parse_release_version(text: &str) -> Result<Version, String> {
 #[derive(Debug, clap::Args)]
 pub struct ReindexArgs {
     /// Print the result as JSON (`ReindexResult` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom sync`.
+#[derive(Debug, clap::Args)]
+pub struct SyncArgs {
+    /// Print the result as JSON (`BackupReport` schema).
     #[arg(long)]
     pub json: bool,
 }
@@ -528,6 +546,7 @@ mod tests {
             | Command::Repo { .. }
             | Command::Search(_)
             | Command::Reindex(_)
+            | Command::Sync(_)
             | Command::ShellInit(_)
             | Command::UpgradeWatchdog(_) => {
                 panic!("not a service command: {args:?}")

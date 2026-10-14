@@ -3,7 +3,10 @@
 
 use std::fmt::Write as _;
 
-use loom_api::{ContextName, TaskId};
+use std::collections::BTreeMap;
+
+use loom_api::{BackupReport, BackupSync, ContextBackup, ContextName, TaskId};
+use loom_config::config::StoreSettings;
 use loom_core::{Event, Status};
 
 /// `.gitattributes` written when a store repository is created: `events.jsonl` only grows, so
@@ -183,6 +186,69 @@ pub fn redact_remote(remote: &str) -> String {
     }
 }
 
+/// The backup report of the stores `held` on the machine `machine`.
+///
+/// Each store with its remote (redacted), last commit failure (`pending`) and last sync
+/// (`synced`). `only` keeps the listed contexts (the ones a sync just ran on).
+#[must_use]
+pub fn report(
+    machine: &str,
+    held: &BTreeMap<ContextName, StoreSettings>,
+    not_held: &[ContextName],
+    pending: &BTreeMap<ContextName, String>,
+    synced: &BTreeMap<ContextName, BackupSync>,
+    only: Option<&[ContextName]>,
+) -> BackupReport {
+    let contexts = held
+        .iter()
+        .filter(|(context, _)| only.is_none_or(|only| only.contains(context)))
+        .map(|(context, store)| ContextBackup {
+            context: context.clone(),
+            path: store.path.clone(),
+            remote: store.remote.as_deref().map(redact_remote),
+            uncommitted: pending.get(context).cloned(),
+            last_sync: synced.get(context).cloned(),
+        })
+        .collect();
+    BackupReport {
+        machine: machine.to_owned(),
+        contexts,
+        not_held: not_held.to_vec(),
+    }
+}
+
+/// The contexts a sync of `requested` runs on: every held context with a remote, or the one
+/// requested.
+///
+/// # Errors
+///
+/// Why the requested context cannot be synced: not held here, unknown, or without a remote.
+pub fn sync_targets(
+    requested: Option<&ContextName>,
+    held: &BTreeMap<ContextName, StoreSettings>,
+    not_held: &[ContextName],
+) -> Result<Vec<ContextName>, String> {
+    let Some(context) = requested else {
+        return Ok(held
+            .iter()
+            .filter(|(_, store)| store.remote.is_some())
+            .map(|(context, _)| context.clone())
+            .collect());
+    };
+    match held.get(context) {
+        Some(store) if store.remote.is_some() => Ok(vec![context.clone()]),
+        Some(_) => Err(format!(
+            "context `{context}` has no store.backup.remote: add one to [contexts.{context}] to back it up"
+        )),
+        None if not_held.contains(context) => Err(format!(
+            "context `{context}` is not held on this machine: its `machines` does not name it"
+        )),
+        None => Err(format!(
+            "no context `{context}`: add a [contexts.{context}] table"
+        )),
+    }
+}
+
 /// The type and summary of `event`.
 fn describe(event: &Event) -> (&'static str, String) {
     match event {
@@ -235,10 +301,87 @@ fn one_line(text: &str) -> String {
 mod tests {
     use loom_core::{Change, Event, FieldChange, Importance, Status};
 
+    use std::collections::BTreeMap;
+
+    use loom_api::{BackupOutcome, BackupSync, ContextName, Timestamp};
+    use loom_config::config::StoreSettings;
+
     use super::{
         Scope, Sides, SyncAction, catch_up_message, commit_message, decide_sync, hand_edit_message,
-        parse_counts, push_refused, redact_remote, removed_message, scope,
+        parse_counts, push_refused, redact_remote, removed_message, report, scope, sync_targets,
     };
+
+    fn stores() -> BTreeMap<ContextName, StoreSettings> {
+        BTreeMap::from([
+            (
+                "home".parse().unwrap(),
+                StoreSettings {
+                    path: "/l/contexts/home".into(),
+                    remote: None,
+                },
+            ),
+            (
+                "work".parse().unwrap(),
+                StoreSettings {
+                    path: "/l/contexts/work".into(),
+                    remote: Some("https://me:pw@example.com/w.git".to_owned()),
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_sync_runs_on_held_contexts_with_a_remote() {
+        let held = stores();
+        let not_held = ["lab".parse::<ContextName>().unwrap()];
+        let work: ContextName = "work".parse().unwrap();
+        assert_eq!(sync_targets(None, &held, &not_held), Ok(vec![work.clone()]));
+        assert_eq!(sync_targets(Some(&work), &held, &not_held), Ok(vec![work]));
+        let error =
+            |name: &str| sync_targets(Some(&name.parse().unwrap()), &held, &not_held).unwrap_err();
+        assert!(error("home").contains("has no store.backup.remote"));
+        assert!(error("lab").contains("not held on this machine"));
+        assert!(error("nope").contains("no context `nope`"));
+    }
+
+    #[test]
+    fn the_report_lists_each_held_store() {
+        let held = stores();
+        let work: ContextName = "work".parse().unwrap();
+        let synced = BTreeMap::from([(
+            work.clone(),
+            BackupSync {
+                time: Timestamp::EPOCH,
+                outcome: BackupOutcome::Pushed { commits: 1 },
+            },
+        )]);
+        let pending = BTreeMap::from([(work.clone(), "commit failed".to_owned())]);
+        let lab: ContextName = "lab".parse().unwrap();
+        let all = report(
+            "desk",
+            &held,
+            std::slice::from_ref(&lab),
+            &pending,
+            &synced,
+            None,
+        );
+        assert_eq!(all.machine, "desk");
+        assert_eq!(all.not_held, [lab]);
+        assert_eq!(all.contexts.len(), 2);
+        assert_eq!(all.contexts[0].remote, None);
+        assert_eq!(all.contexts[0].last_sync, None);
+        assert_eq!(
+            all.contexts[1].remote.as_deref(),
+            Some("https://me:***@example.com/w.git")
+        );
+        assert_eq!(
+            all.contexts[1].uncommitted.as_deref(),
+            Some("commit failed")
+        );
+        assert!(all.contexts[1].failed());
+        let only = report("desk", &held, &[], &pending, &synced, Some(&[work]));
+        assert_eq!(only.contexts.len(), 1);
+    }
 
     #[test]
     fn a_sync_pushes_or_fast_forwards_and_stops_on_divergence() {

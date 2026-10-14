@@ -41,7 +41,7 @@ Error: invalid configuration <path>:<line>:<column>: <message>
 `line` and `column` start at 1; `column` counts characters. For an unknown key, `message` names it:
 
 ```text
-Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected one of `contexts`, `daemon`, `default_context`, `forges`, `repos`, `telemetry`, `update`
+Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`, expected one of `contexts`, `daemon`, `default_context`, `forges`, `repos`, `tasks`, `telemetry`, `update`
 ```
 
 `loom` reads `config.toml` at each command for `[telemetry]`. A file it cannot read or parse does not stop a command for that reason: `loom` exports no traces, prints this warning on stderr (hidden by `-q`) and runs the command. Commands that need the file for something else, such as `loom service install`, still fail on it. `loom upgrade` reads `[update] channel` the same way: a file it cannot read or parse leaves the key unset, with a warning, so that an install can still be repaired.
@@ -55,7 +55,8 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
-| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[tasks] sync_interval` | string: duration | `"15m"` | Time between two syncs of each context store with its `store.backup.remote`. Duration syntax of `[update] check_interval`. At least `"1m"`. See [store backup](#store-backup). |
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[forges."<host>"] kind` | | | See [contexts and repositories](#contexts-and-repositories). |
@@ -123,6 +124,7 @@ kind = "gitlab"
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A trailing `/` is ignored. |
 | `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no git command. |
 | `[contexts.<name>] store.path` | string: path | `<loom home>/contexts/<name>` | Root of the context's task store. Same path rules as `match.paths`; `~` is the user's home, not the loom home. Two contexts cannot have the same `store.path`. |
+| `[contexts.<name>] store.backup.remote` | string: git URL or path | none | Repository the context store is pushed to and pulled from (see [store backup](#store-backup)). Not empty, no whitespace or control characters, not starting with `-`. Two contexts cannot have the same remote: their stores would diverge at once. |
 | `[contexts.<name>] machines` | array of strings: machine names | none (every machine) | The machines that hold the context's store, by their [`machine.toml`](#machinetoml) `id`. At least one entry when given; each entry follows the rules of `id`. On a machine it does not name, `loomd` does not load the store: no `tasks/` is created, its tasks are not indexed. The repositories of the context are matched as usual. |
 | `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
 | `[repos] max_depth` | integer | `4` | 0 to 4294967295. Deepest directory level examined below each root, the root being level 0. |
@@ -345,6 +347,24 @@ A message is `<type>(<id>): <summary>`, the summary on one line, cut to 60 chara
 Every git command of a store runs in its root with `-c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=/dev/null`: store commits are never signed and run no hook (neither the store's `.git/hooks` nor a `core.hooksPath` of the user's configuration), whatever the configuration says. The rest of the user's configuration applies: identity, `init.templateDir`. Commands run without a terminal (`GIT_TERMINAL_PROMPT=0`, no standard input), never look for a repository above the store root (`GIT_CEILING_DIRECTORIES`), and are stopped with their process group after 60 seconds.
 
 A commit that fails (no identity, a lock held by another git process) is logged as a warning: the change stays written, and the next commit of that store stages the whole store.
+
+### Store backup
+
+A store with `[contexts.<name>] store.backup.remote` is synced with that repository when `loomd` starts, then every `[tasks] sync_interval`, and on [`loom sync`](cli/conventions.md#loom-sync). A sync of a store:
+
+1. Creates its repository when it has none (without a commit, so that an empty store can be filled from the remote), and commits every change not committed yet.
+2. Points the remote `backup` of the store repository at `store.backup.remote` (`git remote add` or `set-url`).
+3. Fetches it: `git fetch --prune --no-tags backup`.
+4. Compares `HEAD` with `backup/main`, then:
+
+| Store | Remote | Action |
+| --- | --- | --- |
+| no new commit | no new commit | Nothing (`up to date`). |
+| new commits | no new commit | `git push backup HEAD:refs/heads/main`, never forced. |
+| no new commit | new commits | `git merge --ff-only --no-autostash <commit>`, only when `git status --porcelain` is empty. |
+| new commits | new commits | Nothing: the sync of that store stops (`diverged`), and `loom repo doctor` fails on it. |
+
+A sync never merges, rebases, resets or forces. A push the remote refuses keeps the commits local. A failed step is logged and reported by [`GET /v1/tasks/backup`](api.md#tasks) and `loom repo doctor`; the other stores are synced. The fetch and the push run with the environment of the [repository updates](#contexts-and-repositories): `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode` unless `core.sshCommand` or `GIT_SSH_COMMAND` is set, stopped after 120 s with their process group. Fetch and push run on their own thread; the commit and the fast-forward run between the writes of the task store. A fast-forward changes task files: they are reconciled and indexed like hand edits that record no event.
 
 ## `run/`
 
