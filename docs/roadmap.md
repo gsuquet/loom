@@ -88,5 +88,6 @@ Each task is a GitHub issue in the `v0.3` milestone, written with the [agent tas
 | 17 | – | Enter my tasks, a week of starting the day with `loom` | Chore | 14, 15 | Me |
 | 18 | [#84](https://github.com/gsuquet/loom/issues/84) | Disk usage of the loom home in `loom status` and `--json`, doctor checks (kept versions, WAL, free space) | Story | – | Agent |
 | 19 | [#94](https://github.com/gsuquet/loom/issues/94) | loomd change events over SSE (`GET /v1/events`), followed by the TUI ([ADR-0014](adr/0014-tui-architecture.md)) | Story | 6 | Agent |
+| 20 | [#113](https://github.com/gsuquet/loom/issues/113) | `loom service restart`: restart loomd (service manager or signal), config checked first, wait for the new loomd | Story | – | Agent |
 
-Parallel tracks: 18 from the start; after 2, {3} and {4, 5}; after 5, {11, 12, 16}; after 6, {7, 8}, {9, 10}, {19 -> 13, 14, 15}.
+Parallel tracks: 18 and 20 from the start; after 2, {3} and {4, 5}; after 5, {11, 12, 16}; after 6, {7, 8}, {9, 10}, {19 -> 13, 14, 15}.
