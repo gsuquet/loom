@@ -56,8 +56,10 @@ impl Sandbox {
     fn new() -> Self {
         let loomd = loom_bin().with_file_name("loomd");
         assert!(loomd.is_file(), "{} is missing", loomd.display());
+        // The path is searched: the prefix is glued to the random characters, so that they never
+        // form a word of their own that a query term starts (`ap` for `LO ap`).
         let dir = tempfile::Builder::new()
-            .prefix("search-")
+            .prefix("sx")
             .tempdir_in("/tmp")
             .unwrap();
         let sandbox = Self { dir };
