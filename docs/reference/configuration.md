@@ -276,6 +276,19 @@ Error: cannot start the repository index
 
 `loom repo scan --rebuild` rebuilds the index from a scan of the roots while `loomd` runs (see [`loom repo scan`](cli/conventions.md#loom-repo-scan)). It can also be rebuilt by hand: stop `loomd`, delete `index.db`, `index.db-wal` and `index.db-shm`, start `loomd`. Registered repositories outside the scan are lost, slugs are assigned again, states are read again, and the results of the last updates are lost (every repository is then updated at once).
 
+The index also holds the tasks of the [context stores](#context-stores), read from their files: `loomd` indexes them when it starts, and `loom reindex` ([`POST /v1/tasks/reindex`](api.md#tasks)) rebuilds them from the files while it runs, without touching the repositories. A deleted `index.db` gets the same task rows back at the next start.
+
+## Context stores
+
+Each context of `config.toml` has a task store: `[contexts.<name>] store.path`, by default `<loom home>/contexts/<name>`. `loomd` creates `<store>/tasks/` (mode `0700`) when it starts; a store that cannot be created stops it with code 1.
+
+| Path | Mode | Content |
+| --- | --- | --- |
+| `tasks/<id>/` | `0700` | One directory per task, named by its ID (8 lowercase Crockford base32 characters). Other names in `tasks/` are ignored. |
+| `tasks/<id>/task.md` | `0600` | The task: TOML frontmatter between `+++` lines, then free notes ([format](task-file.md)). Replaced atomically: written to `.task.md.tmp` beside it, synced, renamed over it, and the directory synced. |
+| `tasks/<id>/events.jsonl` | `0600` | The task's events, one JSON object per line, appended and synced, never rewritten. A last line cut by a crash is closed by a line ending before the next append. |
+| `tasks/.<id>.tmp/` | `0700` | A task being created: written whole, then renamed to `tasks/<id>/`. A leftover of a crash is ignored, and replaced when the same ID is created again. |
+
 ## `run/`
 
 Runtime files of `loomd`, in `<loom home>/run/`.

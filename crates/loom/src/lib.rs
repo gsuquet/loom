@@ -6,6 +6,7 @@ pub mod cli_doc;
 pub mod conventions;
 pub mod doctor;
 pub mod loomd_path;
+pub mod reindex;
 pub mod repo;
 pub mod search;
 pub mod service;

@@ -34,8 +34,9 @@ use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH,
     REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery,
-    SearchQuery, agent_socket, clock_error, home_value, invalid_request, method_not_allowed,
-    not_found, register_path, repo_filter, search_request, slug, status_at, timestamp,
+    SearchQuery, TASKS_REINDEX_PATH, agent_socket, clock_error, home_value, invalid_request,
+    method_not_allowed, not_found, register_path, repo_filter, search_request, slug, status_at,
+    timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::exit::Shutdown;
@@ -50,6 +51,7 @@ use tracing::{debug, info, warn};
 
 use crate::disk_usage::DiskCache;
 use crate::repos::{self, Failure, RepoHandle};
+use crate::tasks::{self, TaskHandle};
 use crate::updater::{self, Settings};
 
 /// What the daemon reads before it changes anything.
@@ -116,6 +118,11 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     // Opened under the lock: this daemon is the only writer of the index.
     let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home)
         .wrap_err("cannot start the repository index")?;
+    let (task_store, task_handle) = tasks::start(
+        &layout.index_db,
+        &config.store_paths(&layout.home, &user_home),
+    )
+    .wrap_err("cannot start the task store")?;
 
     let base = StatusResponse {
         api_version: ApiVersion::CURRENT,
@@ -151,11 +158,13 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         update_state: layout.update_state.clone(),
         running: Version::parse(&VERSION_INFO.version).ok(),
         repos: repo_handle,
+        tasks: task_handle,
         layout: layout.clone(),
         disk: DiskCache::default(),
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     updater.stop();
+    task_store.stop();
     index.stop();
     served
 }
@@ -189,6 +198,8 @@ struct App {
     running: Option<Version>,
     /// The repository index.
     repos: RepoHandle,
+    /// The task store.
+    tasks: TaskHandle,
     /// Paths under the loom home.
     layout: Layout,
     /// Last disk usage of the loom home, a new process starts without one.
@@ -349,6 +360,7 @@ fn router(app: App) -> Router {
         .route(SEARCH_PATH, get(search))
         .route(DIAGNOSTICS_PATH, get(diagnostics))
         .route(REMOTE_CHECK_PATH, post(remote_check))
+        .route(TASKS_REINDEX_PATH, post(reindex_tasks))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -475,6 +487,11 @@ async fn diagnostics() -> Response {
         home: home_value(env::var_os("HOME").as_deref()),
     })
     .into_response()
+}
+
+/// The tasks index rebuilt from the files; the repositories are left as they are.
+async fn reindex_tasks(State(app): State<Arc<App>>) -> Response {
+    respond(app.tasks.reindex().await)
 }
 
 /// `git ls-remote` of each remote endpoint of the index, in loomd's environment.

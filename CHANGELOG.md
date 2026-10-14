@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Disk usage of the loom home: `loom status` prints `disk: <total> (versions …, index …, logs …, contexts …)`, and `GET /v1/status` (`loom status --json`) carries a `disk` object with the allocated bytes of `versions/`, the index (and its WAL), `log/`, `state/`, each context store and the rest, the kept versions and the free space of the volume. Measured by loomd without following symbolic links, cached 5 minutes and measured again when `versions/` changes; an unreadable directory counts as 0 with a warning.
 - `[contexts.<name>] store.path` in `config.toml`: root of the context's task store, `<loom home>/contexts/<name>` by default; two contexts cannot share one.
+- Task store: loomd creates `tasks/` in each context store and indexes the task files (`tasks/<id>/task.md`, `events.jsonl`) in `index.db` when it starts, with full-text search over title, notes and link keys. An invalid `task.md` is indexed read-only with its error and never rewritten. Task files are written atomically (temporary file, fsync, rename, fsync of the directory) under a per-task lock.
+- `loom reindex [--json]` (`POST /v1/tasks/reindex`, `ReindexResult` schema): rebuilds the tasks index from the files, lists the invalid ones and the ones that cannot be read (which keep their previous row, without stopping the others), leaves the repositories untouched. A deleted `index.db` gets the same task rows back.
 - `loom repo doctor` checks the disk usage: `disk` (parts that could not be measured), `disk-versions` (versions kept beyond what `loom rollback` needs), `disk-wal` (`index.db-wal` above 64 MB) and `disk-free` (less than 1 GB free on the volume of the loom home).
 
 ### Fixed

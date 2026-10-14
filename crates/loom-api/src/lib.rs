@@ -15,6 +15,7 @@ mod repo_update;
 mod search;
 mod service;
 mod status;
+mod task_index;
 mod update;
 mod version;
 
@@ -31,7 +32,9 @@ pub use doctor::{
 };
 pub use error::{ApiError, ErrorCode};
 // Moved to loom-core, which loom-api builds on; re-exported so that clients keep their paths.
-pub use loom_core::{CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, Timestamp, UNASSIGNED};
+pub use loom_core::{
+    CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, TaskId, Timestamp, UNASSIGNED,
+};
 pub use repo::{
     ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,
     RepoUpdatePolicy, ScanIssue, ScanResult,
@@ -44,6 +47,7 @@ pub use repo_update::{
 pub use search::{DEFAULT_SEARCH_LIMIT, SearchField, SearchKind, SearchResult, SearchResults};
 pub use service::{ServicePlatform, ServiceStatus};
 pub use status::StatusResponse;
+pub use task_index::{FailedTaskFile, InvalidTaskFile, ReindexResult};
 pub use update::{
     DaemonRestart, InstallReport, RollbackReport, UpgradeDecision, UpgradeReport,
     UpgradeSkipReason, UpgradeSource,

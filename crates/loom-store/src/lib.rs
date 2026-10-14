@@ -1,6 +1,11 @@
-//! The SQLite index `index.db`: repositories, their state and their search table (ADR-0012).
+//! The SQLite index `index.db` and the task store.
 //!
-//! One [`Store`] writes (loomd owns it); any number of [`Reader`]s read at the same time. The
+//! The index holds the repositories, their state and their search table (ADR-0012), and the
+//! tasks read from the context stores ([`tasks`], ADR-0013). The task files are reached through
+//! [`port::StorePort`], whose files adapter is [`files::FileStore`].
+//!
+//! One [`Store`] writes the repositories and one [`tasks::TaskIndex`] the tasks (loomd owns
+//! both, SQLite serializes their transactions); any number of [`Reader`]s read at the same time. The
 //! database runs in WAL mode, so a reader sees the state before or after a write transaction,
 //! never a part of it, and never waits for it.
 //!
@@ -14,6 +19,7 @@ mod migrate;
 pub mod port;
 mod repos;
 pub mod search;
+pub mod tasks;
 
 use std::fs::{self, OpenOptions, Permissions};
 use std::io;
@@ -22,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_api::{LastUpdate, RepoIdentity, RepoState, RepoSummary, SearchResult, Timestamp};
+use loom_core::{ContextName, TaskId};
 use loom_repo::ScanDiff;
 use rusqlite::{Connection, OpenFlags};
 use thiserror::Error;
@@ -29,6 +36,7 @@ use tracing::debug_span;
 
 pub use migrate::SCHEMA_VERSION;
 pub use repos::RepoFilter;
+pub use tasks::IndexedTask;
 
 /// Mode of `index.db` and of the WAL files SQLite creates beside it: owner read and write.
 pub const INDEX_FILE_MODE: u32 = 0o600;
@@ -113,16 +121,9 @@ impl Store {
     /// [`StoreError::Migration`] when a migration fails.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let _span = debug_span!("store.open", path = %path.display()).entered();
-        create_private(path)?;
-        let mut conn = Connection::open(path).map_err(|source| open_error(path, source))?;
-        configure(&conn).map_err(|source| open_error(path, source))?;
-        // WAL is persistent in the file, but only a write connection can switch to it.
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(|source| open_error(path, source))?;
-        conn.pragma_update(None, "synchronous", "NORMAL")
-            .map_err(|source| open_error(path, source))?;
-        migrate::migrate(&mut conn, path)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: open_writer(path)?,
+        })
     }
 
     /// Every repository, sorted by slug.
@@ -339,6 +340,58 @@ impl Reader {
         let _span = debug_span!("store.search", context, limit).entered();
         search::search(&self.conn, query, context, limit)
     }
+
+    /// The indexed task with `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or the row is invalid.
+    pub fn task(&self, id: &TaskId) -> Result<Option<IndexedTask>, StoreError> {
+        let _span = debug_span!("store.task", %id).entered();
+        tasks::get(&self.conn, id)
+    }
+
+    /// The indexed tasks, only those of `context` when given, sorted by ID, read in one
+    /// snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or a row is invalid.
+    pub fn tasks(&self, context: Option<&ContextName>) -> Result<Vec<IndexedTask>, StoreError> {
+        let _span = debug_span!("store.tasks").entered();
+        tasks::list(&self.conn, context)
+    }
+
+    /// IDs of the tasks whose title, notes or link keys match `query` (the syntax of
+    /// [`search`]), only those of `context` when given, most relevant first, at most `limit`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails.
+    pub fn search_tasks(
+        &self,
+        query: &str,
+        context: Option<&ContextName>,
+        limit: usize,
+    ) -> Result<Vec<TaskId>, StoreError> {
+        let _span = debug_span!("store.search_tasks", limit).entered();
+        tasks::search(&self.conn, query, context, limit)
+    }
+}
+
+/// A write connection to the index at `path`, created (mode `0600`) when missing and migrated
+/// to [`SCHEMA_VERSION`].
+fn open_writer(path: &Path) -> Result<Connection, StoreError> {
+    create_private(path)?;
+    let mut conn = Connection::open(path).map_err(|source| open_error(path, source))?;
+    configure(&conn).map_err(|source| open_error(path, source))?;
+    // WAL is persistent in the file, but only a write connection can switch to it.
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|source| open_error(path, source))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|source| open_error(path, source))?;
+    migrate::migrate(&mut conn, path)?;
+    Ok(conn)
 }
 
 /// Settings of every connection: wait for locks, enforce foreign keys.
