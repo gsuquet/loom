@@ -12,6 +12,8 @@ axum.workspace = true
 clap.workspace = true
 loom-api.workspace = true
 loom-config.workspace = true
+# Origin of the events loomd records (actor, machine) and its random source.
+loom-core.workspace = true
 # Repository discovery, identity, contexts and scan changes (ADR-0012).
 loom-repo.workspace = true
 # The repository index `index.db` (ADR-0012).
@@ -20,8 +22,11 @@ loom-telemetry.workspace = true
 # Auto-upgrade: discovery, decision, download, pre-flight, swap, update state (ADR-0011).
 loom-update.workspace = true
 miette.workspace = true
+# Hand edits of `task.md`: notified within a second instead of polling every task file.
+notify.workspace = true
 # `statvfs`: free space of the volume of the loom home (already in the tree through gix and tempfile).
-rustix.workspace = true
+# `uname`: the host name, which names the machine of the events loomd records.
+rustix = { workspace = true, features = ["system"] }
 # Running version for the update decision.
 semver.workspace = true
 serde.workspace = true

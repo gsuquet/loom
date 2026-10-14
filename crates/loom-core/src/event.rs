@@ -15,8 +15,10 @@ pub const EVENT_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Actor {
-    /// Me, through the CLI, the TUI or a hand edit.
+    /// Me, through the CLI or the TUI.
     User,
+    /// A hand edit of `task.md`, detected by loomd: a change it did not make.
+    File,
     /// loomd on its own: sync, schedules.
     Daemon,
     /// An agent.

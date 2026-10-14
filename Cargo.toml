@@ -41,6 +41,8 @@ loom-update = { path = "crates/loom-update" }
 loomd = { path = "crates/loomd" }
 miette = "7.6"
 minisign-verify = "0.3"
+# File watcher of the task stores (hand edits of `task.md`): FSEvents on macOS, inotify on Linux.
+notify = "8.2"
 opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
 opentelemetry-http = { version = "0.33", default-features = false }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "trace", "internal-logs"] }

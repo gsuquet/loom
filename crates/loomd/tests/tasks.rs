@@ -9,15 +9,20 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use loom_api::{ContextName, ReindexResult};
+use loom_api::{ContextName, ReindexResult, TaskId, Timestamp};
+use loom_core::{Actor, Kind, MachineId, NewTask, Origin, Relations, Status};
 use loom_store::Reader;
-use loom_store::tasks::{IndexedState, IndexedTask};
+use loom_store::files::FileStore;
+use loom_store::tasks::{IndexedState, IndexedTask, TaskIndex, Tasks};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 mod common;
 
-use common::{Daemon, HttpResponse, ok, request};
+use common::{Daemon, HttpResponse, POLL, TIMEOUT, ok, request};
 
 const CONFIG: &str = r#"
 [repos]
@@ -204,6 +209,157 @@ fn a_deleted_index_is_rebuilt_with_the_same_rows() {
     daemon.stop();
 }
 
+/// A task of `work` titled `title`, created through the store as loomd would, with its
+/// `created` event.
+fn create_task(sandbox: &Sandbox, title: &str) -> TaskId {
+    let store = FileStore::new(context("work"), sandbox.loom_home().join("contexts/work"));
+    let mut tasks = Tasks::new(vec![store], TaskIndex::open(&sandbox.index()).unwrap());
+    let mut bits = 0x5eed_u64;
+    let mut random = move || {
+        bits = bits
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        bits
+    };
+    tasks
+        .create(
+            NewTask {
+                title: title.to_owned(),
+                kind: Kind::Chore,
+                context: context("work"),
+                status: Status::Ready,
+                importance: None,
+                due: None,
+                pinned: false,
+                links: Vec::new(),
+                relations: Relations::default(),
+            },
+            Timestamp::from_unix_secs(1_760_000_000).unwrap(),
+            &Origin {
+                actor: Actor::User,
+                machine_id: MachineId("test".to_owned()),
+            },
+            &mut random,
+        )
+        .unwrap()
+        .id
+}
+
+/// Polls the index until `done` holds for the row of `id`, at most `deadline`: slow CI machines
+/// get their time, a fast one does not wait. Returns how long it took.
+fn wait_for(
+    sandbox: &Sandbox,
+    id: &TaskId,
+    deadline: Duration,
+    done: impl Fn(&IndexedTask) -> bool,
+) -> Duration {
+    let started = Instant::now();
+    loop {
+        let row = Reader::open(&sandbox.index())
+            .ok()
+            .and_then(|reader| reader.task(id).ok().flatten());
+        if row.as_ref().is_some_and(&done) {
+            return started.elapsed();
+        }
+        assert!(
+            started.elapsed() < deadline,
+            "not indexed after {deadline:?}: {row:?}"
+        );
+        thread::sleep(POLL);
+    }
+}
+
+/// The lines of the event log of `id`, parsed.
+fn events(sandbox: &Sandbox, id: &TaskId) -> Vec<Value> {
+    fs::read_to_string(sandbox.task_dir("work", id.as_str()).join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// Replaces `from` with `to` in the `task.md` of `id`, as an editor would; the new text.
+fn hand_edit(sandbox: &Sandbox, id: &TaskId, from: &str, to: &str) -> String {
+    let path = sandbox.task_dir("work", id.as_str()).join("task.md");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains(from), "{text}");
+    let edited = text.replace(from, to);
+    fs::write(&path, &edited).unwrap();
+    edited
+}
+
+#[test]
+fn a_hand_edit_of_the_title_is_indexed_and_recorded_as_an_event() {
+    let sandbox = Sandbox::new();
+    let id = create_task(&sandbox, "Before");
+    let daemon = sandbox.start();
+    // The reconciliation on start finds the file loomd indexed: nothing recorded.
+    sandbox.reindex();
+    assert_eq!(events(&sandbox, &id).len(), 1);
+
+    hand_edit(&sandbox, &id, "title = \"Before\"", "title = \"After\"");
+    let took = wait_for(&sandbox, &id, TIMEOUT, |row| row.title() == "After");
+    // The target is 2 s; the deadline is longer so that a loaded CI runner does not fail.
+    eprintln!("hand edit indexed after {took:?}");
+    let log = events(&sandbox, &id);
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[1]["type"], "edited");
+    assert_eq!(log[1]["actor"], json!({ "type": "file" }));
+    assert_eq!(
+        log[1]["changes"],
+        json!([{ "field": "title", "from": "Before", "to": "After" }])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn an_invalid_hand_edit_is_flagged_read_only_and_never_rewritten() {
+    let sandbox = Sandbox::new();
+    let id = create_task(&sandbox, "Fragile");
+    let daemon = sandbox.start();
+    sandbox.reindex();
+
+    let broken = hand_edit(&sandbox, &id, "title = \"Fragile\"", "title = ");
+    // The whole edit, not the empty file an editor may leave for an instant while it writes.
+    wait_for(
+        &sandbox,
+        &id,
+        TIMEOUT,
+        |row| matches!(&row.state, IndexedState::Invalid { text, .. } if *text == broken),
+    );
+    let row = Reader::open(&sandbox.index())
+        .unwrap()
+        .task(&id)
+        .unwrap()
+        .unwrap();
+    assert!(row.read_only());
+    assert!(
+        matches!(row.state, IndexedState::Invalid { ref error, .. } if error.starts_with("line 3: invalid TOML")),
+        "{row:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(sandbox.task_dir("work", id.as_str()).join("task.md")).unwrap(),
+        broken
+    );
+    assert_eq!(events(&sandbox, &id).len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_hand_edit_made_while_loomd_was_stopped_is_recorded_at_start() {
+    let sandbox = Sandbox::new();
+    let id = create_task(&sandbox, "Offline");
+    hand_edit(&sandbox, &id, "status = \"ready\"", "status = \"done\"");
+    let daemon = sandbox.start();
+    // Queued after the reconciliation on start.
+    sandbox.reindex();
+    let log = events(&sandbox, &id);
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[1]["actor"], json!({ "type": "file" }));
+    assert_eq!(log[1]["changes"][0]["field"], "status");
+    daemon.stop();
+}
+
 #[test]
 fn an_unreadable_task_is_reported_and_the_others_indexed() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -219,6 +375,13 @@ fn an_unreadable_task_is_reported_and_the_others_indexed() {
     let daemon = sandbox.start();
 
     let result = sandbox.reindex();
+    // Read the index before restoring the mode: the watcher reindexes the task as soon as it
+    // sees the change (inotify reports it at once on Linux).
+    let ids: Vec<String> = sandbox
+        .indexed()
+        .into_iter()
+        .map(|task| task.id.to_string())
+        .collect();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(result.tasks, 1);
     assert_eq!(result.failed.len(), 1, "{result:?}");
@@ -226,11 +389,6 @@ fn an_unreadable_task_is_reported_and_the_others_indexed() {
         result.failed[0].path.ends_with("tasks/bbbbbbbb"),
         "{result:?}"
     );
-    let ids: Vec<String> = sandbox
-        .indexed()
-        .into_iter()
-        .map(|task| task.id.to_string())
-        .collect();
     assert_eq!(ids, ["aaaaaaaa"]);
     daemon.stop();
 }

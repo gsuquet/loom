@@ -142,9 +142,9 @@ The ranking is computed on every match, then cut to `limit`.
 
 ### Tasks
 
-The tasks are files in the context stores (see [configuration](configuration.md#context-stores)), indexed in `<loom home>/index.db`. `loomd` indexes them when it starts.
+The tasks are files in the context stores (see [configuration](configuration.md#context-stores)), indexed in `<loom home>/index.db`. `loomd` reconciles them with the index when it starts and when their files change, recording hand edits (see [context stores](configuration.md#context-stores)).
 
-`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction, and answers with a [`ReindexResult`](#reindexresult) once it is written. Rows of tasks whose directory is gone are dropped; an invalid `task.md` is indexed read-only and listed, never rewritten. The repositories of the index are left as they are. A task whose files cannot be read (permissions, I/O), or a store whose `tasks/` cannot be listed, is listed in `failed` and keeps the row it had; the other tasks are indexed. Only a failure to write the index answers `500 internal`, the index then unchanged.
+`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction, and answers with a [`ReindexResult`](#reindexresult) once it is written. Rows of tasks whose directory is gone are dropped; an invalid `task.md` is indexed read-only and listed, never rewritten. Before the rebuild, every task is reconciled: a hand edit not recorded yet gets its `edited` event first, so a reindex may append events, and the rebuild never hides an edit. The repositories of the index are left as they are. A task whose files cannot be read (permissions, I/O), or a store whose `tasks/` cannot be listed, by the reconciliation or by the rebuild, is listed in `failed` and keeps the row it had; the other tasks are indexed. Only a failure to write the index answers `500 internal`, the index then unchanged.
 
 ### Errors
 

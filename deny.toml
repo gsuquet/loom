@@ -62,6 +62,21 @@ allow = ["Zlib"]
 crate = "encoding_rs"
 allow = ["BSD-3-Clause"]
 
+# File watcher of the task stores (`notify`, in loomd) and its Linux backend (`inotify`). CC0-1.0
+# is a public-domain dedication and ISC is permissive; both are MIT-compatible. Allowed for these
+# crates only.
+[[licenses.exceptions]]
+crate = "notify"
+allow = ["CC0-1.0"]
+
+[[licenses.exceptions]]
+crate = "inotify"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "inotify-sys"
+allow = ["ISC"]
+
 [licenses.private]
 # Workspace crates are not published (`publish = false`).
 ignore = true

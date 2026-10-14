@@ -1,10 +1,12 @@
-//! Responses of the tasks index, decided without I/O.
+//! Decisions of the task store of loomd, without I/O: the response of a reindex, the task a
+//! changed path belongs to.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use loom_api::{ContextName, FailedTaskFile, InvalidTaskFile, ReindexResult};
+use loom_api::{ContextName, FailedTaskFile, InvalidTaskFile, ReindexResult, TaskId};
 use loom_store::files::TASKS_DIR;
+use loom_store::port::task_dir_id;
 use loom_store::tasks::{IndexedState, Reindexed, TaskFailure};
 
 /// What a reindex reports: every row counted, the invalid ones listed by context and ID, the
@@ -60,6 +62,89 @@ pub fn failed_files(
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files.dedup_by(|later, first| later.path == first.path);
     files
+}
+
+/// The task a changed `path` belongs to, if any.
+///
+/// A task path is under `<root>/tasks/<id>/` of one of `stores` (context and store root, as
+/// watched), `<id>` a task ID. Temporary directories of a creation (`.<id>.tmp`) and other
+/// names are not tasks.
+#[must_use]
+pub fn task_of_path(
+    stores: &[(ContextName, PathBuf)],
+    path: &Path,
+) -> Option<(ContextName, TaskId)> {
+    stores
+        .iter()
+        .filter_map(|(context, root)| {
+            // Component-wise: `tasks-nested` is not under `tasks`.
+            let rest = path.strip_prefix(root.join(TASKS_DIR)).ok()?;
+            let id = task_dir_id(rest.components().next()?.as_os_str())?;
+            Some((root.as_os_str().len(), context, id))
+        })
+        .max_by_key(|(len, _, _)| *len)
+        .map(|(_, context, id)| (context.clone(), id))
+}
+
+#[cfg(test)]
+mod path_tests {
+    use std::path::{Path, PathBuf};
+
+    use loom_api::ContextName;
+
+    use super::task_of_path;
+
+    fn stores() -> Vec<(ContextName, PathBuf)> {
+        vec![
+            ("work".parse().unwrap(), PathBuf::from("/l/contexts/work")),
+            ("home".parse().unwrap(), PathBuf::from("/u/stores/home")),
+            // A store inside another one's root: the longest root wins, never the outer one.
+            (
+                "nested".parse().unwrap(),
+                PathBuf::from("/l/contexts/work/tasks-nested"),
+            ),
+        ]
+    }
+
+    fn found(path: &str) -> Option<(String, String)> {
+        task_of_path(&stores(), Path::new(path))
+            .map(|(context, id)| (context.to_string(), id.to_string()))
+    }
+
+    #[test]
+    fn a_path_in_a_task_directory_is_that_task() {
+        let task = |context: &str, id: &str| Some((context.to_owned(), id.to_owned()));
+        assert_eq!(
+            found("/l/contexts/work/tasks/k3q7zm2a/task.md"),
+            task("work", "k3q7zm2a")
+        );
+        assert_eq!(
+            found("/l/contexts/work/tasks/k3q7zm2a/.task.md.tmp"),
+            task("work", "k3q7zm2a")
+        );
+        assert_eq!(
+            found("/l/contexts/work/tasks/k3q7zm2a"),
+            task("work", "k3q7zm2a")
+        );
+        assert_eq!(
+            found("/u/stores/home/tasks/h8w2nc4d/events.jsonl"),
+            task("home", "h8w2nc4d")
+        );
+    }
+
+    #[test]
+    fn other_paths_are_no_task() {
+        for path in [
+            "/l/contexts/work/tasks",
+            "/l/contexts/work/tasks/.k3q7zm2a.tmp/task.md",
+            "/l/contexts/work/tasks/notes/task.md",
+            "/l/contexts/work/notes/k3q7zm2a/task.md",
+            "/l/contexts/workshop/tasks/k3q7zm2a/task.md",
+            "/elsewhere/tasks/k3q7zm2a/task.md",
+        ] {
+            assert_eq!(found(path), None, "{path}");
+        }
+    }
 }
 
 #[cfg(test)]

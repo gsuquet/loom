@@ -16,7 +16,8 @@ mod task_file;
 mod timestamp;
 
 pub use command::{
-    Action, Command, DomainError, NewTask, TaskEdit, apply, available_actions, create, undo,
+    Action, Command, DomainError, NewTask, ReplayError, TaskEdit, apply, available_actions, create,
+    hand_edit_changes, replay, undo,
 };
 pub use context::{CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, UNASSIGNED};
 pub use event::{

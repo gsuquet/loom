@@ -17,6 +17,7 @@ pub mod atomic;
 pub mod files;
 mod migrate;
 pub mod port;
+pub mod reconcile;
 mod repos;
 pub mod search;
 pub mod tasks;

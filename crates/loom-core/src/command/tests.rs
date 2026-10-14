@@ -3,6 +3,7 @@ use crate::{
     Importance, Kind, Link, MachineId, NewTask, Origin, ReadOnlyReason, Status, StatusName, Task,
     TaskEdit, Timestamp, apply, available_actions, create, is_legal_transition, undo,
 };
+use crate::{ReplayError, hand_edit_changes, replay};
 
 fn at(secs: u64) -> Timestamp {
     Timestamp::from_unix_secs(1_760_000_000 + secs).unwrap()
@@ -411,5 +412,109 @@ fn an_undo_command_cannot_be_read_from_input() {
     assert_eq!(
         serde_json::from_value::<Command>(pin).unwrap(),
         Command::Pin
+    );
+}
+
+#[test]
+fn replaying_the_log_gives_the_task_it_describes() {
+    let (task, mut log) = task_with(Status::Inbox);
+    let task = run(task, &mut log, set(StatusName::Active), 1);
+    let edit = TaskEdit {
+        title: Some("Renamed".to_owned()),
+        due: Some(Some("2026-10-15".parse().unwrap())),
+        ..TaskEdit::default()
+    };
+    let task = run(task, &mut log, Command::Edit(edit), 2);
+    let task = run(task, &mut log, Command::Pin, 3);
+    let task = undo_last(task, &mut log, 4);
+    let note = Command::LogNote {
+        text: "called".to_owned(),
+    };
+    let task = run(task, &mut log, note, 5);
+    assert_eq!(replay(&log), Ok(task.clone()));
+    assert_eq!(task.updated, at(5));
+    // The creation alone.
+    assert_eq!(replay(&log[..1]).unwrap().updated, at(0));
+}
+
+#[test]
+fn a_log_without_its_creation_or_with_a_stale_change_does_not_replay() {
+    let (task, mut log) = task_with(Status::Ready);
+    run(task, &mut log, set(StatusName::Active), 1);
+    assert_eq!(replay(&[]), Err(ReplayError::NoCreation));
+    assert_eq!(replay(&log[1..]), Err(ReplayError::NoCreation));
+    // The same change twice: the second expects `ready`, finds `active`.
+    let doubled = [log[0].clone(), log[1].clone(), log[1].clone()];
+    assert_eq!(replay(&doubled), Err(ReplayError::Conflict("status")));
+    // A second creation is not a change: the log is not one task's.
+    let twice = [log[0].clone(), log[0].clone()];
+    assert_eq!(replay(&twice), Err(ReplayError::CreatedTwice));
+}
+
+#[test]
+fn a_hand_edit_is_the_changes_of_every_field_that_differs() {
+    let (before, _) = task_with(Status::Ready);
+    assert_eq!(hand_edit_changes(&before, &before), []);
+    let after = Task {
+        title: "By hand".to_owned(),
+        status: Status::Unknown("snoozed".to_owned()),
+        pinned: true,
+        links: vec![Link::Repo {
+            repo: "company-a/checkout".to_owned(),
+        }],
+        // Not a field a hand edit records.
+        updated: at(99),
+        ..before.clone()
+    };
+    assert_eq!(
+        hand_edit_changes(&before, &after),
+        [
+            FieldChange::Title(Change {
+                from: before.title.clone(),
+                to: "By hand".to_owned(),
+            }),
+            FieldChange::Status(Change {
+                from: Status::Ready,
+                to: Status::Unknown("snoozed".to_owned()),
+            }),
+            FieldChange::Pinned(Change {
+                from: false,
+                to: true,
+            }),
+            FieldChange::Links(Change {
+                from: Vec::new(),
+                to: after.links.clone(),
+            }),
+        ]
+    );
+    // Recorded, then replayed: the log describes the file again.
+    let (task, mut log) = task_with(Status::Ready);
+    let edited = Task {
+        title: "By hand".to_owned(),
+        importance: Importance::P3,
+        ..task.clone()
+    };
+    let file = Origin {
+        actor: Actor::File,
+        machine_id: MachineId("laptop".to_owned()),
+    };
+    log.push(EventRecord::new(
+        "zzzzzzzz".parse().unwrap(),
+        Event::Edited {
+            changes: hand_edit_changes(&task, &edited),
+        },
+        at(7),
+        &file,
+    ));
+    assert_eq!(
+        replay(&log),
+        Ok(Task {
+            updated: at(7),
+            ..edited
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&log[1].actor).unwrap(),
+        serde_json::json!({ "type": "file" })
     );
 }
