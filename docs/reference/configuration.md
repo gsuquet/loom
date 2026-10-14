@@ -55,7 +55,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
-| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[forges."<host>"] kind` | | | See [contexts and repositories](#contexts-and-repositories). |
@@ -123,6 +123,7 @@ kind = "gitlab"
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A trailing `/` is ignored. |
 | `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no git command. |
 | `[contexts.<name>] store.path` | string: path | `<loom home>/contexts/<name>` | Root of the context's task store. Same path rules as `match.paths`; `~` is the user's home, not the loom home. Two contexts cannot have the same `store.path`. |
+| `[contexts.<name>] machines` | array of strings: machine names | none (every machine) | The machines that hold the context's store, by their [`machine.toml`](#machinetoml) `id`. At least one entry when given; each entry follows the rules of `id`. On a machine it does not name, `loomd` does not load the store: no `tasks/` is created, its tasks are not indexed. The repositories of the context are matched as usual. |
 | `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
 | `[repos] max_depth` | integer | `4` | 0 to 4294967295. Deepest directory level examined below each root, the root being level 0. |
 | `[repos] exclude` | array of strings: glob patterns | `[]` | Each pattern is not empty and is a valid glob (`*`, `?`, `**`, `[…]`, `{a,b}`). A pattern without `/` matches a directory name at any depth (`archive`, `*-old`); a pattern with `/` matches the whole directory path relative to its root, with `/` separators (`clients/old`, `**/fixtures`). A matching directory is not walked. Hidden directories and `node_modules`, `vendor`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__` are always excluded. |
@@ -278,9 +279,27 @@ Error: cannot start the repository index
 
 The index also holds the tasks of the [context stores](#context-stores), read from their files: `loomd` reconciles them when it starts and as their files change, and `loom reindex` ([`POST /v1/tasks/reindex`](api.md#tasks)) rebuilds them from the files while it runs, without touching the repositories. A deleted `index.db` gets the same task rows back at the next start.
 
+## `machine.toml`
+
+Path: `<loom home>/machine.toml`, mode `0600`. Local to the machine and not meant to be versioned, unlike `config.toml`, which can be the same on every machine.
+
+```toml
+id = "laptop"
+```
+
+| Key | Type | Constraints | Effect |
+| --- | --- | --- | --- |
+| `id` | string | Required. 1 to 64 bytes, no whitespace or control characters. | Name of the machine: matched against `[contexts.<name>] machines`, and written as the `machine_id` of every [event](task-file.md#common-fields) `loomd` records. |
+
+When the file is missing, `loomd` creates it at start with the host name (whitespace and control characters removed, cut to 64 bytes, `unknown` when nothing is left), and logs `machine named after the host`. The file is read once, when `loomd` starts. An unknown key, a missing or invalid `id`, or a TOML syntax error stops `loomd` with code 1:
+
+```text
+Error: invalid configuration /home/me/.loom/machine.toml:1:1: unknown field `name`, expected `id`
+```
+
 ## Context stores
 
-Each context of `config.toml` has a task store: `[contexts.<name>] store.path`, by default `<loom home>/contexts/<name>`. `loomd` creates `<store>/tasks/` (mode `0700`) when it starts; a store that cannot be created stops it with code 1.
+Each context of `config.toml` held by this machine (see [`machines`](#contexts-and-repositories)) has a task store: `[contexts.<name>] store.path`, by default `<loom home>/contexts/<name>`. `loomd` creates `<store>/tasks/` (mode `0700`) when it starts; a store that cannot be created stops it with code 1.
 
 | Path | Mode | Content |
 | --- | --- | --- |

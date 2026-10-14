@@ -6,4 +6,5 @@ pub mod config;
 pub mod duration;
 pub mod home;
 pub mod layout;
+pub mod machine;
 pub mod repos;

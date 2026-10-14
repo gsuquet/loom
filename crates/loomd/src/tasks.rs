@@ -99,10 +99,12 @@ pub struct TaskHandle {
 }
 
 /// Creates `tasks/` in every context store, opens `db` (created and migrated when needed),
-/// starts the file watcher, then the task thread, which reconciles every task at once.
+/// starts the file watcher, then the task thread, which reconciles every task at once. Events
+/// are recorded on the machine `machine_id`.
 pub fn start(
     db: &Path,
     stores: &BTreeMap<ContextName, PathBuf>,
+    machine_id: MachineId,
 ) -> Result<(TaskStore, TaskHandle)> {
     let mut files = Vec::with_capacity(stores.len());
     for (context, root) in stores {
@@ -123,11 +125,11 @@ pub fn start(
         stores: stores.clone(),
         origin: Origin {
             actor: Actor::File,
-            machine_id: machine_id(),
+            machine_id: machine_id.clone(),
         },
         user: Origin {
             actor: Actor::User,
-            machine_id: machine_id(),
+            machine_id,
         },
         random: OsRandom::open(),
     };
@@ -222,20 +224,6 @@ const fn relevant(kind: EventKind) -> bool {
         | EventKind::Remove(_)
         | EventKind::Other => true,
     }
-}
-
-/// The machine events are recorded on: the host name.
-// TODO(#72 follow-up): read `~/.loom/machine.toml` once it exists (ADR-0013, decision 8).
-fn machine_id() -> MachineId {
-    let name = rustix::system::uname()
-        .nodename()
-        .to_string_lossy()
-        .into_owned();
-    MachineId(if name.is_empty() {
-        "unknown".to_owned()
-    } else {
-        name
-    })
 }
 
 /// Randomness of the IDs loomd draws: `/dev/urandom`, and the keys of the standard library's

@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer};
 pub use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
+use crate::machine::MachineName;
 use crate::repos::{ContextConfig, ForgeConfig, ForgeHost, ReposConfig, reserved_message};
 
 /// Content of `config.toml`. Unknown keys and tables are rejected at every level.
@@ -59,6 +60,42 @@ impl Config {
                 (name.clone(), path)
             })
             .collect()
+    }
+}
+
+/// The context stores a machine holds, and the contexts it does not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Stores {
+    /// Each context the machine holds, with its store.
+    pub held: BTreeMap<ContextName, StoreSettings>,
+    /// Contexts whose `machines` does not name the machine, sorted.
+    pub not_held: Vec<ContextName>,
+}
+
+/// Where a context store is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreSettings {
+    /// Root of the store (see [`Config::store_paths`]).
+    pub path: PathBuf,
+}
+
+impl Config {
+    /// The stores of the contexts `machine` holds (`machines` absent or naming it), and the
+    /// contexts it does not hold. Paths as [`Config::store_paths`] gives them.
+    #[must_use]
+    pub fn stores(&self, loom_home: &Path, user_home: &Path, machine: &MachineName) -> Stores {
+        let mut paths = self.store_paths(loom_home, user_home);
+        let mut stores = Stores::default();
+        for (name, context) in &self.contexts {
+            if !context.held_by(machine) {
+                stores.not_held.push(name.clone());
+                continue;
+            }
+            if let Some(path) = paths.remove(name) {
+                stores.held.insert(name.clone(), StoreSettings { path });
+            }
+        }
+        stores
     }
 }
 
@@ -328,7 +365,7 @@ fn tie<T: fmt::Display>(
 
 /// Line and column of the byte `offset` in `text`. An offset inside a character or past the
 /// end is clamped to the previous character boundary.
-fn location(text: &str, offset: usize) -> Location {
+pub(crate) fn location(text: &str, offset: usize) -> Location {
     let mut offset = offset.min(text.len());
     while !text.is_char_boundary(offset) {
         offset -= 1;
@@ -345,7 +382,7 @@ fn location(text: &str, offset: usize) -> Location {
 mod tests {
     use super::{
         CheckInterval, Config, DEFAULT_CHECK_INTERVAL, Daemon, Location, OtlpEndpoint, Spanned,
-        TelemetryConfig, Update, location, parse_config,
+        StoreSettings, TelemetryConfig, Update, location, parse_config,
     };
     use crate::repos::{
         ConfigPath, ContextConfig, DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_INTERVAL,
@@ -951,6 +988,51 @@ kind = "gitlab"
                 .store_paths(Path::new("/l"), Path::new("/h"))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn machines_are_read_and_checked() {
+        let text = "[contexts.work]\nmachines = [\"laptop\", \"tower\"]\n[contexts.home]\n";
+        let config = parse_config(text, Path::new(PATH)).unwrap();
+        let work = &config.contexts[&"work".parse::<ContextName>().unwrap()];
+        assert!(work.held_by(&"laptop".parse().unwrap()));
+        assert!(!work.held_by(&"server".parse().unwrap()));
+        let home = &config.contexts[&"home".parse::<ContextName>().unwrap()];
+        assert!(home.held_by(&"server".parse().unwrap()));
+
+        assert_rejected("[contexts.a]\nmachines = []\n", 2, 12, "machines is empty");
+        assert_rejected(
+            "[contexts.a]\nmachines = [\"my laptop\"]\n",
+            2,
+            12,
+            "machines: invalid machine name `my laptop`",
+        );
+    }
+
+    #[test]
+    fn stores_keep_the_contexts_this_machine_holds() {
+        let text = "[contexts.personal]\n[contexts.work]\nmachines = [\"laptop\"]\n[contexts.lab]\nmachines = [\"tower\"]\n";
+        let config = parse_config(text, Path::new(PATH)).unwrap();
+        let name = |name: &str| name.parse::<ContextName>().unwrap();
+        let stores = config.stores(Path::new("/l"), Path::new("/h"), &"laptop".parse().unwrap());
+        assert_eq!(
+            stores.held,
+            BTreeMap::from([
+                (
+                    name("personal"),
+                    StoreSettings {
+                        path: PathBuf::from("/l/contexts/personal"),
+                    }
+                ),
+                (
+                    name("work"),
+                    StoreSettings {
+                        path: PathBuf::from("/l/contexts/work"),
+                    }
+                ),
+            ])
+        );
+        assert_eq!(stores.not_held, [name("lab")]);
     }
 
     #[test]
