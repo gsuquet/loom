@@ -25,6 +25,7 @@ use loom_api::{
     Channel, DaemonRestart, RollbackReport, UpdateChannel, UpdateState, UpgradeDecision,
     UpgradeReport, UpgradeSource, VersionInfo,
 };
+use loom_update::exec::retry_busy;
 use loom_update::release::release_target;
 use loom_update::verify::sha256_hex;
 use serde_json::{Value, json};
@@ -84,7 +85,8 @@ impl Env {
     }
 
     fn loom(&self, args: &[&str]) -> Output {
-        Command::new(self.install.path().join("loom"))
+        let mut command = Command::new(self.install.path().join("loom"));
+        command
             .args(args)
             .env("LOOM_HOME", self.home.path())
             .envs(isolation::isolated_env(self.home.path()))
@@ -97,9 +99,9 @@ impl Env {
             .env_remove("ALL_PROXY")
             .env_remove("http_proxy")
             .env_remove("https_proxy")
-            .env_remove("all_proxy")
-            .output()
-            .unwrap()
+            .env_remove("all_proxy");
+        // The test wrote this binary: another test forking meanwhile can keep it busy on Linux.
+        retry_busy(|| command.output()).unwrap()
     }
 
     fn installed(&self) -> [Vec<u8>; 2] {
@@ -472,16 +474,16 @@ fn the_release_key_rejects_a_signature_from_another_key() {
     let env = Env::new();
     env.publish_latest(NEW, Tamper::None);
     let before = env.installed();
-    let output = Command::new(env.install.path().join("loom"))
+    let mut command = Command::new(env.install.path().join("loom"));
+    command
         .args(["upgrade", "--channel", "stable"])
         .env("LOOM_HOME", env.home.path())
         .envs(isolation::isolated_env(env.home.path()))
         .env("LOOM_RELEASES_URL", &env.api.url)
         .env_remove("LOOM_UPDATE_PUBKEY")
         .env_remove("LOOM_GITHUB_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .output()
-        .unwrap();
+        .env_remove("GITHUB_TOKEN");
+    let output = retry_busy(|| command.output()).unwrap();
     assert_failure(&output, "invalid signature on SHA256SUMS");
     assert_eq!(env.installed(), before);
 }
@@ -490,15 +492,15 @@ fn the_release_key_rejects_a_signature_from_another_key() {
 fn token_is_sent_as_a_bearer() {
     let env = Env::new();
     env.publish_latest(NEW, Tamper::None);
-    let output = Command::new(env.install.path().join("loom"))
+    let mut command = Command::new(env.install.path().join("loom"));
+    command
         .args(["upgrade", "--channel", "stable", "--check"])
         .env("LOOM_HOME", env.home.path())
         .envs(isolation::isolated_env(env.home.path()))
         .env("LOOM_RELEASES_URL", &env.api.url)
         .env("LOOM_GITHUB_TOKEN", "test-token")
-        .env_remove("GITHUB_TOKEN")
-        .output()
-        .unwrap();
+        .env_remove("GITHUB_TOKEN");
+    let output = retry_busy(|| command.output()).unwrap();
     assert_success(&output);
     let requests = env.api.requests();
     assert!(
