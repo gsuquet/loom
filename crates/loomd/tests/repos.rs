@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use loom_api::{
     ApiError, DaemonDiagnostics, ErrorCode, MaybeKnown, PlannedAction, RemoteCheckOutcome,
-    RemoteCheckResult, RemoteProblem, RemoteScheme, RepoHead, RepoList, RepoSummary,
-    RepoUpdatePolicy, ScanResult, SearchField, SearchKind, SearchResults, SkipReason,
+    RemoteCheckResult, RemoteProblem, RemoteScheme, RepoHead, RepoList, RepoMatch, RepoSummary,
+    RepoUpdatePolicy, ScanResult, SearchField, SearchResult, SearchResults, SkipReason,
     SshAgentSocket, SyncOutcome, SyncResult, Untracked, UpdateOutcome,
 };
 use serde::de::DeserializeOwned;
@@ -47,8 +47,10 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
+        // The path is searched: the prefix is glued to the random characters, so that they never
+        // form a word of their own that a query term starts (`ap` for `LO AP`).
         let dir = tempfile::Builder::new()
-            .prefix("loomd-repos-")
+            .prefix("dr")
             .tempdir_in("/tmp")
             .unwrap();
         let sandbox = Self { dir };
@@ -236,14 +238,20 @@ fn search_ranks_and_filters_over_the_api() {
     let _daemon = sandbox.start();
     wait_for_repos(&sandbox, 3);
 
-    let search = |path: &str| -> Vec<String> {
+    // No task store holds anything: every result is a repository.
+    let repos = |path: &str| -> Vec<RepoMatch> {
         sandbox
             .get::<SearchResults>(path)
             .results
             .into_iter()
-            .map(|result| result.slug)
+            .map(|result| match result {
+                SearchResult::Repo(repo) => repo,
+                SearchResult::Task(task) => panic!("unexpected task {}", task.id),
+            })
             .collect()
     };
+    let search =
+        |path: &str| -> Vec<String> { repos(path).into_iter().map(|repo| repo.slug).collect() };
     assert_eq!(
         search("/v1/search?q=loom"),
         ["personal/loom", "personal/loom-api", "work/tool"]
@@ -254,9 +262,13 @@ fn search_ranks_and_filters_over_the_api() {
     assert_eq!(search("/v1/search?q=%22loom%22%20OR"), Vec::<String>::new());
     assert_eq!(search("/v1/search?q="), Vec::<String>::new());
 
-    let results = sandbox.get::<SearchResults>("/v1/search?q=company").results;
+    assert_eq!(
+        search("/v1/search?q=loom&type=repo&context="),
+        search("/v1/search?q=loom")
+    );
+    assert_eq!(search("/v1/search?q=loom&type=task"), Vec::<String>::new());
+    let results = repos("/v1/search?q=company");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].kind, SearchKind::Repo);
     assert_eq!(results[0].name, "tool");
     assert_eq!(results[0].context, "work");
     assert_eq!(results[0].path, perso.join("clients/tool"));
@@ -268,6 +280,8 @@ fn search_ranks_and_filters_over_the_api() {
         "/v1/search?q=x&limit=-1",
         "/v1/search?q=x&context=Not/A/Context",
         "/v1/search?q=x&sort=name",
+        "/v1/search?q=x&type=note",
+        "/v1/search?q=x&type=Repo",
     ] {
         assert_api_error(
             &sandbox.request("GET", path, None),

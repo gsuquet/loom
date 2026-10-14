@@ -23,7 +23,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
@@ -39,7 +39,7 @@ use loomd::task_index::{failed_files, reindex_result, task_of_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tracing::{Span, debug, info, info_span, warn};
 
 use crate::repos::Failure;
@@ -91,11 +91,13 @@ pub struct TaskStore {
     watcher: Option<RecommendedWatcher>,
 }
 
-/// What the API handlers use: the command channel, and the index for reads.
+/// What the API handlers use: the command channel, the index for reads, and whether the
+/// reconciliation on start is over.
 #[derive(Clone)]
 pub struct TaskHandle {
     commands: mpsc::Sender<Command>,
     db: PathBuf,
+    ready: watch::Receiver<bool>,
 }
 
 /// Creates `tasks/` in every context store, opens `db` (created and migrated when needed),
@@ -118,7 +120,9 @@ pub fn start(
     // Before the reconciliation: an edit made while it runs is seen by one or the other.
     let watcher = watch(stores, &commands);
     let _ = commands.send(Command::ReconcileAll);
+    let (ready_sender, ready) = watch::channel(false);
     let worker = Worker {
+        ready: Some(ready_sender),
         tasks: Tasks::new(files, index),
         stores: stores.clone(),
         origin: Origin {
@@ -151,6 +155,7 @@ pub fn start(
         TaskHandle {
             commands,
             db: db.to_path_buf(),
+            ready,
         },
     ))
 }
@@ -286,6 +291,18 @@ impl TaskStore {
 }
 
 impl TaskHandle {
+    /// Waits, at most `timeout`, for the reconciliation on start, so that a search does not
+    /// answer from a tasks index still being filled. `false` when it is not over yet; the
+    /// caller goes on with the index as it is.
+    pub async fn wait_ready(&self, timeout: Duration) -> bool {
+        let mut ready = self.ready.clone();
+        // A thread gone without setting it (stopped, panicked) ends the wait as well.
+        matches!(
+            tokio::time::timeout(timeout, ready.wait_for(|ready| *ready)).await,
+            Ok(Ok(_))
+        )
+    }
+
     /// Rebuilds the tasks index from the files.
     pub async fn reindex(&self) -> Result<ReindexResult, Failure> {
         self.send(|reply, parent| Command::Reindex { reply, parent })
@@ -404,6 +421,8 @@ struct Worker {
     /// Who the changes of the API are recorded as: the actor `user`, on this machine.
     user: Origin,
     random: OsRandom,
+    /// Set once the reconciliation on start is over, then dropped.
+    ready: Option<watch::Sender<bool>>,
 }
 
 impl Worker {
@@ -433,6 +452,10 @@ impl Worker {
                 }
                 Command::ReconcileAll => {
                     self.reconcile_all();
+                    // The first one is the reconciliation on start, queued before any other.
+                    if let Some(ready) = self.ready.take() {
+                        ready.send_replace(true);
+                    }
                 }
                 Command::Changed { context, id } => self.reconcile(&context, &id),
                 Command::Stop => return,
@@ -600,4 +623,55 @@ fn log_reconciled(id: &TaskId, reconciled: &Reconciled) {
 /// the log tolerates).
 fn now() -> Timestamp {
     timestamp(SystemTime::now()).unwrap_or(Timestamp::EPOCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use tokio::sync::watch;
+
+    use super::TaskHandle;
+
+    fn handle() -> (TaskHandle, watch::Sender<bool>) {
+        let (commands, _) = mpsc::channel();
+        let (sender, ready) = watch::channel(false);
+        let db = std::path::PathBuf::new();
+        (
+            TaskHandle {
+                commands,
+                db,
+                ready,
+            },
+            sender,
+        )
+    }
+
+    fn wait(handle: &TaskHandle, timeout: Duration) -> bool {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(handle.wait_ready(timeout))
+    }
+
+    #[test]
+    fn a_search_waits_for_the_reconciliation_on_start_at_most_the_timeout() {
+        let (handle, sender) = handle();
+        assert!(!wait(&handle, Duration::from_millis(10)));
+        sender.send_replace(true);
+        assert!(wait(&handle, Duration::ZERO));
+        // Every clone sees it.
+        let clone = handle.clone();
+        drop(handle);
+        assert!(wait(&clone, Duration::ZERO));
+    }
+
+    #[test]
+    fn a_task_thread_gone_ends_the_wait() {
+        let (handle, sender) = handle();
+        drop(sender);
+        assert!(!wait(&handle, Duration::from_secs(60)));
+    }
 }

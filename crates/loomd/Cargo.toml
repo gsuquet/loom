@@ -37,7 +37,7 @@ serde.workspace = true
 # its kind and status, so serde cannot reject unknown keys), and error details are JSON.
 serde_json.workspace = true
 # `sync`: the updater thread asks the server to stop after an upgrade (oneshot channel).
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

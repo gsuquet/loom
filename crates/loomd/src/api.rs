@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loom_api::{
-    ApiError, ContextName, DEFAULT_SEARCH_LIMIT, ErrorCode, SshAgentSocket, StatusResponse,
-    Timestamp,
+    ApiError, ContextName, DEFAULT_SEARCH_LIMIT, ErrorCode, SearchKind, SshAgentSocket,
+    StatusResponse, Timestamp,
 };
 use serde::Deserialize;
 
@@ -124,6 +124,9 @@ pub struct SearchQuery {
     pub context: Option<String>,
     /// Most results returned, at least 1; default [`DEFAULT_SEARCH_LIMIT`].
     pub limit: Option<usize>,
+    /// Only the results of this kind (`repo`, `task`); ignored when empty.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
 }
 
 /// A search request, checked.
@@ -133,6 +136,8 @@ pub struct SearchRequest {
     pub q: String,
     /// The context to search in.
     pub context: Option<String>,
+    /// The kind of results; both when `None`.
+    pub kind: Option<SearchKind>,
     /// Most results returned.
     pub limit: usize,
 }
@@ -141,7 +146,7 @@ pub struct SearchRequest {
 ///
 /// # Errors
 ///
-/// `invalid_request` when `context` is not a context name or `limit` is 0.
+/// `invalid_request` when `context` is not a context name, `type` not a kind, or `limit` is 0.
 pub fn search_request(query: SearchQuery) -> Result<SearchRequest, ApiError> {
     let (context, _) = repo_filter(RepoQuery {
         context: query.context,
@@ -152,9 +157,21 @@ pub fn search_request(query: SearchQuery) -> Result<SearchRequest, ApiError> {
         Some(0) => return Err(invalid_request("limit must be at least 1")),
         Some(limit) => limit,
     };
+    let kind = match query.kind.as_deref() {
+        None | Some("") => None,
+        Some(text) => Some(
+            SearchKind::ALL
+                .into_iter()
+                .find(|kind| kind.as_str() == text)
+                .ok_or_else(|| {
+                    invalid_request(format!("invalid type `{text}`: expected `repo` or `task`"))
+                })?,
+        ),
+    };
     Ok(SearchRequest {
         q: query.q,
         context,
+        kind,
         limit,
     })
 }
@@ -262,8 +279,8 @@ mod tests {
         slug, status_at, timestamp,
     };
     use loom_api::{
-        ApiVersion, DEFAULT_SEARCH_LIMIT, ErrorCode, SshAgentSocket, StatusResponse, Timestamp,
-        VersionInfo,
+        ApiVersion, DEFAULT_SEARCH_LIMIT, ErrorCode, SearchKind, SshAgentSocket, StatusResponse,
+        Timestamp, VersionInfo,
     };
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
@@ -294,12 +311,14 @@ mod tests {
             q: "lo om".to_owned(),
             context: context.map(str::to_owned),
             limit,
+            kind: None,
         };
         assert_eq!(
             search_request(query(None, None)).unwrap(),
             SearchRequest {
                 q: "lo om".to_owned(),
                 context: None,
+                kind: None,
                 limit: DEFAULT_SEARCH_LIMIT,
             }
         );
@@ -308,9 +327,28 @@ mod tests {
             SearchRequest {
                 q: "lo om".to_owned(),
                 context: None,
+                kind: None,
                 limit: 3,
             }
         );
+        let typed = |kind: &str| {
+            search_request(SearchQuery {
+                kind: Some(kind.to_owned()),
+                ..query(None, None)
+            })
+        };
+        assert_eq!(typed("task").unwrap().kind, Some(SearchKind::Task));
+        assert_eq!(typed("repo").unwrap().kind, Some(SearchKind::Repo));
+        assert_eq!(typed("").unwrap().kind, None);
+        for bad in ["note", "Task", " repo"] {
+            assert_eq!(
+                typed(bad).unwrap_err().code,
+                ErrorCode::InvalidRequest,
+                "{bad}"
+            );
+        }
+        let parsed: SearchQuery = serde_json::from_str(r#"{"q": "x", "type": "task"}"#).unwrap();
+        assert_eq!(parsed.kind.as_deref(), Some("task"));
         assert_eq!(
             search_request(query(Some("work"), Some(1)))
                 .unwrap()

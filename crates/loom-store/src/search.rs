@@ -1,17 +1,21 @@
-//! `loom search` over the repositories: full-text matching by the `repos_fts` table (FTS5),
-//! ranking by [`rank`].
+//! `loom search` over the repositories and the tasks: full-text matching by the `repos_fts` and
+//! `tasks_fts` tables (FTS5), ranking by [`rank_repos`], [`rank_tasks`] and [`merge`].
 //!
 //! A query is split on whitespace; every term must match (AND), each as the prefix of a word.
 //! Terms are quoted, so FTS5 syntax (`"`, `*`, `:`, `(`, `)`, `^`, `-`, `+`, `NEAR`, `AND`,
 //! `OR`, `NOT`) is searched as text, never run as an operator. Case and diacritics are folded
-//! by the table's tokenizer (`unicode61 remove_diacritics 2`), which also splits words on
+//! by the tables' tokenizer (`unicode61 remove_diacritics 2`), which also splits words on
 //! every character that is not a letter or a digit.
+//!
+//! Repositories and tasks are read in one snapshot, then ranked by [`Group`] first: active and
+//! ready tasks, then repositories, then the inbox, then closed tasks.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use loom_api::{SearchField, SearchKind, SearchResult};
+use loom_api::{RepoMatch, SearchField, SearchKind, SearchResult, TaskMatch, TaskSearchField};
+use loom_core::{ContextName, StatusName, TaskId};
 use rusqlite::{Connection, params};
 
 use crate::StoreError;
@@ -19,6 +23,34 @@ use crate::StoreError;
 /// Marks around a matched word in `highlight()` output: characters no indexed text holds.
 const OPEN: char = '\u{1}';
 const CLOSE: char = '\u{2}';
+
+/// Where a result ranks, before anything else: groups come in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    /// Tasks being worked on or next: active, ready, waiting.
+    Current,
+    /// Repositories.
+    Repo,
+    /// Tasks to triage, and tasks whose status or file this loom cannot read.
+    Inbox,
+    /// Done and cancelled tasks.
+    Closed,
+    /// Archived tasks. None yet: the archive comes with #77, which ranks them here.
+    Archived,
+}
+
+impl Group {
+    /// The group of a task with status `status`; `None` for a status written by a newer loom,
+    /// or an invalid `task.md`.
+    #[must_use]
+    pub const fn of_task(status: Option<StatusName>) -> Self {
+        match status {
+            Some(StatusName::Active | StatusName::Ready | StatusName::Waiting) => Self::Current,
+            Some(StatusName::Inbox) | None => Self::Inbox,
+            Some(StatusName::Done | StatusName::Cancelled) => Self::Closed,
+        }
+    }
+}
 
 /// How well a repository matches, best first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,11 +79,53 @@ impl Tier {
     }
 }
 
-/// A match before ranking.
+/// How well a task matches, best first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TaskTier {
+    /// The query is one of its link keys (`CORE-1042`, `!88`), case ignored.
+    Key,
+    /// Every term starts a word of the title.
+    Title,
+    /// The terms are spread over the title, the notes and the link keys.
+    Other,
+}
+
+impl TaskTier {
+    /// The tier of a task, from what matched: a whole link key, every term in its title.
+    #[must_use]
+    pub const fn of(key: bool, title: bool) -> Self {
+        match (key, title) {
+            (true, _) => Self::Key,
+            (false, true) => Self::Title,
+            (false, false) => Self::Other,
+        }
+    }
+}
+
+/// Whether the query made of `terms` (joined with one space) is one of `link_keys`, case
+/// ignored.
+#[must_use]
+pub fn is_key(terms: &[&str], link_keys: &[String]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let query = terms.join(" ").to_lowercase();
+    link_keys.iter().any(|key| key.to_lowercase() == query)
+}
+
+/// The status named `text` as the index stores it; `None` for a status of a newer loom.
+#[must_use]
+pub fn status_name(text: &str) -> Option<StatusName> {
+    StatusName::ALL
+        .into_iter()
+        .find(|name| name.to_string() == text)
+}
+
+/// A repository match before ranking.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Candidate {
+pub struct RepoCandidate {
     /// The result, as returned.
-    pub result: SearchResult,
+    pub result: RepoMatch,
     /// How well it matches.
     pub tier: Tier,
     /// `last_used` in Unix seconds; `None` when never used.
@@ -60,9 +134,24 @@ pub struct Candidate {
     pub bm25: f64,
 }
 
+/// A task match before ranking.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskCandidate {
+    /// The result, as returned.
+    pub result: TaskMatch,
+    /// Its group, from its status.
+    pub group: Group,
+    /// How well it matches.
+    pub tier: TaskTier,
+    /// Last change in Unix seconds; `None` for an invalid `task.md`.
+    pub updated: Option<i64>,
+    /// FTS5 `bm25()`: lower is more relevant.
+    pub bm25: f64,
+}
+
 /// Sorts `candidates` best first: by [`Tier`], then most recently used (never used last),
 /// then by `bm25`, then by slug, so that the order is total and stable.
-pub fn rank(candidates: &mut [Candidate]) {
+pub fn rank_repos(candidates: &mut [RepoCandidate]) {
     candidates.sort_by(|a, b| {
         a.tier
             .cmp(&b.tier)
@@ -70,6 +159,46 @@ pub fn rank(candidates: &mut [Candidate]) {
             .then_with(|| a.bm25.total_cmp(&b.bm25))
             .then_with(|| a.result.slug.cmp(&b.result.slug))
     });
+}
+
+/// Sorts `candidates` best first: by [`Group`], then [`TaskTier`], then most recently changed
+/// (invalid files last), then by `bm25`, then by ID, so that the order is total and stable.
+pub fn rank_tasks(candidates: &mut [TaskCandidate]) {
+    candidates.sort_by(|a, b| {
+        a.group
+            .cmp(&b.group)
+            .then_with(|| a.tier.cmp(&b.tier))
+            .then_with(|| recency(a.updated, b.updated))
+            .then_with(|| a.bm25.total_cmp(&b.bm25))
+            .then_with(|| a.result.id.cmp(&b.result.id))
+    });
+}
+
+/// The results of `repos` and `tasks`, best first, at most `limit`: by [`Group`], each kind
+/// ranked by [`rank_repos`] or [`rank_tasks`] within it.
+#[must_use]
+pub fn merge(
+    mut repos: Vec<RepoCandidate>,
+    mut tasks: Vec<TaskCandidate>,
+    limit: usize,
+) -> Vec<SearchResult> {
+    rank_repos(&mut repos);
+    rank_tasks(&mut tasks);
+    // No group holds both kinds: a stable sort by group keeps each kind's own ranking.
+    let mut all: Vec<(Group, SearchResult)> = tasks
+        .into_iter()
+        .map(|task| (task.group, SearchResult::Task(task.result)))
+        .chain(
+            repos
+                .into_iter()
+                .map(|repo| (Group::Repo, SearchResult::Repo(repo.result))),
+        )
+        .collect();
+    all.sort_by_key(|(group, _)| *group);
+    all.into_iter()
+        .take(limit)
+        .map(|(_, result)| result)
+        .collect()
 }
 
 /// Most recent first, never used last.
@@ -97,6 +226,8 @@ pub fn terms(query: &str) -> Vec<&str> {
 pub struct Expressions {
     /// Every term, as a prefix, in any column.
     pub all: String,
+    /// At least one term, as a prefix: put in a column filter, whether the column holds one.
+    pub any: String,
     /// Every term, as a prefix, in the name.
     pub name: String,
     /// Every term, as a prefix, in the slug.
@@ -105,20 +236,29 @@ pub struct Expressions {
     pub exact_name: String,
 }
 
+impl Expressions {
+    /// `expression` restricted to the column `column`.
+    #[must_use]
+    pub fn in_column(column: &str, expression: &str) -> String {
+        format!("{{{column}}} : ({expression})")
+    }
+}
+
 /// The expressions for `terms`; `None` without terms.
 #[must_use]
 pub fn expressions(terms: &[&str]) -> Option<Expressions> {
     if terms.is_empty() {
         return None;
     }
-    let all = terms
+    let prefixes: Vec<String> = terms
         .iter()
         .map(|term| format!("{}*", quoted(term)))
-        .collect::<Vec<_>>()
-        .join(" AND ");
+        .collect();
+    let all = prefixes.join(" AND ");
     Some(Expressions {
-        name: format!("{{name}} : ({all})"),
-        slug: format!("{{slug}} : ({all})"),
+        any: prefixes.join(" OR "),
+        name: Expressions::in_column("name", &all),
+        slug: Expressions::in_column("slug", &all),
         exact_name: format!("{{name}} : ^{}", quoted(&terms.join(" "))),
         all,
     })
@@ -155,24 +295,52 @@ fn matched_fields(highlighted: &[Option<String>; 6]) -> Vec<SearchField> {
         .collect()
 }
 
-/// The repositories matching `query` (in `context` when given), ranked, at most `limit`, read
-/// in one snapshot.
+/// The repositories and tasks matching `query` (in `context` when given, of `kind` when
+/// given), ranked by [`merge`], at most `limit`, read in one snapshot.
 ///
 /// # Errors
 ///
-/// [`StoreError`] when a query fails.
+/// [`StoreError`] when a query fails or a task row is invalid.
 pub fn search(
     conn: &Connection,
     query: &str,
     context: Option<&str>,
+    kind: Option<SearchKind>,
     limit: usize,
 ) -> Result<Vec<SearchResult>, StoreError> {
-    let Some(expressions) = expressions(&terms(query)) else {
+    let terms = terms(query);
+    let Some(expressions) = expressions(&terms) else {
         return Ok(Vec::new());
     };
+    let (repos, tasks) = match kind {
+        None => (true, true),
+        Some(SearchKind::Repo) => (true, false),
+        Some(SearchKind::Task) => (false, true),
+    };
+    // One read transaction: both kinds come from the same state of the index.
     let tx = conn.unchecked_transaction()?;
-    let exact = exact_names(&tx, &expressions.exact_name)?;
-    let mut statement = tx.prepare(
+    let repos = if repos {
+        repo_candidates(&tx, &expressions, context)?
+    } else {
+        Vec::new()
+    };
+    let tasks = if tasks {
+        task_candidates(&tx, &terms, &expressions, context)?
+    } else {
+        Vec::new()
+    };
+    tx.finish()?;
+    Ok(merge(repos, tasks, limit))
+}
+
+/// The repositories matching `expressions`, unranked.
+fn repo_candidates(
+    conn: &Connection,
+    expressions: &Expressions,
+    context: Option<&str>,
+) -> Result<Vec<RepoCandidate>, StoreError> {
+    let exact = exact_names(conn, &expressions.exact_name)?;
+    let mut statement = conn.prepare(
         "SELECT repos_fts.rowid, r.slug, r.name, r.context, r.path, r.last_used, \
                 bm25(repos_fts), \
                 highlight(repos_fts, 0, char(1), char(2)), \
@@ -199,9 +367,8 @@ pub fn search(
                 row.get(11)?,
                 row.get(12)?,
             ];
-            Ok(Candidate {
-                result: SearchResult {
-                    kind: SearchKind::Repo,
+            Ok(RepoCandidate {
+                result: RepoMatch {
                     slug: row.get(1)?,
                     name: row.get(2)?,
                     context: row.get(3)?,
@@ -215,15 +382,7 @@ pub fn search(
             })
         },
     )?;
-    let mut candidates = rows.collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    tx.finish()?;
-    rank(&mut candidates);
-    Ok(candidates
-        .into_iter()
-        .take(limit)
-        .map(|candidate| candidate.result)
-        .collect())
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// Row ids of the repositories whose whole name the phrase `expression` matches.
@@ -245,157 +404,108 @@ fn exact_names(conn: &Connection, expression: &str) -> Result<HashSet<i64>, Stor
     Ok(exact)
 }
 
-#[cfg(test)]
-mod tests {
-    use loom_api::{SearchField, SearchKind, SearchResult};
-
-    use super::{Candidate, Expressions, Tier, covers_whole, expressions, rank, terms};
-
-    fn candidate(slug: &str, tier: Tier, last_used: Option<i64>, bm25: f64) -> Candidate {
-        Candidate {
-            result: SearchResult {
-                kind: SearchKind::Repo,
-                slug: slug.to_owned(),
-                name: slug.rsplit('/').next().unwrap_or(slug).to_owned(),
-                context: "p".to_owned(),
-                path: format!("/w/{slug}").into(),
-                score: -bm25,
-                matched_fields: vec![SearchField::Name],
-            },
-            tier,
-            last_used,
-            bm25,
-        }
-    }
-
-    fn ranked(mut candidates: Vec<Candidate>) -> Vec<String> {
-        rank(&mut candidates);
-        candidates
-            .into_iter()
-            .map(|candidate| candidate.result.slug)
-            .collect()
-    }
-
-    #[test]
-    fn ranking_table() {
-        use Tier::{ExactName, NamePrefix, Other, Slug};
-        let cases: Vec<(&str, Vec<Candidate>, Vec<&str>)> = vec![
-            (
-                "tier first, whatever the recency and relevance",
-                vec![
-                    candidate("p/other", Other, Some(900), -9.0),
-                    candidate("p/slug", Slug, Some(800), -8.0),
-                    candidate("p/prefix", NamePrefix, Some(700), -7.0),
-                    candidate("p/exact", ExactName, None, -1.0),
-                ],
-                vec!["p/exact", "p/prefix", "p/slug", "p/other"],
-            ),
-            (
-                "same tier: most recently used first, never used last",
-                vec![
-                    candidate("p/never", NamePrefix, None, -9.0),
-                    candidate("p/old", NamePrefix, Some(10), -1.0),
-                    candidate("p/new", NamePrefix, Some(20), -1.0),
-                ],
-                vec!["p/new", "p/old", "p/never"],
-            ),
-            (
-                "same tier and recency: lower bm25 first",
-                vec![
-                    candidate("p/a", Other, Some(5), -1.0),
-                    candidate("p/b", Other, Some(5), -3.0),
-                    candidate("p/c", Other, Some(5), -2.0),
-                ],
-                vec!["p/b", "p/c", "p/a"],
-            ),
-            (
-                "full tie: by slug",
-                vec![
-                    candidate("p/z", Slug, None, -1.0),
-                    candidate("p/a", Slug, None, -1.0),
-                    candidate("o/m", Slug, None, -1.0),
-                ],
-                vec!["o/m", "p/a", "p/z"],
-            ),
-            ("nothing", vec![], vec![]),
-        ];
-        for (name, candidates, expected) in cases {
-            assert_eq!(ranked(candidates), expected, "{name}");
-        }
-    }
-
-    #[test]
-    fn ranking_is_stable_under_permutation() {
-        let all = || {
-            vec![
-                candidate("p/a", Tier::Other, None, -1.0),
-                candidate("p/b", Tier::Other, Some(3), -1.0),
-                candidate("p/c", Tier::Slug, None, -2.0),
-                candidate("p/d", Tier::ExactName, Some(1), -0.5),
-            ]
-        };
-        let expected = ranked(all());
-        let mut reversed = all();
-        reversed.reverse();
-        assert_eq!(ranked(reversed), expected);
-        assert_eq!(expected, ["p/d", "p/c", "p/b", "p/a"]);
-    }
-
-    #[test]
-    fn tier_table() {
-        let cases = [
-            ((true, true, true), Tier::ExactName),
-            ((true, false, false), Tier::ExactName),
-            ((false, true, true), Tier::NamePrefix),
-            ((false, true, false), Tier::NamePrefix),
-            ((false, false, true), Tier::Slug),
-            ((false, false, false), Tier::Other),
-        ];
-        for ((exact, name, slug), expected) in cases {
-            assert_eq!(
-                Tier::of(exact, name, slug),
-                expected,
-                "{exact} {name} {slug}"
-            );
-        }
-    }
-
-    #[test]
-    fn terms_split_on_whitespace_and_drop_punctuation_only_words() {
-        assert_eq!(terms("  loom\tapi \n"), ["loom", "api"]);
-        assert_eq!(terms("- loom -- * \"\""), ["loom"]);
-        assert_eq!(terms("café 42"), ["café", "42"]);
-        assert_eq!(terms(""), [] as [&str; 0]);
-        assert_eq!(terms("  "), [] as [&str; 0]);
-    }
-
-    #[test]
-    fn expressions_quote_every_term() {
-        assert_eq!(expressions(&[]), None);
-        assert_eq!(
-            expressions(&["lo", "api"]),
-            Some(Expressions {
-                all: r#""lo"* AND "api"*"#.to_owned(),
-                name: r#"{name} : ("lo"* AND "api"*)"#.to_owned(),
-                slug: r#"{slug} : ("lo"* AND "api"*)"#.to_owned(),
-                exact_name: r#"{name} : ^"lo api""#.to_owned(),
-            })
-        );
-        // FTS5 syntax stays inside quotes; inner quotes are doubled.
-        let syntax = expressions(&["NEAR(a", "b\"c", "x:y", "-z", "^w", "OR"]).unwrap();
-        assert_eq!(
-            syntax.all,
-            r#""NEAR(a"* AND "b""c"* AND "x:y"* AND "-z"* AND "^w"* AND "OR"*"#
-        );
-    }
-
-    #[test]
-    fn covers_whole_needs_every_letter_and_digit_inside_a_match() {
-        assert!(covers_whole("\u{1}loom\u{2}"));
-        assert!(covers_whole("\u{1}loom-api\u{2}"));
-        assert!(covers_whole("\u{1}loom\u{2}-\u{1}api\u{2}."));
-        assert!(!covers_whole("\u{1}loom\u{2}-api"));
-        assert!(!covers_whole("x\u{1}loom\u{2}"));
-        assert!(!covers_whole("loom"));
-    }
+/// A task row as the search reads it, before its values are checked.
+struct TaskRow {
+    id: String,
+    context: String,
+    title: String,
+    status: Option<String>,
+    updated: Option<i64>,
+    link_keys: String,
+    bm25: f64,
+    title_all: bool,
+    matched: [bool; 3],
 }
+
+/// The tasks matching `expressions`, unranked. Which column holds a term is asked of the
+/// search table (one subquery per column), so that the notes are never read back.
+fn task_candidates(
+    conn: &Connection,
+    terms: &[&str],
+    expressions: &Expressions,
+    context: Option<&str>,
+) -> Result<Vec<TaskCandidate>, StoreError> {
+    let column = |name: &str| Expressions::in_column(name, &expressions.any);
+    let mut statement = conn.prepare(
+        "SELECT t.id, t.context, t.title, t.status, t.updated, t.link_keys, bm25(tasks_fts), \
+                tasks_fts.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?2), \
+                tasks_fts.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?3), \
+                tasks_fts.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?4), \
+                tasks_fts.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?5) \
+         FROM tasks_fts JOIN tasks t ON t.key = tasks_fts.rowid \
+         WHERE tasks_fts MATCH ?1 AND (?6 IS NULL OR t.context = ?6)",
+    )?;
+    let rows = statement.query_map(
+        params![
+            expressions.all,
+            Expressions::in_column("title", &expressions.all),
+            column("title"),
+            column("body"),
+            column("link_keys"),
+            context,
+        ],
+        |row| {
+            Ok(TaskRow {
+                id: row.get(0)?,
+                context: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                updated: row.get(4)?,
+                link_keys: row.get(5)?,
+                bm25: row.get(6)?,
+                title_all: row.get(7)?,
+                matched: [row.get(8)?, row.get(9)?, row.get(10)?],
+            })
+        },
+    )?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        candidates.push(task_candidate(terms, row?)?);
+    }
+    Ok(candidates)
+}
+
+/// The candidate of `row`, its values checked.
+fn task_candidate(terms: &[&str], row: TaskRow) -> Result<TaskCandidate, StoreError> {
+    let corrupt = |message: String| StoreError::Corrupt(message);
+    let id: TaskId = row
+        .id
+        .parse()
+        .map_err(|error: loom_core::IdError| corrupt(error.to_string()))?;
+    let context: ContextName = row
+        .context
+        .parse()
+        .map_err(|error: loom_core::ContextNameError| corrupt(error.to_string()))?;
+    let link_keys: Vec<String> = row
+        .link_keys
+        .split(' ')
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let group = Group::of_task(row.status.as_deref().and_then(status_name));
+    let tier = TaskTier::of(is_key(terms, &link_keys), row.title_all);
+    let matched_fields = TaskSearchField::ALL
+        .into_iter()
+        .zip(row.matched)
+        .filter(|(_, matched)| *matched)
+        .map(|(field, _)| field)
+        .collect();
+    Ok(TaskCandidate {
+        result: TaskMatch {
+            id,
+            context,
+            title: row.title,
+            status: row.status,
+            link_keys,
+            score: -row.bm25,
+            matched_fields,
+        },
+        group,
+        tier,
+        updated: row.updated,
+        bm25: row.bm25,
+    })
+}
+
+#[cfg(test)]
+mod tests;
