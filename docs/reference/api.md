@@ -125,29 +125,44 @@ Except on `?refresh=true`, states are read in the background by at most 4 thread
 
 ### Search
 
-`GET /v1/search` searches the repositories of the index. Query parameters; an empty `context` is ignored, any other parameter is an `invalid_request`:
+`GET /v1/search` searches the tasks of the context stores and the repositories of the index. Query parameters; an empty `context` or `type` is ignored, any other parameter is an `invalid_request`:
 
 | Parameter | Content |
 | --- | --- |
 | `q` | Required. The query: words separated by whitespace. |
-| `context` | Only the repositories of this context. A context name (the rule of `-c`), or `unassigned`. |
+| `context` | Only the results of this context. A context name (the rule of `-c`), or `unassigned` (repositories only). |
+| `type` | Only the results of this kind: `task` or `repo`. |
 | `limit` | Most results returned, at least `1`. Default `20`. |
 
 Matching:
 
-- The searched fields are the repository's name, slug, path, remote URLs, context name and branch (the branch `HEAD` is on in its stored [state](#repostate), unborn included; empty when detached or not read yet).
-- Each field is split into words on every character that is not a letter or a digit (`loom-api` is `loom` and `api`). Case and diacritics are ignored: `cafe` finds `Café`, `viet` finds `Việt`.
-- A repository matches when every word of the query starts a word of one of its fields, not necessarily the same field. A query word made of punctuation only is ignored; a query without words returns no result.
+- The searched fields of a task are its title, its notes (the whole file when its `task.md` is invalid) and the keys of its origin and related links (`CORE-1042`, `!88`). Those of a repository are its name, slug, path, remote URLs, context name and branch (the branch `HEAD` is on in its stored [state](#repostate), unborn included; empty when detached or not read yet).
+- Each field is split into words on every character that is not a letter or a digit (`loom-api` is `loom` and `api`, `CORE-1042` is `core` and `1042`, `!88` is `88`). Case and diacritics are ignored: `cafe` finds `Café`, `viet` finds `Việt`.
+- A result matches when every word of the query starts a word of one of its fields, not necessarily the same field. A query word made of punctuation only is ignored; a query without words returns no result.
 - Query words are text only: `"`, `*`, `:`, `(`, `)`, `^`, `-`, `+`, `{`, `}` act as word separators, and `AND`, `OR`, `NOT`, `NEAR` are words to find.
 
-Results are ranked by these keys, in order:
+Results are ranked by group first:
+
+1. Tasks `active`, `ready` and `waiting`.
+2. Repositories.
+3. Tasks `inbox`, tasks whose status was written by a newer loom, and tasks whose `task.md` is invalid.
+4. Tasks `done` and `cancelled`.
+
+Within the tasks of a group, by these keys, in order:
+
+1. How the task matches: the query is one of its link keys (case ignored, such as `core-1042` for `CORE-1042`), then every query word starts a word of its title, then the other cases.
+2. Last change, most recent first; invalid files last.
+3. Full-text relevance (SQLite FTS5 `bm25`), most relevant first.
+4. ID.
+
+Within the repositories, by these keys, in order:
 
 1. How the repository matches: its name is the query (the same words, in order, such as `loom-api` for `loom api`), then every query word starts a word of its name, then every query word starts a word of its slug, then the other cases.
 2. `last_used`, most recent first; never used last.
 3. Full-text relevance (SQLite FTS5 `bm25`), most relevant first.
 4. Slug.
 
-The ranking is computed on every match, then cut to `limit`.
+The ranking is computed on every match, then cut to `limit`. Repositories and tasks are read in one snapshot of the index. While `loomd` reconciles the tasks with the index after it starts, a search that covers tasks waits for the end of it (at most 10 s, then answers from the tasks indexed so far).
 
 ### Tasks
 
@@ -569,17 +584,32 @@ Unknown fields are rejected.
 | --- | --- | --- |
 | `results` | list of `SearchResult` | The results, best first (see [search](#search)), at most `limit`. |
 
-`SearchResult`:
+`SearchResult`: an object whose `kind` says what matched, `repo` or `task`.
+
+A repository (`kind` `repo`, the v0.2 shape):
 
 | Field | Type | Content |
 | --- | --- | --- |
-| `kind` | string | What matched: `repo`. |
+| `kind` | string | `repo`. |
 | `slug` | string | Slug of the repository. |
 | `name` | string | Directory name of the repository. |
 | `context` | string | Context name, `unassigned` for a repository without context. |
 | `path` | string | Absolute path of the repository. |
 | `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. One of the ranking keys only: the order of `results` is the ranking. |
 | `matched_fields` | list of strings | Fields holding at least one query word: `name`, `slug`, `path`, `remotes`, `context`, `branch`, in this order. |
+
+A task (`kind` `task`):
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `kind` | string | `task`. |
+| `id` | string | ID of the task. |
+| `context` | string | Context of its store. |
+| `title` | string | Title; empty when its `task.md` is invalid. |
+| `status` | string or `null` | Status as written in `task.md`, a status of a newer loom included; `null` when `task.md` is invalid. |
+| `link_keys` | list of strings | Keys of the origin and related links, in file order. |
+| `score` | number | As for a repository. |
+| `matched_fields` | list of strings | Fields holding at least one query word: `title`, `notes`, `link_keys`, in this order. |
 
 ### `BackupReport`
 
