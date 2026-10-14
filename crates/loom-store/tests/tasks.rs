@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use loom_api::{ContextAssignment, RepoIdentity};
 use loom_core::{
-    Actor, Command, ContextName, ExternalRef, Kind, Link, MachineId, NewTask, Origin, Relations,
-    Status, Task, TaskEdit, TaskId, Timestamp,
+    Actor, Command, ContextName, DomainError, Event, ExternalRef, Kind, Link, MachineId, NewTask,
+    Origin, Relations, Status, Task, TaskEdit, TaskId, Timestamp,
 };
 use loom_store::files::FileStore;
 use loom_store::tasks::{IndexedState, TaskError, TaskIndex, Tasks};
@@ -490,4 +490,80 @@ fn the_repository_and_task_writers_wait_for_each_other() {
     let store = repos.join().unwrap();
     assert_eq!(store.repos().unwrap().len(), 20);
     assert_eq!(fixture.reader().tasks(None).unwrap().len(), 20);
+}
+
+#[test]
+fn undo_reverts_the_last_change_from_the_log_and_indexes_it() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = tasks
+        .create(
+            new_task("Undo me", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+    let refused = tasks.undo(&task.id, at(150), &origin(), &mut random(2));
+    assert!(
+        matches!(refused, Err(TaskError::Domain(DomainError::NothingToUndo))),
+        "{refused:?}"
+    );
+    tasks
+        .apply(&task.id, Command::Pin, at(200), &origin(), &mut random(3))
+        .unwrap();
+    let undone = tasks
+        .undo(&task.id, at(300), &origin(), &mut random(4))
+        .unwrap();
+    assert!(!undone.pinned);
+    assert_eq!(undone.updated, at(300));
+    let indexed = fixture.reader().task(&task.id).unwrap().unwrap();
+    assert!(matches!(indexed.state, IndexedState::Valid { task, .. } if *task == undone));
+    let log = tasks.events(&task.id).unwrap();
+    assert_eq!(log.events.len(), 3);
+    assert!(matches!(
+        log.events.last().map(|record| &record.event),
+        Some(Event::Undone { .. })
+    ));
+    // Undoing the undo redoes the pin.
+    let redone = tasks
+        .undo(&task.id, at(400), &origin(), &mut random(5))
+        .unwrap();
+    assert!(redone.pinned);
+
+    let missing: TaskId = "k3q7zm2a".parse().unwrap();
+    assert!(matches!(
+        tasks.undo(&missing, at(500), &origin(), &mut random(6)),
+        Err(TaskError::NotFound(id)) if id == missing
+    ));
+    assert!(matches!(
+        tasks.events(&missing),
+        Err(TaskError::NotFound(id)) if id == missing
+    ));
+}
+
+#[test]
+fn undo_of_an_invalid_task_is_refused() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = tasks
+        .create(
+            new_task("Fragile", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+    tasks
+        .apply(&task.id, Command::Pin, at(200), &origin(), &mut random(2))
+        .unwrap();
+    let path = fixture
+        .store_root("work")
+        .join("tasks")
+        .join(task.id.as_str())
+        .join("task.md");
+    fs::write(&path, "+++\nbroken\n+++\n").unwrap();
+    let refused = tasks.undo(&task.id, at(300), &origin(), &mut random(3));
+    assert!(matches!(refused, Err(TaskError::Invalid(_))), "{refused:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "+++\nbroken\n+++\n");
 }

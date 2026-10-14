@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use loom_core::{
-    Command, ContextName, DomainError, Event, EventId, EventRecord, FieldChange, Importance, Link,
-    NewTask, Origin, RandomSource, Status, Task, TaskDocument, TaskId, Timestamp, apply, create,
+    Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
+    Importance, Link, NewTask, Origin, RandomSource, Status, Task, TaskDocument, TaskId, Timestamp,
+    apply, create, undo,
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
@@ -302,19 +303,63 @@ impl<P: StorePort> Tasks<P> {
         origin: &Origin,
         random: &mut impl RandomSource,
     ) -> Result<Task, TaskError> {
-        let indexed = self
-            .index
-            .get(id)?
-            .ok_or_else(|| TaskError::NotFound(id.clone()))?;
-        let store = self
-            .stores
-            .get(&indexed.context)
-            .ok_or_else(|| TaskError::UnknownContext(indexed.context.clone()))?;
+        self.change(id, |_, _| Ok(command), now, origin, random)
+    }
+
+    /// Reverts the last change of task `id` at `now`: the compensating command is computed
+    /// from its event log (see [`loom_core::undo`]) under the task's lock, then applied,
+    /// written and indexed.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::NotFound`], [`TaskError::Invalid`] for an invalid file,
+    /// [`DomainError::NothingToUndo`], [`DomainError::Conflict`] when a field changed since,
+    /// or the write error.
+    pub fn undo(
+        &mut self,
+        id: &TaskId,
+        now: Timestamp,
+        origin: &Origin,
+        random: &mut impl RandomSource,
+    ) -> Result<Task, TaskError> {
+        self.change(id, undo, now, origin, random)
+    }
+
+    /// The event log of task `id`, read from its store.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::NotFound`], or the read error.
+    pub fn events(&self, id: &TaskId) -> Result<EventLog, TaskError> {
+        let store = self.store_of(id)?;
+        store.read_events(id).map_err(|error| match error {
+            PortError::NotFound { .. } => TaskError::NotFound(id.clone()),
+            error => TaskError::Files(error),
+        })
+    }
+
+    /// The store holding task `id`, as indexed.
+    fn store_of(&self, id: &TaskId) -> Result<&P, TaskError> {
+        store_of(&self.index, &self.stores, id)
+    }
+
+    /// Applies the command `command` builds from the task and its log, under the task's lock,
+    /// then writes and indexes the result.
+    fn change(
+        &mut self,
+        id: &TaskId,
+        command: impl FnOnce(&Task, &[EventRecord]) -> Result<Command, DomainError>,
+        now: Timestamp,
+        origin: &Origin,
+        random: &mut impl RandomSource,
+    ) -> Result<Task, TaskError> {
+        let store = store_of(&self.index, &self.stores, id)?;
         let task = store.update(id, |stored| {
             let current = stored
                 .task()
                 .map_err(|error| TaskError::Invalid(error.clone()))?;
             let mut document = stored.file.document.map_err(TaskError::Invalid)?;
+            let command = command(&current, &stored.events.events)?;
             let (task, events) =
                 apply(current, command, &stored.events.events, now, origin, random)?;
             if events.is_empty() {
@@ -480,6 +525,20 @@ impl<P: StorePort> Tasks<P> {
         }
         Ok(ReconciledAll { results, failed })
     }
+}
+
+/// The store of `stores` holding task `id`, by the context `index` gives it.
+fn store_of<'a, P>(
+    index: &TaskIndex,
+    stores: &'a BTreeMap<ContextName, P>,
+    id: &TaskId,
+) -> Result<&'a P, TaskError> {
+    let indexed = index
+        .get(id)?
+        .ok_or_else(|| TaskError::NotFound(id.clone()))?;
+    stores
+        .get(&indexed.context)
+        .ok_or(TaskError::UnknownContext(indexed.context))
 }
 
 /// What [`Tasks::reconcile_all`] did.
