@@ -2,24 +2,30 @@
 //! detached start, then waits for the new loomd to answer. The decisions are in
 //! `loom::service` ([`plan_restart`]).
 
+use std::env;
+use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom::service::{RestartPlan, format_restart, is_new_daemon, plan_restart};
+use loom::service::{RestartPlan, format_restart, is_new_daemon, plan_restart, test_timeout};
 use loom_api::{DaemonRestart, DaemonRestartReport, StatusResponse};
-use loom_config::layout::Layout;
-use loom_update::daemon::{holder_pid, lock_held, restart};
+use loom_config::layout::{Layout, parse_lock_pid};
+use loom_update::daemon::{lock_held, restart};
 use miette::{IntoDiagnostic as _, Result, miette};
 use tracing::info;
 
 use crate::client::Client;
-use crate::service_cmd::{self, CommandRunner, Supervisor, Target};
+use crate::service_cmd::{self, CommandRunner, Target};
 use crate::start;
 
 /// Longest wait for the signalled loomd to release the lock.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest wait for the loomd restarted by the service manager to answer.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(15);
+/// Test hooks, read by debug builds only: [`EXIT_TIMEOUT`] and [`ANSWER_TIMEOUT`] in
+/// milliseconds.
+const EXIT_TIMEOUT_ENV: &str = "LOOM_TEST_RESTART_EXIT_TIMEOUT_MS";
+const ANSWER_TIMEOUT_ENV: &str = "LOOM_TEST_RESTART_ANSWER_TIMEOUT_MS";
 /// Interval between two checks of the lock or the socket.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -32,12 +38,17 @@ pub fn run(
     json: bool,
 ) -> Result<String> {
     let started = Instant::now();
-    let previous_pid = holder_pid(&layout.lock);
+    // One probe of the lock: its holder's PID is read only when it is held.
     let was_running = lock_held(&layout.lock);
-    let service = match service_cmd::supervisor(target, &layout.home, runner)? {
-        Supervisor::Service(manager) => Some(manager),
-        Supervisor::Unsupervised => None,
+    let previous_pid = if was_running {
+        fs::read_to_string(&layout.lock)
+            .ok()
+            .and_then(|text| parse_lock_pid(&text))
+    } else {
+        None
     };
+    let service = service_cmd::loaded_service(target, &layout.home, runner)?
+        .map(|(manager, state)| (manager, state.running));
     let plan = plan_restart(service, was_running);
     info!(?plan, previous_pid, "restarting loomd");
 
@@ -48,6 +59,11 @@ pub fn run(
     let client = Client::new(layout.socket.clone());
     let status = match plan {
         RestartPlan::Manager(manager) => {
+            service_cmd::recover(manager, runner)?;
+            runtime.block_on(wait_for_new(&client, previous_pid, layout, plan))?
+        }
+        RestartPlan::Takeover(manager) => {
+            signal_and_wait(layout)?;
             service_cmd::recover(manager, runner)?;
             runtime.block_on(wait_for_new(&client, previous_pid, layout, plan))?
         }
@@ -92,12 +108,13 @@ fn signal_and_wait(layout: &Layout) -> Result<()> {
         }
         DaemonRestart::Skipped => return Err(miette!("loomd was left alone: nothing to restart")),
     };
-    let deadline = Instant::now() + EXIT_TIMEOUT;
+    let timeout = timeout(EXIT_TIMEOUT_ENV, EXIT_TIMEOUT);
+    let deadline = Instant::now() + timeout;
     while lock_held(&layout.lock) {
         if Instant::now() >= deadline {
             return Err(miette!(
-                "loomd (pid {pid}) did not exit within {} s of SIGTERM and keeps running; log: {}",
-                EXIT_TIMEOUT.as_secs(),
+                "loomd (pid {pid}) did not exit within {} of SIGTERM and keeps running; log: {}",
+                seconds(timeout),
                 layout.daemon_log.display()
             ));
         }
@@ -113,23 +130,49 @@ async fn wait_for_new(
     layout: &Layout,
     plan: RestartPlan,
 ) -> Result<StatusResponse> {
-    let deadline = Instant::now() + ANSWER_TIMEOUT;
+    let timeout = timeout(ANSWER_TIMEOUT_ENV, ANSWER_TIMEOUT);
+    let deadline = Instant::now() + timeout;
+    let mut last_answer = None;
     loop {
         // Unreachable while the manager swaps the processes; the old loomd may still answer.
-        if let Ok(status) = client.status().await
-            && is_new_daemon(previous, status.pid)
-        {
-            return Ok(status);
+        if let Ok(status) = client.status().await {
+            if is_new_daemon(previous, status.pid) {
+                return Ok(status);
+            }
+            last_answer = Some(status.pid);
         }
         if Instant::now() >= deadline {
-            return Err(miette!(
-                "no new loomd answered on {} within {} s of the restart via {}; log: {}",
-                client.socket().display(),
-                ANSWER_TIMEOUT.as_secs(),
-                plan.via().as_str(),
-                layout.daemon_log.display()
+            let via = plan.via().as_str();
+            let log = layout.daemon_log.display();
+            return Err(last_answer.map_or_else(
+                || {
+                    miette!(
+                        "no new loomd answered on {} within {} of the restart via {via}; log: {log}",
+                        client.socket().display(),
+                        seconds(timeout)
+                    )
+                },
+                |pid| {
+                    miette!(
+                        "loomd (pid {pid}) still answers {} after the restart via {via}: it was not replaced; log: {log}",
+                        seconds(timeout)
+                    )
+                },
             ));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+fn timeout(env_name: &str, default: Duration) -> Duration {
+    test_timeout(
+        env::var(env_name).ok().as_deref(),
+        cfg!(debug_assertions),
+        default,
+    )
+}
+
+/// `10 s`, or `0.25 s` for a test timeout.
+fn seconds(duration: Duration) -> String {
+    format!("{} s", duration.as_secs_f64())
 }

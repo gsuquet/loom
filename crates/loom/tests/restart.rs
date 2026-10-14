@@ -183,7 +183,15 @@ fn a_loomd_that_ignores_sigterm_fails_the_restart_without_sigkill() {
     fs::write(lock(home.path()), format!("{}\n", stubborn.id())).unwrap();
 
     let started = Instant::now();
-    let output = loom(home.path(), &["service", "restart"]);
+    let output = Command::new(loom_bin())
+        .current_dir(home.path())
+        .env("LOOM_HOME", home.path())
+        .envs(isolation::isolated_env(home.path()))
+        .env("LOOM_TEST_RESTART_EXIT_TIMEOUT_MS", "500")
+        .args(["--color=never", "service", "restart"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     let waited = started.elapsed();
     let alive_after = alive(stubborn.id());
     let _ = stubborn.kill();
@@ -193,13 +201,13 @@ fn a_loomd_that_ignores_sigterm_fails_the_restart_without_sigkill() {
     let message = stderr(&output);
     assert!(
         message.contains(&format!(
-            "loomd (pid {}) did not exit within 10 s",
+            "loomd (pid {}) did not exit within 0.5 s",
             stubborn.id()
         )),
         "{message}"
     );
     assert!(message.contains("loomd.log"), "{message}");
-    assert!(waited >= Duration::from_secs(10), "{waited:?}");
+    assert!(waited >= Duration::from_millis(500), "{waited:?}");
     assert!(alive_after, "SIGKILL was sent");
     drop(held);
 }

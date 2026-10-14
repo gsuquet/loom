@@ -261,7 +261,7 @@ When `bootstrap` follows a `bootout` in the same run (the plist changed while th
 Steps, in order:
 
 1. `config.toml` is parsed and validated as `loomd` does. Invalid: the error is printed, exit `1`, `loomd` untouched.
-2. The service is installed for this loom home and loaded (as for the [auto-upgrade watchdog](../configuration.md)): its manager restarts `loomd`, macOS `launchctl kickstart -k gui/<uid>/io.github.gsuquet.loomd`, Linux `systemctl --user reset-failed loomd.service` then `systemctl --user restart loomd.service`. `loom` sends no signal.
+2. The service is installed for this loom home and loaded (as for the [auto-upgrade watchdog](../configuration.md)): its manager restarts `loomd`, macOS `launchctl kickstart -k gui/<uid>/io.github.gsuquet.loomd`, Linux `systemctl --user reset-failed loomd.service` then `systemctl --user restart loomd.service`. `loom` sends no signal. When the manager reports the service not running while a `loomd` holds the lock (one a `loom` command started while the service was down), that `loomd` gets `SIGTERM` first and `loom` waits up to 10 s for the lock, as in step 3: the service's own `loomd` would fail on the lock.
 3. No service and a `loomd` holds the lock: `SIGTERM` to the PID in the lock, then `loom` waits up to 10 s for the lock to be released and starts `loomd` detached, as any command does.
 4. No service and no `loomd`: `loomd` is started detached.
 5. `loom` waits for `GET /v1/status` from a `loomd` with a PID other than the previous one: up to 15 s after the service manager, the usual start window otherwise.
@@ -270,10 +270,10 @@ On success, one line on stdout:
 
 ```text
 loomd restarted (pid 812 -> 9431, 0.3.0, via launchd) in 640 ms
-loomd was not running: started (pid 9431, 0.3.0) in 640 ms
+loomd was not running: started (pid 9431, 0.3.0, via start) in 640 ms
 ```
 
-Failures exit `1` with the step, the PID and the path of the log: the old `loomd` does not exit within 10 s (it keeps running: `SIGKILL` is never sent), no new `loomd` answers in time, or `SIGTERM` cannot be sent.
+Failures exit `1` with the step, the PID and the path of the log: the old `loomd` does not exit within 10 s (it keeps running: `SIGKILL` is never sent), the old `loomd` still answers after the service manager's restart, no new `loomd` answers in time, or `SIGTERM` cannot be sent. `loomd restarted (pid ? -> …)`: a `loomd` held the lock but had not written its PID yet.
 
 JSON output (`loom service restart --json`), `DaemonRestartReport` schema ([daemon_restart_report.json](../schemas/daemon_restart_report.json)):
 
