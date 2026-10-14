@@ -9,7 +9,7 @@ use std::os::unix::fs::{
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use axum::Json;
 use axum::Router;
@@ -20,7 +20,7 @@ use axum::middleware;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use loom_api::{
-    ApiError, ApiVersion, DaemonDiagnostics, RegisterRequest, RepoList, SearchResults,
+    ApiError, ApiVersion, DaemonDiagnostics, RegisterRequest, RepoList, SearchKind, SearchResults,
     StatusResponse, SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
@@ -53,6 +53,10 @@ use crate::disk_usage::DiskCache;
 use crate::repos::{self, Failure, RepoHandle};
 use crate::tasks::{self, TaskHandle};
 use crate::updater::{self, Settings};
+
+/// How long a search that covers tasks waits for the reconciliation on start before it answers
+/// from the tasks indexed so far.
+const TASKS_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the daemon reads before it changes anything.
 pub struct Setup {
@@ -416,12 +420,19 @@ async fn search(
         .map_err(|rejection| invalid_request(rejection.body_text()))
         .and_then(|Query(query)| search_request(query));
     match request {
-        Ok(request) => respond(
-            app.repos
-                .search(request)
-                .await
-                .map(|results| SearchResults { results }),
-        ),
+        Ok(request) => {
+            if request.kind != Some(SearchKind::Repo)
+                && !app.tasks.wait_ready(TASKS_READY_TIMEOUT).await
+            {
+                warn!("tasks still being indexed: the search may miss some");
+            }
+            respond(
+                app.repos
+                    .search(request)
+                    .await
+                    .map(|results| SearchResults { results }),
+            )
+        }
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }
 }
