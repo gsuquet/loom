@@ -4,7 +4,7 @@ use loom_api::{
     StatusName, Task, TaskActionName, TaskActionRequest, TaskEdit, TaskId, TaskReadOnly, Timestamp,
 };
 use loom_core::{Command, DomainError, ReadOnlyReason};
-use loom_store::port::ContentHash;
+use loom_store::port::{ContentHash, TaskLocation};
 use loom_store::tasks::{IndexedState, IndexedTask, TaskError};
 use serde_json::json;
 
@@ -41,6 +41,7 @@ fn row(task: Task) -> IndexedTask {
         id: task.id.clone(),
         context: task.context.clone(),
         hash: ContentHash::of(b""),
+        location: TaskLocation::Active,
         state: IndexedState::Valid {
             task: Box::new(task),
             body: "## Notes\n".to_owned(),
@@ -53,6 +54,7 @@ fn invalid(task_id: &str, context: &str) -> IndexedTask {
         id: id(task_id),
         context: context.parse().unwrap(),
         hash: ContentHash::of(b"x"),
+        location: TaskLocation::Active,
         state: IndexedState::Invalid {
             error: "line 2: invalid TOML".to_owned(),
             text: "+++\nbroken\n+++\n".to_owned(),
@@ -65,6 +67,7 @@ fn filter(context: Option<&str>, status: Option<&str>, ranked: Option<bool>) -> 
         context: context.map(str::to_owned),
         status: status.map(str::to_owned),
         ranked,
+        archived: None,
     }
 }
 
@@ -80,8 +83,14 @@ fn list_filters_are_checked_and_empty_values_ignored() {
             context: Some("work".parse().unwrap()),
             status: Some(StatusName::Waiting),
             ranked: true,
+            archived: false,
         }
     );
+    let archived = TaskListQuery {
+        archived: Some(true),
+        ..filter(None, None, None)
+    };
+    assert!(task_filter(archived).unwrap().archived);
     for bad in [
         filter(Some("Bad/ctx"), None, None),
         filter(None, Some("blocked"), None),
@@ -146,6 +155,52 @@ fn the_list_filters_by_context_and_status_keeping_global_prefixes() {
     let done = TaskFilter {
         status: Some(StatusName::Done),
         ..work
+    };
+    assert_eq!(ids(&done), ["k3r00000:k3r"]);
+}
+
+#[test]
+fn archived_tasks_are_listed_apart_and_never_ranked() {
+    let mut closed = task("k3r00000", "work", 100);
+    closed.status = Status::Done;
+    // Reopened by hand in the archive: still archived, never in the priority list.
+    let reopened = task("k3s00000", "work", 100);
+    let archived = |task| IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..row(task)
+    };
+    let rows = vec![
+        row(task("k3q7zm2a", "work", 100)),
+        archived(closed),
+        archived(reopened),
+    ];
+    let ids = |filter: &TaskFilter| -> Vec<String> {
+        task_list(&rows, filter, date("2026-10-14"))
+            .tasks
+            .into_iter()
+            .map(|summary| format!("{}:{}", summary.id, summary.prefix))
+            .collect()
+    };
+    assert_eq!(ids(&TaskFilter::default()), ["k3q7zm2a:k3q"]);
+    let ranked = TaskFilter {
+        ranked: true,
+        ..TaskFilter::default()
+    };
+    assert_eq!(ids(&ranked), ["k3q7zm2a:k3q"]);
+    let only_archived = TaskFilter {
+        archived: true,
+        ..TaskFilter::default()
+    };
+    // Prefixes stay unique across every task.
+    assert_eq!(ids(&only_archived), ["k3r00000:k3r", "k3s00000:k3s"]);
+    let ranked_archived = TaskFilter {
+        ranked: true,
+        ..only_archived.clone()
+    };
+    assert_eq!(ids(&ranked_archived), [] as [&str; 0]);
+    let done = TaskFilter {
+        status: Some(StatusName::Done),
+        ..only_archived
     };
     assert_eq!(ids(&done), ["k3r00000:k3r"]);
 }
@@ -266,6 +321,30 @@ fn a_detail_has_the_body_and_the_actions() {
         Some(TaskReadOnly::UnknownStatus("blocked".to_owned()))
     );
     assert_eq!(detail.actions, []);
+}
+
+#[test]
+fn an_archived_task_is_read_only_with_no_action() {
+    let mut done = task("k3q7zm2a", "work", 100);
+    done.status = Status::Done;
+    let archived = IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..row(done)
+    };
+    let ids = [archived.id.clone()];
+    let detail = task_detail(&archived, &ids);
+    assert_eq!(detail.summary.read_only, Some(TaskReadOnly::Archived(2026)));
+    assert_eq!(detail.actions, []);
+    assert_eq!(detail.body, "## Notes\n");
+    // Archived first, whatever else makes it read-only.
+    let broken = IndexedTask {
+        location: TaskLocation::Archived(2025),
+        ..invalid("k3r00000", "home")
+    };
+    assert_eq!(
+        task_detail(&broken, &ids).summary.read_only,
+        Some(TaskReadOnly::Archived(2025))
+    );
 }
 
 #[test]
@@ -416,6 +495,17 @@ fn task_errors_are_typed_problems() {
             StatusCode::CONFLICT,
             ErrorCode::ReadOnly,
             Some(json!({ "reason": "unknown_kind", "value": "epic" }))
+        )
+    );
+    assert_eq!(
+        problem(TaskError::Archived {
+            id: id("k3q7zm2a"),
+            year: 2026,
+        }),
+        (
+            StatusCode::CONFLICT,
+            ErrorCode::ReadOnly,
+            Some(json!({ "reason": "archived", "value": 2026 }))
         )
     );
     let (status, code, details) =

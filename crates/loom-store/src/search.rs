@@ -8,7 +8,7 @@
 //! every character that is not a letter or a digit.
 //!
 //! Repositories and tasks are read in one snapshot, then ranked by [`Group`] first: active and
-//! ready tasks, then repositories, then the inbox, then closed tasks.
+//! ready tasks, then repositories, then the inbox, then closed tasks, then archived tasks.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -35,15 +35,18 @@ pub enum Group {
     Inbox,
     /// Done and cancelled tasks.
     Closed,
-    /// Archived tasks. None yet: the archive comes with #77, which ranks them here.
+    /// Archived tasks.
     Archived,
 }
 
 impl Group {
-    /// The group of a task with status `status`; `None` for a status written by a newer loom,
-    /// or an invalid `task.md`.
+    /// The group of a task with status `status` (`None` for a status written by a newer loom,
+    /// or an invalid `task.md`), `archived` or not.
     #[must_use]
-    pub const fn of_task(status: Option<StatusName>) -> Self {
+    pub const fn of_task(status: Option<StatusName>, archived: bool) -> Self {
+        if archived {
+            return Self::Archived;
+        }
         match status {
             Some(StatusName::Active | StatusName::Ready | StatusName::Waiting) => Self::Current,
             Some(StatusName::Inbox) | None => Self::Inbox,
@@ -412,6 +415,7 @@ struct TaskRow {
     status: Option<String>,
     updated: Option<i64>,
     link_keys: String,
+    archived: bool,
     bm25: f64,
     title_all: bool,
     matched: [bool; 3],
@@ -428,6 +432,7 @@ fn task_candidates(
     let column = |name: &str| Expressions::in_column(name, &expressions.any);
     let mut statement = conn.prepare(
         "SELECT t.id, t.context, t.title, t.status, t.updated, t.link_keys, bm25(tasks_fts), \
+                t.archived IS NOT NULL, \
                 tasks_fts.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?2), \
                 tasks_fts.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?3), \
                 tasks_fts.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?4), \
@@ -453,8 +458,9 @@ fn task_candidates(
                 updated: row.get(4)?,
                 link_keys: row.get(5)?,
                 bm25: row.get(6)?,
-                title_all: row.get(7)?,
-                matched: [row.get(8)?, row.get(9)?, row.get(10)?],
+                archived: row.get(7)?,
+                title_all: row.get(8)?,
+                matched: [row.get(9)?, row.get(10)?, row.get(11)?],
             })
         },
     )?;
@@ -482,7 +488,7 @@ fn task_candidate(terms: &[&str], row: TaskRow) -> Result<TaskCandidate, StoreEr
         .filter(|key| !key.is_empty())
         .map(str::to_owned)
         .collect();
-    let group = Group::of_task(row.status.as_deref().and_then(status_name));
+    let group = Group::of_task(row.status.as_deref().and_then(status_name), row.archived);
     let tier = TaskTier::of(is_key(terms, &link_keys), row.title_all);
     let matched_fields = TaskSearchField::ALL
         .into_iter()

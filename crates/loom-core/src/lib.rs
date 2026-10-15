@@ -5,6 +5,7 @@
 //! No I/O, no clock, no randomness of its own, no async runtime: callers inject the current time
 //! and a [`RandomSource`], and persist the events [`apply`] returns.
 
+mod archive;
 mod command;
 mod context;
 mod event;
@@ -17,6 +18,7 @@ mod task;
 mod task_file;
 mod timestamp;
 
+pub use archive::{archive_year, closed_at};
 pub use command::{
     Action, Command, DomainError, NewTask, ReplayError, TaskEdit, apply, available_actions, create,
     hand_edit_changes, replay, undo,

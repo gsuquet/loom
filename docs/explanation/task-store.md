@@ -47,12 +47,26 @@ The comparison uses the log, not the index, so the result is correct in every or
 
 `loomd` finds changes in two ways:
 
-- a file watcher on `tasks/` of every store (FSEvents on macOS, inotify on Linux). Thus, `loomd` indexes and records an edit almost as soon as the editor saves it.
+- a file watcher on `tasks/` and `archive/` of every store (FSEvents on macOS, inotify on Linux). Thus, `loomd` indexes and records an edit almost as soon as the editor saves it.
 - a reconciliation of every task when `loomd` starts, for what changed while it was stopped. There is also a reconciliation each time the watcher reports that it lost events.
 
 `loom reindex` reconciles every task before it rebuilds the rows, so it can append `edited` events. Without this step, a rebuild can store the hash of an edit whose watcher event is still in the queue. That edit then looks like a write of `loomd`.
 
 A write by `loomd` changes `task.md`, then appends its events. If `loomd` crashes between the two, the next reconciliation finds a file that its log does not explain. It records the difference as a hand edit. The change stays, with the actor `file` instead of your actor.
+
+## Archived tasks
+
+A task that is done or cancelled is history that you can still need. But it does not belong in the store that you use each day. Thus, an archived task is in `<store>/archive/<yyyy>/<id>/`, where `<yyyy>` is the year of its closing. It is the same directory with the same two files, at a different location. Directories per year stay small, and you can copy or delete an old year easily.
+
+`loomd` indexes an archived task like the other tasks, with its archive year. `loom show` finds it. `loom search` finds it after all the other results. `loom reindex` builds its row again from the files. The task list and the priority list do not show it; `archived=true` lists the archived tasks.
+
+An archived task is read-only. `loomd` refuses each action, edit and undo with `read_only` and the reason `archived`, and a command adds nothing to its log. The location makes a task archived, not its status. If a hand edit sets an archived task to `ready`, `loomd` records the edit, but the task stays read-only and out of the priority list. To open the task again, move its directory back to `tasks/`. No command does this.
+
+A move is one `rename` of the task directory. Before the rename, `loomd` creates the year directory and syncs it to the disk. On one file system, a rename is atomic. Thus, after a crash, the task is in `tasks/` or in the archive, never in the two locations and never in neither.
+
+`loomd` writes the index row after the rename. If a crash occurs between the two, the reconciliation at the next start finds the same file at a new location. It then indexes the task as archived; the hash alone would show no change. The same rule applies to a directory that you move by hand, in the two directions.
+
+The file watcher monitors `archive/` and `tasks/`. `loomd` records and commits a hand edit of an archived file like any other edit, at its archive path. The commit of an archived task also removes from git what stays of it in `tasks/`. Thus, a move is one commit.
 
 ## When a file is invalid
 

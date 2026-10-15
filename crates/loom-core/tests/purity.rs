@@ -5,6 +5,7 @@
 const SOURCES: &[(&str, &str)] = &[
     ("Cargo.toml", include_str!("../Cargo.toml")),
     ("src/lib.rs", include_str!("../src/lib.rs")),
+    ("src/archive.rs", include_str!("../src/archive.rs")),
     ("src/command.rs", include_str!("../src/command.rs")),
     ("src/context.rs", include_str!("../src/context.rs")),
     ("src/event.rs", include_str!("../src/event.rs")),

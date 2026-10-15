@@ -81,6 +81,8 @@ pub enum TaskReadOnly {
     UnknownStatus(String),
     /// `task.md` cannot be read: why, with the line when known.
     InvalidFile(String),
+    /// The task is archived in `archive/<yyyy>/`: the year.
+    Archived(u16),
 }
 
 impl From<ReadOnlyReason> for TaskReadOnly {
@@ -205,6 +207,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(TaskReadOnly::InvalidFile("line 2: x".to_owned())).unwrap(),
             json!({ "reason": "invalid_file", "value": "line 2: x" })
+        );
+        assert_eq!(
+            serde_json::to_value(TaskReadOnly::Archived(2026)).unwrap(),
+            json!({ "reason": "archived", "value": 2026 })
         );
     }
 

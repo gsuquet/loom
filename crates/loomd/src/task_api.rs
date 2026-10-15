@@ -11,6 +11,7 @@ use loom_api::{
 };
 use loom_core::shortest_unique_prefixes;
 use loom_core::{Command, DomainError, PrefixError, available_actions, rank, resolve_prefix};
+use loom_store::port::TaskLocation;
 use loom_store::tasks::{IndexedState, IndexedTask, TaskError};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -56,6 +57,8 @@ pub struct TaskListQuery {
     pub status: Option<String>,
     /// `true`: the priority list.
     pub ranked: Option<bool>,
+    /// `true`: the archived tasks instead of the others.
+    pub archived: Option<bool>,
 }
 
 /// The filter of a task list, checked.
@@ -67,6 +70,8 @@ pub struct TaskFilter {
     pub status: Option<StatusName>,
     /// The priority list: the tasks [`loom_core::rank`] lists, in its order.
     pub ranked: bool,
+    /// The archived tasks only; otherwise the tasks of `tasks/` only.
+    pub archived: bool,
 }
 
 /// The filter of `query`.
@@ -97,6 +102,7 @@ pub fn task_filter(query: TaskListQuery) -> Result<TaskFilter, ApiError> {
         context,
         status,
         ranked: query.ranked.unwrap_or(false),
+        archived: query.archived.unwrap_or(false),
     })
 }
 
@@ -112,10 +118,11 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
             .map_or_else(|| id.to_string(), |prefix| (*prefix).to_owned())
     };
     let kept = rows.iter().filter(|row| {
-        filter
-            .context
-            .as_ref()
-            .is_none_or(|context| row.context == *context)
+        (row.location != TaskLocation::Active) == filter.archived
+            && filter
+                .context
+                .as_ref()
+                .is_none_or(|context| row.context == *context)
             && filter.status.is_none_or(|status| {
                 task_of(row).and_then(|task| task.status.name()) == Some(status)
             })
@@ -130,8 +137,11 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
                 .collect(),
         };
     }
+    // An archived task is never ranked, even reopened by hand: `archived` with `ranked` lists
+    // nothing.
     let tasks: Vec<Task> = kept
         .iter()
+        .filter(|row| row.location == TaskLocation::Active)
         .filter_map(|row| task_of(row).cloned())
         .collect();
     let by_id: HashMap<&TaskId, &IndexedTask> = kept.iter().map(|row| (&row.id, *row)).collect();
@@ -206,10 +216,13 @@ pub fn task_detail(row: &IndexedTask, ids: &[TaskId]) -> TaskDetail {
         .position(|id| *id == row.id)
         .and_then(|index| shortest_unique_prefixes(ids).get(index).copied())
         .unwrap_or(row.id.as_str());
-    let (body, actions) = match &row.state {
+    let (body, mut actions) = match &row.state {
         IndexedState::Valid { task, body } => (body.clone(), available_actions(task)),
         IndexedState::Invalid { text, .. } => (text.clone(), Vec::new()),
     };
+    if row.location != TaskLocation::Active {
+        actions.clear();
+    }
     TaskDetail {
         summary: summary(row, prefix, None),
         body,
@@ -226,6 +239,11 @@ fn summary(row: &IndexedTask, prefix: &str, rank: Option<TaskRank>) -> TaskSumma
         IndexedState::Invalid { error, .. } => {
             (None, Some(TaskReadOnly::InvalidFile(error.clone())))
         }
+    };
+    // Archived comes first: fixing the file or upgrading loom would not make it writable.
+    let read_only = match row.location {
+        TaskLocation::Archived(year) => Some(TaskReadOnly::Archived(year)),
+        TaskLocation::Active => read_only,
     };
     TaskSummary {
         id: row.id.clone(),
@@ -378,6 +396,13 @@ pub fn task_problem(error: &TaskError) -> Problem {
             with_details(
                 ApiError::new(ErrorCode::ReadOnly, message),
                 &TaskReadOnly::InvalidFile(invalid.to_string()),
+            ),
+        ),
+        TaskError::Archived { year, .. } => (
+            StatusCode::CONFLICT,
+            with_details(
+                ApiError::new(ErrorCode::ReadOnly, message),
+                &TaskReadOnly::Archived(*year),
             ),
         ),
         TaskError::Domain(refused) => domain_problem(refused, message),

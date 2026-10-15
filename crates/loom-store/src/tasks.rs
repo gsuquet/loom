@@ -4,20 +4,27 @@
 //!
 //! The files are the source of truth: [`Tasks::reindex`] rebuilds every row from them, and two
 //! reindexes of the same files give the same rows.
+//!
+//! Archived tasks (ADR-0013, decision 10) are indexed as the others, with their archive year:
+//! they are listed, searched and read, never changed. [`Tasks::archive_due`] moves the closed
+//! tasks whose time has come.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+use std::time::Duration;
 
 use loom_core::{
     Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
     Importance, Link, NewTask, Origin, ParentLink, RandomSource, Status, Task, TaskDocument,
-    TaskId, Timestamp, apply, check_parent, create, undo,
+    TaskId, Timestamp, apply, archive_year, check_parent, create, undo,
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
 use tracing::debug_span;
 
-use crate::port::{ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskWrite};
+use crate::port::{
+    ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskLocation, TaskWrite,
+};
 use crate::reconcile::{Reconciliation, decide};
 use crate::{StoreError, open_writer};
 
@@ -30,6 +37,8 @@ pub struct IndexedTask {
     pub context: ContextName,
     /// Hash of `task.md` as last read or written by loomd.
     pub hash: ContentHash,
+    /// Where its directory is: active, or archived.
+    pub location: TaskLocation,
     /// What the file holds.
     pub state: IndexedState,
 }
@@ -71,6 +80,7 @@ impl IndexedTask {
             id: stored.id.clone(),
             context: stored.context.clone(),
             hash: stored.file.hash.clone(),
+            location: stored.location,
             state,
         }
     }
@@ -93,10 +103,13 @@ impl IndexedTask {
         }
     }
 
-    /// Whether the task cannot be changed: its file is invalid, or its kind, format or status
-    /// was written by a newer version of loom.
+    /// Whether the task cannot be changed: it is archived, its file is invalid, or its kind,
+    /// format or status was written by a newer version of loom.
     #[must_use]
     pub fn read_only(&self) -> bool {
+        if self.location != TaskLocation::Active {
+            return true;
+        }
         match &self.state {
             IndexedState::Valid { task, .. } => task.read_only_reason().is_some(),
             IndexedState::Invalid { .. } => true,
@@ -226,6 +239,14 @@ pub enum TaskError {
     /// The task file is invalid: the task is read-only until it is fixed.
     #[error("the task file is invalid, fix it by hand: {0}")]
     Invalid(InvalidTask),
+    /// The task is archived: read-only.
+    #[error("task `{id}` is archived (archive/{year}): an archived task is read-only")]
+    Archived {
+        /// The task.
+        id: TaskId,
+        /// Year of its archive.
+        year: u16,
+    },
     /// The command was refused.
     #[error(transparent)]
     Domain(#[from] DomainError),
@@ -321,6 +342,12 @@ impl<P: StorePort> Tasks<P> {
                 .index
                 .get(id)?
                 .ok_or_else(|| TaskError::NotFound(id.clone()))?;
+            if let TaskLocation::Archived(year) = row.location {
+                return Err(TaskError::Archived {
+                    id: id.clone(),
+                    year,
+                });
+            }
             // Only a new parent is checked: an edit of the other relations resends the current
             // one, which may have become invalid since (a hand edit), and must not be refused for
             // it. A read-only task is left to `change`, which refuses it as such.
@@ -406,6 +433,12 @@ impl<P: StorePort> Tasks<P> {
     ) -> Result<Task, TaskError> {
         let store = store_of(&self.index, &self.stores, id)?;
         let task = store.update(id, |stored| {
+            if let TaskLocation::Archived(year) = stored.location {
+                return Err(TaskError::Archived {
+                    id: id.clone(),
+                    year,
+                });
+            }
             let current = stored
                 .task()
                 .map_err(|error| TaskError::Invalid(error.clone()))?;
@@ -428,6 +461,78 @@ impl<P: StorePort> Tasks<P> {
         self.index
             .upsert(&IndexedTask::from_stored(&store.read(id)?))?;
         Ok(task)
+    }
+
+    /// Moves every active, closed task whose closing is at least `after` before `now` to the
+    /// archive of the year it was closed (see [`loom_core::archive_year`]), and indexes it there.
+    ///
+    /// A task that cannot be read or moved is reported in [`ArchivedAll::failed`] and stays
+    /// where it is; the others are moved.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::Index`] when the index cannot be read.
+    pub fn archive_due(
+        &mut self,
+        now: Timestamp,
+        after: Duration,
+    ) -> Result<ArchivedAll, TaskError> {
+        let _span = debug_span!("tasks.archive_due").entered();
+        let mut report = ArchivedAll::default();
+        for row in list(&self.index.conn, None)? {
+            let IndexedState::Valid { task, .. } = &row.state else {
+                continue;
+            };
+            // Only closed tasks can be due: the others are skipped without reading their log.
+            if row.location != TaskLocation::Active
+                || !matches!(task.status, Status::Done | Status::Cancelled)
+            {
+                continue;
+            }
+            let due = self
+                .events(&row.id)
+                .map(|log| archive_year(task, &log.events, now, after));
+            let result = match due {
+                Ok(Some(year)) => self.archive(&row.id, year).map(|()| Some(year)),
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(Some(year)) => report.moved.push(ArchivedTask {
+                    context: row.context,
+                    id: row.id,
+                    year,
+                }),
+                Ok(None) => {}
+                Err(error) => {
+                    report
+                        .failed
+                        .push(TaskFailure::new(&row.context, Some(&row.id), &error));
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Moves the active task `id` to the archive of `year`, and indexes it there.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::NotFound`], [`TaskError::Archived`] when it is archived already, or the
+    /// move or index error.
+    pub fn archive(&mut self, id: &TaskId, year: u16) -> Result<(), TaskError> {
+        let store = store_of(&self.index, &self.stores, id)?;
+        store.archive(id, year).map_err(|error| match error {
+            PortError::NotFound { .. } => TaskError::NotFound(id.clone()),
+            PortError::Archived { year, .. } => TaskError::Archived {
+                id: id.clone(),
+                year,
+            },
+            error => TaskError::Files(error),
+        })?;
+        self.index
+            .upsert(&IndexedTask::from_stored(&store.read(id)?))?;
+        Ok(())
     }
 
     /// Rebuilds the task rows from the files of every store, in one transaction: rows of tasks
@@ -486,11 +591,12 @@ impl<P: StorePort> Tasks<P> {
             .get(context)
             .ok_or_else(|| TaskError::UnknownContext(context.clone()))?;
         let indexed = self.index.get(id)?;
-        let hash = indexed
+        let last = indexed
             .as_ref()
             .filter(|row| row.context == *context)
-            .map(|row| row.hash.clone());
-        let result = store.update(id, |mut stored| match decide(hash.as_ref(), &stored) {
+            .map(|row| (row.hash.clone(), row.location));
+        let last = last.as_ref().map(|(hash, location)| (hash, *location));
+        let result = store.update(id, |mut stored| match decide(last, &stored) {
             Reconciliation::Unchanged => Ok((TaskWrite::default(), (Reconciled::Unchanged, None))),
             Reconciliation::Index => {
                 Ok((TaskWrite::default(), (Reconciled::Indexed, Some(stored))))
@@ -592,6 +698,26 @@ fn store_of<'a, P>(
         .ok_or(TaskError::UnknownContext(indexed.context))
 }
 
+/// What [`Tasks::archive_due`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchivedAll {
+    /// The tasks moved to the archive, by context, then ID.
+    pub moved: Vec<ArchivedTask>,
+    /// The tasks that could not be read or moved: they stay where they are.
+    pub failed: Vec<TaskFailure>,
+}
+
+/// A task moved to the archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedTask {
+    /// Context of its store.
+    pub context: ContextName,
+    /// The task.
+    pub id: TaskId,
+    /// Year of its archive, the year it was closed.
+    pub year: u16,
+}
+
 /// What [`Tasks::reconcile_all`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconciledAll {
@@ -655,7 +781,7 @@ fn keeps(failed: &[TaskFailure], context: &ContextName, id: &TaskId) -> bool {
 }
 
 /// Columns of [`read_row`].
-const COLUMNS: &str = "id, context, hash, task, error, body";
+const COLUMNS: &str = "id, context, hash, task, error, body, archived";
 
 fn insert(conn: &Connection, task: &IndexedTask) -> Result<(), StoreError> {
     let (json, error, status, importance, due, pinned, updated, body) = match &task.state {
@@ -685,13 +811,14 @@ fn insert(conn: &Connection, task: &IndexedTask) -> Result<(), StoreError> {
     };
     conn.execute(
         "INSERT INTO tasks (id, context, hash, task, error, title, status, importance, due, \
-                            pinned, updated, body, link_keys) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+                            pinned, updated, body, link_keys, archived) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
          ON CONFLICT (id) DO UPDATE SET \
              context = excluded.context, hash = excluded.hash, task = excluded.task, \
              error = excluded.error, title = excluded.title, status = excluded.status, \
              importance = excluded.importance, due = excluded.due, pinned = excluded.pinned, \
-             updated = excluded.updated, body = excluded.body, link_keys = excluded.link_keys",
+             updated = excluded.updated, body = excluded.body, link_keys = excluded.link_keys, \
+             archived = excluded.archived",
         params![
             task.id.as_str(),
             task.context.as_str(),
@@ -706,6 +833,7 @@ fn insert(conn: &Connection, task: &IndexedTask) -> Result<(), StoreError> {
             updated,
             body,
             task.link_keys(),
+            task.location.archive_year(),
         ],
     )?;
     Ok(())
@@ -754,6 +882,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<IndexedTask, StoreError>> 
     let json: Option<String> = row.get(3)?;
     let error: Option<String> = row.get(4)?;
     let body: String = row.get(5)?;
+    let archived: Option<u16> = row.get(6)?;
     Ok((|| {
         let corrupt = |message: String| StoreError::Corrupt(message);
         let state = match (json, error) {
@@ -776,6 +905,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<IndexedTask, StoreError>> 
                 .parse()
                 .map_err(|error: loom_core::ContextNameError| corrupt(error.to_string()))?,
             hash: ContentHash::from_hex(hash),
+            location: archived.map_or(TaskLocation::Active, TaskLocation::Archived),
             state,
         })
     })())

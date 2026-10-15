@@ -4,7 +4,7 @@ use loom_core::{
 };
 
 use super::{IndexedState, IndexedTask, link_keys};
-use crate::port::{StoredTask, TaskFile};
+use crate::port::{StoredTask, TaskFile, TaskLocation};
 
 fn context(name: &str) -> ContextName {
     name.parse().unwrap()
@@ -14,6 +14,7 @@ fn stored(text: &str, task: &loom_core::Task, events: EventLog) -> StoredTask {
     StoredTask {
         id: task.id.clone(),
         context: task.context.clone(),
+        location: TaskLocation::Active,
         file: TaskFile::parse(text.as_bytes().to_vec(), &task.id, &task.context),
         events,
     }

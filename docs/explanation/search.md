@@ -20,8 +20,7 @@ Full-text relevance alone tells which text holds these words best. It does not t
 2. repositories: the places you work in.
 3. tasks `inbox`, and tasks that loom cannot fully read (a status from a newer loom, an invalid `task.md`): still to look at.
 4. tasks `done` and `cancelled`: history.
-
-Archived tasks do not exist yet. When they exist, they will rank after all the other groups.
+5. archived tasks, whatever their status: older history that you can still find.
 
 In a group, each kind keeps its own order. For tasks, the order is link key, then title, then the rest. At each of these levels, the most recently changed task comes first. For repositories, the order is exact name, name prefix, slug, then the rest. At each of these levels, the most recently used repository comes first. FTS5 relevance (`bm25`) only breaks ties, and the ID or the slug makes the order total: the same index always gives the same order.
 

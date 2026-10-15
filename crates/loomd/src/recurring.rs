@@ -15,6 +15,7 @@ use loom_core::{
     PolicyDecision, SCHEDULE_PROVIDER, apply_policy, due_occurrence, occurrence_key,
     parse_occurrence_key,
 };
+use loom_store::port::TaskLocation;
 use loom_store::tasks::{IndexedState, IndexedTask};
 
 /// What a schedule does on a given day.
@@ -55,7 +56,10 @@ pub fn plan(
         .filter_map(|row| match &row.state {
             IndexedState::Valid { task, .. } => {
                 let occurrence = occurrence_of(&task.links, id)?;
-                Some((occurrence, row, is_open(&task.status)))
+                // An archived task is out of every list, even reopened by hand: `skip` never
+                // waits on it. Its occurrence still counts as created.
+                let open = is_open(&task.status) && row.location == TaskLocation::Active;
+                Some((occurrence, row, open))
             }
             // Its status is unknown: open, so `skip` waits; read-only, so never cancelled.
             IndexedState::Invalid { text, .. } => Some((occurrence_in_text(text, id)?, row, true)),

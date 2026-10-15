@@ -2,7 +2,7 @@ use jiff::ToSpan as _;
 use loom_api::{Importance, Kind, Relations, Task, Timestamp as TaskTimestamp};
 use loom_config::config::parse_config;
 use loom_config::machine::MachineName;
-use loom_store::port::ContentHash;
+use loom_store::port::{ContentHash, TaskLocation};
 use std::path::Path;
 
 use super::*;
@@ -48,6 +48,7 @@ fn row(id: &str, context: &str, schedule: &str, occurrence: &str, status: Status
         id: task.id.clone(),
         context: task.context.clone(),
         hash: ContentHash::of(b""),
+        location: TaskLocation::Active,
         state: IndexedState::Valid {
             task: Box::new(task),
             body: String::new(),
@@ -227,6 +228,31 @@ fn policies_with_the_previous_occurrence_open() {
         created(&plan(&context(), &replace, &[newer], today)),
         Some((today, &[][..]))
     );
+    // Reopened by hand in the archive: not open, never cancelled, its occurrence kept.
+    let archived = IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..open
+    };
+    assert_eq!(
+        created(&plan(
+            &context(),
+            &skip,
+            std::slice::from_ref(&archived),
+            today
+        )),
+        Some((today, &[][..]))
+    );
+    let same_day = IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..row(
+            "0000000e",
+            "company-a",
+            "timesheet",
+            "2026-10-16",
+            Status::Done,
+        )
+    };
+    assert_eq!(plan(&context(), &skip, &[same_day], today), Outcome::NotDue);
 }
 
 /// The occurrences a daily schedule creates when checked every 15 minutes from `from` to `to`
@@ -300,6 +326,7 @@ fn invalid(id: &str, text: &str) -> IndexedTask {
         id: id.parse().unwrap(),
         context: context(),
         hash: ContentHash::of(text.as_bytes()),
+        location: TaskLocation::Active,
         state: IndexedState::Invalid {
             error: "line 2: invalid TOML".to_owned(),
             text: text.to_owned(),

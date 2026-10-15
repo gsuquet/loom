@@ -1,10 +1,15 @@
 //! The files adapter of [`StorePort`]: one directory per task under the context store,
-//! `<store>/tasks/<id>/{task.md,events.jsonl}` (ADR-0013).
+//! `<store>/tasks/<id>/{task.md,events.jsonl}`, moved to `<store>/archive/<yyyy>/<id>/` when
+//! archived (ADR-0013).
 //!
 //! - `task.md` is replaced atomically (temporary file, sync, rename, sync of the directory).
 //! - `events.jsonl` only grows: lines are appended and synced.
 //! - A creation builds the whole task directory under a hidden name and renames it into place.
 //! - Every write of a task holds the task's lock, for the whole read, change and write.
+//! - The archive moves a task directory with one rename: a crash leaves it in `tasks/` or in
+//!   the archive, never in both or in neither.
+//! - A task is looked for in `tasks/` first, then in the archive years in order: the first
+//!   directory found is the task.
 
 use std::collections::HashMap;
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -16,7 +21,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use loom_core::{ContextName, EventLog, TaskId, Timestamp, parse_events, render_task_md};
 
 use crate::atomic::{self, sync_dir, sync_parent};
-use crate::port::{PortError, StorePort, StoredTask, TaskFile, TaskWrite, appended, task_dir_id};
+use crate::port::{
+    PortError, StorePort, StoredTask, TaskFile, TaskLocation, TaskWrite, appended,
+    archive_year_dir, task_dir_id,
+};
 
 /// Mode of the task directories and of `tasks/`: owner only, the store holds private notes.
 pub const TASK_DIR_MODE: u32 = 0o700;
@@ -29,6 +37,8 @@ pub const TASK_FILE: &str = "task.md";
 pub const EVENTS_FILE: &str = "events.jsonl";
 /// `tasks/`, in each context store.
 pub const TASKS_DIR: &str = "tasks";
+/// `archive/`, in each context store: one directory per year of closure.
+pub const ARCHIVE_DIR: &str = "archive";
 
 /// The tasks of one context, as files under its store root.
 #[derive(Debug)]
@@ -69,18 +79,73 @@ impl FileStore {
         self.tasks_dir().join(id.as_str())
     }
 
-    /// Creates `<root>/tasks` (mode `0700`) when missing.
+    /// `<root>/archive`.
+    #[must_use]
+    pub fn archive_dir(&self) -> PathBuf {
+        self.root.join(ARCHIVE_DIR)
+    }
+
+    /// The directory of task `id` at `location`: `<root>/tasks/<id>` or
+    /// `<root>/archive/<yyyy>/<id>`.
+    #[must_use]
+    pub fn dir_at(&self, id: &TaskId, location: TaskLocation) -> PathBuf {
+        match location {
+            TaskLocation::Active => self.task_dir(id),
+            TaskLocation::Archived(year) => self
+                .archive_dir()
+                .join(format!("{year:04}"))
+                .join(id.as_str()),
+        }
+    }
+
+    /// The years of the archive, sorted; none when there is no archive.
+    fn archive_years(&self) -> Result<Vec<u16>, PortError> {
+        let archive = self.archive_dir();
+        let entries = match fs::read_dir(&archive) {
+            Ok(entries) => entries,
+            Err(error) if is_missing(&error) => return Ok(Vec::new()),
+            Err(source) => return Err(io_error(&archive, source)),
+        };
+        let mut years = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(&archive, source))?;
+            if let Some(year) = archive_year_dir(&entry.file_name())
+                && entry.path().is_dir()
+            {
+                years.push(year);
+            }
+        }
+        years.sort_unstable();
+        Ok(years)
+    }
+
+    /// Where task `id` is: `tasks/` first, then the archive years in order. `None` when it is
+    /// in neither.
+    fn locate(&self, id: &TaskId) -> Result<Option<TaskLocation>, PortError> {
+        if self.task_dir(id).is_dir() {
+            return Ok(Some(TaskLocation::Active));
+        }
+        Ok(self
+            .archive_years()?
+            .into_iter()
+            .map(TaskLocation::Archived)
+            .find(|location| self.dir_at(id, *location).is_dir()))
+    }
+
+    /// Creates `<root>/tasks` and `<root>/archive` (mode `0700`) when missing.
     ///
     /// # Errors
     ///
-    /// [`PortError::Io`] when it cannot be created.
+    /// [`PortError::Io`] when one cannot be created.
     pub fn init(&self) -> Result<(), PortError> {
-        let tasks = self.tasks_dir();
-        DirBuilder::new()
-            .recursive(true)
-            .mode(TASK_DIR_MODE)
-            .create(&tasks)
-            .map_err(|source| io_error(&tasks, source))
+        for dir in [self.tasks_dir(), self.archive_dir()] {
+            DirBuilder::new()
+                .recursive(true)
+                .mode(TASK_DIR_MODE)
+                .create(&dir)
+                .map_err(|source| io_error(&dir, source))?;
+        }
+        Ok(())
     }
 
     /// The lock of task `id`, created on first use.
@@ -101,7 +166,8 @@ impl FileStore {
 
     /// Reads task `id`; the caller holds its lock when it writes afterwards.
     fn read_unlocked(&self, id: &TaskId) -> Result<StoredTask, PortError> {
-        let dir = self.task_dir(id);
+        let location = self.locate(id)?.ok_or_else(|| self.not_found(id))?;
+        let dir = self.dir_at(id, location);
         let path = dir.join(TASK_FILE);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -111,14 +177,21 @@ impl FileStore {
         Ok(StoredTask {
             id: id.clone(),
             context: self.context.clone(),
+            location,
             file: TaskFile::parse(bytes, id, &self.context),
             events: read_log(&dir.join(EVENTS_FILE))?,
         })
     }
 
-    /// Writes `write` to the existing task `id`, its lock held: `task.md`, then the events.
-    fn write_unlocked(&self, id: &TaskId, write: &TaskWrite) -> Result<(), PortError> {
-        let dir = self.task_dir(id);
+    /// Writes `write` to the existing task `id` at `location`, its lock held: `task.md`, then
+    /// the events.
+    fn write_unlocked(
+        &self,
+        id: &TaskId,
+        location: TaskLocation,
+        write: &TaskWrite,
+    ) -> Result<(), PortError> {
+        let dir = self.dir_at(id, location);
         if let Some(document) = &write.document {
             let path = dir.join(TASK_FILE);
             atomic::write_file(&path, render_task_md(document).as_bytes(), TASK_FILE_MODE)
@@ -147,7 +220,7 @@ impl StorePort for FileStore {
         let _held = lock_guard(&lock);
         self.init()?;
         let target = self.task_dir(&task.id);
-        if target.exists() {
+        if target.exists() || self.locate(&task.id)?.is_some() {
             return Err(PortError::AlreadyExists {
                 context: self.context.clone(),
                 id: task.id,
@@ -189,40 +262,89 @@ impl StorePort for FileStore {
         let lock = self.lock(id);
         let _held = lock_guard(&lock);
         let stored = self.read_unlocked(id)?;
+        let location = stored.location;
         let (write, value) = change(stored)?;
-        self.write_unlocked(id, &write)?;
+        self.write_unlocked(id, location, &write)?;
         Ok(value)
     }
 
     fn list(&self) -> Result<Vec<TaskId>, PortError> {
-        let tasks = self.tasks_dir();
-        let entries = match fs::read_dir(&tasks) {
-            Ok(entries) => entries,
-            Err(error) if is_missing(&error) => return Ok(Vec::new()),
-            Err(source) => return Err(io_error(&tasks, source)),
-        };
-        let mut ids = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|source| io_error(&tasks, source))?;
-            let Some(id) = task_dir_id(&entry.file_name()) else {
-                continue;
-            };
-            // Follows symbolic links: a task directory linked from elsewhere is a task.
-            if entry.path().is_dir() {
-                ids.push(id);
-            }
+        let mut ids = task_dirs(&self.tasks_dir())?;
+        for year in self.archive_years()? {
+            let dir = self.archive_dir().join(format!("{year:04}"));
+            ids.extend(task_dirs(&dir)?);
         }
         ids.sort();
+        ids.dedup();
         Ok(ids)
     }
 
     fn read_events(&self, id: &TaskId) -> Result<EventLog, PortError> {
-        let dir = self.task_dir(id);
-        if !dir.is_dir() {
-            return Err(self.not_found(id));
-        }
-        read_log(&dir.join(EVENTS_FILE))
+        let location = self.locate(id)?.ok_or_else(|| self.not_found(id))?;
+        read_log(&self.dir_at(id, location).join(EVENTS_FILE))
     }
+
+    fn archive(&self, id: &TaskId, year: u16) -> Result<(), PortError> {
+        let lock = self.lock(id);
+        let _held = lock_guard(&lock);
+        match self.locate(id)? {
+            None => return Err(self.not_found(id)),
+            Some(TaskLocation::Archived(year)) => {
+                return Err(PortError::Archived {
+                    context: self.context.clone(),
+                    id: id.clone(),
+                    year,
+                });
+            }
+            Some(TaskLocation::Active) => {}
+        }
+        let source = self.task_dir(id);
+        let target = self.dir_at(id, TaskLocation::Archived(year));
+        // `rename` replaces an empty directory: a task already there is never overwritten. The
+        // check and the rename are two steps; the task lock covers loomd, not a hand `mv` in
+        // between. TODO: `renameat2(RENAME_NOREPLACE)` on Linux and `renamex_np(RENAME_EXCL)`
+        // on macOS make it one step.
+        if target.exists() {
+            return Err(PortError::AlreadyExists {
+                context: self.context.clone(),
+                id: id.clone(),
+            });
+        }
+        let error = |source| io_error(&target, source);
+        let year_dir = target.parent().unwrap_or(&target);
+        DirBuilder::new()
+            .recursive(true)
+            .mode(TASK_DIR_MODE)
+            .create(year_dir)
+            .map_err(error)?;
+        // The new directories survive a crash before the rename does.
+        sync_parent(year_dir).map_err(error)?;
+        sync_parent(&self.archive_dir()).map_err(error)?;
+        fs::rename(&source, &target).map_err(error)?;
+        sync_dir(year_dir).map_err(error)?;
+        sync_parent(&source).map_err(error)
+    }
+}
+
+/// The task directories of `dir`, unsorted; none when it is missing.
+fn task_dirs(dir: &Path) -> Result<Vec<TaskId>, PortError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if is_missing(&error) => return Ok(Vec::new()),
+        Err(source) => return Err(io_error(dir, source)),
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| io_error(dir, source))?;
+        let Some(id) = task_dir_id(&entry.file_name()) else {
+            continue;
+        };
+        // Follows symbolic links: a task directory linked from elsewhere is a task.
+        if entry.path().is_dir() {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 /// The event log at `path`; empty when the file is missing. Invalid UTF-8 is replaced, and the

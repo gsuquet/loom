@@ -3,7 +3,10 @@ use loom_core::{
     TaskDocument, TaskId, Timestamp, create, parse_events, render_event, render_task_md,
 };
 
-use super::{ContentHash, InvalidTask, StoredTask, TaskFile, appended, task_dir_id};
+use super::{
+    ContentHash, InvalidTask, StoredTask, TaskFile, TaskLocation, appended, archive_year_dir,
+    task_dir_id,
+};
 
 fn at(secs: u64) -> Timestamp {
     Timestamp::from_unix_secs(secs).unwrap()
@@ -67,6 +70,7 @@ fn a_valid_file_reads_into_its_task_last_updated_at_its_last_event() {
     let stored = |events: &[EventRecord]| StoredTask {
         id: task.id.clone(),
         context: task.context.clone(),
+        location: TaskLocation::Active,
         file: file.clone(),
         events: parse_events(
             &events
@@ -163,5 +167,16 @@ fn only_task_id_directory_names_are_tasks() {
         "",
     ] {
         assert_eq!(task_dir_id(name.as_ref()), None, "{name}");
+    }
+}
+
+#[test]
+fn only_four_digit_years_are_archive_directories() {
+    assert_eq!(archive_year_dir("2026".as_ref()), Some(2026));
+    assert_eq!(archive_year_dir("1970".as_ref()), Some(1970));
+    for name in [
+        "1969", "0000", "+202", "202", "20260", "2026.tmp", ".2026", "abcd", "",
+    ] {
+        assert_eq!(archive_year_dir(name.as_ref()), None, "{name}");
     }
 }
