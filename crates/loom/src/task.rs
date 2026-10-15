@@ -765,6 +765,33 @@ pub fn render_change(detail: &TaskDetail) -> String {
     )
 }
 
+/// Who changed the task after the `loom edit` save, once loomd recorded it.
+///
+/// The actors of the events after the first hand-edit event of `new_events` (the save), in
+/// order, without repeats. A later hand edit (a second save, another window) is "a hand edit".
+#[must_use]
+pub fn changed_after_save(new_events: &[EventRecord]) -> Vec<String> {
+    let Some(save) = new_events
+        .iter()
+        .position(|record| record.actor == Actor::File)
+    else {
+        return Vec::new();
+    };
+    let mut actors: Vec<String> = Vec::new();
+    for record in &new_events[save + 1..] {
+        let name = match &record.actor {
+            Actor::File => "a hand edit".to_owned(),
+            Actor::User => "user".to_owned(),
+            Actor::Daemon => "loomd".to_owned(),
+            Actor::Agent { name } => format!("agent {name}"),
+        };
+        if !actors.contains(&name) {
+            actors.push(name);
+        }
+    }
+    actors
+}
+
 /// Whether the index holds the file `loom edit` saved: the same task, `updated` aside (it comes
 /// from the log, not from the file), and the same notes.
 ///
@@ -1247,6 +1274,26 @@ mod tests {
             Timestamp::from_unix_secs(1_791_792_000).unwrap(),
             &origin,
         )
+    }
+
+    #[test]
+    fn only_the_changes_after_the_save_are_named() {
+        // A user change while the editor was open, the save, then loomd and a second save.
+        let events = [
+            record(Actor::User),
+            record(Actor::File),
+            record(Actor::Daemon),
+            record(Actor::File),
+        ];
+        assert_eq!(changed_after_save(&events), ["loomd", "a hand edit"]);
+        assert_eq!(
+            changed_after_save(&[record(Actor::User), record(Actor::File)]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            changed_after_save(&[record(Actor::User)]),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
