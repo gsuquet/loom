@@ -4,7 +4,7 @@ use loom_core::{
     parse_task_md, render_task_md,
 };
 
-use super::{Reconciliation, decide};
+use super::{Reconciliation, decide, duplicate_ids};
 use crate::port::{ContentHash, StoredTask, TaskFile, TaskLocation};
 
 fn new_task() -> (Task, Vec<EventRecord>) {
@@ -134,8 +134,59 @@ fn an_invalid_file_or_an_unreadable_log_is_indexed_without_an_event() {
         reason: SkipReason::NewerVersion { v: 9 },
     }];
     let newer = stored(&task, &text, events, skipped);
-    assert_eq!(decide(None, &newer), Reconciliation::Index);
+    assert_eq!(decide(None, &newer), Reconciliation::Withhold);
     // No creation event: nothing to compare with.
     let no_log = stored(&task, &text, Vec::new(), Vec::new());
     assert_eq!(decide(None, &no_log), Reconciliation::Index);
+}
+
+#[test]
+fn a_damaged_or_unknown_line_does_not_stop_the_recording_of_a_hand_edit() {
+    let (task, events) = new_task();
+    let text = retitled(&task, "After");
+    let expected = Reconciliation::Record(vec![FieldChange::Title(Change {
+        from: "Before".to_owned(),
+        to: "After".to_owned(),
+    })]);
+    // A line cut by a crash in the middle of an append, and a line of a type this version does
+    // not know: the events that were read still describe the task.
+    for reason in [
+        SkipReason::Invalid {
+            message: "EOF while parsing".to_owned(),
+        },
+        SkipReason::UnknownType {
+            name: "teleported".to_owned(),
+        },
+    ] {
+        let skipped = vec![SkippedLine {
+            line: 2,
+            raw: "{\"garbage\"".to_owned(),
+            reason,
+        }];
+        let stored = stored(&task, &text, events.clone(), skipped);
+        assert_eq!(decide(None, &stored), expected);
+    }
+}
+
+#[test]
+fn an_id_held_by_two_contexts_is_a_duplicate() {
+    let id = |text: &str| text.parse::<loom_core::TaskId>().unwrap();
+    let context = |text: &str| text.parse::<ContextName>().unwrap();
+    let (a, b, c) = (context("a"), context("b"), context("c"));
+    let (one, two, three) = (id("k3q7zm2a"), id("h8w2n4pt"), id("m5x9d2rv"));
+    let held = [
+        (&a, &one),
+        (&a, &two),
+        (&b, &one),
+        (&c, &three),
+        (&c, &one),
+        (&b, &two),
+    ];
+    let duplicates = duplicate_ids(held);
+    assert_eq!(duplicates.len(), 2);
+    // Contexts in the order they were given, each once.
+    assert_eq!(duplicates[&one], [a.clone(), b.clone(), c]);
+    assert_eq!(duplicates[&two], [a, b]);
+    assert!(!duplicates.contains_key(&three));
+    assert!(duplicate_ids([]).is_empty());
 }

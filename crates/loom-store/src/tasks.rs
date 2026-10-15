@@ -20,12 +20,12 @@ use loom_core::{
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
-use tracing::debug_span;
+use tracing::{debug_span, warn};
 
 use crate::port::{
     ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskLocation, TaskWrite,
 };
-use crate::reconcile::{Reconciliation, decide};
+use crate::reconcile::{Reconciliation, decide, duplicate_ids};
 use crate::{StoreError, open_writer};
 
 /// A task as indexed: the task and its notes, or why its file is invalid.
@@ -82,6 +82,28 @@ impl IndexedTask {
             hash: stored.file.hash.clone(),
             location: stored.location,
             state,
+        }
+    }
+
+    /// The row of the ID of `first`, held by the stores of `contexts` (see [`duplicate_ids`]):
+    /// invalid, in the context and with the file of `first`. Its hash is not the one of the
+    /// file, so that reconciling the file after the other copies are gone indexes it again.
+    #[must_use]
+    pub fn duplicate(first: &StoredTask, contexts: &[ContextName]) -> Self {
+        let error = InvalidTask::DuplicateId {
+            id: first.id.clone(),
+            contexts: contexts.to_vec(),
+        };
+        let marked = format!("duplicate {}", first.file.hash.as_str());
+        Self {
+            id: first.id.clone(),
+            context: first.context.clone(),
+            hash: ContentHash::of(marked.as_bytes()),
+            location: first.location,
+            state: IndexedState::Invalid {
+                error: error.to_string(),
+                text: first.file.text.clone(),
+            },
         }
     }
 
@@ -432,6 +454,15 @@ impl<P: StorePort> Tasks<P> {
         random: &mut impl RandomSource,
     ) -> Result<Task, TaskError> {
         let store = store_of(&self.index, &self.stores, id)?;
+        // The row of a duplicate ID is invalid in the index, but the file the store returns is
+        // a valid copy: which of the copies the command is for is unknown.
+        let holders = self.holders(id)?;
+        if holders.len() > 1 {
+            return Err(TaskError::Invalid(InvalidTask::DuplicateId {
+                id: id.clone(),
+                contexts: holders,
+            }));
+        }
         let task = store.update(id, |stored| {
             if let TaskLocation::Archived(year) = stored.location {
                 return Err(TaskError::Archived {
@@ -553,7 +584,7 @@ impl<P: StorePort> Tasks<P> {
     /// [`TaskError::Index`] when the index cannot be written; it is unchanged then.
     pub fn reindex(&mut self) -> Result<Reindexed, TaskError> {
         let _span = debug_span!("tasks.reindex").entered();
-        let mut rows = Vec::new();
+        let mut read = Vec::new();
         let mut failed = Vec::new();
         for (context, store) in &self.stores {
             let ids = match store.list() {
@@ -565,10 +596,25 @@ impl<P: StorePort> Tasks<P> {
             };
             for id in ids {
                 match store.read(&id) {
-                    Ok(stored) => rows.push(IndexedTask::from_stored(&stored)),
+                    Ok(stored) => read.push(stored),
                     // Removed since it was listed.
                     Err(PortError::NotFound { .. }) => {}
                     Err(error) => failed.push(TaskFailure::new(context, Some(&id), &error.into())),
+                }
+            }
+        }
+        // An ID held by several stores gets one flagged row, at the place of its first copy.
+        let duplicates = duplicate_ids(read.iter().map(|stored| (&stored.context, &stored.id)));
+        let mut rows = Vec::with_capacity(read.len());
+        let mut flagged = HashSet::new();
+        for stored in &read {
+            match duplicates.get(&stored.id) {
+                None => rows.push(IndexedTask::from_stored(stored)),
+                Some(contexts) => {
+                    if flagged.insert(stored.id.clone()) {
+                        warn!(id = %stored.id, ?contexts, "duplicate task ID across contexts");
+                        rows.push(IndexedTask::duplicate(stored, contexts));
+                    }
                 }
             }
         }
@@ -582,6 +628,9 @@ impl<P: StorePort> Tasks<P> {
     /// appended to its log as an `edited` event of `origin` (the actor `file`) at `now`, its ID
     /// drawn from `random`; `task.md` itself is never written.
     ///
+    /// An ID that the stores of several contexts hold is not indexed as any of them: its row is
+    /// flagged invalid, [`Reconciled::Duplicate`], and no file is written.
+    ///
     /// # Errors
     ///
     /// [`TaskError::UnknownContext`], or the read, write or index error.
@@ -593,6 +642,38 @@ impl<P: StorePort> Tasks<P> {
         origin: &Origin,
         random: &mut impl RandomSource,
     ) -> Result<Reconciled, TaskError> {
+        let holders = self.holders(id)?;
+        self.reconcile_held(context, id, &holders, now, origin, random)
+    }
+
+    /// The contexts whose stores hold task `id`, in the order of the stores.
+    fn holders(&self, id: &TaskId) -> Result<Vec<ContextName>, TaskError> {
+        let mut holders = Vec::new();
+        for (context, store) in &self.stores {
+            match store.read_events(id) {
+                Ok(_) => holders.push(context.clone()),
+                Err(PortError::NotFound { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(holders)
+    }
+
+    /// [`Tasks::reconcile`] of task `id`, which the stores of `holders` hold.
+    fn reconcile_held(
+        &mut self,
+        context: &ContextName,
+        id: &TaskId,
+        holders: &[ContextName],
+        now: Timestamp,
+        origin: &Origin,
+        random: &mut impl RandomSource,
+    ) -> Result<Reconciled, TaskError> {
+        let context = match holders {
+            [] => context,
+            [only] => only,
+            [first, ..] => return self.flag_duplicate(first, id, holders),
+        };
         let store = self
             .stores
             .get(context)
@@ -607,6 +688,9 @@ impl<P: StorePort> Tasks<P> {
             Reconciliation::Unchanged => Ok((TaskWrite::default(), (Reconciled::Unchanged, None))),
             Reconciliation::Index => {
                 Ok((TaskWrite::default(), (Reconciled::Indexed, Some(stored))))
+            }
+            Reconciliation::Withhold => {
+                Ok((TaskWrite::default(), (Reconciled::Withheld, Some(stored))))
             }
             Reconciliation::Record(changes) => {
                 let taken: Vec<EventId> = stored
@@ -646,6 +730,27 @@ impl<P: StorePort> Tasks<P> {
         }
     }
 
+    /// Flags the row of `id`, held by the stores of `holders`, as a duplicate; `first` is the
+    /// context that gives its file.
+    fn flag_duplicate(
+        &mut self,
+        first: &ContextName,
+        id: &TaskId,
+        holders: &[ContextName],
+    ) -> Result<Reconciled, TaskError> {
+        let store = self
+            .stores
+            .get(first)
+            .ok_or_else(|| TaskError::UnknownContext(first.clone()))?;
+        let row = IndexedTask::duplicate(&store.read(id)?, holders);
+        if self.index.get(id)?.as_ref() == Some(&row) {
+            return Ok(Reconciled::Unchanged);
+        }
+        warn!(%id, contexts = ?holders, "duplicate task ID across contexts");
+        self.index.upsert(&row)?;
+        Ok(Reconciled::Duplicate(holders.to_vec()))
+    }
+
     /// [`Tasks::reconcile`] of every task of every store, then removes the rows of the tasks
     /// that are in no store any more.
     ///
@@ -670,10 +775,15 @@ impl<P: StorePort> Tasks<P> {
                 Err(error) => failed.push(TaskFailure::new(context, None, &error.into())),
             }
         }
+        let duplicates = duplicate_ids(listed.iter().map(|(context, id)| (context, id)));
         let mut results = Vec::with_capacity(listed.len());
         let mut seen = HashSet::with_capacity(listed.len());
         for (context, id) in listed {
-            match self.reconcile(&context, &id, now, origin, random) {
+            let holders = duplicates
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| vec![context.clone()]);
+            match self.reconcile_held(&context, &id, &holders, now, origin, random) {
                 Ok(reconciled) => results.push((id.clone(), reconciled)),
                 Err(error) => failed.push(TaskFailure::new(&context, Some(&id), &error)),
             }
@@ -741,11 +851,17 @@ pub struct ReconciledAll {
 pub enum Reconciled {
     /// The file is the one last indexed: nothing done.
     Unchanged,
-    /// The file was indexed (new, notes changed, invalid, or a log that cannot be replayed),
+    /// The file was indexed (new, notes changed, invalid, or a log without creation event),
     /// without an event.
     Indexed,
+    /// The file was indexed without an event, although it may hold a hand edit: the log has a
+    /// line written by a newer loom, so the edit cannot be told apart from that line's change.
+    Withheld,
     /// A hand edit of these fields was recorded, and the file indexed.
     Edited(Vec<FieldChange>),
+    /// The ID is in the stores of these contexts: its row was flagged invalid and no file was
+    /// written (see [`IndexedTask::duplicate`]).
+    Duplicate(Vec<ContextName>),
     /// The task is gone from its store: its row was removed.
     Removed,
 }

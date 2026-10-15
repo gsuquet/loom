@@ -219,6 +219,26 @@ pub enum InvalidTask {
         /// `context` of the file.
         found: ContextName,
     },
+    /// The same task ID is in the stores of several contexts (a task directory copied by hand):
+    /// loomd cannot tell which one a command is for.
+    #[error(
+        "duplicate ID across contexts: `{id}` is in the stores of {}; keep one task directory and remove the others",
+        contexts_text(.contexts)
+    )]
+    DuplicateId {
+        /// The ID.
+        id: TaskId,
+        /// The contexts whose stores hold it, in the order of the stores.
+        contexts: Vec<ContextName>,
+    },
+}
+
+fn contexts_text(contexts: &[ContextName]) -> String {
+    contexts
+        .iter()
+        .map(ContextName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Lowercase hex SHA-256 of a file: tells whether it changed since loomd last read or wrote it.
