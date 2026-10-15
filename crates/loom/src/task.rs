@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use jiff::Span;
 use loom_api::{
     Actor, ContentFormat, ContextAssignment, ContextName, Date, EventRecord, Importance, Kind,
-    NewTask, RankReason, Relations, Status, TaskDetail, TaskEdit, TaskId, TaskReadOnly,
+    NewTask, RankReason, Relations, Status, Task, TaskDetail, TaskEdit, TaskId, TaskReadOnly,
     TaskSummary,
 };
 use thiserror::Error;
@@ -765,13 +765,21 @@ pub fn render_change(detail: &TaskDetail) -> String {
     )
 }
 
-/// Whether loomd has recorded a `loom edit` save.
+/// Whether the index holds the file `loom edit` saved: the same task, `updated` aside (it comes
+/// from the log, not from the file), and the same notes.
 ///
-/// From the events appended to the task's log since the editor opened and whether its notes
-/// changed: a changed field is an event of the actor `file`; a notes-only change has no event.
+/// loomd takes the file as the truth, so the index ends with exactly this, whatever else
+/// changed the task meanwhile. Before that, the index may already list the hand-edit event
+/// but not its result, or show a change made by someone else.
 #[must_use]
-pub fn edit_recorded(new_events: &[EventRecord], notes_changed: bool) -> bool {
-    notes_changed || new_events.iter().any(|record| record.actor == Actor::File)
+pub fn holds_saved(indexed: &TaskDetail, saved: &Task, saved_notes: &str) -> bool {
+    indexed.body == saved_notes
+        && indexed.summary.task.as_ref().is_some_and(|task| {
+            Task {
+                updated: saved.updated,
+                ..task.clone()
+            } == *saved
+        })
 }
 
 /// Who changed the task while it was open in the editor: the actors of the events appended
@@ -807,7 +815,7 @@ pub fn editor(visual: Option<&str>, editor: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_api::{Task, TaskRank, Timestamp};
+    use loom_api::{TaskRank, Timestamp};
 
     fn name(text: &str) -> ContextName {
         text.parse().unwrap()
@@ -1238,14 +1246,23 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_is_recorded_by_a_file_event_or_a_notes_change() {
-        assert!(!edit_recorded(&[], false));
-        assert!(edit_recorded(&[], true));
-        assert!(!edit_recorded(&[record(Actor::User)], false));
-        assert!(edit_recorded(
-            &[record(Actor::User), record(Actor::File)],
-            false
-        ));
+    fn the_index_holds_the_save_once_task_and_notes_match() {
+        let indexed = TaskDetail {
+            summary: summary("k3q7zm2a", "Edited", None),
+            body: "## Notes\n".to_owned(),
+            actions: Vec::new(),
+        };
+        let mut saved = indexed.summary.task.clone().unwrap();
+        // `updated` comes from the log, never from the file.
+        saved.updated = Timestamp::from_unix_secs(1).unwrap();
+        assert!(holds_saved(&indexed, &saved, "## Notes\n"));
+        assert!(!holds_saved(&indexed, &saved, "## Notes\nmore\n"));
+        let mut older = saved.clone();
+        older.title = "Original".to_owned();
+        assert!(!holds_saved(&indexed, &older, "## Notes\n"));
+        let mut invalid = indexed;
+        invalid.summary.task = None;
+        assert!(!holds_saved(&invalid, &saved, "## Notes\n"));
     }
 
     #[test]
