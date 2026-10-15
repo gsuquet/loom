@@ -374,17 +374,25 @@ pub fn new_task(request: AddRequest) -> NewTask {
     }
 }
 
-/// `GET /v1/tasks` query of `loom ls`: the priority list, or every task with `status`; one
-/// context, or all of them.
+/// `GET /v1/tasks` query of `loom ls`: the priority list, every task with `status`, or the
+/// archived tasks (with `status` when given), sorted by ID; one context, or all of them.
 #[must_use]
-pub fn list_api_path(context: Option<&ContextName>, status: Option<&str>) -> String {
+pub fn list_api_path(
+    context: Option<&ContextName>,
+    status: Option<&str>,
+    archived: bool,
+) -> String {
     let mut query = Vec::new();
     if let Some(context) = context {
         query.push(format!("context={context}"));
     }
-    match status {
-        Some(status) => query.push(format!("status={status}")),
-        None => query.push("ranked=true".to_owned()),
+    if let Some(status) = status {
+        query.push(format!("status={status}"));
+    }
+    if archived {
+        query.push("archived=true".to_owned());
+    } else if status.is_none() {
+        query.push("ranked=true".to_owned());
     }
     format!("/v1/tasks?{}", query.join("&"))
 }
@@ -1081,11 +1089,26 @@ mod tests {
     #[test]
     fn ls_asks_for_the_priority_list_unless_a_status_is_given() {
         assert_eq!(
-            list_api_path(Some(&name("work")), None),
+            list_api_path(Some(&name("work")), None, false),
             "/v1/tasks?context=work&ranked=true"
         );
-        assert_eq!(list_api_path(None, None), "/v1/tasks?ranked=true");
-        assert_eq!(list_api_path(None, Some("inbox")), "/v1/tasks?status=inbox");
+        assert_eq!(list_api_path(None, None, false), "/v1/tasks?ranked=true");
+        assert_eq!(
+            list_api_path(None, Some("inbox"), false),
+            "/v1/tasks?status=inbox"
+        );
+    }
+
+    #[test]
+    fn ls_archived_asks_for_the_archived_tasks_by_id() {
+        assert_eq!(
+            list_api_path(Some(&name("work")), None, true),
+            "/v1/tasks?context=work&archived=true"
+        );
+        assert_eq!(
+            list_api_path(None, Some("cancelled"), true),
+            "/v1/tasks?status=cancelled&archived=true"
+        );
     }
 
     fn summary(id: &str, title: &str, rank: Option<(usize, RankReason)>) -> TaskSummary {

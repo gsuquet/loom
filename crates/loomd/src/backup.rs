@@ -67,6 +67,13 @@ pub fn commit_message(id: &TaskId, events: &[&Event]) -> Option<String> {
     Some(format!("{kind}({id}): {summary}"))
 }
 
+/// The message of the move of task `id` to the archive of `year`:
+/// `archived(<id>): moved to archive/<yyyy>`.
+#[must_use]
+pub fn archived_message(id: &TaskId, year: u16) -> String {
+    format!("archived({id}): moved to archive/{year:04}")
+}
+
 /// The message of a hand edit of task `id` that changed no field (notes, a new or invalid
 /// file): `edited(<id>): changed by hand`.
 #[must_use]
@@ -318,8 +325,9 @@ mod tests {
     use loom_store::port::TaskLocation;
 
     use super::{
-        Scope, Sides, SyncAction, catch_up_message, commit_message, decide_sync, hand_edit_message,
-        parse_counts, push_refused, redact_remote, removed_message, report, scope, sync_targets,
+        Scope, Sides, SyncAction, archived_message, catch_up_message, commit_message, decide_sync,
+        hand_edit_message, parse_counts, push_refused, redact_remote, removed_message, report,
+        scope, sync_targets,
     };
 
     fn stores() -> BTreeMap<ContextName, StoreSettings> {
@@ -507,6 +515,14 @@ mod tests {
         assert_eq!(scope(&id(), active, true, true), Scope::All);
         // The first commit of a store holds every file.
         assert_eq!(scope(&id(), active, false, false), Scope::All);
+    }
+
+    #[test]
+    fn a_move_to_the_archive_names_its_year() {
+        assert_eq!(
+            archived_message(&id(), 2026),
+            "archived(k3q7zm2a): moved to archive/2026"
+        );
     }
 
     #[test]

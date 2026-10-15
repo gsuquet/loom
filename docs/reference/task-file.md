@@ -4,7 +4,7 @@
 
 `loomd` reads these files to index the tasks (`loom reindex`). No command creates or changes a task yet.
 
-Path of both files: `<store>/tasks/<id>/`, where `<store>` is the context's `store.path`, `<loom home>/contexts/<context>` by default (see [context stores](configuration.md#context-stores)). An archived task is in `<store>/archive/<yyyy>/<id>/`, with the same two files. `<yyyy>` is the four-digit year of its closing.
+Path of both files: `<store>/tasks/<id>/`, where `<store>` is the context's `store.path`, `<loom home>/contexts/<context>` by default (see [context stores](configuration.md#context-stores)). An archived task is in `<store>/archive/<yyyy>/<id>/`, with the same two files. `<yyyy>` is the four-digit year of its close time: the time of the last event that set its status to `done` or `cancelled`.
 
 | Location | Read | Changed |
 | --- | --- | --- |
@@ -15,7 +15,7 @@ Path of both files: `<store>/tasks/<id>/`, where `<store>` is the context's `sto
 
 An archived task stays archived, whatever its file contains. If a hand edit sets an open status, the task stays read-only and out of the priority list. To open it again, move its directory back to `tasks/`. `loomd` then indexes it there immediately, or at its next start.
 
-A task ID has one location. If a directory with the same ID is in `tasks/` and in the archive, `tasks/<id>/` is the task, and `loomd` ignores the archived copy. Between two archive years, the earlier year is the task.
+A task ID has one location. If a directory with the same ID is in `tasks/` and in the archive, `tasks/<id>/` is the task, and `loomd` ignores the archived copy. If the same ID is in two archive years, the directory of the earlier year is the task.
 
 ## `task.md`
 

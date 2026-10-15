@@ -116,12 +116,54 @@ pub const MIN_SYNC_INTERVAL: Duration = Duration::from_mins(1);
 /// Default `[tasks] sync_interval`.
 pub const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_mins(15);
 
+/// Shortest `[tasks] archive_after` accepted.
+pub const MIN_ARCHIVE_AFTER: Duration = Duration::from_hours(24);
+/// Default `[tasks] archive_after`.
+pub const DEFAULT_ARCHIVE_AFTER: Duration = Duration::from_hours(7 * 24);
+
 /// `[tasks]` table: the context stores.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TasksConfig {
     /// `sync_interval`: time between two pushes and pulls of each store with a backup remote.
     pub sync_interval: SyncInterval,
+    /// `archive_after`: time after which a done or cancelled task moves to the archive.
+    pub archive_after: ArchiveAfter,
+}
+
+/// `[tasks] archive_after`: a duration of at least [`MIN_ARCHIVE_AFTER`], written as text
+/// (`"7d"`). Default [`DEFAULT_ARCHIVE_AFTER`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveAfter(Duration);
+
+impl ArchiveAfter {
+    /// The duration.
+    #[must_use]
+    pub const fn get(self) -> Duration {
+        self.0
+    }
+}
+
+impl Default for ArchiveAfter {
+    fn default() -> Self {
+        Self(DEFAULT_ARCHIVE_AFTER)
+    }
+}
+
+impl<'de> Deserialize<'de> for ArchiveAfter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let text = String::deserialize(deserializer)?;
+        let duration = parse_duration(&text)
+            .map_err(|error| D::Error::custom(format!("archive_after: {error}")))?;
+        if duration < MIN_ARCHIVE_AFTER {
+            return Err(D::Error::custom(format!(
+                "archive_after `{text}` is shorter than the minimum {}",
+                format_duration(MIN_ARCHIVE_AFTER)
+            )));
+        }
+        Ok(Self(duration))
+    }
 }
 
 /// `[tasks] sync_interval`: a duration of at least [`MIN_SYNC_INTERVAL`], written as text
@@ -470,8 +512,9 @@ pub(crate) fn location(text: &str, offset: usize) -> Location {
 #[cfg(test)]
 mod tests {
     use super::{
-        CheckInterval, Config, DEFAULT_CHECK_INTERVAL, DEFAULT_SYNC_INTERVAL, Daemon, Location,
-        OtlpEndpoint, Spanned, StoreSettings, TelemetryConfig, Update, location, parse_config,
+        CheckInterval, Config, DEFAULT_ARCHIVE_AFTER, DEFAULT_CHECK_INTERVAL,
+        DEFAULT_SYNC_INTERVAL, Daemon, Location, OtlpEndpoint, Spanned, StoreSettings,
+        TelemetryConfig, Update, location, parse_config,
     };
     use crate::repos::{
         ConfigPath, ContextConfig, DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_INTERVAL,
@@ -1111,6 +1154,32 @@ kind = "gitlab"
             "sync_interval `30s` is shorter than the minimum 1m",
         );
         assert_rejected("[tasks]\nfoo = 1\n", 2, 1, "unknown field `foo`");
+    }
+
+    #[test]
+    fn archive_after_defaults_to_7_days_with_a_minimum_of_1() {
+        assert_eq!(
+            Config::default().tasks.archive_after.get(),
+            DEFAULT_ARCHIVE_AFTER
+        );
+        assert_eq!(DEFAULT_ARCHIVE_AFTER, Duration::from_hours(7 * 24));
+        let config = parse_config("[tasks]\narchive_after = \"30d\"\n", Path::new(PATH)).unwrap();
+        assert_eq!(
+            config.tasks.archive_after.get(),
+            Duration::from_hours(30 * 24)
+        );
+        assert_rejected(
+            "[tasks]\narchive_after = \"23h\"\n",
+            2,
+            17,
+            "archive_after `23h` is shorter than the minimum 1d",
+        );
+        assert_rejected(
+            "[tasks]\narchive_after = \"a week\"\n",
+            2,
+            17,
+            "archive_after: invalid duration `a week`",
+        );
     }
 
     #[test]

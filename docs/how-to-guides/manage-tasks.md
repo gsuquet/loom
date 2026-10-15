@@ -108,6 +108,54 @@ loom cancel h8w2
 
 To revert a mistake, run `loom undo k3q8`. It reverts the last change of the task, also if this change closed the task.
 
+`loomd` archives a closed task 7 days after its close time (`[tasks] archive_after`). It moves the task to the archive of its context store. An archived task is read-only.
+
+## Find an archived task
+
+List the archived tasks of the context:
+
+```bash
+loom ls --archived
+```
+
+Other ways to find an archived task:
+
+- To see only one status in all the contexts, add `--status` and `--all-contexts`:
+
+  ```bash
+  loom ls --archived --status cancelled --all-contexts
+  ```
+
+- To find a task by its words, use `loom search`. The archived tasks come after all the other results:
+
+  ```bash
+  loom search certificates
+  ```
+
+- To see the task, use `loom show`. It prints `read-only:  archived in archive/<yyyy>`:
+
+  ```bash
+  loom show k3q8
+  ```
+
+## Open an archived task again
+
+`loom done`, `set`, `undo`, `edit` and the other commands refuse an archived task. Change the file first, then move the directory: in this order, the archive pass cannot move the task back.
+
+1. Open `task.md` in the archive directory with your editor, and set `status = "ready"`. `loomd` records the edit.
+
+   ```bash
+   $EDITOR ~/.loom/contexts/work/archive/2026/k3q8m2xa/task.md
+   ```
+
+2. Move the task directory back to `tasks/` in its store. The store is `<loom home>/contexts/<context>`, if `store.path` does not give a different path.
+
+   ```bash
+   mv ~/.loom/contexts/work/archive/2026/k3q8m2xa ~/.loom/contexts/work/tasks/
+   ```
+
+The task is open again, and the commands accept it.
+
 ## Reference
 
 - [CLI conventions: task commands](../reference/cli/conventions.md#task-commands)

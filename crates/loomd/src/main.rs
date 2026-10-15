@@ -1,5 +1,6 @@
 //! `loomd`: the daemon. Runs in the foreground until `SIGTERM` or `SIGINT`.
 
+mod archiver;
 mod daemon;
 mod disk_usage;
 mod repos;

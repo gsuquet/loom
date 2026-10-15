@@ -35,7 +35,7 @@ const DELIVERY: Duration = Duration::from_secs(1);
 
 struct Sandbox {
     dir: TempDir,
-    /// `LOOM_TEST_TODAY`, if set.
+    /// `LOOM_TEST_TODAY`, if set; a test may change it between two starts.
     today: Option<&'static str>,
 }
 
@@ -449,5 +449,79 @@ fn a_task_a_schedule_replaces_reaches_a_client() {
         detail.summary.task.unwrap().status.name(),
         Some(loom_api::StatusName::Cancelled)
     );
+    daemon.stop();
+}
+
+#[test]
+fn a_task_the_archive_pass_moves_reaches_a_client() {
+    let mut sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let id = sandbox
+        .create("work", "Rotate the certificates")
+        .summary
+        .id
+        .to_string();
+    let _: TaskDetail = ok(&request(
+        &sandbox.socket(),
+        "POST",
+        &format!("/v1/tasks/{id}/actions/done"),
+        None,
+    ));
+    let events: loom_api::TaskEvents = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        &format!("/v1/tasks/{id}/events"),
+        None,
+    ));
+    daemon.stop();
+    // Started again 8 days after the closing: the pass on start archives the task.
+    let closed: loom_api::Date = events.events.last().unwrap().at.to_string()[..10]
+        .parse()
+        .unwrap();
+    let later = closed.checked_add(jiff::Span::new().days(8)).unwrap();
+    sandbox.today = Some(String::leak(later.to_string()));
+    let daemon = sandbox.start();
+    // The pass on start runs before any client connects: resume from the start of the run.
+    let mut probe = Stream::open(&sandbox, "?context=home", None);
+    sandbox.create("home", "Probe");
+    let run = probe.event(DELIVERY).unwrap().id.unwrap();
+    let run = run.split_once('-').unwrap().0;
+    let mut stream = Stream::open(&sandbox, "?context=work", Some(&format!("{run}-0")));
+    let archived = loop {
+        let sse = stream.event(DELIVERY).expect("no task.archived event");
+        match change(&sse) {
+            ChangeEvent::TaskArchived { id, context } => {
+                break (id.to_string(), context.to_string());
+            }
+            // The done event is in the previous run: the move itself sends no `task.changed`.
+            ChangeEvent::TaskChanged { id: changed, .. } => {
+                assert_ne!(
+                    changed.to_string(),
+                    id,
+                    "task.changed for the archived task"
+                );
+            }
+            ChangeEvent::Resync => {}
+            other => panic!("unexpected event: {other:?}"),
+        }
+    };
+    assert_eq!(archived, (id.clone(), "work".to_owned()));
+    // Nor after: the watcher sees the rename, and its reconciliation finds the task unchanged.
+    while let Some(sse) = stream.event(Duration::from_millis(500)) {
+        if let ChangeEvent::TaskChanged { id: changed, .. } = change(&sse) {
+            assert_ne!(changed.to_string(), id, "task.changed after the move");
+        }
+    }
+    // The task is archived.
+    let detail: TaskDetail = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        &format!("/v1/tasks/{id}"),
+        None,
+    ));
+    assert!(matches!(
+        detail.summary.read_only,
+        Some(loom_api::TaskReadOnly::Archived(_))
+    ));
     daemon.stop();
 }

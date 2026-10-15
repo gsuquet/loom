@@ -12,6 +12,8 @@
 //!   are read here, so that a read never sees an append in progress.
 //! - The other reads (list, one task) go through a read connection to the index, on a
 //!   blocking thread, without waiting for the task thread.
+//! - Closed tasks move to the archive (ADR-0013, decision 10) in a pass right after the
+//!   reconciliation on start, then every hour (`loomd::archiver`): each move is one commit.
 //! - Each change is committed to the store's git repository right after it is written
 //!   (`loomd::store_git`): a hand edit recorded as an event, a task removed, and at the end of a
 //!   reconciliation of every task, whatever no other commit took. A commit that fails is logged
@@ -21,10 +23,12 @@
 //! the I/O.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::fs::{self, File};
 use std::hash::{BuildHasher as _, Hasher as _, RandomState};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
@@ -41,19 +45,23 @@ use loom_store::port::TaskLocation;
 use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskIndex, Tasks};
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
-use loomd::backup::{catch_up_message, commit_message, hand_edit_message, removed_message};
+use loomd::backup::{
+    archived_message, catch_up_message, commit_message, hand_edit_message, removed_message,
+};
 use loomd::events::Bus;
 use loomd::recurring::{Outcome, plan};
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
-use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
-use loomd::task_index::{failed_files, reindex_result, task_of_path};
+use loomd::task_api::{TEST_TODAY_ENV, TaskFilter, resolve, task_detail, task_list, task_problem};
+use loomd::task_archive::{ARCHIVE_BATCH, archive_now};
+use loomd::task_index::{WatchedPath, failed_files, reindex_result, watched_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 use tokio::sync::{oneshot, watch};
 use tracing::{Span, debug, info, info_span, warn};
 
+use crate::archiver::{self, Archiver};
 use crate::repos::Failure;
 
 type Reply<T> = oneshot::Sender<Result<T, Failure>>;
@@ -62,7 +70,8 @@ type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 pub type Schedules = BTreeMap<ContextName, Vec<Schedule>>;
 
 /// How long a read of the tasks index (a search that covers tasks, a list, a task, an ID prefix)
-/// waits for the reconciliation on start before it answers from the tasks indexed so far.
+/// waits for the reconciliation and the archive pass on start before it answers from the tasks
+/// indexed so far.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A request to the task thread, with the span of the API request that sent it.
@@ -94,6 +103,8 @@ enum Command {
     },
     /// Reconcile every task: at start, and when the watcher may have missed events.
     ReconcileAll,
+    /// Move the closed tasks whose time has come to the archive.
+    Archive,
     /// A file of this task changed.
     Changed {
         context: ContextName,
@@ -128,10 +139,12 @@ pub struct TaskStore {
     thread: JoinHandle<()>,
     /// Dropped on stop: no more events.
     watcher: Option<RecommendedWatcher>,
+    /// Asks for an archive pass every hour.
+    archiver: Option<Archiver>,
 }
 
 /// What the API handlers use: the command channel, the index for reads, and whether the
-/// reconciliation on start is over.
+/// reconciliation and the archive pass on start are over.
 #[derive(Clone)]
 pub struct TaskHandle {
     commands: mpsc::Sender<Command>,
@@ -141,11 +154,13 @@ pub struct TaskHandle {
 
 /// Creates `tasks/` and `archive/` in every context store, opens `db` (created and migrated when needed),
 /// starts the file watcher, then the task thread, which reconciles every task at once. Events
-/// are recorded on the machine `machine_id`.
+/// are recorded on the machine `machine_id`; closed tasks are archived `archive_after` after
+/// their closing, at start and every hour.
 pub fn start(
     db: &Path,
     stores: &BTreeMap<ContextName, PathBuf>,
     machine_id: MachineId,
+    archive_after: Duration,
     events: Arc<Bus>,
 ) -> Result<(TaskStore, TaskHandle)> {
     let mut files = Vec::with_capacity(stores.len());
@@ -159,9 +174,13 @@ pub fn start(
     }
     let index = TaskIndex::open(db).into_diagnostic()?;
     let (commands, received) = mpsc::channel();
+    // Set: the reconciliation on start is queued below, before any watcher event.
+    let reconcile_queued = Arc::new(AtomicBool::new(true));
     // Before the reconciliation: an edit made while it runs is seen by one or the other.
-    let watcher = watch(stores, &commands);
+    let watcher = watch(stores, &commands, Arc::clone(&reconcile_queued));
     let _ = commands.send(Command::ReconcileAll);
+    // After the reconciliation on start: the closings recorded by it count.
+    let _ = commands.send(Command::Archive);
     let (ready_sender, ready) = watch::channel(false);
     let worker = Worker {
         ready: Some(ready_sender),
@@ -177,6 +196,9 @@ pub fn start(
             machine_id,
         },
         random: OsRandom::open(),
+        archive_after,
+        archive_pending: false,
+        reconcile_queued,
         schedule_failures: BTreeMap::new(),
         events,
     };
@@ -191,11 +213,16 @@ pub fn start(
         .spawn(move || worker.run(&received))
         .into_diagnostic()
         .wrap_err("cannot start the task store thread")?;
+    let timer = commands.clone();
+    let archiver = archiver::start(move || timer.send(Command::Archive).is_ok())
+        .inspect_err(|error| warn!(%error, "closed tasks are archived at start only"))
+        .ok();
     Ok((
         TaskStore {
             commands: commands.clone(),
             thread,
             watcher,
+            archiver,
         },
         TaskHandle {
             commands,
@@ -210,6 +237,7 @@ pub fn start(
 fn watch(
     stores: &BTreeMap<ContextName, PathBuf>,
     commands: &mpsc::Sender<Command>,
+    reconcile_queued: Arc<AtomicBool>,
 ) -> Option<RecommendedWatcher> {
     // Events may name the canonical path (FSEvents resolves `/tmp` to `/private/tmp`): both
     // spellings of each root are matched.
@@ -226,21 +254,28 @@ fn watch(
     let handler = move |event: notify::Result<notify::Event>| match event {
         Ok(event) => {
             if event.need_rescan() {
-                let _ = sender.send(Command::ReconcileAll);
+                queue_reconcile_all(&reconcile_queued, &sender);
                 return;
             }
             if !relevant(event.kind) {
                 return;
             }
             for path in &event.paths {
-                if let Some((context, id)) = task_of_path(&roots, path) {
-                    let _ = sender.send(Command::Changed { context, id });
+                match watched_path(&roots, path) {
+                    WatchedPath::Task(context, id) => {
+                        let _ = sender.send(Command::Changed { context, id });
+                    }
+                    // Rare: the first move of a year, a sync, a hand copy or removal.
+                    WatchedPath::ArchiveYear => {
+                        queue_reconcile_all(&reconcile_queued, &sender);
+                    }
+                    WatchedPath::Other => {}
                 }
             }
         }
         Err(error) => {
             warn!(%error, "task file watcher error, reconciling every task");
-            let _ = sender.send(Command::ReconcileAll);
+            queue_reconcile_all(&reconcile_queued, &sender);
         }
     };
     let mut watcher = match notify::recommended_watcher(handler) {
@@ -259,6 +294,15 @@ fn watch(
         }
     }
     Some(watcher)
+}
+
+/// Queues a reconciliation of every task, unless one is queued and not started yet: a burst of
+/// watcher events (a sync of several archive years, coalesced events) costs at most two scans,
+/// the one queued and one for what changes while it runs.
+fn queue_reconcile_all(queued: &AtomicBool, sender: &mpsc::Sender<Command>) {
+    if !queued.swap(true, Ordering::SeqCst) {
+        let _ = sender.send(Command::ReconcileAll);
+    }
 }
 
 /// Whether an event of `kind` can change a file. Reads are not: loomd reads every file it
@@ -315,6 +359,9 @@ impl TaskStore {
     /// Stops the watcher, then the task thread after the command it is running; queued
     /// requests are answered `unavailable`.
     pub fn stop(mut self) {
+        if let Some(archiver) = self.archiver.take() {
+            archiver.stop();
+        }
         drop(self.watcher.take());
         let _ = self.commands.send(Command::Stop);
         if self.thread.join().is_err() {
@@ -376,9 +423,9 @@ impl TaskHandle {
         answer.await.map_err(|_| stopped())
     }
 
-    /// Waits, at most `timeout`, for the reconciliation on start, so that a read does not
-    /// answer from a tasks index still being filled. `false` when it is not over yet; the
-    /// caller goes on with the index as it is.
+    /// Waits, at most `timeout`, for the reconciliation and the archive pass on start, so that a
+    /// read does not answer from a tasks index still being filled. `false` when it is not over
+    /// yet; the caller goes on with the index as it is.
     pub async fn wait_ready(&self, timeout: Duration) -> bool {
         let mut ready = self.ready.clone();
         // A thread gone without setting it (stopped, panicked) ends the wait as well.
@@ -511,8 +558,16 @@ struct Worker {
     /// Who the changes of the API are recorded as: the actor `user`, on this machine.
     user: Origin,
     random: OsRandom,
-    /// Set once the reconciliation on start is over, then dropped.
+    /// Set once the reconciliation and the archive pass on start are over, then dropped.
     ready: Option<watch::Sender<bool>>,
+    /// `[tasks] archive_after`.
+    archive_after: Duration,
+    /// A pass reached [`ARCHIVE_BATCH`]: the next one runs once the queue is empty, after the
+    /// requests waiting.
+    archive_pending: bool,
+    /// A reconciliation of every task is queued and not started yet: shared with the watcher,
+    /// which then queues none more.
+    reconcile_queued: Arc<AtomicBool>,
     /// The last failure of each schedule (context, ID) to create its task: a failure that
     /// repeats at each check is warned once.
     schedule_failures: BTreeMap<(ContextName, String), String>,
@@ -521,9 +576,25 @@ struct Worker {
 }
 
 impl Worker {
+    /// The next command: the one waiting, else the archive pass left pending, else the next one
+    /// to come. `None` once every sender is gone.
+    fn next(&mut self, received: &mpsc::Receiver<Command>) -> Option<Command> {
+        if self.archive_pending {
+            match received.try_recv() {
+                Ok(command) => return Some(command),
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.archive_pending = false;
+                    return Some(Command::Archive);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+            }
+        }
+        received.recv().ok()
+    }
+
     /// Runs the commands in order until `Stop` or until every sender is gone.
     fn run(mut self, received: &mpsc::Receiver<Command>) {
-        while let Ok(command) = received.recv() {
+        while let Some(command) = self.next(received) {
             match command {
                 Command::Reindex { reply, parent } => {
                     let _ = reply.send(self.reindex(&parent));
@@ -547,7 +618,11 @@ impl Worker {
                 }
                 Command::ReconcileAll => {
                     self.reconcile_all();
-                    // The first one is the reconciliation on start, queued before any other.
+                }
+                Command::Archive => {
+                    self.archive();
+                    // The first one is the pass on start, queued right after the reconciliation
+                    // on start: reads then see the tasks indexed and archived.
                     if let Some(ready) = self.ready.take() {
                         ready.send_replace(true);
                     }
@@ -725,6 +800,8 @@ impl Worker {
     /// the failures.
     fn reconcile_all(&mut self) -> Vec<TaskFailure> {
         let _span = info_span!("tasks.reconcile_all").entered();
+        // Before the scan: an event during it queues one more.
+        self.reconcile_queued.store(false, Ordering::SeqCst);
         let now = now();
         match self
             .tasks
@@ -768,6 +845,60 @@ impl Worker {
                 warn!(%error, "cannot drop the removed tasks from the index");
                 Vec::new()
             }
+        }
+    }
+
+    /// Moves the closed tasks whose time has come to the archive, one commit each; a task that
+    /// cannot be moved is logged and stays.
+    fn archive(&mut self) {
+        let _span = info_span!("tasks.archive").entered();
+        // Set again only by a pass that reaches its limit: a failing pass never loops.
+        self.archive_pending = false;
+        let now = archive_now(
+            env::var(TEST_TODAY_ENV).ok().as_deref(),
+            cfg!(debug_assertions),
+            now(),
+        );
+        let report = match self
+            .tasks
+            .archive_due(now, self.archive_after, ARCHIVE_BATCH)
+        {
+            Ok(report) => report,
+            Err(error) => {
+                warn!(%error, "cannot archive the closed tasks");
+                return;
+            }
+        };
+        for moved in &report.moved {
+            info!(context = %moved.context, id = %moved.id, year = moved.year, "task archived");
+            let result = self.commits.commit_task(
+                &moved.context,
+                &moved.id,
+                TaskLocation::Archived(moved.year),
+                &archived_message(&moved.id, moved.year),
+            );
+            log_commit(&moved.context, Some(&moved.id), result);
+            // After the move, its index row and its commit attempt, as for any change.
+            self.events.publish(ChangeEvent::TaskArchived {
+                id: moved.id.clone(),
+                context: moved.context.clone(),
+            });
+        }
+        for failure in &report.failed {
+            warn!(
+                context = %failure.context,
+                id = failure.id.as_ref().map(TaskId::as_str),
+                error = %failure.error,
+                "cannot archive a task, it stays in tasks/"
+            );
+        }
+        self.archive_pending = report.more;
+        if !report.moved.is_empty() || !report.failed.is_empty() {
+            info!(
+                archived = report.moved.len(),
+                failed = report.failed.len(),
+                "closed tasks archived"
+            );
         }
     }
 
@@ -985,7 +1116,26 @@ mod tests {
 
     use tokio::sync::watch;
 
-    use super::TaskHandle;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{Command, TaskHandle, queue_reconcile_all};
+
+    #[test]
+    fn a_burst_of_events_queues_one_reconciliation_until_it_starts() {
+        let (sender, received) = mpsc::channel();
+        let queued = AtomicBool::new(false);
+        for _ in 0..3 {
+            queue_reconcile_all(&queued, &sender);
+        }
+        assert!(matches!(received.try_recv(), Ok(Command::ReconcileAll)));
+        assert!(received.try_recv().is_err());
+        // Started: the next event queues another one.
+        queued.store(false, Ordering::SeqCst);
+        queue_reconcile_all(&queued, &sender);
+        queue_reconcile_all(&queued, &sender);
+        assert!(matches!(received.try_recv(), Ok(Command::ReconcileAll)));
+        assert!(received.try_recv().is_err());
+    }
 
     fn handle() -> (TaskHandle, watch::Sender<bool>) {
         let (commands, _) = mpsc::channel();

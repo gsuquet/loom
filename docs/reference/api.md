@@ -186,7 +186,7 @@ Before the rebuild, `loomd` reconciles every task: a hand edit not recorded yet 
 
 `{id}` is a task ID or a prefix of one, from 1 to 8 characters. `loomd` reads it as Crockford base32: case ignored, `i` and `l` read as `1`, `o` as `0`. `loomd` resolves it against every indexed task, of every context. If several tasks start with the prefix, the error is `ambiguous_prefix`, and the error lists these tasks. `/v1/tasks/reindex` is the reindex endpoint, never a task.
 
-Reads (`GET /v1/tasks`, `GET /v1/tasks/{id}`) use a read connection to the index and never wait for a write. After `loomd` starts, a read waits for the reconciliation on start. The resolution of `{id}` by every endpoint also waits for it. The wait is at most 10 s, then `loomd` answers from the tasks indexed so far. Thus a client should allow more than 10 s for its first request.
+Reads (`GET /v1/tasks`, `GET /v1/tasks/{id}`) use a read connection to the index and never wait for a write. After `loomd` starts, a read waits for the reconciliation on start and for the first [archive](configuration.md#archive) pass. The resolution of `{id}` by every endpoint also waits for them. The wait is at most 10 s, then `loomd` answers from the tasks indexed so far. Thus a client should allow more than 10 s for its first request.
 
 Creations, edits, actions, undos and event reads run on the task thread, one at a time. They run after the hand edits and the reindexes queued before them. Thus two requests on one task never interleave, and no request is lost. Their events have the actor `user` and the `id` of [`machine.toml`](configuration.md#machinetoml). A request that changes nothing writes nothing and answers the task as it is. Examples are a pin of a pinned task, and an edit of a field to its value.
 
@@ -255,9 +255,10 @@ Events that `loomd` sends:
 | `type` | When |
 | --- | --- |
 | `task.changed` | An API request creates, edits, moves, pins, unpins or undoes a task, and writes a [task event](#taskevents). A request that changes nothing sends no change event. Also when `loomd` reconciles a hand edit of the task files: a new task, a changed task, or a removed task directory. Also when a [schedule](configuration.md#schedules) creates a task, and when the `replace` policy cancels the task of an earlier occurrence. |
+| `task.archived` | The [archive](configuration.md#archive) pass moves a closed task to `archive/<yyyy>/`. `loomd` sends the event after the move, the index write and the commit attempt. A directory that you move by hand sends `task.changed`. |
 | `resync` | `loom reindex` builds the index again. A reconciliation of all the tasks changes one or more tasks (the watcher can miss events). A sync moves a context store forward to the commits of another machine. Also the first event to a client that cannot resume, and the last event to a client that is too far behind (see below). |
 
-`task.archived`, `repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
+`repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
 
 Query parameter `context`: the stream has only the events of this context, and all the `resync` events. An invalid name or an unknown parameter gives `400 invalid_request`.
 

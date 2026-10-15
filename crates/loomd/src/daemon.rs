@@ -151,6 +151,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         &layout.index_db,
         &store_paths,
         MachineId(machine.as_str().to_owned()),
+        config.tasks.archive_after.get(),
         Arc::clone(&events),
     )
     .wrap_err("cannot start the task store")?;

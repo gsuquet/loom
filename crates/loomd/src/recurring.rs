@@ -61,8 +61,13 @@ pub fn plan(
                 let open = is_open(&task.status) && row.location == TaskLocation::Active;
                 Some((occurrence, row, open))
             }
-            // Its status is unknown: open, so `skip` waits; read-only, so never cancelled.
-            IndexedState::Invalid { text, .. } => Some((occurrence_in_text(text, id)?, row, true)),
+            // Its status is unknown: open, so `skip` waits (unless it is archived, out of every
+            // list); read-only, so never cancelled.
+            IndexedState::Invalid { text, .. } => Some((
+                occurrence_in_text(text, id)?,
+                row,
+                row.location == TaskLocation::Active,
+            )),
         })
         .collect();
     let last_created = tasks.iter().map(|(occurrence, ..)| *occurrence).max();

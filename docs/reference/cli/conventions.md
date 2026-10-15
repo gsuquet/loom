@@ -351,7 +351,7 @@ The title is the arguments, with spaces between them. The status of the task is 
 
 ### `loom ls`
 
-Without `--status`, `loom ls` prints the priority list of the context, with the position of each task in a `#` column. The list has the `ready` and `active` tasks, and the `waiting` tasks whose date has come. With `--status`, it prints the tasks with that status, sorted by ID. Columns: `ID` (shortest unique prefix), `CONTEXT`, `STATUS`, `P`, `KIND`, `DUE`, `TITLE` (`* ` before a pinned task, and the error for an invalid `task.md`). `--why` (not with `--status`) adds `WHY`, the rule that placed the task after the previous one:
+Without `--status`, `loom ls` prints the priority list of the context, with the position of each task in a `#` column. The list has the `ready` and `active` tasks, and the `waiting` tasks whose date has come. With `--status`, it prints the tasks with that status, sorted by ID. With `--archived`, it prints the archived tasks (`archive/<yyyy>/`), sorted by ID. With `--archived` and `--status`, it prints only the archived tasks with that status. No other view shows an archived task. Columns: `ID` (shortest unique prefix), `CONTEXT`, `STATUS`, `P`, `KIND`, `DUE`, `TITLE` (`* ` before a pinned task, and the error for an invalid `task.md`). `--why` (not with `--status` or `--archived`) adds `WHY`, the rule that placed the task after the previous one:
 
 | `WHY` | Rule |
 | --- | --- |
@@ -367,7 +367,7 @@ Without `--status`, `loom ls` prints the priority list of the context, with the 
 
 ### `loom show`
 
-`loom show` prints one field per line: `id`, `context`, `title`, `kind`, `status` and `importance`. Then it prints `due`, `pinned` and `parent` if they are set, then `created` and `updated`. A task that this version cannot change also has `read-only`. Then come a blank line and the notes. `--json`: the `TaskDetail`.
+`loom show` prints one field per line: `id`, `context`, `title`, `kind`, `status` and `importance`. Then it prints `due`, `pinned` and `parent` if they are set, then `created` and `updated`. A task that this version cannot change also has `read-only`. For an archived task, `read-only` is `archived in archive/<yyyy>`. Then come a blank line and the notes. `--json`: the `TaskDetail`.
 
 For an unknown ID, `loom show` exits with `1`. If several tasks start with the prefix, it exits with `1` and lists them.
 
@@ -399,7 +399,11 @@ A malformed `key=value` or an unknown key is a usage error (exit `2`). A repeate
 
 ### `loom edit`
 
-`loom edit` opens the `task.md` of the task in an editor. The path is `<store>/tasks/<id>/task.md`, with the store of its context in `config.toml`. The editor is `VISUAL`, otherwise `EDITOR`, otherwise `vi`. `loom` runs it through `sh -c`, with the path as its argument. Then:
+`loom edit` opens the `task.md` of the task in an editor. The path is `<store>/tasks/<id>/task.md`, with the store of its context in `config.toml`. The editor is `VISUAL`, otherwise `EDITOR`, otherwise `vi`. `loom` runs it through `sh -c`, with the path as its argument.
+
+`loom edit` does not open an archived task. It exits with `1` and this message: `task <prefix> is archived (archive/<yyyy>): an archived task is read-only. To reopen it, set its status in archive/<yyyy>/<id>/task.md, then move its directory back to tasks/.` See [open an archived task again](../../how-to-guides/manage-tasks.md#open-an-archived-task-again).
+
+For the other tasks, after the editor closes:
 
 - File unchanged: prints `<prefix> unchanged`.
 - File invalid (`task.md` format): exit `1` with the path and the error. The file stays as you saved it. loomd shows the task as read-only until the file is correct.
@@ -408,6 +412,7 @@ A malformed `key=value` or an unknown key is a usage error (exit `2`). A repeate
 - If loomd did not record the hand edit in that time, `loom` prints `<prefix> saved; loomd has not recorded it within 5 s`. This occurs if loomd did not read the file yet.
 - Other events can be added to the log of the task while the editor is open. For example: a `loom done` in another terminal, a sync, an agent. In that case, `loom` prints a warning on stderr with their actors. The save replaced the file, and loomd recorded it as an edit that can revert these events. `loom undo <id>` reverts that edit.
 - The editor exits non-zero: exit `1`, the file left as it is.
+- The task is a closed one and the hourly archive pass moves it while the editor is open: the save targets `tasks/<id>/task.md`, whose directory is gone. Most editors fail to save; one that creates the missing directory leaves a `tasks/<id>/` beside the archived task, which then wins over it ([task files](../task-file.md)).
 
 ## `loom upgrade`
 
