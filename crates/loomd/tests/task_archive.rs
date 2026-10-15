@@ -234,23 +234,30 @@ fn a_hand_edit_in_the_archive_is_recorded_and_committed_at_once() {
     // Edited by hand while loomd runs: the watcher covers the archive.
     let text = done_md().replace("Rotate the certificates", "Rotate the old certificates");
     fs::write(dir.join("task.md"), text).unwrap();
+    // `fs::write` truncates, then writes: the watcher may index the empty file first (invalid,
+    // no task) and the full one next.
     eventually("the edit to be indexed", || {
         let detail: TaskDetail = ok(&sandbox.call("GET", "/v1/tasks/k3q"));
-        detail.summary.task.unwrap().title == "Rotate the old certificates"
+        detail
+            .summary
+            .task
+            .is_some_and(|task| task.title == "Rotate the old certificates")
     });
     // The store with only an archived task is committed at start, then the edit under its
-    // archive path, nothing left over.
+    // archive path (after a commit of the empty file, if the watcher saw it): the last commit
+    // holds the edited file, nothing left over.
+    let committed = format!("HEAD:archive/2026/{ID}/task.md");
     eventually("the edit to be committed", || {
-        let log = git_run(
-            &sandbox.user_home(),
-            &sandbox.store(),
-            &["log", "--format=%s", "-1"],
-        );
-        String::from_utf8_lossy(&log.stdout).starts_with(&format!("edited({ID})"))
+        let home = sandbox.user_home();
+        let store = sandbox.store();
+        let file = git_run(&home, &store, &["show", &committed]);
+        let status = git_run(&home, &store, &["status", "--porcelain"]);
+        String::from_utf8_lossy(&file.stdout).contains("Rotate the old certificates")
+            && status.status.success()
+            && status.stdout.is_empty()
     });
-    let subjects = sandbox.git(&["log", "--format=%s"]);
-    assert_eq!(subjects.lines().count(), 2, "{subjects}");
-    assert_eq!(sandbox.git(&["status", "--porcelain"]), "");
+    let subject = sandbox.git(&["log", "--format=%s", "-1"]);
+    assert!(subject.starts_with(&format!("edited({ID})")), "{subject}");
     let tracked = sandbox.git(&["ls-files"]);
     assert!(
         tracked.contains(&format!("archive/2026/{ID}/task.md")),

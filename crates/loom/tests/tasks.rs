@@ -683,9 +683,20 @@ fn archived_tasks_are_listed_apart_shown_and_read_only() {
             .map(|summary| summary.id.to_string())
             .collect()
     };
-    // Picked up by the watcher: wait for it.
+    // Picked up by the watcher: wait for it, the whole file read (a file read during its write
+    // is indexed as invalid, without a status, for a moment).
     let deadline = Instant::now() + TIMEOUT;
-    while ids(&["ls", "-c", "work", "--archived", "--json"]).is_empty() {
+    while ids(&[
+        "ls",
+        "-c",
+        "work",
+        "--archived",
+        "--status",
+        "done",
+        "--json",
+    ])
+    .is_empty()
+    {
         assert!(
             Instant::now() < deadline,
             "the archived task is not indexed"
