@@ -3,7 +3,8 @@
 //!
 //! Each task a schedule creates carries the origin link `schedule` / `<id>/<occurrence date>`,
 //! the dedup key: the latest one gives the last occurrence created, so a restart, a second
-//! check the same day or a week offline never create an occurrence twice.
+//! check the same day or a week offline never create an occurrence twice. A task whose
+//! `task.md` is invalid keeps its occurrence when its text still holds the quoted key.
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -50,12 +51,13 @@ pub fn plan(
     let tasks: Vec<(Date, &IndexedTask, bool)> = rows
         .iter()
         .filter(|row| row.context == *context)
-        .filter_map(|row| {
-            let IndexedState::Valid { task, .. } = &row.state else {
-                return None;
-            };
-            let occurrence = occurrence_of(&task.links, id)?;
-            Some((occurrence, row, is_open(&task.status)))
+        .filter_map(|row| match &row.state {
+            IndexedState::Valid { task, .. } => {
+                let occurrence = occurrence_of(&task.links, id)?;
+                Some((occurrence, row, is_open(&task.status)))
+            }
+            // Its status is unknown: open, so `skip` waits; read-only, so never cancelled.
+            IndexedState::Invalid { text, .. } => Some((occurrence_in_text(text, id)?, row, true)),
         })
         .collect();
     let last_created = tasks.iter().map(|(occurrence, ..)| *occurrence).max();
@@ -95,6 +97,20 @@ fn occurrence_of(links: &[Link], id: &str) -> Option<Date> {
         }
         Link::Origin(_) | Link::Related(_) | Link::Repo { .. } => None,
     })
+}
+
+/// The latest occurrence of schedule `id` whose key, quoted (`"<id>/<date>"`), is in `text`:
+/// the occurrence of a task whose `task.md` a hand edit made invalid, so that it is not created
+/// again.
+fn occurrence_in_text(text: &str, id: &str) -> Option<Date> {
+    let prefix = format!("\"{id}/");
+    text.match_indices(&prefix)
+        .filter_map(|(start, _)| {
+            let rest = text.get(start + prefix.len()..)?;
+            let (date, after) = (rest.get(..10)?, rest.get(10..)?);
+            after.starts_with('"').then(|| date.parse().ok()).flatten()
+        })
+        .max()
 }
 
 /// Whether a task is still to do. A status of a newer loom counts as open: `skip` then waits

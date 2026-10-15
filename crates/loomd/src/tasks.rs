@@ -173,6 +173,7 @@ pub fn start(
             machine_id,
         },
         random: OsRandom::open(),
+        schedule_failures: BTreeMap::new(),
     };
     info!(
         stores = ?stores.values().map(|root| root.display().to_string()).collect::<Vec<_>>(),
@@ -505,6 +506,9 @@ struct Worker {
     random: OsRandom,
     /// Set once the reconciliation on start is over, then dropped.
     ready: Option<watch::Sender<bool>>,
+    /// The last failure of each schedule (context, ID) to create its task: a failure that
+    /// repeats at each check is warned once.
+    schedule_failures: BTreeMap<(ContextName, String), String>,
 }
 
 impl Worker {
@@ -827,10 +831,20 @@ impl Worker {
                         new,
                         cancel,
                     } => {
+                        let key = (context.clone(), id.as_str().to_owned());
                         let task = match self.tasks.create(*new, now(), &daemon, &mut self.random) {
-                            Ok(task) => task,
+                            Ok(task) => {
+                                self.schedule_failures.remove(&key);
+                                task
+                            }
                             Err(error) => {
-                                warn!(%context, schedule = %id, %occurrence, %error, "cannot create the task of a schedule");
+                                let failure = format!("{occurrence}: {error}");
+                                if self.schedule_failures.get(&key) == Some(&failure) {
+                                    debug!(%context, schedule = %id, %occurrence, %error, "cannot create the task of a schedule, again");
+                                } else {
+                                    warn!(%context, schedule = %id, %occurrence, %error, "cannot create the task of a schedule, retried every minute");
+                                    self.schedule_failures.insert(key, failure);
+                                }
                                 continue;
                             }
                         };

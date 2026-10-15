@@ -35,6 +35,8 @@ Before you start: `loom` and `loomd` are installed and the context is defined in
    - `policy` decides what happens when the task of the previous occurrence is still open: `skip` (default) creates nothing until it is closed, `stack` keeps both, `replace` cancels the old one.
    - For a rule with `INTERVAL` above 1, add `start = 2026-10-01`: the periods are counted from it.
 
+   - If several machines hold the context, each one creates every task: set `machines` to one machine for a context with schedules.
+
 3. Restart loomd to load the schedule. The configuration is checked first; a rule loomd does not support is refused with the part it names.
 
    ```bash

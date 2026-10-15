@@ -292,3 +292,61 @@ fn daylight_saving_changes_in_paris_neither_shift_nor_repeat_occurrences() {
         date("2026-10-25")
     );
 }
+
+/// A task of `context` whose `task.md` is invalid, with `text`.
+fn invalid(id: &str, text: &str) -> IndexedTask {
+    IndexedTask {
+        id: id.parse().unwrap(),
+        context: context(),
+        hash: ContentHash::of(text.as_bytes()),
+        state: IndexedState::Invalid {
+            error: "line 2: invalid TOML".to_owned(),
+            text: text.to_owned(),
+        },
+    }
+}
+
+#[test]
+fn an_invalid_task_file_keeps_its_occurrence_and_counts_as_open() {
+    // A hand edit broke the task of today's occurrence: it is not created again.
+    let broken = invalid(
+        "0000000e",
+        "+++\ntitle = \"Fill in\nkind = \"admin\"\n[[links]]\nrole = \"origin\"\nprovider = \"schedule\"\nkey = \"timesheet/2026-10-16\"\n+++\n",
+    );
+    let done = row(
+        "0000000a",
+        "company-a",
+        "timesheet",
+        "2026-10-09",
+        Status::Done,
+    );
+    let stack = schedule("FREQ=WEEKLY;BYDAY=FR", "stack");
+    let rows = [done, broken.clone()];
+    assert_eq!(
+        plan(&context(), &stack, &rows, date("2026-10-16")),
+        Outcome::NotDue
+    );
+    // Open for `skip`, never cancelled by `replace`.
+    let skip = schedule("FREQ=WEEKLY;BYDAY=FR", "skip");
+    assert_eq!(
+        plan(&context(), &skip, &rows, date("2026-10-23")),
+        Outcome::Skipped {
+            occurrence: date("2026-10-23"),
+            open: vec![broken.id],
+        }
+    );
+    let replace = schedule("FREQ=WEEKLY;BYDAY=FR", "replace");
+    assert_eq!(
+        created(&plan(&context(), &replace, &rows, date("2026-10-23"))),
+        Some((date("2026-10-23"), &[][..]))
+    );
+    // Another schedule's key, or no key, is not this schedule's.
+    let other = invalid(
+        "0000000f",
+        "key = \"standup/2026-10-16\"\nkey = \"timesheet/2026-13-01\"\n",
+    );
+    assert_eq!(
+        created(&plan(&context(), &stack, &[other], date("2026-10-16"))),
+        Some((date("2026-10-16"), &[][..]))
+    );
+}
