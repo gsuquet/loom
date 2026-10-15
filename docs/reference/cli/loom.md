@@ -459,7 +459,7 @@ Global options apply.
 
 ### `loom show`
 
-Show a task: its fields and notes. `ID` is a task ID or a unique prefix of one, of any context
+Show a task: its fields and notes. `ID` is a task ID or a unique prefix of one, of any context. A warning on standard error lists the lines of its event log that loom does not replay
 
 ```text
 loom show [OPTIONS] <ID>

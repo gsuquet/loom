@@ -42,6 +42,9 @@ A change writes `task.md` before its events. A crash between the two leaves a fi
 - `loomd` compares a file with another hash with its log. It replays `events.jsonl` (the created task, then every change in order). Then it compares the result with the frontmatter, field by field. Each field that is different goes into one `edited` event of the actor `file`, which `loomd` appends to the log. `loomd` does not write `task.md` itself, so your layout and comments stay.
 - Only the notes changed: the task is indexed, the notes are searchable, no event. The log records fields, not prose.
 - The log is not reliable: the task is indexed, no event. Examples: no creation event, a line from a newer loom, changes that do not follow from each other. A guess can put a wrong change in the history.
+- A line that `loomd` does not replay does not make the log unreliable, unless a newer loom wrote it. A line cut by a crash, a line that is not an event and a line of an unknown type stay in the log as they are. `loomd` replays the other lines and records the edit as usual. A line from a newer loom can hold a change that this version cannot read, so `loomd` cannot tell that change from your edit. It records nothing for the task until you upgrade loom, and it logs a warning each time it indexes the task.
+
+`loom show` prints the lines that are not replayed as a warning on standard error. Thus a damaged log is not silent.
 
 The comparison uses the log, not the index, so the result is correct in every order of events. The log, not the index, tells what the task was. If you edit `task.md` while `loomd` is stopped, or before you delete `index.db`, `loomd` still records the edit at its next start. When nothing changed, the hash only lets `loomd` skip the replay.
 
@@ -89,3 +92,13 @@ Sometimes `loomd` cannot read a `task.md`. These are examples:
 `loomd` indexes the task anyway, and marks it invalid with the reason and its line. The task is read-only until you fix the file. `loomd` never changes a file that it cannot read, so nothing that you typed is lost, and it records no event for it. `loom reindex` lists the invalid files. When you fix the file, the reconciliation records the fields that are different from the last state of the log, as for any hand edit.
 
 A task whose kind or status comes from a newer version of loom is valid, but it is also read-only. This version keeps the value and does not change the task.
+
+## When two stores hold one ID
+
+The index has one row for each ID, and a task ID is unique in every context. A task directory that you copy by hand from one context store to another breaks this rule. `loomd` cannot tell which copy a command is for, and a command that writes the wrong file would hide the other.
+
+`loomd` does not choose. It indexes the ID once, as invalid, with the error `duplicate ID across contexts` and the contexts that hold it. The row has the context and the file of the first store, in the order of the contexts. The task is read-only: each action, edit and undo is refused with `read_only`, and `loomd` writes neither copy. `loom reindex` lists the ID in `invalid`, and `loomd` logs a warning when it finds it.
+
+`loomd` looks at the directories of the other stores to find a duplicate, and reads no file for it. A store that it cannot look at (a permission, a disk error) is skipped, so it never blocks the tasks of the other contexts. Until that store can be read, `loomd` does not see its copy as a duplicate. A reindex finds a duplicate from the listing of the stores, also when a copy cannot be read.
+
+To fix this, remove one task directory (or move it out of the stores). `loomd` then indexes the copy that is left as a valid task, and records the difference between the file and its log as a hand edit.

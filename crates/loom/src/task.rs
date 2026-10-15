@@ -7,9 +7,10 @@ use std::fmt::Write as _;
 use jiff::Span;
 use loom_api::{
     Actor, ContentFormat, ContextAssignment, ContextName, Date, EventRecord, Importance, Kind,
-    NewTask, RankReason, Relations, Status, Task, TaskDetail, TaskEdit, TaskId, TaskReadOnly,
-    TaskSummary,
+    NewTask, RankReason, Relations, SkippedLine, Status, Task, TaskDetail, TaskEdit, TaskId,
+    TaskReadOnly, TaskSummary,
 };
+use loom_core::SkipReason;
 use thiserror::Error;
 
 /// Date of today for the tests, honored by debug builds only, as by loomd.
@@ -842,6 +843,30 @@ pub fn changed_meanwhile(new_events: &[EventRecord]) -> Vec<String> {
     actors
 }
 
+/// Warning of `loom show` for the lines of `events.jsonl` that loom does not replay; `None` when
+/// there are none. A line written by a newer loom stops the recording of hand edits.
+#[must_use]
+pub fn skipped_notice(skipped: &[SkippedLine]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let noun = if skipped.len() == 1 { "line" } else { "lines" };
+    let mut out = format!(
+        "events.jsonl has {} {noun} that loom does not replay (kept as written):\n",
+        skipped.len()
+    );
+    for line in skipped {
+        let _ = writeln!(out, "  line {}: {}", line.line, line.reason);
+    }
+    if skipped
+        .iter()
+        .any(|line| matches!(line.reason, SkipReason::NewerVersion { .. }))
+    {
+        out.push_str("Hand edits of this task are not recorded until loom is upgraded.\n");
+    }
+    Some(out)
+}
+
 /// The editor of `loom edit`: `VISUAL`, then `EDITOR`, then `vi`; an empty value is unset.
 #[must_use]
 pub fn editor(visual: Option<&str>, editor: Option<&str>) -> String {
@@ -1171,6 +1196,40 @@ mod tests {
                 "zzzz  work                                   invalid task.md: line 2: x\n"
             ),
             "{text:?}"
+        );
+    }
+
+    #[test]
+    fn skipped_log_lines_are_listed_and_a_newer_line_says_what_it_costs() {
+        assert_eq!(skipped_notice(&[]), None);
+        let damaged = SkippedLine {
+            line: 3,
+            raw: "{\"garbage\"".to_owned(),
+            reason: SkipReason::Invalid {
+                message: "EOF while parsing".to_owned(),
+            },
+        };
+        assert_eq!(
+            skipped_notice(std::slice::from_ref(&damaged)).as_deref(),
+            Some(
+                "events.jsonl has 1 line that loom does not replay (kept as written):\n  \
+                 line 3: invalid event: EOF while parsing\n"
+            )
+        );
+        let newer = SkippedLine {
+            line: 5,
+            raw: "{}".to_owned(),
+            reason: SkipReason::NewerVersion { v: 9 },
+        };
+        let text = skipped_notice(&[damaged, newer]).unwrap();
+        assert!(text.starts_with("events.jsonl has 2 lines that loom does not replay"));
+        assert!(
+            text.contains("  line 5: schema version 9, newer than"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("Hand edits of this task are not recorded until loom is upgraded.\n"),
+            "{text}"
         );
     }
 

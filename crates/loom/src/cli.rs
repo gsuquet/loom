@@ -125,7 +125,8 @@ pub enum Command {
     /// come, in priority order. Starts loomd if it is stopped.
     Ls(LsArgs),
     /// Show a task: its fields and notes. `ID` is a task ID or a unique prefix of one, of any
-    /// context.
+    /// context. A warning on standard error lists the lines of its event log that loom does not
+    /// replay.
     Show(ShowArgs),
     /// Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format`
     /// (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or
