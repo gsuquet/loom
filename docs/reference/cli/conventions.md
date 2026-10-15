@@ -146,7 +146,7 @@ failed:      0.1.1
 last_result: upgraded 0.1.0-dev.41 -> 0.1.0-dev.42 at 2026-10-12T08:00:30Z
 ```
 
-The `disk` line comes from the `disk` object of the status ([API reference](../api.md#diskusage)). Its format is `<total> (versions <versions>, index <index>, logs <logs>, contexts <sum of the context stores>)`. If the status has no `disk` object, `loom status` prints no `disk` line. Sizes use decimal units (`B`, `KB`, `MB`, `GB`, `TB`, `PB`, `EB`), and 1 KB is 1,000 bytes. A size below 10 is rounded to one decimal (`4.2 MB`), and a size from 10 to a whole number (`35 MB`).
+The `disk` line comes from the `disk` object of the status ([API reference](../api.md#diskusage)). Its format is `<total> (versions <versions>, index <index>, logs <logs>, contexts <sum of the context stores>)`. If the status has no `disk` object, `loom status` prints no `disk` line. Sizes use decimal units (`B`, `KB`, `MB`, `GB`, `TB`, `PB`, `EB`), and 1 KB is 1,000 bytes. A size below 10 is rounded to one decimal (`4.2 MB`), A size of 10 or more is rounded to a whole number (`35 MB`).
 
 The update lines come from the `update` object of the status ([API reference](../api.md#updatestatus)). If the status has no `update` object, `loom status` prints none of these lines.
 
@@ -165,7 +165,7 @@ The update lines come from the `update` object of the status ([API reference](..
 
 ### Version mismatch
 
-If the daemon and the `loom` binary have a different `version` or `commit`, `loom status` exits with `0`. It prints a warning on stderr (hidden by `-q`):
+If the daemon and the `loom` binary have a different `version` or `commit`, `loom status` prints a warning on stderr (hidden by `-q`), then exits with `0`:
 
 ```text
  WARN loom 0.1.0-dev.43 (commit 89abcdef0123) and the running loomd 0.1.0-dev.42 (commit 0123456789ab) are different builds: restart loomd (PID 4242) to run the same build
@@ -176,7 +176,7 @@ If the daemon and the `loom` binary have a different `version` or `commit`, `loo
 | Code | Case | Message on stderr |
 | --- | --- | --- |
 | `0` | The daemon answered, including after a version mismatch warning. | |
-| `1` | `--no-start` and the daemon is not running. | ``Error: loomd is not running: cannot connect to <socket>: <cause>; run `loom status` without --no-start to start it`` |
+| `1` | `--no-start` and the daemon does not run. | ``Error: loomd is not running: cannot connect to <socket>: <cause>; run `loom status` without --no-start to start it`` |
 | `1` | No `loomd` next to `loom` or in `PATH`. | `Error: cannot start loomd: no loomd next to <loom executable> or in PATH; install loomd next to loom` |
 | `1` | The started `loomd` exited, or did not answer within 5 s. | `Error: cannot start loomd: <reason>; last lines of <loom home>/log/loomd.log:` followed by up to 5 lines that this start wrote to the log. |
 | `1` | The daemon answered with an error. | `Error: loomd returned an error (HTTP <status>, <code>): <message>` |
@@ -230,7 +230,7 @@ On success, one line on stdout:
 | `uninstall` | Something changed | `loomd service uninstalled: <unit path>` |
 | `uninstall` | No file and service not loaded: nothing run | `loomd service not installed: <unit path>` |
 
-With `-n`/`--dry-run`, if something would change, stdout lists the steps instead, in order, one step per line. The steps are `write <path>:` followed by the full file content, `create directory <path>`, `remove <path>` and `run <command>`. Single quotes enclose the arguments that contain spaces or quotes.
+With `-n`/`--dry-run`, if something would change, stdout lists the steps instead, in order, one step per line. Each step is one of: `write <path>:` followed by the full file content, `create directory <path>`, `remove <path>` or `run <command>`. Single quotes enclose the arguments that contain spaces or quotes.
 
 ```text
 write /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist:
@@ -254,7 +254,7 @@ The table gives the commands that `install` and `uninstall` run in each case. "L
 
 On macOS, `<uid>` comes from `id -u`. On macOS, `install` also creates `<loom home>/log` (mode `0700`) before `bootstrap`. `install` creates the parent directories of the unit file that do not exist.
 
-If `bootstrap` follows a `bootout` in the same run, launchd possibly did not complete the unload of the service. This occurs when the plist changed while the service was loaded. Thus `loom` tries that `bootstrap` again while it exits non-zero: up to 5 attempts, 200 ms apart. If all attempts fail, `loom` reports the stderr of the last attempt. A `bootstrap` that does not follow a `bootout` runs once.
+A `bootstrap` follows a `bootout` in the same run when the plist changed while the service was loaded. launchd can then still be in the unload of the service. Thus `loom` tries that `bootstrap` again while it exits non-zero: up to 5 attempts, 200 ms apart. If all attempts fail, `loom` reports the stderr of the last attempt. A `bootstrap` that does not follow a `bootout` runs once.
 
 `install` and `uninstall` never ask for confirmation.
 
@@ -265,7 +265,7 @@ Steps, in order:
 1. `loom` parses and validates `config.toml` as `loomd` does. If the file is invalid, `loom` prints the error, exits with `1` and does not touch `loomd`.
 2. If the service is installed for this loom home and loaded (as for the [auto-upgrade watchdog](../configuration.md)), its manager restarts `loomd`. On macOS, `loom` runs `launchctl kickstart -k gui/<uid>/io.github.gsuquet.loomd`. On Linux, `loom` runs `systemctl --user reset-failed loomd.service`, then `systemctl --user restart loomd.service`. `loom` sends no signal.
 
-   The manager can report that the service does not run while a `loomd` holds the lock. A `loom` command started that `loomd` while the service was stopped. In that case, `loom` first sends `SIGTERM` to that `loomd`. Then it waits up to 10 s for the lock, as in step 3. Without this step, the `loomd` of the service would fail on the lock.
+   If the manager reports that the service does not run but a `loomd` holds the lock, `loom` first sends `SIGTERM` to that `loomd`. A `loom` command started this `loomd` while the service was stopped. Then it waits up to 10 s for the lock, as in step 3. Without this step, the `loomd` of the service would fail on the lock.
 3. If there is no service and a `loomd` holds the lock, `loom` sends `SIGTERM` to the PID in the lock. Then it waits up to 10 s until the lock is released. Then it starts `loomd` detached, as any command does.
 4. If there is no service and no `loomd`, `loom` starts `loomd` detached.
 5. `loom` waits for an answer to `GET /v1/status` from a `loomd` with a PID other than the previous one. It waits up to 15 s after the service manager, otherwise for the usual start window.
@@ -401,8 +401,8 @@ A malformed `key=value` or an unknown key is a usage error (exit `2`). A repeate
 
 - File unchanged: prints `<prefix> unchanged`.
 - File invalid (`task.md` format): exit `1` with the path and the error. The file stays as you saved it. loomd shows the task as read-only until the file is correct.
-- Other cases: `loom` waits up to 5 s until loomd records the hand edit, then prints the task line. The record is an `edited` event of the actor `file`, or a change of the notes. If loomd records no change in that time, `loom` prints `<prefix> saved; loomd recorded no change of the task within 5 s (…)`. This occurs if only the spaces changed, or if loomd did not read the file yet.
-- Other events can be added to the log of the task while the editor is open (a `loom done` in another terminal, a sync, an agent). In that case, `loom` prints a warning on stderr with their actors. The save replaced the file, and loomd recorded it as an edit that can revert these events. `loom undo <id>` reverts that edit.
+- Other cases: `loom` waits up to 5 s until loomd records the hand edit, then prints the task line. The record is an `edited` event of the actor `file`, or a change of the notes. If loomd records no change in that time, `loom` prints `<prefix> saved; loomd recorded no change of the task within 5 s (…)`. This occurs if only whitespace changed, or if loomd did not read the file yet.
+- Other events can be added to the log of the task while the editor is open. For example: a `loom done` in another terminal, a sync, an agent. In that case, `loom` prints a warning on stderr with their actors. The save replaced the file, and loomd recorded it as an edit that can revert these events. `loom undo <id>` reverts that edit.
 - The editor exits non-zero: exit `1`, the file left as it is.
 
 ## `loom upgrade`
@@ -420,7 +420,7 @@ A malformed `key=value` or an unknown key is a usage error (exit `2`). A repeate
 
    Without `--channel`, `--version` or `--from`, the effective channel is `[update] channel`, otherwise the channel last given to `--channel`, otherwise the build channel ([channel resolution](../configuration.md#channel-resolution)). A local build (channel `local`) has no channel of its own: without any of them, `loom upgrade` fails.
 
-   `loom upgrade` remembers `--channel`. When the command succeeds, it writes the channel to `channel` of `<loom home>/state/update.json`. A success includes `--check` and the up-to-date case, but not `--dry-run`. The auto-upgrade of loomd and the next `loom upgrade` use this channel.
+   `loom upgrade` remembers `--channel`. When the command succeeds, it writes the channel to `channel` of `<loom home>/state/update.json`. This includes `--check` and the up-to-date case. With `--dry-run`, it does not write the channel. The auto-upgrade of loomd and the next `loom upgrade` use this channel.
 
    If `[update] channel` names another channel, a warning says that it takes precedence. If `loom` cannot write the state, `--check` fails (exit code `1`). In the other cases, it is a warning. `--version` and `--from` leave the remembered channel unchanged.
 
@@ -487,7 +487,7 @@ Install report (also in `loom rollback`):
 
 | Code | Cases |
 | --- | --- |
-| `0` | Installed; up to date; `--check` whatever the decision; `--dry-run` verified. Also when loomd could not get the signal: a warning on stderr says that it continues to run the replaced version. |
+| `0` | Installed; up to date; `--check` whatever the decision; `--dry-run` verified. Also when `loom` cannot send the signal to loomd: a warning on stderr says that it continues to run the replaced version. |
 | `1` | Auto-upgrade of loomd in progress; every newer version failed; local build without `--channel`, `--version` or `--from`; `--version` not released or lower than the current version; install directory not writable; HTTP error (`401`, `403` and `429` name `LOOM_GITHUB_TOKEN`); missing asset; invalid signature; checksum mismatch; rejected archive; binaries that do not report the expected version; I/O error. Every download or verification error ends with `nothing was installed`. |
 | `2` | Usage error, including `--channel`, `--version` and `--from` together, or `--check` with `--from` or `--dry-run`. |
 
@@ -661,13 +661,13 @@ fail  backup work: ~/.loom/contexts/work and /srv/work-store.git: diverged: 1 lo
 | `contexts` | `fail` when `match.paths` entries of two contexts are the same directory once `~` is expanded, or two `[repos."<path>"]` keys name the same repository: loomd refuses such a configuration. Nested entries of different contexts are valid (the longest prefix wins) and are listed in the `ok` line. |
 | `loomd` | `warn` when loomd does not run: the checks below are skipped, and loomd is not started. `fail` when it answers with an error. |
 | `disk` | The disk usage loomd measured ([`DiskUsage`](../api.md#diskusage)): `ok` with the total and its parts. `warn` when a part could not be measured (counted as 0), with the list of warnings. `warn` when loomd is older than this field. Then the other `disk-*` checks are skipped. |
-| `disk-versions` | `warn` when `versions/` holds a version that `loom rollback` does not need, with the names of these versions and how to delete them. The retention rule of the upgrades applies: the 2 highest versions other than the current one are kept, and a copy of the current version is not needed. If the current version is not a semantic version, the rule uses the count only. Directories not named after a version are ignored. |
-| `disk-wal` | `warn` when `index.db-wal` is larger than 64 MB (64,000,000 bytes): SQLite does not copy it into `index.db`. The fix is to restart loomd. |
+| `disk-versions` | `warn` when `versions/` holds a version that `loom rollback` does not need, with the names of these versions and how to delete them. The retention rule of the upgrades applies: the 2 highest versions other than the version that loomd runs are kept, and a copy of the version that loomd runs is not needed. If the version of loomd is not a semantic version, the rule uses the count only. Directories not named after a version are ignored. |
+| `disk-wal` | `warn` when `index.db-wal` is larger than 64 MB (64,000,000 bytes): SQLite did not copy it into `index.db` yet. The fix is to restart loomd. |
 | `disk-free` | `warn` when less than 1 GB (1,000,000,000 bytes) is free for an unprivileged process on the volume of the loom home. Absent when the free space is unknown (the `disk` check then warns). |
 | `unassigned` | `warn` with the count, one example and the configuration that would assign it. |
 | `ssh-agent` | `SSH_AUTH_SOCK` in loomd's environment ([`GET /v1/diagnostics`](../api.md#daemondiagnostics)): `ok` when it is a socket. Otherwise, `fail` when an indexed remote uses SSH, `warn` when none does. The fix depends on the platform (systemd: `systemctl --user import-environment SSH_AUTH_SOCK`, then restart; launchd: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`). `warn` when loomd is older than this endpoint. |
 | `home` | `warn` when loomd's `HOME` differs from the one of `loom`: `~` in the configuration then expands elsewhere. |
-| `remote <endpoint> (<scheme>, via <slug>)` | One per distinct endpoint and scheme of the primary remotes of the index, from [`POST /v1/diagnostics/remote-check`](../api.md#remote-check): loomd runs `git -C <repo> ls-remote --exit-code <primary remote> HEAD` in one repository of the endpoint. It uses the environment, git configuration (`core.sshCommand`, `includeIf`, credential helpers) and non-interactive settings of its updates. Endpoint: `<user>@<host>[:<port>]` for SSH (user `git` when the URL has none, an SSH alias as written), `<scheme>://<host>[:<port>]` for HTTP(S) and `git://`, the URL of a local or other remote. Scheme: `ssh`, `https`, `http`, `git`, `local`, `other`. `ok` (`reachable`) when the remote answers, even without `HEAD`. `fail` otherwise. The detail is the last line of the git error output that is not the generic git text `Could not read from remote repository`. The fix depends on the kind of failure: SSH authentication (agent, `core.sshCommand`, host key), HTTPS authentication (credential helper, or switch the remote to SSH), not found (update the remote or forget the clone), network (no answer within 20 s, name resolution, connection: network or VPN), other (run the same `git ls-remote` in a terminal). One `ok` when no repository has a remote. `warn` when loomd is older than the endpoint. |
+| `remote <endpoint> (<scheme>, via <slug>)` | One per distinct endpoint and scheme of the primary remotes of the index, from [`POST /v1/diagnostics/remote-check`](../api.md#remote-check): loomd runs `git -C <repo> ls-remote --exit-code <primary remote> HEAD` in one repository of the endpoint. It uses the environment, git configuration (`core.sshCommand`, `includeIf`, credential helpers) and non-interactive settings of its updates. Endpoint: `<user>@<host>[:<port>]` for SSH (user `git` when the URL has none, an SSH alias as written), `<scheme>://<host>[:<port>]` for HTTP(S) and `git://`, the URL of a local or other remote. Scheme: `ssh`, `https`, `http`, `git`, `local`, `other`. `ok` (`reachable`) when the remote answers, even without `HEAD`. `fail` otherwise. The detail is the last line of the git error output that is not the generic git text `Could not read from remote repository`. The fix matches the kind of failure: SSH authentication (agent, `core.sshCommand`, host key), HTTPS authentication (credential helper, or switch the remote to SSH), not found (update the remote or forget the clone), network (no answer within 20 s, name resolution, connection: network or VPN), other (run the same `git ls-remote` in a terminal). One `ok` when no repository has a remote. `warn` when loomd is older than the endpoint. |
 | `machine` | `ok`, naming this machine (the `id` of [`machine.toml`](../configuration.md#machinetoml)) and the contexts whose `machines` does not name it ([`GET /v1/tasks/backup`](../api.md#tasks)). `warn` when loomd is older than this endpoint. |
 | `backup <context>` | One per context store held here. Without `store.backup.remote`: `ok` (commits stay local). Before the first sync since loomd started: `ok`. After a sync that left the store and its remote equal (`up to date`, `pushed`, `pulled`): `ok`. `fail` when they diverged, or when the remote refused the push (the commits stay local), with the fix. `warn` when a step failed (`commit`, `remote`, `fetch`, `compare`, `push`, `fast-forward`), or when changes of the store are not committed, with git's error. |
 | `updates` | The last update of every repository ([`last_update`](../api.md#lastupdate)), skips asked for (`policy_off`, `no_remote`) left out: one `warn` per reason, as `<reason> (<count>): <slug>, <slug>, <slug>, …` (at most 3 slugs, sorted), with its fix. Reasons, in this order: `fetch refused by SSH`, `fetch without HTTPS credential`, `remote not found`, `remote unreachable`, `fetch failed` (a failed fetch, classified from git's error output as for `remote`), `fast-forward failed`, `default branch move failed`, `repository unreadable`, `repository busy`, `state unknown`, `operation in progress`, `local changes`, `HEAD detached`, `branch without commit`, `branch without upstream`, `diverged from upstream`, `fast-forward refused by git`, `default branch diverged`. One `ok` when there is none. |
@@ -742,7 +742,7 @@ work/legacy  skipped: update policy is off
 | `skipped: <reason>` | A step was not done; the reasons are listed in [`SkipReason`](../api.md#lastupdate). |
 | `failed: <step>: <error>[: <last line of git's stderr>]` | A git command failed or timed out; `step` is `fetch`, `fast_forward` or `move_default_branch`. |
 
-With `-n`/`--dry-run`, nothing is fetched or merged. Each line says what an update would do, from the state that is read now. A branch move depends on what the fetch brings, so the dry run does not predict it (`then decide`). The exception is when the working tree already prevents a fast-forward of the branch that `HEAD` is on. The dry run never predicts the default branch.
+With `-n`/`--dry-run`, nothing is fetched or merged. Each line says what an update would do, from the state that is read now. A branch move depends on what the fetch brings, so the dry run does not predict it (`then decide`). The exception is when the working tree already prevents a fast-forward of the branch that `HEAD` is on. The dry run never predicts a move of the default branch.
 
 ```text
 $ loom repo sync -n
