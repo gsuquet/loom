@@ -479,6 +479,146 @@ loom show [OPTIONS] <ID>
 
 Global options apply.
 
+### `loom set`
+
+Change fields of a task: `key=value` pairs among `title`, `kind`, `format` (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`) and `pinned` (`yes` or `no`)
+
+```text
+loom set [OPTIONS] <ID> <KEY=VALUE>...
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+| `<KEY=VALUE>` |  |  | Changes, as `key=value` |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom done`
+
+Mark a task done
+
+```text
+loom done [OPTIONS] <ID>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom cancel`
+
+Cancel a task
+
+```text
+loom cancel [OPTIONS] <ID>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom snooze`
+
+Put a task in `waiting` until a date: hidden from the priority list until then
+
+```text
+loom snooze [OPTIONS] <ID> <UNTIL>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+| `<UNTIL>` |  |  | Until when: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w` |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--on <WHO>` |  |  | Who or what the task waits on |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom undo`
+
+Revert the last change of a task (an edit, a status change, a pin, a hand edit, an undo). Undoing an undo redoes the change
+
+```text
+loom undo [OPTIONS] <ID>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom edit`
+
+Open the `task.md` of a task in `VISUAL`, `EDITOR` or `vi`. loomd records the changes as an edit; an invalid file is reported and kept as saved
+
+```text
+loom edit [OPTIONS] <ID>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
 ### `loom reindex`
 
 Rebuild the tasks index from the task files of every context store.

@@ -757,16 +757,18 @@ pub fn with_parent(relations: &Relations, parent: Option<TaskId>) -> Relations {
 #[must_use]
 pub fn render_change(detail: &TaskDetail) -> String {
     let summary = &detail.summary;
-    match &summary.task {
-        Some(task) => format!(
-            "{} {} {} {}\n",
-            summary.prefix,
-            summary.context,
-            status_text(&task.status),
-            task.title
-        ),
-        None => format!("{} {}\n", summary.prefix, summary.context),
-    }
+    summary.task.as_ref().map_or_else(
+        || format!("{} {}\n", summary.prefix, summary.context),
+        |task| {
+            format!(
+                "{} {} {} {}\n",
+                summary.prefix,
+                summary.context,
+                status_text(&task.status),
+                task.title
+            )
+        },
+    )
 }
 
 /// The editor of `loom edit`: `VISUAL`, then `EDITOR`, then `vi`; an empty value is unset.
