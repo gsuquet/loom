@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 /// Error returned by the loomd API instead of a response body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ApiError {
-    /// Machine-readable category; clients branch on it, never on `message`.
+    /// Machine-readable category. Clients branch on it, never on `message`.
     pub code: ErrorCode,
     /// Human-readable explanation, in English.
     pub message: String,
     /// Structured context for the error, such as the name of an invalid field. Its shape depends
-    /// on `code` and the endpoint; absent when there is none.
+    /// on `code` and the endpoint. Absent when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
@@ -34,19 +34,19 @@ impl ApiError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
-    /// The request is malformed: unparsable body, unknown or missing field, invalid value.
-    /// Retrying the same request fails the same way.
+    /// The request is malformed: unparsable body, unknown or absent field, invalid value.
+    /// The same request fails the same way again.
     InvalidRequest,
     /// The addressed resource or endpoint does not exist.
     NotFound,
     /// The client asked for an API version this daemon does not serve.
     VersionMismatch,
-    /// The daemon cannot serve the request right now (starting, shutting down, a dependency is
-    /// down). The same request may succeed later.
+    /// The daemon stops and cannot serve the request. The same request can succeed after
+    /// loomd starts again.
     Unavailable,
-    /// The daemon failed while handling a valid request: a bug or an unexpected I/O failure.
+    /// The daemon failed while it handled a valid request: a bug or an unexpected I/O failure.
     Internal,
-    /// A task ID prefix matches several tasks; `details` lists them.
+    /// A task ID prefix matches several tasks. `details` lists them.
     AmbiguousPrefix,
     /// The task cannot be changed: unknown kind, format or status, or an invalid `task.md`.
     ReadOnly,

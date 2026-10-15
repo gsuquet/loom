@@ -13,7 +13,7 @@ use crate::{ContextName, Timestamp};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackupRequest {
-    /// The context to sync; absent: every context held here with a backup remote.
+    /// The context to sync. If absent: every context held here with a backup remote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextName>,
 }
@@ -23,7 +23,7 @@ pub struct BackupRequest {
 pub struct BackupReport {
     /// This machine: the `id` of `machine.toml`.
     pub machine: String,
-    /// Each store held here, sorted by context; after a sync, only the ones synced.
+    /// Each store held here, sorted by context. After a sync, only the ones synced.
     pub contexts: Vec<ContextBackup>,
     /// Contexts whose `machines` does not name this machine: not loaded, never synced here.
     pub not_held: Vec<ContextName>,
@@ -36,12 +36,12 @@ pub struct ContextBackup {
     pub context: ContextName,
     /// Root of its store.
     pub path: PathBuf,
-    /// `store.backup.remote`, a password in it replaced with `***`; `null` when the store is
-    /// not pushed anywhere.
+    /// `store.backup.remote`, a password in it replaced with `***`. `null` if the store is not
+    /// pushed anywhere.
     pub remote: Option<String>,
-    /// Why the last commit of the store failed; `null` when every change is committed.
+    /// Why the last commit of the store failed. `null` if every change is committed.
     pub uncommitted: Option<String>,
-    /// The last sync since loomd started; `null` before the first one or without a remote.
+    /// The last sync since loomd started. `null` before the first one or without a remote.
     pub last_sync: Option<BackupSync>,
 }
 
@@ -159,13 +159,13 @@ fn last_line(f: &mut fmt::Formatter<'_>, stderr: &str) -> fmt::Result {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BackupStep {
-    /// Committing the changes not committed yet, or creating the repository.
+    /// Commit of the changes not committed yet, or creation of the repository.
     Commit,
-    /// Setting the `backup` remote of the repository.
+    /// Configuration of the `backup` remote of the repository.
     Remote,
     /// `git fetch`.
     Fetch,
-    /// Comparing the store with the remote.
+    /// Comparison of the store with the remote.
     Compare,
     /// `git push`.
     Push,

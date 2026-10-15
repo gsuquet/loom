@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "contexts": {
-      "description": "Each store held here, sorted by context; after a sync, only the ones synced.",
+      "description": "Each store held here, sorted by context. After a sync, only the ones synced.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/ContextBackup"
@@ -164,12 +164,12 @@
       "description": "A step of a sync.",
       "oneOf": [
         {
-          "description": "Committing the changes not committed yet, or creating the repository.",
+          "description": "Commit of the changes not committed yet, or creation of the repository.",
           "type": "string",
           "const": "commit"
         },
         {
-          "description": "Setting the `backup` remote of the repository.",
+          "description": "Configuration of the `backup` remote of the repository.",
           "type": "string",
           "const": "remote"
         },
@@ -179,7 +179,7 @@
           "const": "fetch"
         },
         {
-          "description": "Comparing the store with the remote.",
+          "description": "Comparison of the store with the remote.",
           "type": "string",
           "const": "compare"
         },
@@ -222,7 +222,7 @@
           "$ref": "#/$defs/ContextName"
         },
         "last_sync": {
-          "description": "The last sync since loomd started; `null` before the first one or without a remote.",
+          "description": "The last sync since loomd started. `null` before the first one or without a remote.",
           "anyOf": [
             {
               "$ref": "#/$defs/BackupSync"
@@ -237,14 +237,14 @@
           "type": "string"
         },
         "remote": {
-          "description": "`store.backup.remote`, a password in it replaced with `***`; `null` when the store is\nnot pushed anywhere.",
+          "description": "`store.backup.remote`, a password in it replaced with `***`. `null` if the store is not\npushed anywhere.",
           "type": [
             "string",
             "null"
           ]
         },
         "uncommitted": {
-          "description": "Why the last commit of the store failed; `null` when every change is committed.",
+          "description": "Why the last commit of the store failed. `null` if every change is committed.",
           "type": [
             "string",
             "null"
@@ -257,7 +257,7 @@
       ]
     },
     "ContextName": {
-      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,

@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "RepoState",
-  "description": "The state of a repository, read without starting git, at [`RepoState::refreshed_at`].",
+  "description": "The state of a repository, read without a git process, at [`RepoState::refreshed_at`].",
   "type": "object",
   "properties": {
     "default_branch": {
-      "description": "Default branch: the target of `refs/remotes/<primary remote>/HEAD`, otherwise `main`,\notherwise `master` when the branch exists; `null` when none of them.",
+      "description": "Default branch: the target of `refs/remotes/<primary remote>/HEAD`, otherwise `main`,\notherwise `master` when the branch exists. `null` when none of them.",
       "$ref": "#/$defs/MaybeKnown_Nullable_string"
     },
     "dirty": {
@@ -13,7 +13,7 @@
       "$ref": "#/$defs/MaybeKnown_uint64"
     },
     "error": {
-      "description": "Why some fields are unknown, in English; `null` when every field is known.",
+      "description": "Why some fields are unknown, in English. `null` when every field is known.",
       "type": [
         "string",
         "null"
@@ -44,7 +44,7 @@
       "$ref": "#/$defs/MaybeKnown_Untracked"
     },
     "upstream": {
-      "description": "Upstream of the `HEAD` branch, `null` when detached, unconfigured, or when its ref is\nmissing (never fetched, or deleted on the remote and pruned).",
+      "description": "Upstream of the `HEAD` branch, `null` when detached, unconfigured, or when its ref does\nnot exist (never fetched, or deleted on the remote and pruned).",
       "$ref": "#/$defs/MaybeKnown_Nullable_Upstream"
     }
   },
@@ -310,7 +310,7 @@
       "description": "A git operation left in progress in the working tree.",
       "oneOf": [
         {
-          "description": "`git rebase`, including an interactive one.",
+          "description": "`git rebase`, also an interactive one.",
           "type": "string",
           "const": "rebase"
         },
@@ -335,7 +335,7 @@
           "const": "bisect"
         },
         {
-          "description": "`git am`: patches being applied from a mailbox.",
+          "description": "`git am`: it applies patches from a mailbox.",
           "type": "string",
           "const": "am"
         }

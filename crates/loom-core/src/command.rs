@@ -88,7 +88,7 @@ pub enum Command {
     },
 }
 
-/// Fields to change; `None` leaves a field as it is.
+/// Fields to change. `None` leaves a field as it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskEdit {
     /// New title.
@@ -100,17 +100,17 @@ pub struct TaskEdit {
     /// New importance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub importance: Option<Importance>,
-    /// New due date; `Some(None)` (`null`) removes it.
+    /// New due date. `Some(None)` (`null`) removes it.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
     pub due: Option<Option<Date>>,
-    /// New links, replacing all of them.
+    /// New links, which replace all the links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<Vec<Link>>,
-    /// New relations, replacing all of them.
+    /// New relations, which replace all the relations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relations: Option<Relations>,
 }
@@ -151,7 +151,7 @@ pub struct NewTask {
     /// Initial status, usually `inbox`.
     #[serde(flatten)]
     pub status: Status,
-    /// Importance; the default of the kind when `None`.
+    /// Importance. If `None`, the default of the kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub importance: Option<Importance>,
     /// Due date.

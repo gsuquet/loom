@@ -104,9 +104,9 @@ impl fmt::Display for Channel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Profile {
-    /// `dev` or `test` profile, or a custom profile inheriting from them.
+    /// `dev` or `test` profile, or a custom profile that inherits from them.
     Debug,
-    /// `release` or `bench` profile, or a custom profile inheriting from them.
+    /// `release` or `bench` profile, or a custom profile that inherits from them.
     Release,
 }
 
