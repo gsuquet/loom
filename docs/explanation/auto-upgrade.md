@@ -42,7 +42,7 @@ Someone has to start the new `loomd`:
 - under `loom service` (launchd `KeepAlive`, systemd `Restart=always`), the service manager restarts it. The watchdog never starts one itself.
 - otherwise, when nobody holds `run/loomd.lock` for 15 s, the watchdog starts it itself, as `loom status` does.
 
-The watchdog counts the service only when the service file runs `loomd` for the same loom home (`LOOM_HOME`) and the service manager has it loaded. If the watchdog started a `loomd` next to a service, that `loomd` would hold the lock. Every start of the service would then fail on the lock: launchd tries again every 10 s, and systemd does not try again. The `loomd` that runs would have no supervisor.
+The watchdog counts the service only when the service file runs `loomd` for the same loom home (`LOOM_HOME`) and the service manager has it loaded. If the watchdog started a `loomd` next to a service, that `loomd` would hold the lock. Every start of the service would then fail on the lock: launchd tries again every 10 s, and systemd stops after its start limit. The `loomd` that runs would have no supervisor.
 
 When the new `loomd` answers in time, the watchdog records `upgraded` and exits.
 
@@ -63,7 +63,7 @@ With `[telemetry]` enabled, each check of loomd is one trace, with the root `upd
 
 ## Failed versions
 
-A version in `failed_versions` is never installed automatically again. When `loomd` or `loom upgrade` follows a channel, it does not install this version. The next release above it is installed as usual. `loom upgrade --version <version>` installs it anyway. With this command, you can retry the version on purpose, for example after you fix the cause of the failure on this machine. If you delete `~/.loom/state/update.json`, loom forgets every failed version.
+A version in `failed_versions` is never installed automatically again. When `loomd` or `loom upgrade` follows a channel, it does not install this version. They install the next release above it as usual. `loom upgrade --version <version>` installs it anyway. With this command, you can retry the version on purpose, for example after you fix the cause of the failure on this machine. If you delete `~/.loom/state/update.json`, loom forgets every failed version.
 
 ## What it does not catch
 
@@ -74,10 +74,10 @@ A version in `failed_versions` is never installed automatically again. When `loo
 
 | Symptom | Cause | What to do |
 | --- | --- | --- |
-| `loom upgrade` says `loomd is upgrading from … to …` | An upgrade is in progress. | Wait a minute. Then try again. A `pending` older than one hour is ignored and cleared at the next check. |
+| `loom upgrade` says `loomd is upgrading from … to …` | An upgrade is in progress. | Wait a minute. Then try again. The next check ignores and clears a `pending` older than one hour. |
 | `loom status` cannot reach loomd after an upgrade | The new and the restored `loomd` both failed to start, or the watchdog was killed (machine restarted during the deadline). | Read `~/.loom/log/loomd.log` (and `journalctl --user -u loomd.service` on Linux), then `loom rollback` and `loom status`. |
-| `last_result` is `failed … not writable` | The user of `loomd` cannot write to its directory. | Fix the permissions, or do the upgrade by hand with `loom upgrade` as a user who can write there. |
+| `last_result` is `failed … not writable` | The user of `loomd` cannot write to the directory of the `loomd` binary. | Fix the permissions, or do the upgrade by hand with `loom upgrade` as a user who can write there. |
 | The same version is skipped each time | It is in `failed_versions`. | Retry it with `loom upgrade --version <version>`, or wait for the next release. |
-| An installed systemd unit lacks `KillMode=process` | Installed before the auto-upgrade shipped. Then systemd can stop the watchdog together with `loomd`. | Run `loom service install` again. |
-| An installed systemd unit lacks `RestartSec=1s` | Installed before the rollback recovery shipped. Then a `loomd` that fails is restarted every 100 ms. | Run `loom service install` again. |
+| An installed systemd unit lacks `KillMode=process` | Installed before the auto-upgrade shipped. In that case, systemd can stop the watchdog together with `loomd`. | Run `loom service install` again. |
+| An installed systemd unit lacks `RestartSec=1s` | Installed before the rollback recovery shipped. In that case, a `loomd` that fails is restarted every 100 ms. | Run `loom service install` again. |
 | `loomd.service` is `failed` after a rollback, or `loom service status` says `running: no` | The watchdog could not run `systemctl --user` or `launchctl` (see `loomd.log`). | `systemctl --user reset-failed loomd.service && systemctl --user restart loomd.service`, or `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`. |

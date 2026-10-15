@@ -15,7 +15,7 @@ Each context has its own store (`store.path`). Thus, you can encrypt or delete t
 
 ## The index is a copy
 
-To list, sort and search tasks, `loomd` cannot read every file each time: this method is too slow for a few thousand tasks. `loomd` keeps a copy of each task in `index.db`, the SQLite database that already indexes the repositories:
+If `loomd` read every file each time to list, sort and search tasks, it would be too slow for a few thousand tasks. `loomd` keeps a copy of each task in `index.db`, the SQLite database that already indexes the repositories:
 
 - one row per task: its fields, its notes, the keys of its links (`CORE-1042`, `!88`), and the hash of its `task.md`.
 - a full-text table over the title, the notes and the link keys, with the tokenizer of the repository search (case and diacritics folded).
@@ -39,20 +39,20 @@ A change writes `task.md` before its events. A crash between the two leaves a fi
 `task.md` is made for edits by hand: to fix a title, an editor is faster than any command. The history must still tell what changed, so `loomd` separates its own writes from your writes.
 
 - Each index row keeps the SHA-256 of the `task.md` that `loomd` read or wrote last. A file with that hash is the one that `loomd` knows: nothing to do. This is how `loomd` ignores the watcher events of its own writes.
-- `loomd` compares a file with another hash with its log. It replays `events.jsonl` (the created task, then every change in order). Then it compares the result with the frontmatter, field by field. Each field that is different goes into one `edited` event of the actor `file`, which `loomd` appends to the log. `loomd` does not write `task.md` itself, so your format and comments stay.
+- `loomd` compares a file with another hash with its log. It replays `events.jsonl` (the created task, then every change in order). Then it compares the result with the frontmatter, field by field. Each field that is different goes into one `edited` event of the actor `file`, which `loomd` appends to the log. `loomd` does not write `task.md` itself, so your layout and comments stay.
 - Only the notes changed: the task is indexed, the notes are searchable, no event. The log records fields, not prose.
 - The log is not reliable: the task is indexed, no event. Examples: no creation event, a line from a newer loom, changes that do not follow from each other. A guess can put a wrong change in the history.
 
-The comparison uses the log, not the index, so the result is correct in every order of events. The log, not the index, tells what the task was. Thus, `loomd` records an edit at the next start, also if you made the edit while `loomd` was stopped, or before you deleted `index.db`. The hash only prevents the replay when nothing changed.
+The comparison uses the log, not the index, so the result is correct in every order of events. The log, not the index, tells what the task was. If you edit `task.md` while `loomd` is stopped, or before you delete `index.db`, `loomd` still records the edit at its next start. When nothing changed, the hash only lets `loomd` skip the replay.
 
 `loomd` finds changes in two ways:
 
 - a file watcher on `tasks/` of every store (FSEvents on macOS, inotify on Linux). Thus, `loomd` indexes and records an edit almost as soon as the editor saves it.
-- a reconciliation of every task when `loomd` starts, for what changed while it was stopped, and each time the watcher reports that it lost events.
+- a reconciliation of every task when `loomd` starts, for what changed while it was stopped. There is also a reconciliation each time the watcher reports that it lost events.
 
 `loom reindex` reconciles every task before it rebuilds the rows, so it can append `edited` events. Without this step, a rebuild can store the hash of an edit whose watcher event is still in the queue. That edit then looks like a write of `loomd`.
 
-A write by `loomd` changes `task.md`, then appends its events. If `loomd` crashes between the two, the next reconciliation finds a file that its log does not explain. It records the difference as a hand edit. The change stays, with the actor `file` instead of you.
+A write by `loomd` changes `task.md`, then appends its events. If `loomd` crashes between the two, the next reconciliation finds a file that its log does not explain. It records the difference as a hand edit. The change stays, with the actor `file` instead of your actor.
 
 ## When a file is invalid
 

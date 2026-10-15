@@ -6,7 +6,7 @@
 
 `index.db` holds two full-text tables (SQLite FTS5). One table indexes the repositories (name, slug, path, remote URLs, context, branch). The other table indexes the tasks (title, notes, link keys).
 
-The two tables use the same tokenizer. The tokenizer cuts a field into words at each character that is not a letter or a digit. It also folds case and diacritics. A query is cut at whitespace. Each word of the query must be the start of a word in the result.
+The two tables use the same tokenizer. The tokenizer cuts a field into words at each character that is not a letter or a digit. It also folds case and diacritics. The search cuts a query at whitespace. Each word of the query must be the start of a word in the result.
 
 Thus, a search for `CORE-1042` looks for `core` followed by `1042`. A search for `!88` looks for `88`. A task with one of these link keys matches. A task whose notes say "see CORE-1042" also matches. For this reason, a task whose link key is exactly the query (case ignored) ranks first among the tasks of its group.
 

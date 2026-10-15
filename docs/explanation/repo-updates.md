@@ -38,14 +38,14 @@ If nobody updates a repository for a week, it is a week behind. Then you must ru
    - every one of these is known. A field that the state could not read in its time budget means no move. A file that needs a filter driver (git-lfs…) for the comparison also means no move.
 
    When the upstream has nothing new, nothing has to move and nothing is reported as skipped.
-5. **Default branch.** The local default branch comes from `refs/remotes/<primary>/HEAD`, otherwise it is `main`, otherwise `master`. The update moves it only when all these conditions hold:
+5. **Default branch.** The local default branch comes from `refs/remotes/<primary>/HEAD`, otherwise it is `main`, otherwise `master`, if it exists locally or on the primary remote. The update moves it only when all these conditions hold:
 
    - no working tree of the repository has it checked out, not even a linked one.
    - no rebase or bisect is in progress on it.
    - it has an upstream on the primary remote.
    - it is strictly behind its upstream.
 
-   The update moves it with `git fetch --no-prune --no-prune-tags --no-tags <primary> <its branch on the remote>:refs/heads/<branch>`. If it is ahead or diverged, it stays, and the update tells so. If a working tree has it checked out, the update of that working tree moves it, under the conditions above.
+   The update moves it with `git fetch --no-prune --no-prune-tags --no-tags <primary> <its branch on the remote>:refs/heads/<branch>`. If it is ahead or diverged, it stays, and the update tells so. If a working tree has it checked out, the update of that working tree moves it, under the conditions of step 4.
 6. **Result.** The update reads the state once more and stores it with the result of the update, its [`last_update`](../reference/api.md#lastupdate). The result is `fetched`, `fast_forwarded`, `default_branch_moved`, `skipped` with a reason, or `failed` with the step and the end of the git error output.
 
 Nothing else ever occurs: no rebase, reset, stash, checkout, branch deletion or prune, no other branch moved, no conflict resolved.
@@ -56,7 +56,7 @@ The decision of loom is the first guard: it reads the state with `gix` and refus
 
 When git refuses, the update reports it as skipped (`git refused the fast-forward: …`), and does not retry before the next interval. The typical case is an untracked file with the same name as a file that the remote added.
 
-## When another git process is working
+## When another git process holds a lock
 
 git protects a repository with lock files: `index.lock` while it writes the index, `<ref>.lock` while it moves a ref. An editor that fetches in the background, or a command that you run, holds them for a moment. If an update meets a lock, it fails in git (`fatal: Unable to create '…/index.lock': File exists`, `error: cannot lock ref 'refs/remotes/origin/…': is at … but expected …`). loomd reads the git error output and reports the step as skipped, `repository busy`, not as failed.
 
@@ -85,7 +85,7 @@ The suite fails on any change to refs, index, files, stash, operation or configu
 
 The commands run through the `git` CLI, in the working tree of the repository. They use the git configuration, credential helpers and hooks of the user, exactly as a manual `git pull --ff-only` does. In particular, a `post-merge` hook runs after each automatic fast-forward. The time that a hook takes counts in the 10 min timeout of the fast-forward.
 
-git never asks anything. `GIT_TERMINAL_PROMPT=0` disables password prompts. SSH runs with `BatchMode=yes` (no passphrase or host key question), unless the user configured an SSH command (`core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`). git is pinned to the repository: variables such as `GIT_DIR` that `loomd` inherits are removed. git never looks above the working tree for another repository.
+git never asks anything. `GIT_TERMINAL_PROMPT=0` disables password prompts. SSH runs with `BatchMode=yes` (no passphrase or host key question), unless the user configured an SSH command (`core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`). git is pinned to the repository: `loomd` removes the variables that it inherits, such as `GIT_DIR`. git never looks above the working tree for another repository.
 
 Each command has a timeout: 120 s for a fetch, 10 min for a fast-forward. On timeout, the whole process group of the command (git, ssh, hooks, credential helpers) receives `SIGTERM`, so that git can remove its lock files. 5 s later, the process group receives `SIGKILL`.
 
