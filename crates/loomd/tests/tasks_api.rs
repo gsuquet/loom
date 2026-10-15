@@ -637,9 +637,9 @@ fn only_a_new_parent_is_checked_and_an_invalid_file_is_a_known_task() {
         "bbbbbbbb"
     );
 
-    // A read-only task is refused as such, whatever its parent.
+    // A read-only task is refused as such, even with a new parent that is invalid.
     let error = problem(
-        &patch("cccccccc", json!({ "relations": { "parent": "hhhhhhhh" } })),
+        &patch("cccccccc", json!({ "relations": { "parent": "zzzzzzzz" } })),
         409,
     );
     assert_eq!(error.code, ErrorCode::ReadOnly);
