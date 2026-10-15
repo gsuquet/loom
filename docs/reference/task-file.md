@@ -120,7 +120,7 @@ Each section is a `## <name>` heading followed by an empty line.
 | Case | Behavior |
 | --- | --- |
 | No field changed | The file is written back byte for byte. |
-| A field changed | Only its keys are rewritten. A rewritten key keeps its place, the comments above it, and the spaces and comment around its value. |
+| A field changed | Only its keys are rewritten. A rewritten key keeps its place, the comments above it, and the whitespace and comment around its value. |
 | A new key | Added after the last top-level key. |
 | A field emptied (`due`, `format`, `waiting_on`, `waiting_until`, `pinned = false`, `relations.parent`) | Its key is removed. |
 | Links changed | A link that stays keeps its table, comments and unknown keys included. New links get a new table. |

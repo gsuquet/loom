@@ -139,7 +139,7 @@ kind = "gitlab"
 | `[forges."<host>"]` | table | none | `<host>`: a lowercase host name (ASCII letters, digits, `-`, `.`), without port or path. |
 | `[forges."<host>"] kind` | string: `"github"`, `"gitlab"` | required | Forge of the host. |
 
-For this check, `loomd` compares the paths as written, after it removes `.` components and repeated or final `/`. `~` stays unexpanded for this check.
+The check compares the paths as written, after it removes `.` components and repeated or final `/`. `~` stays unexpanded for this check.
 
 Two contexts cannot have the same `match.paths` entry, the same `match.hosts` entry or the same `store.path`. For `match.hosts`, the comparison of path segments ignores ASCII case. The error is at the second entry and names the location of the first:
 
@@ -190,7 +190,7 @@ The service runs the `loomd` that `loom service install` finds. This is the `loo
 
 Property list content (macOS): `ProgramArguments` = [`loomd` path], `EnvironmentVariables` = `LOOM_HOME`, `RunAtLoad` true, `KeepAlive` true, `ProcessType` `Background`, `StandardOutPath` and `StandardErrorPath` = `<loom home>/log/loomd.log`. Values are XML-escaped.
 
-Unit content (Linux). `KillMode=process` makes systemd stop only `loomd` when it exits, not the watchdog it starts after an auto-upgrade. `RestartSec=1s` restarts `loomd` every second after it fails. The default start limit of systemd (5 starts in 10 s) still stops a crash loop, and the watchdog clears it after a rollback. `loom service install` updates a unit written before these two lines existed.
+Unit content (Linux). `KillMode=process` makes systemd stop only `loomd` when it exits, not the watchdog it starts after an auto-upgrade. `RestartSec=1s` restarts `loomd` every second after it fails. The default start limit of systemd (5 starts in 10 s) still stops a crash loop, and the watchdog clears it after a rollback. To update a unit written before these two lines existed, run `loom service install` again.
 
 ```ini
 [Unit]
@@ -328,7 +328,7 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 | `tasks/<id>/` | `0700` | One directory per task, named by its ID (8 lowercase Crockford base32 characters). Other names in `tasks/` are ignored. |
 | `tasks/<id>/task.md` | `0600` | The task: TOML frontmatter between `+++` lines, then free notes ([format](task-file.md)). Replaced atomically: written to `.task.md.tmp` beside it, synced, renamed over it, and the directory synced. |
 | `tasks/<id>/events.jsonl` | `0600` | The task's events, one JSON object per line, appended and synced, never rewritten. If a crash cuts the last line, `loomd` adds a line ending to it before the next append. |
-| `tasks/.<id>.tmp/` | `0700` | A task that `loomd` creates: written whole, then renamed to `tasks/<id>/`. A leftover of a crash is ignored, and replaced when the same ID is created again. |
+| `tasks/.<id>.tmp/` | `0700` | A task during its creation: written whole, then renamed to `tasks/<id>/`. A leftover of a crash is ignored, and replaced when the same ID is created again. |
 
 `loomd` watches `tasks/` of every store (FSEvents on macOS, inotify on Linux) and reconciles each task whose files change, and every task when it starts:
 
@@ -392,7 +392,8 @@ The fetch and the push use the environment of the [repository updates](#contexts
 
 - `GIT_TERMINAL_PROMPT=0`.
 - SSH `BatchMode`, unless `core.sshCommand` or `GIT_SSH_COMMAND` is set.
-- A stop after 120 s, with their process group.
+
+`loomd` stops the fetch and the push after 120 s, with their process group.
 
 The fetch and the push run on their own thread. The commit and the fast-forward run between the writes of the task store. A fast-forward changes task files: they are reconciled and indexed like hand edits that record no event.
 
@@ -447,7 +448,7 @@ Previous versions of `loom` and `loomd`, kept by `loom upgrade` and `loom rollba
 | `versions/<version>/loom` | as installed | Copy of the `loom` replaced. |
 | `versions/<version>/loomd` | as installed | Copy of the `loomd` replaced; absent when none was installed. |
 
-- Before the binaries are replaced, the current version is copied into `versions/<version>/`. This replaces a previous save of that version.
+- Before the binaries are replaced, the current version is copied into `versions/<version>/`. If a save of that version exists, the copy replaces it.
 - After the binaries are replaced, two previous versions are kept: the one just saved, plus the highest others by semver precedence, two in all.
 - The directory of the newly installed version can exist after `loom rollback`, or after an upgrade back to a version saved earlier. It duplicates the current binaries and is deleted. Exception: if a build of the same version (`--from`) replaced the binaries, this directory is the one just saved, and it is kept.
 - Other directories are deleted.
