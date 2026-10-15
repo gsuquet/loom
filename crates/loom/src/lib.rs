@@ -13,3 +13,4 @@ pub mod search;
 pub mod service;
 pub mod shell;
 pub mod status;
+pub mod task;

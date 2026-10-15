@@ -9,6 +9,7 @@ mod search_cmd;
 mod service_cmd;
 mod start;
 mod sync_cmd;
+mod task_cmd;
 mod upgrade;
 mod watchdog;
 
@@ -181,6 +182,9 @@ const fn registers_on_use(command: &Command) -> bool {
         // Run by every new shell: no delay for it, and the hook it installs registers.
         Command::ShellInit(_) | Command::UpgradeWatchdog(_) => false,
         Command::Search(_)
+        | Command::Add(_)
+        | Command::Ls(_)
+        | Command::Show(_)
         | Command::Reindex(_)
         | Command::Sync(_)
         | Command::Version { .. }
@@ -214,6 +218,9 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Service { command } => run_service(command),
         Command::Repo { command } => repo_cmd::run(command, &cli.global, layout()?),
         Command::Search(args) => search_cmd::run(args, &cli.global, &layout()?),
+        Command::Add(args) => task_cmd::add(args, &cli.global, &layout()?),
+        Command::Ls(args) => task_cmd::ls(args, &cli.global, &layout()?),
+        Command::Show(args) => task_cmd::show(args, &layout()?),
         Command::Reindex(args) => reindex_cmd::run(args, &layout()?),
         Command::Sync(args) => sync_cmd::run(args, &cli.global, &layout()?),
         Command::UpgradeWatchdog(args) => {

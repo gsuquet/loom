@@ -12,6 +12,8 @@ clap.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+# The local date of relative due dates (`loom add --due +3d`), as loomd reads it.
+jiff = { workspace = true, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 loom-api.workspace = true
 loom-config.workspace = true
 # `find_root` and the context rules: resolution of `<repo>` and `loom repo doctor`.

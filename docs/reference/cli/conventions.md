@@ -58,9 +58,10 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | Variable | Effect |
 | --- | --- |
 | `NO_COLOR` | Non-empty: no color with `--color auto`. |
+| `LOOM_CONTEXT` | Non-empty: context of `loom add` and `loom ls`, after `-c` and before the current directory. An invalid name is an error. See [task commands](#task-commands). |
 | `LOOM_HOME` | Non-empty: loom home directory of `loomd`, unless `--loom-home` is given, and of `loom`. See [configuration](../configuration.md). |
 | `PATH` | Searched for `loomd` by `loom status`, `loom service install` and the `loom repo` commands when no `loomd` is next to the `loom` executable. |
-| `PWD` | The current directory of `loom repo` and of the registration on use, when it names the same directory as the working directory (symbolic links kept). See [`loom repo`](#repository-argument). |
+| `PWD` | The current directory of `loom repo`, of the context of `loom add` and `loom ls`, and of the registration on use, when it names the same directory as the working directory (symbolic links kept). See [`loom repo`](#repository-argument). |
 | `XDG_CONFIG_HOME` | Absolute path: `loom service` on Linux writes the systemd unit under `$XDG_CONFIG_HOME/systemd/user/` instead of `~/.config/systemd/user/`. |
 | `LOOM_GITHUB_TOKEN`, `GITHUB_TOKEN` | Optional GitHub token for `loom upgrade`, first non-empty one wins. Raises the API rate limit. Never printed. |
 | `LOOM_RELEASES_URL` | Replaces `https://api.github.com` in `loom upgrade` (test hook). Plain `http://` is then allowed. |
@@ -307,6 +308,48 @@ A failing manager command:
 ```
 
 `install` reads `config.toml` before anything else: when refused, no command runs and no file is written. The steps of a plan run in order and stop at the first failure.
+
+## Task commands
+
+`loom add`, `loom ls` and `loom show` start `loomd` when it is not running. Their requests time out after 15 s: right after it starts, `loomd` waits up to 10 s for the tasks it indexes before answering.
+
+### Context
+
+`loom add` and `loom ls` work in one context, the first of:
+
+1. `-c`/`--context`;
+2. `LOOM_CONTEXT`, when non-empty (an invalid name is an error);
+3. the context of the indexed repository holding the current directory (its `[repos."<path>"]` override, its remote's `match.hosts`, its `match.paths` prefix, or `default_context`); an unassigned repository gives none;
+4. the `match.paths` prefix of the current directory;
+5. `default_context`.
+
+A repository of the current directory that is not indexed yet (a fresh clone) is registered first, so its remote decides. None: exit `1` with `no context: pass -c <name>, …`. `loom ls --all-contexts` lists every context: it ignores `LOOM_CONTEXT` (set for a whole shell) but cannot be combined with `-c` (given for this command). `loom show` takes an ID of any context.
+
+IDs (`loom show`, `--parent`) are 1 to 8 letters and digits of Crockford base32 (no `u`; `i`, `l`, `o` read as `1`, `1`, `0`); anything else is a usage error (exit `2`).
+
+### `loom add`
+
+The title is the arguments joined with spaces. The task is `inbox`, or `ready` with `--ready`; its kind `chore` unless `--kind`; its importance, `--importance` or the default of the kind. `--due` takes `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`, relative to the local date. `--parent` takes an ID or a unique prefix; the task goes to the parent's context, and `-c` or `LOOM_CONTEXT` naming another context is an error. `--format` (`talk`, `article`, `training`, `workshop`) applies to `--kind content` only. Output: the shortest unique prefix, the context and the title, or the `TaskDetail` with `--json`.
+
+### `loom ls`
+
+Without `--status`, the priority list of the context (ready and active tasks, waiting ones whose date has come), with its position in a `#` column. With `--status`, the tasks with that status, sorted by ID. Columns: `ID` (shortest unique prefix), `CONTEXT`, `STATUS`, `P`, `KIND`, `DUE`, `TITLE` (`* ` before a pinned task; the error for an invalid `task.md`). `--why` (not with `--status`) adds `WHY`, the rule that placed the task after the previous one:
+
+| `WHY` | Rule |
+| --- | --- |
+| `first` | Heads the list. |
+| `pinned` | The previous task is pinned, this one is not. |
+| `overdue or due today` | The previous task is overdue or due today, this one is not or is due later. |
+| `more important` | The previous task has a higher importance. |
+| `due earlier` | The previous task is due earlier, or this one has no due date. |
+| `older` | The previous task was created earlier. |
+| `tie, by id` | Every other rule ties. |
+
+`--json`: the `TaskList`. No task: empty output.
+
+### `loom show`
+
+The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importance`, then `due`, `pinned`, `parent` when set, `created`, `updated`, `read-only` for a task this version cannot change), a blank line and the notes. `--json`: the `TaskDetail`. An unknown ID exits `1`; a prefix several tasks start with exits `1` and lists them.
 
 ## `loom upgrade`
 

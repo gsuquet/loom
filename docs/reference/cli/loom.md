@@ -403,6 +403,82 @@ loom search [OPTIONS] <QUERY>...
 
 Global options apply.
 
+### `loom add`
+
+Capture a task: in the inbox, unless `--ready`.
+
+The context is the first of: `-c`, `LOOM_CONTEXT`, the context of the repository of the current directory, its `match.paths` prefix, `default_context`. The kind is `chore` unless `--kind` is given; the importance, the default of the kind. Starts loomd when it is not running.
+
+```text
+loom add [OPTIONS] <TITLE>...
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<TITLE>` |  |  | Title, words joined with spaces (quoting it is optional) |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--kind <KIND>` | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview`, `learning` | `chore` | Kind of the task |
+| `--format <FORMAT>` | `talk`, `article`, `training`, `workshop` |  | Format of a `content` task |
+| `--importance <IMPORTANCE>` | `p0`, `p1`, `p2`, `p3` |  | Importance; the default of the kind when absent (p1 for bug, investigation, support and review; p3 for chore, research and learning; p2 otherwise) |
+| `--due <DATE>` |  |  | Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w` |
+| `--parent <ID>` |  |  | Parent task: an ID or a unique prefix of one. The task goes to the parent's context; `-c` or `LOOM_CONTEXT` naming another context is an error |
+| `--ready` |  |  | Skip the inbox: the task is ready |
+| `--json` |  |  | Print the created task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom ls`
+
+List the priority list of a context, or its tasks with a status.
+
+The context is resolved as for `loom add`; `--all-contexts` lists every context. The priority list holds the ready and active tasks, and the waiting ones whose date has come, in priority order. Starts loomd when it is not running.
+
+```text
+loom ls [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--all-contexts` |  |  | List every context. `LOOM_CONTEXT` is ignored; `-c` is an error |
+| `--status <STATUS>` | `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled` |  | The tasks with this status, sorted by ID, instead of the priority list |
+| `--why` |  |  | Add a `WHY` column: the rule that placed each task after the previous one |
+| `--json` |  |  | Print the list as JSON (`TaskList` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom show`
+
+Show a task: its fields and notes. `ID` is a task ID or a unique prefix of one, of any context
+
+```text
+loom show [OPTIONS] <ID>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
 ### `loom reindex`
 
 Rebuild the tasks index from the task files of every context store.
