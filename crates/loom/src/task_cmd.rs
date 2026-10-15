@@ -238,20 +238,28 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     if saved == original {
         return print(&format!("{} unchanged\n", summary.prefix));
     }
-    if let Err(error) = loom_core::parse_task_md(&saved) {
-        return Err(miette!(
-            "{}: {error}\nThe file is kept as saved: loomd shows the task read-only until it is fixed (`loom edit {}` again).",
-            path.display(),
-            summary.prefix
-        ));
-    }
+    let saved_notes = match loom_core::parse_task_md(&saved) {
+        Ok(document) => document.body().to_owned(),
+        Err(error) => {
+            return Err(miette!(
+                "{}: {error}\nThe file is kept as saved: loomd shows the task read-only until it is fixed (`loom edit {}` again).",
+                path.display(),
+                summary.prefix
+            ));
+        }
+    };
     let deadline = Instant::now() + EDIT_RECORD_TIMEOUT;
     loop {
         let after = runtime.block_on(get(&client, &id))?;
         let log = runtime.block_on(events(&client, &id))?;
+        // The log is append-only, in the order loomd writes it: the events after the first
+        // `logged` arrived while the editor was open. (A merge of logs from several machines
+        // that reorders them would break this.)
         let appended = log.get(logged..).unwrap_or_default();
+        // The saved notes, not any change of them: another actor may log a note meanwhile.
+        let notes_saved = saved_notes != before.body && after.body == saved_notes;
         // The saved file is valid: an invalid state is the watcher reading it mid-write.
-        if after.summary.task.is_some() && edit_recorded(appended, after.body != before.body) {
+        if after.summary.task.is_some() && edit_recorded(appended, notes_saved) {
             let others = changed_meanwhile(appended);
             if !others.is_empty() {
                 warn!(
