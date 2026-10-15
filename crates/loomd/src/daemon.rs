@@ -634,10 +634,10 @@ async fn change_events(
     let stream = events::stream(subscription, context).map(|numbered| {
         let data = serde_json::to_string(&numbered.event).unwrap_or_default();
         let event = SseEvent::default().event(numbered.event.kind()).data(data);
-        let event = if events::has_id(&numbered) {
-            event.id(numbered.cursor.to_string())
-        } else {
-            event
+        let event = match numbered.cursor {
+            Some(cursor) => event.id(cursor.to_string()),
+            // The `resync` of a client that fell behind: it keeps its last id.
+            None => event,
         };
         Ok::<_, Infallible>(event)
     });

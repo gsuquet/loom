@@ -208,7 +208,7 @@ An open status (`inbox`, `ready`, `active`, `waiting`) can move to any other one
 
 ### Change events
 
-`GET /v1/events` answers a Server-Sent Events stream (`text/event-stream`, chunked) that stays open: a client follows the changes and refetches what changed instead of polling. Each event is written once the change is in the task files, the index and the store's git repository:
+`GET /v1/events` answers a Server-Sent Events stream (`text/event-stream`, chunked) that stays open: a client follows the changes and refetches what changed instead of polling. Each event is written once the change is in the task files and the index, after the commit to the store's git repository was attempted (a failed commit is retried later and does not hold the event):
 
 ```text
 id: 1792051200000-7
@@ -227,8 +227,8 @@ Events sent:
 
 | `type` | When |
 | --- | --- |
-| `task.changed` | A task is created, edited, changes status, is pinned or unpinned, or undone through the API; a hand edit of its files is reconciled (created, changed, or its directory removed). |
-| `resync` | `loom reindex` rebuilt the index, or a reconciliation of every task changed some (the watcher may have missed events); also as the first event of a client that cannot resume, or the last of a client that fell behind (below). |
+| `task.changed` | A request through the API created, edited, moved, pinned, unpinned or undid a task, and wrote an event (a request that changes nothing sends none); a hand edit of its files is reconciled (created, changed, or its directory removed). |
+| `resync` | `loom reindex` rebuilt the index; a reconciliation of every task changed some (the watcher may have missed events); a sync of a context store fast-forwarded it to commits of another machine. Also the first event of a client that cannot resume, or the last of a client that fell behind (below). |
 
 `task.archived`, `repo.changed` and `counts.changed` are types of the schema not sent yet.
 

@@ -332,3 +332,24 @@ fn an_idle_stream_gets_heartbeats_and_ends_when_loomd_stops() {
     );
     while stream.next(Duration::from_secs(2)).is_some() {}
 }
+
+#[test]
+fn a_request_that_changes_nothing_sends_no_event() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let id = sandbox.create("work", "Pinned").summary.id.to_string();
+    let pin = || {
+        let _: TaskDetail = ok(&request(
+            &sandbox.socket(),
+            "POST",
+            &format!("/v1/tasks/{id}/actions/pin"),
+            None,
+        ));
+    };
+    pin();
+    let mut stream = Stream::open(&sandbox, "", None);
+    // Already pinned: no event is written, none is sent.
+    pin();
+    assert!(stream.event(Duration::from_millis(1500)).is_none());
+    daemon.stop();
+}

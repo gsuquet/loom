@@ -28,22 +28,34 @@ pub struct EventsQuery {
     pub context: Option<String>,
 }
 
-/// The `Last-Event-ID` of a client: `None` when absent or empty. One that is not an id of
-/// loomd (a client bug, a proxy) is a resume point no run has, so the client gets `resync`.
+/// What a client says it last received, from its `Last-Event-ID`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastSeen {
+    /// No header, or an empty one: a new client.
+    Nothing,
+    /// An event id.
+    At(EventCursor),
+    /// Not an id of loomd (a client bug, a proxy): it cannot resume.
+    Unreadable,
+}
+
+/// The `LastSeen` of a `Last-Event-ID` header.
 #[must_use]
-pub fn resume_point(header: Option<&str>) -> Option<EventCursor> {
-    let text = header.map(str::trim).filter(|text| !text.is_empty())?;
-    Some(text.parse().unwrap_or(EventCursor {
-        run: 0,
-        seq: u64::MAX,
-    }))
+pub fn resume_point(header: Option<&str>) -> LastSeen {
+    header
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map_or(LastSeen::Nothing, |text| {
+            text.parse().map_or(LastSeen::Unreadable, LastSeen::At)
+        })
 }
 
 /// An event and its `id:`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Numbered {
-    /// Its cursor.
-    pub cursor: EventCursor,
+    /// Its id; `None` for the `resync` of a client that fell behind, which keeps its last id
+    /// to resume from.
+    pub cursor: Option<EventCursor>,
     /// The event.
     pub event: ChangeEvent,
 }
@@ -62,9 +74,11 @@ pub enum Replay {
 /// What to replay to a client that last saw `last`, the buffer holding the events `first..next`
 /// of the run `run` (`first == next` when it is empty).
 #[must_use]
-pub const fn replay(last: Option<EventCursor>, run: u64, first: u64, next: u64) -> Replay {
-    let Some(last) = last else {
-        return Replay::Nothing;
+pub const fn replay(last: LastSeen, run: u64, first: u64, next: u64) -> Replay {
+    let last = match last {
+        LastSeen::Nothing => return Replay::Nothing,
+        LastSeen::Unreadable => return Replay::Resync,
+        LastSeen::At(last) => last,
     };
     // `last.seq + 1` is the first event the client misses; it must still be buffered.
     if last.run == run && last.seq < next && last.seq.saturating_add(1) >= first {
@@ -124,10 +138,10 @@ impl Bus {
     pub fn publish(&self, event: ChangeEvent) {
         let mut buffer = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let numbered = Numbered {
-            cursor: EventCursor {
+            cursor: Some(EventCursor {
                 run: self.run,
                 seq: buffer.next,
-            },
+            }),
             event,
         };
         buffer.next += 1;
@@ -144,26 +158,23 @@ impl Bus {
     /// Subscribes a client that last saw `last`. The replay and the live events are taken
     /// under one lock: no event is lost or sent twice between them.
     #[must_use]
-    pub fn subscribe(&self, last: Option<EventCursor>) -> Subscription {
+    pub fn subscribe(&self, last: LastSeen) -> Subscription {
         let buffer = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let first = buffer
-            .events
-            .front()
-            .map_or(buffer.next, |event| event.cursor.seq);
+        let first = buffer.events.front().map_or(buffer.next, seq);
         let replayed = match replay(last, self.run, first, buffer.next) {
             Replay::Nothing => Vec::new(),
-            Replay::From(seq) => buffer
+            Replay::From(from) => buffer
                 .events
                 .iter()
-                .filter(|event| event.cursor.seq >= seq)
+                .filter(|event| self::seq(event) >= from)
                 .cloned()
                 .collect(),
             Replay::Resync => vec![Numbered {
-                // Not numbered: it stands for the events the client cannot get.
-                cursor: EventCursor {
+                // The id of the latest event: once it refetched, the client is up to date.
+                cursor: Some(EventCursor {
                     run: self.run,
                     seq: buffer.next.saturating_sub(1),
-                },
+                }),
                 event: ChangeEvent::Resync,
             }],
         };
@@ -227,7 +238,7 @@ pub fn stream(
                     Err(RecvError::Lagged(_)) => {
                         state.ended = true;
                         let resync = Numbered {
-                            cursor: EventCursor { run: 0, seq: 0 },
+                            cursor: None,
                             event: ChangeEvent::Resync,
                         };
                         return Some((resync, state));
@@ -244,10 +255,12 @@ pub fn stream(
     })
 }
 
-/// Whether `event` carries an id: every one but the `resync` of a client that fell behind.
-#[must_use]
-pub const fn has_id(event: &Numbered) -> bool {
-    event.cursor.run != 0
+/// The number of a buffered event (they all have an id).
+const fn seq(event: &Numbered) -> u64 {
+    match event.cursor {
+        Some(cursor) => cursor.seq,
+        None => 0,
+    }
 }
 
 #[cfg(test)]
@@ -256,8 +269,8 @@ mod tests {
 
     const RUN: u64 = 1_791_792_000_000;
 
-    const fn cursor(run: u64, seq: u64) -> EventCursor {
-        EventCursor { run, seq }
+    const fn at(run: u64, seq: u64) -> LastSeen {
+        LastSeen::At(EventCursor { run, seq })
     }
 
     fn task(n: u8) -> ChangeEvent {
@@ -268,73 +281,68 @@ mod tests {
 
     #[test]
     fn a_bad_last_event_id_resyncs() {
-        assert_eq!(resume_point(None), None);
-        assert_eq!(resume_point(Some(" ")), None);
-        assert_eq!(resume_point(Some("12-3")), Some(cursor(12, 3)));
+        assert_eq!(resume_point(None), LastSeen::Nothing);
+        assert_eq!(resume_point(Some(" ")), LastSeen::Nothing);
+        assert_eq!(resume_point(Some("12-3")), at(12, 3));
         let bad = resume_point(Some("garbage"));
+        assert_eq!(bad, LastSeen::Unreadable);
         assert_eq!(replay(bad, RUN, 1, 10), Replay::Resync);
     }
 
     #[test]
     fn a_new_client_gets_only_the_events_to_come() {
-        assert_eq!(replay(None, RUN, 1, 1), Replay::Nothing);
-        assert_eq!(replay(None, RUN, 40, 90), Replay::Nothing);
+        assert_eq!(replay(LastSeen::Nothing, RUN, 1, 1), Replay::Nothing);
+        assert_eq!(replay(LastSeen::Nothing, RUN, 40, 90), Replay::Nothing);
     }
 
     #[test]
     fn a_resume_point_still_buffered_replays_what_follows() {
         // Buffer holds 40..90 (next is 90).
-        assert_eq!(replay(Some(cursor(RUN, 39)), RUN, 40, 90), Replay::From(40));
-        assert_eq!(replay(Some(cursor(RUN, 60)), RUN, 40, 90), Replay::From(61));
+        assert_eq!(replay(at(RUN, 39), RUN, 40, 90), Replay::From(40));
+        assert_eq!(replay(at(RUN, 60), RUN, 40, 90), Replay::From(61));
         // Up to date: nothing to replay, from the next one.
-        assert_eq!(replay(Some(cursor(RUN, 89)), RUN, 40, 90), Replay::From(90));
+        assert_eq!(replay(at(RUN, 89), RUN, 40, 90), Replay::From(90));
         // Empty buffer, nothing published yet.
-        assert_eq!(replay(Some(cursor(RUN, 0)), RUN, 1, 1), Replay::From(1));
+        assert_eq!(replay(at(RUN, 0), RUN, 1, 1), Replay::From(1));
     }
 
     #[test]
     fn a_resume_point_lost_or_foreign_is_a_resync() {
-        assert_eq!(replay(Some(cursor(RUN, 38)), RUN, 40, 90), Replay::Resync);
-        assert_eq!(
-            replay(Some(cursor(RUN - 1, 60)), RUN, 40, 90),
-            Replay::Resync
-        );
-        assert_eq!(replay(Some(cursor(RUN, 90)), RUN, 40, 90), Replay::Resync);
-        assert_eq!(
-            replay(Some(cursor(RUN, u64::MAX)), RUN, 40, 90),
-            Replay::Resync
-        );
+        assert_eq!(replay(at(RUN, 38), RUN, 40, 90), Replay::Resync);
+        assert_eq!(replay(at(RUN - 1, 60), RUN, 40, 90), Replay::Resync);
+        assert_eq!(replay(at(RUN, 90), RUN, 40, 90), Replay::Resync);
+        assert_eq!(replay(at(RUN, u64::MAX), RUN, 40, 90), Replay::Resync);
     }
 
     #[test]
     fn the_bus_numbers_buffers_and_replays() {
         let bus = Bus::new(RUN, 3, 8);
-        let mut early = bus.subscribe(None);
+        let mut early = bus.subscribe(LastSeen::Nothing);
         for n in 1..=5 {
             bus.publish(task(n));
         }
         // Live: every event, numbered from 1.
         for seq in 1..=5 {
-            assert_eq!(early.live.try_recv().unwrap().cursor.seq, seq);
+            assert_eq!(early.live.try_recv().unwrap().cursor.unwrap().seq, seq);
         }
         // The buffer holds the last 3 (3..=5).
-        let resumed = bus.subscribe(Some(cursor(RUN, 3)));
-        let seqs: Vec<u64> = resumed.replay.iter().map(|e| e.cursor.seq).collect();
+        let resumed = bus.subscribe(at(RUN, 3));
+        let seqs: Vec<u64> = resumed.replay.iter().map(seq).collect();
         assert_eq!(seqs, [4, 5]);
-        let lost = bus.subscribe(Some(cursor(RUN, 1)));
+        let lost = bus.subscribe(at(RUN, 1));
         assert_eq!(lost.replay.len(), 1);
         assert_eq!(lost.replay[0].event, ChangeEvent::Resync);
         // Live events after a subscription follow its replay, none twice.
-        let mut late = bus.subscribe(Some(cursor(RUN, 5)));
+        let mut late = bus.subscribe(at(RUN, 5));
         assert_eq!(late.replay, Vec::new());
         bus.publish(task(6));
-        assert_eq!(late.live.try_recv().unwrap().cursor.seq, 6);
+        assert_eq!(late.live.try_recv().unwrap().cursor.unwrap().seq, 6);
     }
 
     #[test]
     fn a_client_that_falls_behind_is_told_it_lagged() {
         let bus = Bus::new(RUN, 16, 2);
-        let mut slow = bus.subscribe(None);
+        let mut slow = bus.subscribe(LastSeen::Nothing);
         for n in 1..=5 {
             bus.publish(task(n));
         }
@@ -344,7 +352,7 @@ mod tests {
         ));
     }
 
-    fn collect(bus: &Bus, last: Option<EventCursor>, context: Option<&str>) -> Vec<Numbered> {
+    fn collect(bus: &Bus, last: LastSeen, context: Option<&str>) -> Vec<Numbered> {
         use futures_util::StreamExt as _;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -365,9 +373,9 @@ mod tests {
             slug: "home/notes".to_owned(),
         });
         bus.publish(task(2));
-        let work: Vec<u64> = collect(&bus, Some(cursor(RUN, 0)), Some("work"))
+        let work: Vec<u64> = collect(&bus, at(RUN, 0), Some("work"))
             .iter()
-            .map(|event| event.cursor.seq)
+            .map(|event| event.cursor.unwrap().seq)
             .collect();
         assert_eq!(work, [1, 3]);
     }
@@ -380,20 +388,20 @@ mod tests {
             .build()
             .unwrap();
         let bus = Bus::new(RUN, 16, 2);
-        let subscription = bus.subscribe(None);
+        let subscription = bus.subscribe(LastSeen::Nothing);
         for n in 1..=5 {
             bus.publish(task(n));
         }
         let events: Vec<Numbered> = runtime.block_on(stream(subscription, None).collect());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event, ChangeEvent::Resync);
-        assert!(!has_id(&events[0]));
+        assert_eq!(events[0].cursor, None);
     }
 
     #[test]
     fn close_ends_the_streams() {
         let bus = Bus::new(RUN, 4, 4);
-        let subscription = bus.subscribe(None);
+        let subscription = bus.subscribe(LastSeen::Nothing);
         assert!(!*subscription.closed.borrow());
         bus.close();
         assert!(*subscription.closed.borrow());
