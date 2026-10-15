@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_api::{BackupOutcome, BackupStep, ContextName, TaskId};
+use loom_store::files::{ARCHIVE_DIR, TASKS_DIR};
+use loom_store::port::TaskLocation;
 use tracing::{debug, info_span, warn};
 
 use crate::backup::{self, GITATTRIBUTES, GITIGNORE, REMOTE, Scope, Sides, SyncAction};
@@ -147,9 +149,10 @@ impl StoreCommits {
         self.roots.get(context).map(PathBuf::as_path)
     }
 
-    /// Commits the change of task `id` in the store of `context` with `message`: its directory,
-    /// or every change of the store when an earlier commit failed or the repository is new (see
-    /// [`backup::scope`]). The repository is created first when the store has none.
+    /// Commits the change of task `id` at `location` in the store of `context` with `message`:
+    /// its directory, or every change of the store when an earlier commit failed or the
+    /// repository is new (see [`backup::scope`]). The repository is created first when the store
+    /// has none.
     ///
     /// # Errors
     ///
@@ -159,35 +162,15 @@ impl StoreCommits {
         &mut self,
         context: &ContextName,
         id: &TaskId,
+        location: TaskLocation,
         message: &str,
     ) -> Result<Committed, GitError> {
         let Some(root) = self.roots.get(context) else {
             return Ok(Committed::Nothing);
         };
-        let scope = backup::scope(id, self.pending.contains_key(context), is_repository(root));
-        let result = commit(&self.runner, root, &scope, message);
-        self.record(context, &scope, result)
-    }
-
-    /// Commits the move of task `id` of `context` to the archive of `year` with `message`: both
-    /// of its directories, or every change of the store (see [`backup::archive_scope`]).
-    ///
-    /// # Errors
-    ///
-    /// [`GitError`] when a git command fails; the store is then pending.
-    pub fn commit_archived(
-        &mut self,
-        context: &ContextName,
-        id: &TaskId,
-        year: u16,
-        message: &str,
-    ) -> Result<Committed, GitError> {
-        let Some(root) = self.roots.get(context) else {
-            return Ok(Committed::Nothing);
-        };
-        let scope = backup::archive_scope(
+        let scope = backup::scope(
             id,
-            year,
+            location,
             self.pending.contains_key(context),
             is_repository(root),
         );
@@ -288,15 +271,13 @@ impl StoreCommits {
 
 /// Whether `<root>/tasks` or `<root>/archive` holds an entry other than a hidden one.
 fn has_tasks(root: &Path) -> bool {
-    [loom_store::files::TASKS_DIR, loom_store::files::ARCHIVE_DIR]
-        .into_iter()
-        .any(|dir| {
-            fs::read_dir(root.join(dir)).is_ok_and(|mut entries| {
-                entries.any(|entry| {
-                    entry.is_ok_and(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-                })
+    [TASKS_DIR, ARCHIVE_DIR].into_iter().any(|dir| {
+        fs::read_dir(root.join(dir)).is_ok_and(|mut entries| {
+            entries.any(|entry| {
+                entry.is_ok_and(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
             })
         })
+    })
 }
 
 /// Whether the store at `root` has a repository with a commit.
@@ -340,18 +321,52 @@ fn commit(
     } else {
         scope
     };
-    let paths = match scope {
-        Scope::Task(id) => vec![format!("{}/{id}", loom_store::files::TASKS_DIR)],
-        // The old directory was committed with the task: its pathspec matches the deletion.
-        Scope::Archived { id, year } => vec![
-            format!("{}/{id}", loom_store::files::TASKS_DIR),
-            format!("{}/{year:04}/{id}", loom_store::files::ARCHIVE_DIR),
-        ],
-        Scope::All => vec![".".to_owned()],
-    };
-    let mut add = vec!["add", "-A", "--"];
-    add.extend(paths.iter().map(String::as_str));
-    run(&git, "add", &add)?;
+    match scope {
+        Scope::Task {
+            id,
+            location: TaskLocation::Active,
+        } => {
+            run(
+                &git,
+                "add",
+                &["add", "-A", "--", &format!("{TASKS_DIR}/{id}")],
+            )?;
+        }
+        Scope::Task {
+            id,
+            location: TaskLocation::Archived(year),
+        } => {
+            run(
+                &git,
+                "add",
+                &["add", "-A", "--", &format!("{ARCHIVE_DIR}/{year:04}/{id}")],
+            )?;
+            // What the move left in `tasks/`: a directory still there is staged as it is; a
+            // directory gone is unstaged, whether or not it was ever committed (`git add` would
+            // refuse a path it never knew).
+            let active = format!("{TASKS_DIR}/{id}");
+            if root.join(&active).exists() {
+                run(&git, "add", &["add", "-A", "--", &active])?;
+            } else {
+                run(
+                    &git,
+                    "rm",
+                    &[
+                        "rm",
+                        "-r",
+                        "-q",
+                        "--cached",
+                        "--ignore-unmatch",
+                        "--",
+                        &active,
+                    ],
+                )?;
+            }
+        }
+        Scope::All => {
+            run(&git, "add", &["add", "-A", "--", "."])?;
+        }
+    }
     // `--quiet` exits with 1 when something is staged.
     match git.output(&args(&["diff", "--cached", "--quiet"]), LOCAL_TIMEOUT) {
         Ok(_) => {

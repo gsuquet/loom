@@ -67,6 +67,7 @@ fn filter(context: Option<&str>, status: Option<&str>, ranked: Option<bool>) -> 
         context: context.map(str::to_owned),
         status: status.map(str::to_owned),
         ranked,
+        archived: None,
     }
 }
 
@@ -82,8 +83,14 @@ fn list_filters_are_checked_and_empty_values_ignored() {
             context: Some("work".parse().unwrap()),
             status: Some(StatusName::Waiting),
             ranked: true,
+            archived: false,
         }
     );
+    let archived = TaskListQuery {
+        archived: Some(true),
+        ..filter(None, None, None)
+    };
+    assert!(task_filter(archived).unwrap().archived);
     for bad in [
         filter(Some("Bad/ctx"), None, None),
         filter(None, Some("blocked"), None),
@@ -148,6 +155,47 @@ fn the_list_filters_by_context_and_status_keeping_global_prefixes() {
     let done = TaskFilter {
         status: Some(StatusName::Done),
         ..work
+    };
+    assert_eq!(ids(&done), ["k3r00000:k3r"]);
+}
+
+#[test]
+fn archived_tasks_are_listed_apart_and_never_ranked() {
+    let mut closed = task("k3r00000", "work", 100);
+    closed.status = Status::Done;
+    // Reopened by hand in the archive: still archived, never in the priority list.
+    let reopened = task("k3s00000", "work", 100);
+    let archived = |task| IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..row(task)
+    };
+    let rows = vec![
+        row(task("k3q7zm2a", "work", 100)),
+        archived(closed),
+        archived(reopened),
+    ];
+    let ids = |filter: &TaskFilter| -> Vec<String> {
+        task_list(&rows, filter, date("2026-10-14"))
+            .tasks
+            .into_iter()
+            .map(|summary| format!("{}:{}", summary.id, summary.prefix))
+            .collect()
+    };
+    assert_eq!(ids(&TaskFilter::default()), ["k3q7zm2a:k3q"]);
+    let ranked = TaskFilter {
+        ranked: true,
+        ..TaskFilter::default()
+    };
+    assert_eq!(ids(&ranked), ["k3q7zm2a:k3q"]);
+    let only_archived = TaskFilter {
+        archived: true,
+        ..TaskFilter::default()
+    };
+    // Prefixes stay unique across every task.
+    assert_eq!(ids(&only_archived), ["k3r00000:k3r", "k3s00000:k3s"]);
+    let done = TaskFilter {
+        status: Some(StatusName::Done),
+        ..only_archived
     };
     assert_eq!(ids(&done), ["k3r00000:k3r"]);
 }

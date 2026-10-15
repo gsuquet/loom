@@ -9,15 +9,21 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use loom_api::{
-    ApiError, ErrorCode, ReindexResult, SearchResult, SearchResults, TaskDetail, TaskReadOnly,
+    ApiError, ErrorCode, ReindexResult, SearchResult, SearchResults, TaskDetail, TaskList,
+    TaskReadOnly,
 };
 use tempfile::TempDir;
 
 mod common;
 
-use common::{Daemon, HttpResponse, ok, request};
+use common::{Daemon, HttpResponse, POLL, git, git_run, ok, request};
+
+/// Longest wait for loomd to pick up a file change.
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 const CONFIG: &str = r"
 [repos]
@@ -51,6 +57,11 @@ impl Sandbox {
         fs::create_dir_all(sandbox.loom_home()).unwrap();
         fs::create_dir_all(sandbox.user_home()).unwrap();
         fs::write(sandbox.loom_home().join("config.toml"), CONFIG).unwrap();
+        fs::write(
+            sandbox.gitconfig(),
+            "[user]\n\tname = Store Owner\n\temail = owner@example.invalid\n",
+        )
+        .unwrap();
         sandbox
     }
 
@@ -60,6 +71,10 @@ impl Sandbox {
 
     fn user_home(&self) -> PathBuf {
         self.dir.path().join("u")
+    }
+
+    fn gitconfig(&self) -> PathBuf {
+        self.user_home().join(".gitconfig")
     }
 
     fn socket(&self) -> PathBuf {
@@ -76,7 +91,7 @@ impl Sandbox {
             .env("LOOM_HOME", self.loom_home())
             .env("HOME", self.user_home())
             .env("XDG_CONFIG_HOME", self.user_home().join(".config"))
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_GLOBAL", self.gitconfig())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .arg("--color=never")
             .stdin(Stdio::null())
@@ -87,6 +102,36 @@ impl Sandbox {
 
     fn call(&self, method: &str, path: &str) -> HttpResponse {
         request(&self.socket(), method, path, None)
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        git(&self.user_home(), &self.store(), args)
+    }
+
+    /// Writes the done task `ID` in `archive/2026/` and returns its directory.
+    fn write_archived(&self) -> PathBuf {
+        let dir = self.store().join("archive/2026").join(ID);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("task.md"), done_md()).unwrap();
+        dir
+    }
+}
+
+/// IDs of the tasks of `GET path`.
+fn listed(sandbox: &Sandbox, path: &str) -> Vec<String> {
+    let list: TaskList = ok(&sandbox.call("GET", path));
+    list.tasks
+        .into_iter()
+        .map(|summary| summary.id.to_string())
+        .collect()
+}
+
+/// Polls `check` until it holds, at most [`TIMEOUT`].
+fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !check() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(POLL);
     }
 }
 
@@ -167,5 +212,87 @@ fn a_task_moved_to_the_archive_while_loomd_was_stopped_is_archived_and_read_only
     assert_eq!(reindexed.tasks, 1);
     let again: TaskDetail = ok(&sandbox.call("GET", "/v1/tasks/k3q"));
     assert_eq!(again.summary.read_only, Some(TaskReadOnly::Archived(2026)));
+    daemon.stop();
+}
+
+#[test]
+fn a_hand_edit_in_the_archive_is_recorded_and_committed_at_once() {
+    let sandbox = Sandbox::new();
+    let dir = sandbox.write_archived();
+    let daemon = sandbox.start();
+    let detail: TaskDetail = ok(&sandbox.call("GET", "/v1/tasks/k3q"));
+    assert_eq!(detail.summary.read_only, Some(TaskReadOnly::Archived(2026)));
+
+    // Edited by hand while loomd runs: the watcher covers the archive.
+    let text = done_md().replace("Rotate the certificates", "Rotate the old certificates");
+    fs::write(dir.join("task.md"), text).unwrap();
+    eventually("the edit to be indexed", || {
+        let detail: TaskDetail = ok(&sandbox.call("GET", "/v1/tasks/k3q"));
+        detail.summary.task.unwrap().title == "Rotate the old certificates"
+    });
+    // The store with only an archived task is committed at start, then the edit under its
+    // archive path, nothing left over.
+    eventually("the edit to be committed", || {
+        let log = git_run(
+            &sandbox.user_home(),
+            &sandbox.store(),
+            &["log", "--format=%s", "-1"],
+        );
+        String::from_utf8_lossy(&log.stdout).starts_with(&format!("edited({ID})"))
+    });
+    let subjects = sandbox.git(&["log", "--format=%s"]);
+    assert_eq!(subjects.lines().count(), 2, "{subjects}");
+    assert_eq!(sandbox.git(&["status", "--porcelain"]), "");
+    let tracked = sandbox.git(&["ls-files"]);
+    assert!(
+        tracked.contains(&format!("archive/2026/{ID}/task.md")),
+        "{tracked}"
+    );
+    daemon.stop();
+}
+
+#[test]
+fn an_archived_task_reopened_by_hand_stays_archived_and_out_of_the_lists() {
+    let sandbox = Sandbox::new();
+    let dir = sandbox.write_archived();
+    // Reopened by hand in the archive.
+    fs::write(
+        dir.join("task.md"),
+        done_md().replace("\"done\"", "\"ready\""),
+    )
+    .unwrap();
+    let active = sandbox.store().join("tasks/m0000000");
+    fs::create_dir_all(&active).unwrap();
+    fs::write(
+        active.join("task.md"),
+        done_md()
+            .replace(ID, "m0000000")
+            .replace("\"done\"", "\"ready\""),
+    )
+    .unwrap();
+    let daemon = sandbox.start();
+
+    assert_eq!(listed(&sandbox, "/v1/tasks"), ["m0000000"]);
+    assert_eq!(listed(&sandbox, "/v1/tasks?ranked=true"), ["m0000000"]);
+    assert_eq!(listed(&sandbox, "/v1/tasks?archived=true"), [ID]);
+    assert_eq!(
+        listed(&sandbox, "/v1/tasks?archived=true&status=done"),
+        [] as [&str; 0]
+    );
+    let detail: TaskDetail = ok(&sandbox.call("GET", &format!("/v1/tasks/{ID}")));
+    assert_eq!(detail.summary.read_only, Some(TaskReadOnly::Archived(2026)));
+    let error = problem(
+        &sandbox.call("POST", &format!("/v1/tasks/{ID}/actions/done")),
+        409,
+    );
+    assert_eq!(error.code, ErrorCode::ReadOnly);
+    daemon.stop();
+
+    // Moved back by hand: active and writable again.
+    fs::rename(&dir, sandbox.store().join("tasks").join(ID)).unwrap();
+    let daemon = sandbox.start();
+    let detail: TaskDetail = ok(&sandbox.call("GET", &format!("/v1/tasks/{ID}")));
+    assert_eq!(detail.summary.read_only, None);
+    let _: TaskDetail = ok(&sandbox.call("POST", &format!("/v1/tasks/{ID}/actions/done")));
     daemon.stop();
 }

@@ -15,6 +15,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{BackupOutcome, BackupStep, ContextName};
+use loom_store::port::TaskLocation;
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{LocalStep, StoreCommits, sync};
 use tempfile::TempDir;
@@ -133,7 +134,12 @@ impl Machine {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("task.md"), text).unwrap();
         self.commits
-            .commit_task(&work(), &id.parse().unwrap(), &format!("edited({id}): x"))
+            .commit_task(
+                &work(),
+                &id.parse().unwrap(),
+                TaskLocation::Active,
+                &format!("edited({id}): x"),
+            )
             .unwrap();
     }
 

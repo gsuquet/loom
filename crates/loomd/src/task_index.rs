@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use loom_api::{ContextName, FailedTaskFile, InvalidTaskFile, ReindexResult, TaskId};
-use loom_store::files::TASKS_DIR;
-use loom_store::port::task_dir_id;
+use loom_store::files::{ARCHIVE_DIR, TASKS_DIR};
+use loom_store::port::{archive_year_dir, task_dir_id};
 use loom_store::tasks::{IndexedState, Reindexed, TaskFailure};
 
 /// What a reindex reports: every row counted, the invalid ones listed by context and ID, the
@@ -66,9 +66,9 @@ pub fn failed_files(
 
 /// The task a changed `path` belongs to, if any.
 ///
-/// A task path is under `<root>/tasks/<id>/` of one of `stores` (context and store root, as
-/// watched), `<id>` a task ID. Temporary directories of a creation (`.<id>.tmp`) and other
-/// names are not tasks.
+/// A task path is under `<root>/tasks/<id>/` or `<root>/archive/<yyyy>/<id>/` of one of
+/// `stores` (context and store root, as watched), `<id>` a task ID and `<yyyy>` a year.
+/// Temporary directories of a creation (`.<id>.tmp`) and other names are not tasks.
 #[must_use]
 pub fn task_of_path(
     stores: &[(ContextName, PathBuf)],
@@ -78,8 +78,14 @@ pub fn task_of_path(
         .iter()
         .filter_map(|(context, root)| {
             // Component-wise: `tasks-nested` is not under `tasks`.
-            let rest = path.strip_prefix(root.join(TASKS_DIR)).ok()?;
-            let id = task_dir_id(rest.components().next()?.as_os_str())?;
+            let id = if let Ok(rest) = path.strip_prefix(root.join(TASKS_DIR)) {
+                task_dir_id(rest.components().next()?.as_os_str())?
+            } else {
+                let rest = path.strip_prefix(root.join(ARCHIVE_DIR)).ok()?;
+                let mut components = rest.components();
+                archive_year_dir(components.next()?.as_os_str())?;
+                task_dir_id(components.next()?.as_os_str())?
+            };
             Some((root.as_os_str().len(), context, id))
         })
         .max_by_key(|(len, _, _)| *len)
@@ -130,6 +136,14 @@ mod path_tests {
             found("/u/stores/home/tasks/h8w2nc4d/events.jsonl"),
             task("home", "h8w2nc4d")
         );
+        assert_eq!(
+            found("/l/contexts/work/archive/2026/k3q7zm2a/task.md"),
+            task("work", "k3q7zm2a")
+        );
+        assert_eq!(
+            found("/l/contexts/work/archive/2026/k3q7zm2a"),
+            task("work", "k3q7zm2a")
+        );
     }
 
     #[test]
@@ -141,6 +155,10 @@ mod path_tests {
             "/l/contexts/work/notes/k3q7zm2a/task.md",
             "/l/contexts/workshop/tasks/k3q7zm2a/task.md",
             "/elsewhere/tasks/k3q7zm2a/task.md",
+            "/l/contexts/work/archive",
+            "/l/contexts/work/archive/2026",
+            "/l/contexts/work/archive/26/k3q7zm2a/task.md",
+            "/l/contexts/work/archive/2026/notes/task.md",
         ] {
             assert_eq!(found(path), None, "{path}");
         }

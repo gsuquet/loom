@@ -11,6 +11,10 @@ Path of both files: `<store>/tasks/<id>/`, where `<store>` is the context's `sto
 | `tasks/<id>/` | Yes | Yes |
 | `archive/<yyyy>/<id>/` (`<yyyy>` from `1970` to `9999`) | Yes: listed, searched, shown | No: every change is refused (`read_only`) |
 
+`<yyyy>` is the year in UTC: a task closed on 1 January at 00:30 in Paris (31 December, 23:30 UTC) is in the previous year's directory.
+
+An archived task stays archived whatever its file says: edited by hand to an open status, it is still read-only and out of the priority list. To reopen it, move its directory back to `tasks/`; `loomd` indexes it there at once (or at its next start).
+
 A task ID is in one place. When a directory with the same ID is in both, `tasks/<id>/` is the task and the archived copy is ignored; between two archive years, the earlier year is the task.
 
 ## `task.md`
