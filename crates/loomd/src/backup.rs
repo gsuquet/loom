@@ -25,6 +25,13 @@ pub const SUMMARY_MAX_CHARS: usize = 60;
 pub enum Scope {
     /// The directory of this task only.
     Task(TaskId),
+    /// A task moved to the archive: its directory in `tasks/` (gone) and in `archive/<year>/`.
+    Archived {
+        /// The task.
+        id: TaskId,
+        /// Year of its archive.
+        year: u16,
+    },
     /// Every change of the store.
     All,
 }
@@ -55,6 +62,23 @@ pub fn commit_message(id: &TaskId, events: &[&Event]) -> Option<String> {
         let _ = write!(summary, " (+{} events)", events.len() - 1);
     }
     Some(format!("{kind}({id}): {summary}"))
+}
+
+/// What to stage for the move of task `id` to the archive of `year`: both of its directories,
+/// or every change of the store, as [`scope`] decides.
+#[must_use]
+pub fn archive_scope(id: &TaskId, year: u16, pending: bool, repository: bool) -> Scope {
+    match scope(id, pending, repository) {
+        Scope::Task(id) => Scope::Archived { id, year },
+        scope @ (Scope::Archived { .. } | Scope::All) => scope,
+    }
+}
+
+/// The message of the move of task `id` to the archive of `year`:
+/// `archived(<id>): moved to archive/<yyyy>`.
+#[must_use]
+pub fn archived_message(id: &TaskId, year: u16) -> String {
+    format!("archived({id}): moved to archive/{year:04}")
 }
 
 /// The message of a hand edit of task `id` that changed no field (notes, a new or invalid
@@ -307,8 +331,9 @@ mod tests {
     use loom_config::config::StoreSettings;
 
     use super::{
-        Scope, Sides, SyncAction, catch_up_message, commit_message, decide_sync, hand_edit_message,
-        parse_counts, push_refused, redact_remote, removed_message, report, scope, sync_targets,
+        Scope, Sides, SyncAction, archive_scope, archived_message, catch_up_message,
+        commit_message, decide_sync, hand_edit_message, parse_counts, push_refused, redact_remote,
+        removed_message, report, scope, sync_targets,
     };
 
     fn stores() -> BTreeMap<ContextName, StoreSettings> {
@@ -481,6 +506,23 @@ mod tests {
         assert_eq!(scope(&id(), true, true), Scope::All);
         // The first commit of a store holds every file.
         assert_eq!(scope(&id(), false, false), Scope::All);
+    }
+
+    #[test]
+    fn a_move_to_the_archive_takes_both_directories() {
+        assert_eq!(
+            archive_scope(&id(), 2026, false, true),
+            Scope::Archived {
+                id: id(),
+                year: 2026
+            }
+        );
+        assert_eq!(archive_scope(&id(), 2026, true, true), Scope::All);
+        assert_eq!(archive_scope(&id(), 2026, false, false), Scope::All);
+        assert_eq!(
+            archived_message(&id(), 2026),
+            "archived(k3q7zm2a): moved to archive/2026"
+        );
     }
 
     #[test]

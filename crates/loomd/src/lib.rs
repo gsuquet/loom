@@ -14,5 +14,6 @@ pub mod repo_update;
 pub mod schedule;
 pub mod store_git;
 pub mod task_api;
+pub mod task_archive;
 pub mod task_index;
 pub mod trace;

@@ -169,6 +169,32 @@ impl StoreCommits {
         self.record(context, &scope, result)
     }
 
+    /// Commits the move of task `id` of `context` to the archive of `year` with `message`: both
+    /// of its directories, or every change of the store (see [`backup::archive_scope`]).
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] when a git command fails; the store is then pending.
+    pub fn commit_archived(
+        &mut self,
+        context: &ContextName,
+        id: &TaskId,
+        year: u16,
+        message: &str,
+    ) -> Result<Committed, GitError> {
+        let Some(root) = self.roots.get(context) else {
+            return Ok(Committed::Nothing);
+        };
+        let scope = backup::archive_scope(
+            id,
+            year,
+            self.pending.contains_key(context),
+            is_repository(root),
+        );
+        let result = commit(&self.runner, root, &scope, message);
+        self.record(context, &scope, result)
+    }
+
     /// Creates the repository of the store of `context` when it has none (without a commit,
     /// so that a fast-forward can fill an empty store), then commits every change with
     /// `message`: what a sync does before it fetches.
@@ -260,13 +286,17 @@ impl StoreCommits {
     }
 }
 
-/// Whether `<root>/tasks` holds an entry other than a hidden one.
+/// Whether `<root>/tasks` or `<root>/archive` holds an entry other than a hidden one.
 fn has_tasks(root: &Path) -> bool {
-    fs::read_dir(root.join(loom_store::files::TASKS_DIR)).is_ok_and(|mut entries| {
-        entries.any(|entry| {
-            entry.is_ok_and(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+    [loom_store::files::TASKS_DIR, loom_store::files::ARCHIVE_DIR]
+        .into_iter()
+        .any(|dir| {
+            fs::read_dir(root.join(dir)).is_ok_and(|mut entries| {
+                entries.any(|entry| {
+                    entry.is_ok_and(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                })
+            })
         })
-    })
 }
 
 /// Whether the store at `root` has a repository with a commit.
@@ -310,11 +340,18 @@ fn commit(
     } else {
         scope
     };
-    let path = match scope {
-        Scope::Task(id) => format!("{}/{id}", loom_store::files::TASKS_DIR),
-        Scope::All => ".".to_owned(),
+    let paths = match scope {
+        Scope::Task(id) => vec![format!("{}/{id}", loom_store::files::TASKS_DIR)],
+        // The old directory was committed with the task: its pathspec matches the deletion.
+        Scope::Archived { id, year } => vec![
+            format!("{}/{id}", loom_store::files::TASKS_DIR),
+            format!("{}/{year:04}/{id}", loom_store::files::ARCHIVE_DIR),
+        ],
+        Scope::All => vec![".".to_owned()],
     };
-    run(&git, "add", &["add", "-A", "--", &path])?;
+    let mut add = vec!["add", "-A", "--"];
+    add.extend(paths.iter().map(String::as_str));
+    run(&git, "add", &add)?;
     // `--quiet` exits with 1 when something is staged.
     match git.output(&args(&["diff", "--cached", "--quiet"]), LOCAL_TIMEOUT) {
         Ok(_) => {
