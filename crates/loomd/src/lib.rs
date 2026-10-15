@@ -11,6 +11,7 @@ pub mod disk;
 pub mod events;
 pub mod exit;
 pub mod hooks;
+pub mod recurring;
 pub mod repo_update;
 pub mod schedule;
 pub mod store_git;

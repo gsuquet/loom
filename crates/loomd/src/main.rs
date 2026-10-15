@@ -3,6 +3,7 @@
 mod daemon;
 mod disk_usage;
 mod repos;
+mod schedules;
 mod sync;
 mod tasks;
 mod updater;

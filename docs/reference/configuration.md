@@ -56,6 +56,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
 | `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[[contexts.<name>.schedules]]` | | | See [schedules](#schedules). |
 | `[tasks] sync_interval` | string: duration | `"15m"` | Time between two syncs of each context store with its `store.backup.remote`. Duration syntax of `[update] check_interval`. At least `"1m"`. See [store backup](#store-backup). |
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
@@ -148,6 +149,79 @@ Error: invalid configuration /home/me/.loom/config.toml:5:16: match.paths `~/wor
 ```
 
 Errors in an array element (`roots`, `exclude`, `match.paths`, `match.hosts`) are located at the start of the array.
+
+### Schedules
+
+A `[[contexts.<name>.schedules]]` table defines a recurring task. For each occurrence of the schedule, `loomd` creates one task in the context. `loomd` reads the schedules when it starts. A change to a schedule applies after a restart.
+
+One machine runs the schedules of a context: the first machine in its [`machines`](#contexts-and-repositories). At start, the other machines that hold the context write a log line that names this machine. They create no task for the schedules. The tasks come to them through the [store backup](#store-backup).
+
+- If the first machine is off, no machine creates the tasks. When that machine starts again, it creates only the latest occurrence that it did not create.
+- To move the schedules to a different machine, put that machine first in `machines`. Then restart `loomd` on the two machines.
+- If a context has no `machines`, each machine holds the context and runs its schedules. Each `loomd` writes this warning at start, because two machines that share the store create each occurrence two times:
+
+```text
+WARN schedules run on every machine holding the context: set `machines` so that only its first machine creates their tasks context=company-a
+```
+
+```toml
+[contexts.company-a]
+
+[[contexts.company-a.schedules]]
+id = "timesheet"
+title = "Fill in the timesheet"
+kind = "admin"
+importance = "p1"
+rrule = "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"
+policy = "replace"
+due = "same-day"
+
+[[contexts.company-a.schedules]]
+id = "one-on-one"
+title = "Prepare the 1:1"
+kind = "chore"
+rrule = "FREQ=WEEKLY;INTERVAL=2;BYDAY=TH"
+start = 2026-10-01
+```
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `id` | string | required | 1 to 64 lowercase ASCII letters, digits and `-`. The first character is not `-`. Each schedule of a context has a different `id`. The `id` is part of the dedup key of each task. If you change it, the schedule starts again with no task. |
+| `title` | string | required | One line that is not blank. The title of each task. |
+| `kind` | string | required | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview` or `learning`. |
+| `importance` | string: `"p0"` to `"p3"` | the default of the kind | The importance of each task. |
+| `rrule` | string: recurrence rule | required | A rule in the subset of the RFC 5545 `RRULE` that the table below gives. |
+| `start` | date: `2026-10-01` or `"2026-10-01"` | none | The schedule has no occurrence before this date. `start` is necessary in these conditions: `INTERVAL` is more than 1 (the count of periods starts at the period of `start`); `FREQ=WEEKLY` has no `BYDAY` (the weekday of `start` applies); `FREQ=MONTHLY` has no `BYDAY` and no `BYMONTHDAY` (the day of the month of `start` applies). |
+| `policy` | string: `"skip"`, `"stack"`, `"replace"` | `"skip"` | The result when an occurrence is due and a task of an earlier occurrence is open (`inbox`, `ready`, `active` or `waiting`). `skip`: `loomd` creates no task. When no earlier task is open, `loomd` creates the latest occurrence. `stack`: `loomd` creates the task and keeps the open tasks. `replace`: `loomd` creates the task, then cancels the open tasks. |
+| `due` | string: `"same-day"` | none | `same-day`: the due date of each task is the date of its occurrence. If `due` is not there, the tasks have no due date. |
+
+In `rrule`, a `;` separates the parts. Names and values can be in uppercase or lowercase. Each part can occur one time only.
+
+| Part | Values | Effect |
+| --- | --- | --- |
+| `FREQ` | `DAILY`, `WEEKLY`, `MONTHLY` | Required. The period: one day, one week (Monday to Sunday), one month. |
+| `INTERVAL` | positive integer | Default 1. One period in `INTERVAL` periods. The count starts at the period of `start`. |
+| `BYDAY` | a list of `MO`, `TU`, `WE`, `TH`, `FR`, `SA`, `SU`, with commas. With `FREQ=MONTHLY`, each day can have a rank from `1` to `5` or from `-1` to `-5` (`1MO`: the first Monday, `-1FR`: the last Friday) | `DAILY`: only these weekdays. `WEEKLY`: these days of the week. `MONTHLY`: these days of the month. A day without a rank is each such weekday of the month. |
+| `BYMONTHDAY` | a list of `1` to `31` or `-1` (the last day) to `-31`, with commas. `FREQ=MONTHLY` only | These days of the month. If a month does not have the day, that month has no occurrence for it. With `BYDAY`, only the days that the two parts give. |
+| `BYSETPOS` | a list of `1` to `366` or `-1` (the last) to `-366`, with commas. `FREQ=WEEKLY` or `MONTHLY`, with `BYDAY` or `BYMONTHDAY` | Keeps the days at these positions in the days of the period, in date order. |
+
+`loomd` refuses all other parts (`COUNT`, `UNTIL`, `BYHOUR`, `BYMINUTE`, `BYSECOND`, `BYMONTH`, `BYWEEKNO`, `BYYEARDAY`, `WKST`, `X-…`) and all other frequencies. The error gives the name of the part:
+
+```text
+Error: invalid configuration /home/me/.loom/config.toml:8:9: rrule `FREQ=DAILY;BYHOUR=9`: `BYHOUR` is not supported: use FREQ=DAILY|WEEKLY|MONTHLY, INTERVAL, BYDAY, BYMONTHDAY and BYSETPOS
+```
+
+The error for a missing `start` shows the location of the `[[contexts.<name>.schedules]]` header. The other errors show the location of their value. For an `id` that occurs two times, the error shows the second `id` and gives the location of the first.
+
+An occurrence is a date, not a time. `loomd` examines each schedule when it starts, then one time each minute. It compares the schedule with the local date (the time zone of the system). Thus `loomd` creates a task on the day of its occurrence, at the first examination after local midnight. A change of the UTC offset does not move or repeat an occurrence. Each examination creates a maximum of one task for each schedule:
+
+- The occurrence is the latest occurrence on or before today. It is after the latest occurrence that has a task, and not before `start`. If `loomd` was stopped for a week, it creates one task, not one task for each occurrence that it did not create.
+- If a schedule has no task, `loomd` creates its first task on its first occurrence from today. A new schedule never creates a task for a date in the past.
+- The task status is `ready`. The task has the title, kind, importance and due date of the schedule. It has the origin link `provider = "schedule"`, `key = "<id>/<occurrence date>"` (`timesheet/2026-10-30`). This link is the dedup key: a restart or a second examination does not create the same occurrence again.
+- If the `task.md` of a task is invalid, `loomd` reads the latest `"<id>/<date>"` in quotes in its text. The task counts for that occurrence, as an open task that `loomd` never cancels.
+- If a task has no link (for example, you removed it by hand) or is not in the index, the task does not count. `loomd` can then create its occurrence again.
+- The events of the task, and the cancellations of `replace`, have the actor `{"type":"daemon"}`. `loomd` commits each change to the store, as for the changes of the API. Each change sends `task.changed` to the clients of [`GET /v1/events`](api.md#change-events).
+- If `loomd` cannot create a task, it tries again at each examination. It writes a warning only when the error is different from the previous error.
 
 ### Channel resolution
 

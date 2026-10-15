@@ -156,6 +156,30 @@ impl Kind {
         }
     }
 
+    /// The kind named `name`, as written in `kind`, without a content format; `None` for a name
+    /// this version of loom does not know.
+    #[must_use]
+    pub fn known(name: &str) -> Option<Self> {
+        let kind = Self::from(KindRepr {
+            kind: name.to_owned(),
+            format: None,
+        });
+        match kind {
+            Self::Unknown { .. } => None,
+            Self::Story
+            | Self::Bug
+            | Self::Chore
+            | Self::Research
+            | Self::Investigation
+            | Self::Review
+            | Self::Support
+            | Self::Content { .. }
+            | Self::Admin
+            | Self::Interview
+            | Self::Learning => Some(kind),
+        }
+    }
+
     /// The reason a task of this kind is read-only, if the kind or its format is unknown.
     pub(crate) fn unknown(&self) -> Option<ReadOnlyReason> {
         match self {
@@ -535,6 +559,14 @@ mod tests {
             "created": "2026-10-12T09:14:00Z",
             "updated": "2026-10-12T09:14:00Z"
         })
+    }
+
+    #[test]
+    fn known_kinds_by_name() {
+        assert_eq!(Kind::known("admin"), Some(Kind::Admin));
+        assert_eq!(Kind::known("content"), Some(Kind::Content { format: None }));
+        assert_eq!(Kind::known("meeting"), None);
+        assert_eq!(Kind::known("Admin"), None);
     }
 
     #[test]

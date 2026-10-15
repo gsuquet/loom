@@ -12,6 +12,9 @@ publish.workspace = true
 globset.workspace = true
 # `[update]` policy and channel enums, context names and forge kinds, shared with the API.
 loom-api.workspace = true
+# Kinds, importance, dates and recurrence rules of `schedules`, checked when the configuration
+# is read.
+loom-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
