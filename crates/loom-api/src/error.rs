@@ -41,8 +41,8 @@ pub enum ErrorCode {
     NotFound,
     /// The client asked for an API version this daemon does not serve.
     VersionMismatch,
-    /// The daemon cannot serve the request right now, because it stops.
-    /// The same request can succeed later.
+    /// The daemon stops and cannot serve the request. The same request can succeed after
+    /// loomd starts again.
     Unavailable,
     /// The daemon failed while it handled a valid request: a bug or an unexpected I/O failure.
     Internal,

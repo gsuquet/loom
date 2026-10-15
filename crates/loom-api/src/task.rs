@@ -146,7 +146,7 @@ pub struct TaskActionRequest {
     /// `waiting` only: what or whom the task waits on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
-    /// `waiting` only: hidden from the priority list until this date.
+    /// `waiting` only: the priority list does not show the task until this date.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<Date>,
     /// `log_note` only, required: the note.

@@ -19,7 +19,7 @@
       ]
     },
     "until": {
-      "description": "`waiting` only: hidden from the priority list until this date.",
+      "description": "`waiting` only: the priority list does not show the task until this date.",
       "type": [
         "string",
         "null"

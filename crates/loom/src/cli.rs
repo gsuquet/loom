@@ -108,8 +108,8 @@ pub enum Command {
     /// tasks, then done and cancelled tasks. Among tasks: the query as a link key
     /// (`CORE-1042`), then every word in the title, then most recently changed. Among
     /// repositories: exact name, then name prefix, then slug, then the other fields. In each
-    /// rank, the most recently used comes first. `-c` keeps one context, `--type` one kind. Starts loomd if it is
-    /// stopped.
+    /// group, the most recently used comes first. `-c` keeps one context, `--type` one kind.
+    /// Starts loomd if it is stopped.
     Search(SearchArgs),
     /// Capture a task: in the inbox, unless `--ready`.
     ///
@@ -208,7 +208,7 @@ pub struct UpgradeArgs {
     /// `--version` or `--from` is given).
     #[arg(long, value_name = "CHANNEL", value_enum)]
     pub channel: Option<ReleaseChannel>,
-    /// Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version
+    /// Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the version that runs
     /// (use `loom rollback`).
     #[arg(long, value_name = "VERSION", value_parser = parse_release_version)]
     pub version: Option<Version>,
@@ -525,7 +525,7 @@ pub struct RepoShowArgs {
     /// directory. A path the index does not know is registered.
     #[arg(value_name = "REPO")]
     pub repo: Option<String>,
-    /// Read the repository's state now instead of showing the stored one.
+    /// Read the state of the repository now. Do not show the stored state.
     #[arg(long)]
     pub refresh: bool,
     /// Print the repository as JSON (`RepoSummary` schema).

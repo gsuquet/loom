@@ -306,7 +306,7 @@
               "const": "interrupted"
             },
             "to": {
-              "description": "Version that it was to install.",
+              "description": "Version that the abandoned upgrade did not install.",
               "type": "string"
             }
           },

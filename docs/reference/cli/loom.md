@@ -169,7 +169,7 @@ loom upgrade [OPTIONS]
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
 | `--channel <CHANNEL>` | `stable`, `dev` |  | Release channel to upgrade on, remembered in `state/update.json` for loomd and the next `loom upgrade` (not with `--dry-run`). Default: `[update] channel`, otherwise the channel last given here, otherwise the channel of this build (required for a local build, unless `--version` or `--from` is given) |
-| `--version <VERSION>` |  |  | Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version (use `loom rollback`) |
+| `--version <VERSION>` |  |  | Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the version that runs (use `loom rollback`) |
 | `--from <PATH>` |  |  | Install a local build: a release archive (`.tar.gz`) or a directory that holds `loom` and `loomd`. Not verified. Installed even if its version is not newer |
 | `--check` |  |  | Print the decision only: no download, nothing installed (a `--channel` is still remembered) |
 | `-n`, `--dry-run` |  |  | Download and verify, print what would be replaced, change nothing |
@@ -250,7 +250,7 @@ loom repo show [OPTIONS] [REPO]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--refresh` |  |  | Read the repository's state now instead of showing the stored one |
+| `--refresh` |  |  | Read the state of the repository now. Do not show the stored state |
 | `--json` |  |  | Print the repository as JSON (`RepoSummary` schema) |
 | `-h`, `--help` |  |  | Print help |
 
@@ -380,7 +380,7 @@ loom repo help [COMMAND]
 
 Search the tasks (title, notes, link keys) and the indexed repositories (name, slug, path, remote URL, context, branch).
 
-Every word of the query must start a word of the result (case and diacritics ignored). Results are ranked: active, ready and waiting tasks, then repositories, then inbox tasks, then done and cancelled tasks. Among tasks: the query as a link key (`CORE-1042`), then every word in the title, then most recently changed. Among repositories: exact name, then name prefix, then slug, then the other fields. In each rank, the most recently used comes first. `-c` keeps one context, `--type` one kind. Starts loomd if it is stopped.
+Every word of the query must start a word of the result (case and diacritics ignored). Results are ranked: active, ready and waiting tasks, then repositories, then inbox tasks, then done and cancelled tasks. Among tasks: the query as a link key (`CORE-1042`), then every word in the title, then most recently changed. Among repositories: exact name, then name prefix, then slug, then the other fields. In each group, the most recently used comes first. `-c` keeps one context, `--type` one kind. Starts loomd if it is stopped.
 
 ```text
 loom search [OPTIONS] <QUERY>...

@@ -19,7 +19,7 @@
       "const": "version_mismatch"
     },
     {
-      "description": "The daemon cannot serve the request right now, because it stops.\nThe same request can succeed later.",
+      "description": "The daemon stops and cannot serve the request. The same request can succeed after\nloomd starts again.",
       "type": "string",
       "const": "unavailable"
     },

@@ -206,7 +206,7 @@ pub enum UpdateResult {
         at: Timestamp,
         /// Version that ran when it started.
         from: String,
-        /// Version that it was to install.
+        /// Version that the abandoned upgrade did not install.
         to: String,
     },
     /// The check or the upgrade failed before any swap: network, verification, install
