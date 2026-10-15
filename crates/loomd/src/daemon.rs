@@ -1,5 +1,6 @@
 //! I/O of the daemon: configuration file, `run/` directory, lock, socket, HTTP server, signals.
 
+use std::convert::Infallible;
 use std::env;
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions, TryLockError};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
@@ -9,17 +10,19 @@ use std::os::unix::fs::{
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path as UrlPath, Query, State};
-use axum::http::{Method, StatusCode, Uri};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware;
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
+use futures_util::StreamExt as _;
 use loom_api::{
     ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, RegisterRequest, RepoList,
     SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp, UpdateState,
@@ -35,7 +38,7 @@ use loom_core::MachineId;
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    DIAGNOSTICS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH,
+    DIAGNOSTICS_PATH, EVENTS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH,
     REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery,
     SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH,
     TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value,
@@ -43,6 +46,7 @@ use loomd::api::{
     slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
+use loomd::events::{self, Bus, EventsQuery, resume_point};
 use loomd::exit::Shutdown;
 use loomd::hooks;
 use loomd::task_api::{
@@ -141,10 +145,18 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         .iter()
         .map(|(context, store)| (context.clone(), store.path.clone()))
         .collect();
+    // The run of the event ids: the start of this process, in milliseconds.
+    let run = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    let events = Arc::new(Bus::new(run, events::BUFFER_LEN, events::CLIENT_CAPACITY));
     let (task_store, task_handle) = tasks::start(
         &layout.index_db,
         &store_paths,
         MachineId(machine.as_str().to_owned()),
+        Arc::clone(&events),
     )
     .wrap_err("cannot start the task store")?;
     let (sync_thread, sync_handle) = store_sync::start(
@@ -195,6 +207,8 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         sync: sync_handle,
         layout: layout.clone(),
         disk: DiskCache::default(),
+        events,
+        heartbeat: events_heartbeat(),
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     updater.stop();
@@ -241,6 +255,10 @@ struct App {
     layout: Layout,
     /// Last disk usage of the loom home, a new process starts without one.
     disk: DiskCache,
+    /// The change events of `GET /v1/events`.
+    events: Arc<Bus>,
+    /// Interval of the heartbeat of an idle event stream.
+    heartbeat: Duration,
 }
 
 /// Reads the configuration, and whether the file is missing: a missing file gives the
@@ -386,6 +404,7 @@ async fn serve(
                 std::future::pending::<()>().await;
             }
         };
+        let events = Arc::clone(&app.events);
         let shutdown = async move {
             let shutdown = tokio::select! {
                 _ = terminate.recv() => Shutdown::Terminated,
@@ -393,6 +412,8 @@ async fn serve(
                 () = upgrade => Shutdown::Upgraded,
             };
             info!(signal = ?shutdown, "stopping: finishing in-flight requests");
+            // An event stream never ends on its own: the graceful shutdown would wait forever.
+            events.close();
             // Only this future sets it, once.
             let _ = signal_received.set(shutdown);
         };
@@ -435,6 +456,7 @@ fn router(app: App) -> Router {
         .route(TASK_ACTION_PATH, post(task_action))
         .route(TASK_EVENTS_PATH, get(task_events))
         .route(TASK_UNDO_PATH, post(undo_task))
+        .route(EVENTS_PATH, get(change_events))
         .route(TASKS_BACKUP_PATH, get(backup_report))
         .route(TASKS_SYNC_PATH, post(sync_stores))
         .fallback(fallback_not_found)
@@ -575,6 +597,66 @@ async fn diagnostics() -> Response {
 /// The tasks index rebuilt from the files; the repositories are left as they are.
 async fn reindex_tasks(State(app): State<Arc<App>>) -> Response {
     respond(app.tasks.reindex().await)
+}
+
+/// `GET /v1/events`: the change events, as Server-Sent Events.
+async fn change_events(
+    State(app): State<Arc<App>>,
+    query: Result<Query<EventsQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Response {
+    let context = match query {
+        Ok(Query(EventsQuery { context })) => match context.filter(|text| !text.is_empty()) {
+            None => None,
+            Some(text) => match text.parse::<ContextName>() {
+                Ok(context) => Some(context),
+                Err(error) => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        invalid_request(format!("invalid context {text:?}: {error}")),
+                    );
+                }
+            },
+        },
+        Err(rejection) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                invalid_request(rejection.body_text()),
+            );
+        }
+    };
+    let last = resume_point(
+        headers
+            .get("last-event-id")
+            .and_then(|value| value.to_str().ok()),
+    );
+    let subscription = app.events.subscribe(last);
+    let stream = events::stream(subscription, context).map(|numbered| {
+        let data = serde_json::to_string(&numbered.event).unwrap_or_default();
+        let event = SseEvent::default().event(numbered.event.kind()).data(data);
+        let event = match numbered.cursor {
+            Some(cursor) => event.id(cursor.to_string()),
+            // The `resync` of a client that fell behind: it keeps its last id.
+            None => event,
+        };
+        Ok::<_, Infallible>(event)
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(app.heartbeat).text("heartbeat"))
+        .into_response()
+}
+
+/// The heartbeat interval: 15 s, or the debug-only test hook.
+fn events_heartbeat() -> Duration {
+    hooks::duration_hook(
+        hooks::EVENTS_HEARTBEAT_ENV,
+        env::var(hooks::EVENTS_HEARTBEAT_ENV).ok().as_deref(),
+    )
+    .unwrap_or_else(|message| {
+        warn!("{message}");
+        None
+    })
+    .unwrap_or(events::HEARTBEAT)
 }
 
 async fn list_tasks(

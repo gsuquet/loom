@@ -37,6 +37,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
 | `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
 | `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
+| `GET` | `/v1/events` | `200` | `text/event-stream` of [`ChangeEvent`](#changeevent) objects ([change events](#change-events)) |
 
 `loomd` computes `uptime_secs` when it handles the request. At the same time, it reads `<loom home>/state/update.json` for `update`. If `loomd` cannot read the state file, it logs the error and reports an empty state. `disk` is the last measure of the loom home while that measure is fresh, otherwise a new measure ([cache](#diskusage)).
 
@@ -228,6 +229,46 @@ A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to a
 `GET /v1/tasks/backup` answers with the backup state of every context store held on this machine ([`BackupReport`](#backupreport)). `loomd` does not run git for this answer. The backup state is the last commit failure and the last sync of each store since loomd started.
 
 `POST /v1/tasks/sync` with a [`BackupRequest`](#backuprequest) body syncs the stores ([store backup](configuration.md#store-backup)). When every sync ended, it answers with the stores synced. The answer is `400 invalid_request` when `context` names a context without `store.backup.remote`, a context not held on this machine, or an unknown context. The answer is also `400 invalid_request` when the body is invalid. A sync that fails is in the answer, not an error status.
+
+### Change events
+
+`GET /v1/events` sends a Server-Sent Events stream (`text/event-stream`, chunked). The stream stays open. A client reads the changes from the stream, then gets only the data that changed. It does not poll.
+
+`loomd` sends an event after it writes the change to the task files and to the index. Before the event, `loomd` also tries to commit the change to the git repository of the store. If the commit fails, `loomd` sends the event and tries the commit again later.
+
+```text
+id: 1792051200000-7
+event: task.changed
+data: {"type":"task.changed","id":"k3q7zm2a","context":"work"}
+
+```
+
+| Field | Content |
+| --- | --- |
+| `id` | `<run>-<seq>`. `run` is the start time of the `loomd` process, in milliseconds since the Unix epoch. `seq` is the number of the event in the process, from 1. |
+| `event` | The `type` of the event. |
+| `data` | The [`ChangeEvent`](#changeevent) as JSON, with its `type`. |
+
+Events that `loomd` sends:
+
+| `type` | When |
+| --- | --- |
+| `task.changed` | An API request creates, edits, moves, pins, unpins or undoes a task, and writes a [task event](#taskevents). A request that changes nothing sends no change event. Also when `loomd` reconciles a hand edit of the task files: a new task, a changed task, or a removed task directory. |
+| `resync` | `loom reindex` builds the index again. A reconciliation of all the tasks changes one or more tasks (the watcher can miss events). A sync moves a context store forward to the commits of another machine. Also the first event to a client that cannot resume, and the last event to a client that is too far behind (see below). |
+
+`task.archived`, `repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
+
+Query parameter `context`: the stream has only the events of this context, and all the `resync` events. An invalid name or an unknown parameter gives `400 invalid_request`.
+
+Resume:
+
+- A client can connect again with the `Last-Event-ID` header. The header contains the `id` of the last event that the client received.
+- If the buffer of the last 1,024 events of the process has the next events, the client gets them.
+- If the buffer does not have them, the first event is `resync`. The same occurs if the `id` is from another `loomd` process (a restart), or if it is not an `id`. This `resync` has the `id` of the latest event. The client then gets all the data that it shows again.
+
+A client can be a maximum of 256 events behind. If it is more than 256 events behind, it gets a `resync` event and its stream stops. This `resync` has no `id`, so that the client can resume from its last `id`.
+
+While a stream has no events, it gets a `: heartbeat` comment every 15 s. When `loomd` stops, all the streams stop.
 
 ### Errors
 
@@ -689,6 +730,18 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 | --- | --- | --- |
 | `path` | path | The task directory, or the `tasks/` directory of a store that could not be listed. |
 | `error` | string | What failed, with the file when it is an I/O error. |
+
+### `ChangeEvent`
+
+An object. Its `type` field identifies the event ([schema](schemas/change_event.json)):
+
+| `type` | Fields |
+| --- | --- |
+| `task.changed` | `id` (task ID), `context` |
+| `task.archived` | `id`, `context` |
+| `repo.changed` | `slug` (`<context>/<name>`) |
+| `counts.changed` | `context`, `inbox`, `waiting` (numbers of tasks) |
+| `resync` | none |
 
 ### `TaskList`
 
