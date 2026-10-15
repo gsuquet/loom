@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChangeEvent",
+  "description": "A change in loomd, sent as one Server-Sent Event: `event:` is its `type`, `data:` this\nobject as JSON.",
+  "oneOf": [
+    {
+      "description": "A task was created or changed: through the API, a hand edit of its file, or a\nreconciliation.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of its store.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "id": {
+          "description": "ID of the task.",
+          "$ref": "#/$defs/TaskId"
+        },
+        "type": {
+          "type": "string",
+          "const": "task.changed"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "context"
+      ]
+    },
+    {
+      "description": "A task was archived.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of its store.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "id": {
+          "description": "ID of the task.",
+          "$ref": "#/$defs/TaskId"
+        },
+        "type": {
+          "type": "string",
+          "const": "task.archived"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "context"
+      ]
+    },
+    {
+      "description": "A repository of the index was added, changed or removed.",
+      "type": "object",
+      "properties": {
+        "slug": {
+          "description": "Slug of the repository, `<context>/<name>`.",
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "repo.changed"
+        }
+      },
+      "required": [
+        "type",
+        "slug"
+      ]
+    },
+    {
+      "description": "The number of inbox or waiting tasks of a context changed.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "The context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "inbox": {
+          "description": "Tasks in the inbox.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "counts.changed"
+        },
+        "waiting": {
+          "description": "Waiting tasks.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "context",
+        "inbox",
+        "waiting"
+      ]
+    },
+    {
+      "description": "Events were lost (a resume point too old, a client too slow, many changes at once): the\nclient refetches everything it shows.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "resync"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    }
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    }
+  }
+}

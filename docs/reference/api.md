@@ -37,6 +37,7 @@
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
 | `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
 | `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
+| `GET` | `/v1/events` | `200` | `text/event-stream` of [`ChangeEvent`](#changeevent)s, see [change events](#change-events) |
 
 `uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state. `disk` is the last measure of the loom home while it is fresh, otherwise a new one ([cache](#diskusage)).
 
@@ -204,6 +205,38 @@ An open status (`inbox`, `ready`, `active`, `waiting`) can move to any other one
 `GET /v1/tasks/backup` answers with the backup state of every context store held on this machine ([`BackupReport`](#backupreport)), without running git: the last commit failure and the last sync of each store since loomd started.
 
 `POST /v1/tasks/sync` with a [`BackupRequest`](#backuprequest) body syncs the stores ([store backup](configuration.md#store-backup)) and answers once every sync ended, with the stores synced. `400 invalid_request` when `context` names a context without `store.backup.remote`, one not held on this machine, or an unknown one, or when the body is invalid. A sync that fails is in the answer, not an error status.
+
+### Change events
+
+`GET /v1/events` answers a Server-Sent Events stream (`text/event-stream`, chunked) that stays open: a client follows the changes and refetches what changed instead of polling. Each event is written once the change is in the task files, the index and the store's git repository:
+
+```text
+id: 1792051200000-7
+event: task.changed
+data: {"type":"task.changed","id":"k3q7zm2a","context":"work"}
+
+```
+
+| Field | Content |
+| --- | --- |
+| `id` | `<run>-<seq>`: `run` is the start of the loomd process in milliseconds since the Unix epoch, `seq` counts its events from 1. |
+| `event` | The `type` of the event. |
+| `data` | The [`ChangeEvent`](#changeevent) as JSON, `type` included. |
+
+Events sent:
+
+| `type` | When |
+| --- | --- |
+| `task.changed` | A task is created, edited, changes status, is pinned or unpinned, or undone through the API; a hand edit of its files is reconciled (created, changed, or its directory removed). |
+| `resync` | `loom reindex` rebuilt the index, or a reconciliation of every task changed some (the watcher may have missed events); also as the first event of a client that cannot resume, or the last of a client that fell behind (below). |
+
+`task.archived`, `repo.changed` and `counts.changed` are types of the schema not sent yet.
+
+Query parameter `context`: only the events of this context (`resync` always); an invalid name or any other parameter is a `400 invalid_request`.
+
+Resume: a client that reconnects with the `Last-Event-ID` header of the last event it received gets the events since, from a buffer of the last 1,024 events of the process. When the buffer no longer holds them, when the id is of another loomd process (it restarted) or is not an id, the first event is `resync`, with the id of the latest event: the client refetches everything it shows.
+
+A client may fall up to 256 events behind; past that, it gets `resync` (without an id, so that it may resume from its last one) and its stream ends. An idle stream gets a `: heartbeat` comment every 15 s. When loomd stops, every stream ends.
 
 ### Errors
 
@@ -665,6 +698,18 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 | --- | --- | --- |
 | `path` | path | The task directory, or the `tasks/` directory of a store that could not be listed. |
 | `error` | string | What failed, with the file when it is an I/O error. |
+
+### `ChangeEvent`
+
+An object tagged by `type` ([schema](schemas/change_event.json)):
+
+| `type` | Fields |
+| --- | --- |
+| `task.changed` | `id` (task ID), `context` |
+| `task.archived` | `id`, `context` |
+| `repo.changed` | `slug` (`<context>/<name>`) |
+| `counts.changed` | `context`, `inbox`, `waiting` (numbers of tasks) |
+| `resync` | none |
 
 ### `TaskList`
 

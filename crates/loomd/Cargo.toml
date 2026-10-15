@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 axum.workspace = true
+# `stream::unfold` for the SSE stream of `GET /v1/events`.
+futures-util.workspace = true
 clap.workspace = true
 # The local date of the priority list: the system time zone (`TZ`, `/etc/localtime`) and the
 # zoneinfo files, read at each ranked list. jiff is already compiled for loom-core.
@@ -37,7 +39,7 @@ serde.workspace = true
 # its kind and status, so serde cannot reject unknown keys), and error details are JSON.
 serde_json.workspace = true
 # `sync`: the updater thread asks the server to stop after an upgrade (oneshot channel).
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

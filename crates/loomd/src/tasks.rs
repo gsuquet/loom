@@ -25,13 +25,14 @@ use std::fs::{self, File};
 use std::hash::{BuildHasher as _, Hasher as _, RandomState};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ContextName, Date, NewTask, ReindexResult, TaskDetail, TaskEvents, TaskId, TaskList, Timestamp,
+    ChangeEvent, ContextName, Date, NewTask, ReindexResult, TaskDetail, TaskEvents, TaskId,
+    TaskList, Timestamp,
 };
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
 use loom_store::files::FileStore;
@@ -39,6 +40,7 @@ use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskInd
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
 use loomd::backup::{catch_up_message, commit_message, hand_edit_message, removed_message};
+use loomd::events::Bus;
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
 use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
@@ -133,6 +135,7 @@ pub fn start(
     db: &Path,
     stores: &BTreeMap<ContextName, PathBuf>,
     machine_id: MachineId,
+    events: Arc<Bus>,
 ) -> Result<(TaskStore, TaskHandle)> {
     let mut files = Vec::with_capacity(stores.len());
     for (context, root) in stores {
@@ -163,6 +166,7 @@ pub fn start(
             machine_id,
         },
         random: OsRandom::open(),
+        events,
     };
     info!(
         stores = ?stores.values().map(|root| root.display().to_string()).collect::<Vec<_>>(),
@@ -486,6 +490,8 @@ struct Worker {
     random: OsRandom,
     /// Set once the reconciliation on start is over, then dropped.
     ready: Option<watch::Sender<bool>>,
+    /// Where each change is announced, once written, indexed and committed.
+    events: Arc<Bus>,
 }
 
 impl Worker {
@@ -566,6 +572,7 @@ impl Worker {
                     failed = result.failed.len(),
                     "tasks indexed"
                 );
+                self.events.publish(ChangeEvent::Resync);
                 Ok(result)
             }
             Err(error) => {
@@ -586,6 +593,7 @@ impl Worker {
             .map_err(|error| refused(&error))?;
         info!(id = %task.id, context = %task.context, "task created");
         self.commit_change(&task.context, &task.id, 0);
+        self.changed(&task.context, &task.id);
         self.detail(&task.id)
     }
 
@@ -603,6 +611,7 @@ impl Worker {
             .map_err(|error| refused(&error))?;
         debug!(%id, "task changed");
         self.commit_change(&task.context, id, before);
+        self.changed(&task.context, id);
         self.detail(id)
     }
 
@@ -615,6 +624,7 @@ impl Worker {
             .map_err(|error| refused(&error))?;
         info!(%id, "task change undone");
         self.commit_change(&task.context, id, before);
+        self.changed(&task.context, id);
         self.detail(id)
     }
 
@@ -700,6 +710,14 @@ impl Worker {
                     failed = report.failed.len(),
                     "tasks reconciled"
                 );
+                // Any number of tasks may have changed: clients refetch everything.
+                if report
+                    .results
+                    .iter()
+                    .any(|(_, reconciled)| !matches!(reconciled, Reconciled::Unchanged))
+                {
+                    self.events.publish(ChangeEvent::Resync);
+                }
                 report.failed
             }
             Err(error) => {
@@ -735,6 +753,7 @@ impl Worker {
                     Reconciled::Removed => self.commits.commit_all(context, &removed_message(id)),
                 };
                 log_commit(context, Some(id), result);
+                self.changed(context, id);
             }
             Err(error) => warn!(%context, %id, %error, "cannot reconcile a task"),
         }
@@ -751,6 +770,14 @@ fn refused(error: &TaskError) -> Failure {
 }
 
 impl Worker {
+    /// Announces that task `id` of `context` changed: written, indexed and committed.
+    fn changed(&self, context: &ContextName, id: &TaskId) {
+        self.events.publish(ChangeEvent::TaskChanged {
+            id: id.clone(),
+            context: context.clone(),
+        });
+    }
+
     /// Commits the hand edit of `changes` recorded on task `id`, found by a reconciliation of
     /// every task: its context is the one its index row names.
     fn commit_edit(&mut self, id: &TaskId, changes: &[loom_core::FieldChange]) {
