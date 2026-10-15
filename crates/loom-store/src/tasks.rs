@@ -498,7 +498,7 @@ impl<P: StorePort> Tasks<P> {
                 Err(error) => {
                     report
                         .failed
-                        .push(TaskFailure::new(&row.context, Some(&row.id), &error))
+                        .push(TaskFailure::new(&row.context, Some(&row.id), &error));
                 }
             }
         }
