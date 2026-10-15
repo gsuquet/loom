@@ -150,7 +150,13 @@ Errors in an array element (`roots`, `exclude`, `match.paths`, `match.hosts`) ar
 
 ### Schedules
 
-`[[contexts.<name>.schedules]]` tables define recurring tasks: `loomd` creates one task in the context per occurrence of each schedule. It reads them when it starts, like the rest of the file: a change takes effect after a restart. Only the contexts this machine holds (see [`machines`](#contexts-and-repositories)) run their schedules.
+`[[contexts.<name>.schedules]]` tables define recurring tasks: `loomd` creates one task in the context per occurrence of each schedule. It reads them when it starts, like the rest of the file: a change takes effect after a restart.
+
+One machine runs the schedules of a context: the first one of its [`machines`](#contexts-and-repositories). The other machines that hold the context log at start that its schedules run on that machine, and create no task for them; their tasks reach them through the [store backup](#store-backup). A context without `machines` is held by every machine, and each one runs its schedules, with this warning at start: two machines sharing its store would both create each occurrence.
+
+```text
+WARN schedules run on every machine holding the context: set `machines` so that only its first machine creates their tasks context=company-a
+```
 
 ```toml
 [contexts.company-a]
@@ -207,8 +213,6 @@ Occurrences are dates. `loomd` checks every schedule when it starts, then every 
 - A schedule without any task creates its first one on its first occurrence from today: a new schedule never creates a task for a past date.
 - The task is `ready`, with the schedule's title, kind, importance and due date, and the origin link `provider = "schedule"`, `key = "<id>/<occurrence date>"` (`timesheet/2026-10-30`), the dedup key: a restart or a second check never creates an occurrence twice. A task whose `task.md` is invalid counts with the latest quoted `"<id>/<date>"` its text holds, as open and never cancelled. A task without the link (removed by hand) or that left the index does not count: its occurrence can be created again.
 - Its events, and the cancellations of `replace`, have the actor `{"type":"daemon"}`; each change is committed to the store like the changes of the API. A failure is retried at each check, logged as a warning when it differs from the previous one.
-
-Each `loomd` checks the tasks of its own index only. When two machines hold the same context (`machines` absent or naming both) and sync its store, both create the task of each occurrence: hold a context with schedules on one machine only.
 
 ### Channel resolution
 

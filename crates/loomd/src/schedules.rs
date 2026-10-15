@@ -10,8 +10,10 @@ use std::time::Duration;
 
 use loom_api::ContextName;
 use loom_config::config::{Config, StoreSettings};
+use loom_config::machine::MachineName;
+use loomd::recurring::{Runner, runner};
 use miette::{Context as _, IntoDiagnostic as _, Result};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::daemon::local_today;
 use crate::tasks::{Schedules, TaskHandle};
@@ -25,21 +27,37 @@ pub struct ScheduleThread {
     stop: mpsc::Sender<()>,
 }
 
-/// Queues a first run of the schedules of the contexts `held` here on the task thread, before
-/// the API serves any request, then starts the thread that queues one every
-/// [`CHECK_INTERVAL`]. `None` without any schedule.
+/// Queues a first run of the schedules this machine runs on the task thread, before the API
+/// serves any request, then starts the thread that queues one every [`CHECK_INTERVAL`]. `None`
+/// without any schedule.
+///
+/// This machine runs the schedules of the contexts it holds (`held`) and lists first in their
+/// `machines`, or that have no `machines`, with a warning: every machine runs those.
 pub fn start(
     config: &Config,
     held: &BTreeMap<ContextName, StoreSettings>,
+    machine: &MachineName,
     tasks: TaskHandle,
 ) -> Result<Option<ScheduleThread>> {
-    // The contexts not held here have no store.
-    let schedules: Schedules = config
-        .contexts
-        .iter()
-        .filter(|(context, _)| held.contains_key(*context))
-        .map(|(context, settings)| (context.clone(), settings.schedules.clone()))
-        .collect();
+    let mut schedules = Schedules::new();
+    for (context, settings) in &config.contexts {
+        // The contexts not held here have no store.
+        if settings.schedules.is_empty() || !held.contains_key(context) {
+            continue;
+        }
+        match runner(settings.machines.as_deref(), machine) {
+            Runner::This => {}
+            Runner::Other(first) => {
+                info!(%context, runner = %first, "schedules of the context run on another machine");
+                continue;
+            }
+            Runner::Unpinned => warn!(
+                %context,
+                "schedules run on every machine holding the context: set `machines` so that only its first machine creates their tasks"
+            ),
+        }
+        schedules.insert(context.clone(), settings.schedules.clone());
+    }
     let count: usize = schedules.values().map(Vec::len).sum();
     if count == 0 {
         return Ok(None);

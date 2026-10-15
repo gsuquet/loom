@@ -12,7 +12,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Instant;
 
-use loom_api::{Actor, Link, StatusName, TaskEvents, TaskList, TaskSummary};
+use loom_api::{Actor, Link, StatusName, TaskDetail, TaskEvents, TaskList, TaskSummary};
+use serde_json::json;
 use tempfile::TempDir;
 
 mod common;
@@ -40,6 +41,11 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
+        Self::with_config(CONFIG)
+    }
+
+    /// A sandbox with `config` as `config.toml`, on the machine `laptop`.
+    fn with_config(config: &str) -> Self {
         // Under `/tmp`: the macOS default `$TMPDIR` is too long for a socket path.
         let dir = tempfile::Builder::new()
             .prefix("loomd-schedules-")
@@ -48,7 +54,12 @@ impl Sandbox {
         let sandbox = Self { dir };
         fs::create_dir_all(sandbox.loom_home()).unwrap();
         fs::create_dir_all(sandbox.user_home()).unwrap();
-        fs::write(sandbox.loom_home().join("config.toml"), CONFIG).unwrap();
+        fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+        fs::write(
+            sandbox.loom_home().join("machine.toml"),
+            "id = \"laptop\"\n",
+        )
+        .unwrap();
         sandbox
     }
 
@@ -166,5 +177,29 @@ fn a_schedule_creates_one_task_per_occurrence_across_restarts() {
     let status = |summary: &TaskSummary| summary.task.as_ref().unwrap().status.name();
     assert_eq!(status(&both[0]), Some(StatusName::Cancelled));
     assert_eq!(status(&both[1]), Some(StatusName::Ready));
+    daemon.stop();
+}
+
+#[test]
+fn only_the_first_machine_of_a_context_runs_its_schedules() {
+    let config = CONFIG.replace(
+        "[contexts.work]\n",
+        "[contexts.work]\nmachines = [\"tower\", \"laptop\"]\n",
+    );
+    let sandbox = Sandbox::with_config(&config);
+    let socket = sandbox.socket();
+    let daemon = sandbox.start("2026-10-16");
+    // A task created through the API is queued after the run of the schedules at start.
+    let created: TaskDetail = ok(&request(
+        &socket,
+        "POST",
+        "/v1/tasks",
+        Some(&json!({ "title": "Mine", "kind": "chore", "context": "work", "status": "ready" })),
+    ));
+    let titles: Vec<String> = tasks(&socket)
+        .iter()
+        .map(|summary| summary.task.as_ref().unwrap().title.clone())
+        .collect();
+    assert_eq!(titles, ["Mine"], "{created:?}");
     daemon.stop();
 }

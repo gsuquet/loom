@@ -35,7 +35,12 @@ Before you start: `loom` and `loomd` are installed and the context is defined in
    - `policy` decides what happens when the task of the previous occurrence is still open: `skip` (default) creates nothing until it is closed, `stack` keeps both, `replace` cancels the old one.
    - For a rule with `INTERVAL` above 1, add `start = 2026-10-01`: the periods are counted from it.
 
-   - If several machines hold the context, each one creates every task: set `machines` to one machine for a context with schedules.
+   - If several machines hold the context, list them in `machines`: only the first one creates the tasks. Without `machines`, loomd warns at start, and two machines sharing the store would both create each task.
+
+     ```toml
+     [contexts.company-a]
+     machines = ["laptop", "tower"]
+     ```
 
 3. Restart loomd to load the schedule. The configuration is checked first; a rule loomd does not support is refused with the part it names.
 
@@ -54,6 +59,8 @@ loom ls -c company-a
 Each task carries the origin link `schedule` / `<id>/<occurrence date>` (`timesheet/2026-10-30`): a restart never creates the same occurrence twice.
 
 If loomd was stopped over several occurrences, it creates only the latest one at its next start.
+
+With `policy = "skip"`, a task of the schedule whose `task.md` is invalid counts as open: the schedule creates nothing until the file is fixed (`loom reindex` lists invalid files).
 
 ## Stop a schedule
 

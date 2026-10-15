@@ -1,6 +1,7 @@
 use jiff::ToSpan as _;
 use loom_api::{Importance, Kind, Relations, Task, Timestamp as TaskTimestamp};
 use loom_config::config::parse_config;
+use loom_config::machine::MachineName;
 use loom_store::port::ContentHash;
 use std::path::Path;
 
@@ -349,4 +350,20 @@ fn an_invalid_task_file_keeps_its_occurrence_and_counts_as_open() {
         created(&plan(&context(), &stack, &[other], date("2026-10-16"))),
         Some((date("2026-10-16"), &[][..]))
     );
+}
+
+fn machine(name: &str) -> MachineName {
+    name.parse().unwrap()
+}
+
+#[test]
+fn schedules_run_on_the_first_machine_of_the_context() {
+    let both = [machine("laptop"), machine("tower")];
+    assert_eq!(runner(Some(&both), &machine("laptop")), Runner::This);
+    assert_eq!(
+        runner(Some(&both), &machine("tower")),
+        Runner::Other(machine("laptop"))
+    );
+    // Without `machines`, every machine holds the context: each one runs its schedules.
+    assert_eq!(runner(None, &machine("tower")), Runner::Unpinned);
 }

@@ -9,6 +9,7 @@
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use loom_api::{ContextName, Date, ExternalRef, Link, NewTask, Status, TaskId};
+use loom_config::machine::MachineName;
 use loom_config::schedules::Schedule;
 use loom_core::{
     PolicyDecision, SCHEDULE_PROVIDER, apply_policy, due_occurrence, occurrence_key,
@@ -143,6 +144,30 @@ fn new_task(context: &ContextName, schedule: &Schedule, occurrence: Date) -> New
             url: None,
         })],
         relations: loom_api::Relations::default(),
+    }
+}
+
+/// Which machine runs the schedules of a context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Runner {
+    /// This one: the first of the context's `machines`.
+    This,
+    /// Another one, the first of its `machines`: this machine does not run them.
+    Other(MachineName),
+    /// Every machine that holds the context, `machines` being absent: two machines would both
+    /// create each occurrence.
+    Unpinned,
+}
+
+/// Which machine runs the schedules of a context with `machines`, as seen from machine `this`.
+///
+/// The first of `machines`: two machines would both create each occurrence, then sync both.
+#[must_use]
+pub fn runner(machines: Option<&[MachineName]>, this: &MachineName) -> Runner {
+    match machines.and_then(<[MachineName]>::first) {
+        None => Runner::Unpinned,
+        Some(first) if first == this => Runner::This,
+        Some(first) => Runner::Other(first.clone()),
     }
 }
 

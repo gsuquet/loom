@@ -148,7 +148,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         MachineId(machine.as_str().to_owned()),
     )
     .wrap_err("cannot start the task store")?;
-    let schedule_thread = schedules::start(&config, &stores.held, task_handle.clone())?;
+    let schedule_thread = schedules::start(&config, &stores.held, &machine, task_handle.clone())?;
     let (sync_thread, sync_handle) = store_sync::start(
         store_sync::Stores {
             machine: machine.as_str().to_owned(),
