@@ -16,6 +16,8 @@ hyper-util.workspace = true
 jiff = { workspace = true, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 loom-api.workspace = true
 loom-config.workspace = true
+# `parse_task_md`: `loom edit` checks the saved file before loomd reads it.
+loom-core.workspace = true
 # `find_root` and the context rules: resolution of `<repo>` and `loom repo doctor`.
 loom-repo.workspace = true
 loom-telemetry.workspace = true

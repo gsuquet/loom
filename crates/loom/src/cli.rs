@@ -10,7 +10,7 @@ use loom_api::{
 };
 use semver::Version;
 
-use crate::task::{FormatArg, ImportanceArg, KindArg, task_prefix};
+use crate::task::{Assignment, FormatArg, ImportanceArg, KindArg, assignment, task_prefix};
 
 /// Build information, computed once for `--version` and `loom version`;
 /// `LOOM_TEST_BUILD_VERSION` replaces the version in a debug build (test hook).
@@ -127,6 +127,22 @@ pub enum Command {
     /// Show a task: its fields and notes. `ID` is a task ID or a unique prefix of one, of any
     /// context.
     Show(ShowArgs),
+    /// Change fields of a task: `key=value` pairs among `title`, `kind`, `format` (with
+    /// `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`) and
+    /// `pinned` (`yes` or `no`).
+    Set(SetArgs),
+    /// Mark a task done.
+    Done(TaskArgs),
+    /// Cancel a task.
+    Cancel(TaskArgs),
+    /// Put a task in `waiting` until a date: hidden from the priority list until then.
+    Snooze(SnoozeArgs),
+    /// Revert the last change of a task (an edit, a status change, a pin, a hand edit, an
+    /// undo). Undoing an undo redoes the change.
+    Undo(TaskArgs),
+    /// Open the `task.md` of a task in `VISUAL`, `EDITOR` or `vi`. loomd records the changes as
+    /// an edit; an invalid file is reported and kept as saved.
+    Edit(EditArgs),
     /// Rebuild the tasks index from the task files of every context store.
     ///
     /// The files are the source of truth: rows of tasks whose directory is gone are dropped,
@@ -327,6 +343,56 @@ pub struct ShowArgs {
     /// Print the task as JSON (`TaskDetail` schema).
     #[arg(long)]
     pub json: bool,
+}
+
+/// A task, for the gestures on one task.
+#[derive(Debug, clap::Args)]
+pub struct TaskArgs {
+    /// Task ID, or a unique prefix of one.
+    #[arg(value_name = "ID", value_parser = task_prefix)]
+    pub id: String,
+    /// Print the task as JSON (`TaskDetail` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom set`.
+#[derive(Debug, clap::Args)]
+pub struct SetArgs {
+    /// Task ID, or a unique prefix of one.
+    #[arg(value_name = "ID", value_parser = task_prefix)]
+    pub id: String,
+    /// Changes, as `key=value`.
+    #[arg(value_name = "KEY=VALUE", required = true, num_args = 1.., value_parser = assignment)]
+    pub assignments: Vec<Assignment>,
+    /// Print the task as JSON (`TaskDetail` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom snooze`.
+#[derive(Debug, clap::Args)]
+pub struct SnoozeArgs {
+    /// Task ID, or a unique prefix of one.
+    #[arg(value_name = "ID", value_parser = task_prefix)]
+    pub id: String,
+    /// Until when: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`.
+    #[arg(value_name = "UNTIL")]
+    pub until: String,
+    /// Who or what the task waits on.
+    #[arg(long, value_name = "WHO")]
+    pub on: Option<String>,
+    /// Print the task as JSON (`TaskDetail` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom edit`.
+#[derive(Debug, clap::Args)]
+pub struct EditArgs {
+    /// Task ID, or a unique prefix of one.
+    #[arg(value_name = "ID", value_parser = task_prefix)]
+    pub id: String,
 }
 
 /// Statuses accepted by `loom ls --status`.
@@ -710,6 +776,12 @@ mod tests {
             | Command::Add(_)
             | Command::Ls(_)
             | Command::Show(_)
+            | Command::Set(_)
+            | Command::Done(_)
+            | Command::Cancel(_)
+            | Command::Snooze(_)
+            | Command::Undo(_)
+            | Command::Edit(_)
             | Command::Reindex(_)
             | Command::Sync(_)
             | Command::ShellInit(_)

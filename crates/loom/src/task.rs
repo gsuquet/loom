@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use jiff::Span;
 use loom_api::{
     ContentFormat, ContextAssignment, ContextName, Date, Importance, Kind, NewTask, RankReason,
-    Relations, Status, TaskDetail, TaskId, TaskReadOnly, TaskSummary,
+    Relations, Status, TaskDetail, TaskEdit, TaskId, TaskReadOnly, TaskSummary,
 };
 use thiserror::Error;
 
@@ -547,6 +547,238 @@ pub fn render_detail(detail: &TaskDetail) -> String {
     out
 }
 
+/// One `key=value` of `loom set`, as typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assignment {
+    /// The key.
+    pub key: SetKey,
+    /// The value, as typed.
+    pub value: String,
+}
+
+/// Keys of `loom set`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SetKey {
+    /// `title`.
+    Title,
+    /// `kind`.
+    Kind,
+    /// `format`, of a `content` task.
+    Format,
+    /// `importance`.
+    Importance,
+    /// `due`: a date, or `none`.
+    Due,
+    /// `parent`: an ID or prefix, or `none`.
+    Parent,
+    /// `pinned`: `yes` or `no`.
+    Pinned,
+}
+
+impl SetKey {
+    const ALL: [(&'static str, Self); 7] = [
+        ("title", Self::Title),
+        ("kind", Self::Kind),
+        ("format", Self::Format),
+        ("importance", Self::Importance),
+        ("due", Self::Due),
+        ("parent", Self::Parent),
+        ("pinned", Self::Pinned),
+    ];
+
+    /// Name of the key.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(_, key)| *key == self)
+            .map_or("", |(name, _)| name)
+    }
+}
+
+/// Parses one `key=value` of `loom set`; used as a `clap` value parser, so a bad one is a usage
+/// error. The value is checked by [`set_plan`].
+///
+/// # Errors
+///
+/// A message naming the argument.
+pub fn assignment(text: &str) -> Result<Assignment, String> {
+    let names = || {
+        SetKey::ALL
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (key, value) = text
+        .split_once('=')
+        .ok_or_else(|| format!("{text:?} is not key=value (keys: {})", names()))?;
+    let key = SetKey::ALL
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, key)| *key)
+        .ok_or_else(|| format!("unknown key {key:?} (keys: {})", names()))?;
+    Ok(Assignment {
+        key,
+        value: value.to_owned(),
+    })
+}
+
+/// What `loom set` changes: the `PATCH` fields, the parent (resolved by the caller against the
+/// task's relations), and the pin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SetPlan {
+    /// Fields of `PATCH /v1/tasks/{id}`, the relations left out.
+    pub edit: TaskEdit,
+    /// `Some(None)`: remove the parent; `Some(Some(prefix))`: set it.
+    pub parent: Option<Option<String>>,
+    /// `pin` or `unpin`.
+    pub pinned: Option<bool>,
+}
+
+/// Why `loom set` cannot apply its arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SetError {
+    /// A key is given twice.
+    #[error("{0} is given twice")]
+    Repeated(&'static str),
+    /// A value is invalid for its key.
+    #[error("invalid {key}: {reason}")]
+    Invalid {
+        /// The key.
+        key: &'static str,
+        /// Why.
+        reason: String,
+    },
+    /// `format` without `kind=content`.
+    #[error("format applies with kind=content only: set both")]
+    FormatWithoutContent,
+}
+
+/// The changes of `loom set`, dates relative to `today`.
+///
+/// # Errors
+///
+/// [`SetError`] for a repeated key, an invalid value, or `format` without `kind=content`.
+pub fn set_plan(assignments: &[Assignment], today: Date) -> Result<SetPlan, SetError> {
+    let mut seen = Vec::new();
+    let mut plan = SetPlan::default();
+    let mut kind = None;
+    let mut format = None;
+    for Assignment { key, value } in assignments {
+        if seen.contains(key) {
+            return Err(SetError::Repeated(key.name()));
+        }
+        seen.push(*key);
+        let invalid = |reason: String| SetError::Invalid {
+            key: key.name(),
+            reason,
+        };
+        let choice = |values: &[&str]| format!("expected one of {}", values.join(", "));
+        match key {
+            SetKey::Title => plan.edit.title = Some(value.clone()),
+            SetKey::Kind => {
+                kind = Some(
+                    <KindArg as clap::ValueEnum>::from_str(value, false)
+                        .map_err(|_| invalid(choice(&KIND_NAMES)))?,
+                );
+            }
+            SetKey::Format => {
+                format = Some(
+                    <FormatArg as clap::ValueEnum>::from_str(value, false).map_err(|_| {
+                        invalid(choice(&["talk", "article", "training", "workshop"]))
+                    })?,
+                );
+            }
+            SetKey::Importance => {
+                let importance = <ImportanceArg as clap::ValueEnum>::from_str(value, false)
+                    .map_err(|_| invalid(choice(&["p0", "p1", "p2", "p3"])))?;
+                plan.edit.importance = Some(importance.into());
+            }
+            SetKey::Due => {
+                plan.edit.due = Some(if value == "none" {
+                    None
+                } else {
+                    Some(parse_date(value, today).map_err(|error| invalid(error.to_string()))?)
+                });
+            }
+            SetKey::Parent => {
+                plan.parent = Some(if value == "none" {
+                    None
+                } else {
+                    Some(task_prefix(value).map_err(invalid)?)
+                });
+            }
+            SetKey::Pinned => {
+                plan.pinned = Some(match value.as_str() {
+                    "yes" | "true" => true,
+                    "no" | "false" => false,
+                    _ => return Err(invalid(choice(&["yes", "no"]))),
+                });
+            }
+        }
+    }
+    match (kind, format) {
+        (Some(kind), None) => plan.edit.kind = Some(kind_of(kind, None)),
+        (Some(KindArg::Content), Some(format)) => {
+            plan.edit.kind = Some(kind_of(KindArg::Content, Some(format)));
+        }
+        (None, None) => {}
+        (Some(_) | None, Some(_)) => return Err(SetError::FormatWithoutContent),
+    }
+    Ok(plan)
+}
+
+/// Names of [`KindArg`], for messages.
+const KIND_NAMES: [&str; 11] = [
+    "story",
+    "bug",
+    "chore",
+    "research",
+    "investigation",
+    "review",
+    "support",
+    "content",
+    "admin",
+    "interview",
+    "learning",
+];
+
+/// The relations of a task with `parent` as its parent, the others kept.
+#[must_use]
+pub fn with_parent(relations: &Relations, parent: Option<TaskId>) -> Relations {
+    Relations {
+        parent,
+        ..relations.clone()
+    }
+}
+
+/// The line a task gesture prints: prefix, context, status and title.
+#[must_use]
+pub fn render_change(detail: &TaskDetail) -> String {
+    let summary = &detail.summary;
+    match &summary.task {
+        Some(task) => format!(
+            "{} {} {} {}\n",
+            summary.prefix,
+            summary.context,
+            status_text(&task.status),
+            task.title
+        ),
+        None => format!("{} {}\n", summary.prefix, summary.context),
+    }
+}
+
+/// The editor of `loom edit`: `VISUAL`, then `EDITOR`, then `vi`; an empty value is unset.
+#[must_use]
+pub fn editor(visual: Option<&str>, editor: Option<&str>) -> String {
+    visual
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| editor.filter(|value| !value.trim().is_empty()))
+        .unwrap_or("vi")
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,5 +1096,104 @@ mod tests {
         let text = render_detail(&detail);
         assert!(text.starts_with("id:         k3q7zm2a (k3q7)\ncontext:    work\ntitle:      Login timeout\nkind:       bug\nstatus:     active\nimportance: p1\ndue:        2026-10-15\n"), "{text}");
         assert!(text.ends_with("\n\n## Notes\n\nRepro on iOS.\n"), "{text}");
+    }
+
+    fn plan(args: &[&str]) -> Result<SetPlan, SetError> {
+        let assignments: Vec<Assignment> =
+            args.iter().map(|arg| assignment(arg).unwrap()).collect();
+        set_plan(&assignments, date("2026-10-14"))
+    }
+
+    #[test]
+    fn set_reads_key_value_pairs() {
+        assert!(assignment("title").is_err());
+        assert!(
+            assignment("colour=red")
+                .unwrap_err()
+                .contains("unknown key")
+        );
+        let set = plan(&[
+            "title=Login timeout = 30 s",
+            "importance=p0",
+            "due=+3d",
+            "parent=k3q7",
+            "pinned=yes",
+            "kind=content",
+            "format=talk",
+        ])
+        .unwrap();
+        assert_eq!(set.edit.title.as_deref(), Some("Login timeout = 30 s"));
+        assert_eq!(set.edit.importance, Some(Importance::P0));
+        assert_eq!(set.edit.due, Some(Some(date("2026-10-17"))));
+        assert_eq!(
+            set.edit.kind,
+            Some(Kind::Content {
+                format: Some(ContentFormat::Talk)
+            })
+        );
+        assert_eq!(set.parent, Some(Some("k3q7".to_owned())));
+        assert_eq!(set.pinned, Some(true));
+        assert_eq!(set.edit.relations, None);
+
+        let cleared = plan(&["due=none", "parent=none", "pinned=no"]).unwrap();
+        assert_eq!(cleared.edit.due, Some(None));
+        assert_eq!(cleared.parent, Some(None));
+        assert_eq!(cleared.pinned, Some(false));
+    }
+
+    #[test]
+    fn set_refuses_repeats_bad_values_and_a_lone_format() {
+        assert_eq!(
+            plan(&["due=today", "due=none"]),
+            Err(SetError::Repeated("due"))
+        );
+        for bad in [
+            "importance=p9",
+            "due=soon",
+            "parent=a/b",
+            "pinned=maybe",
+            "kind=epic",
+        ] {
+            assert!(
+                matches!(plan(&[bad]), Err(SetError::Invalid { .. })),
+                "{bad}"
+            );
+        }
+        assert_eq!(plan(&["format=talk"]), Err(SetError::FormatWithoutContent));
+        assert_eq!(
+            plan(&["kind=bug", "format=talk"]),
+            Err(SetError::FormatWithoutContent)
+        );
+    }
+
+    #[test]
+    fn a_new_parent_keeps_the_other_relations() {
+        let blocked: TaskId = "bbbbbbbb".parse().unwrap();
+        let relations = Relations {
+            parent: None,
+            spawned_from: Vec::new(),
+            blocks: vec![blocked.clone()],
+        };
+        let parent: TaskId = "k3q7zm2a".parse().unwrap();
+        let moved = with_parent(&relations, Some(parent.clone()));
+        assert_eq!(moved.parent, Some(parent));
+        assert_eq!(moved.blocks, [blocked]);
+    }
+
+    #[test]
+    fn the_editor_is_visual_then_editor_then_vi() {
+        assert_eq!(editor(Some("code --wait"), Some("nano")), "code --wait");
+        assert_eq!(editor(Some(" "), Some("nano")), "nano");
+        assert_eq!(editor(None, None), "vi");
+    }
+
+    #[test]
+    fn a_gesture_prints_one_line() {
+        let detail = TaskDetail {
+            summary: summary("k3q7zm2a", "Login timeout", None),
+            body: String::new(),
+            actions: Vec::new(),
+        };
+        assert_eq!(render_change(&detail), "k3q7 work active Login timeout\n");
     }
 }

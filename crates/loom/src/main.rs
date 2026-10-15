@@ -185,6 +185,12 @@ const fn registers_on_use(command: &Command) -> bool {
         | Command::Add(_)
         | Command::Ls(_)
         | Command::Show(_)
+        | Command::Set(_)
+        | Command::Done(_)
+        | Command::Cancel(_)
+        | Command::Snooze(_)
+        | Command::Undo(_)
+        | Command::Edit(_)
         | Command::Reindex(_)
         | Command::Sync(_)
         | Command::Version { .. }
@@ -221,6 +227,12 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Add(args) => task_cmd::add(args, &cli.global, &layout()?),
         Command::Ls(args) => task_cmd::ls(args, &cli.global, &layout()?),
         Command::Show(args) => task_cmd::show(args, &layout()?),
+        Command::Set(args) => task_cmd::set(args, &layout()?),
+        Command::Done(args) => task_cmd::status(args, "done", &layout()?),
+        Command::Cancel(args) => task_cmd::status(args, "cancelled", &layout()?),
+        Command::Snooze(args) => task_cmd::snooze(args, &layout()?),
+        Command::Undo(args) => task_cmd::undo(args, &layout()?),
+        Command::Edit(args) => task_cmd::edit(args, &layout()?),
         Command::Reindex(args) => reindex_cmd::run(args, &layout()?),
         Command::Sync(args) => sync_cmd::run(args, &cli.global, &layout()?),
         Command::UpgradeWatchdog(args) => {
