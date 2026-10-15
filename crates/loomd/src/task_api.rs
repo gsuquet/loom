@@ -137,8 +137,11 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
                 .collect(),
         };
     }
+    // An archived task is never ranked, even reopened by hand: `archived` with `ranked` lists
+    // nothing.
     let tasks: Vec<Task> = kept
         .iter()
+        .filter(|row| row.location == TaskLocation::Active)
         .filter_map(|row| task_of(row).cloned())
         .collect();
     let by_id: HashMap<&TaskId, &IndexedTask> = kept.iter().map(|row| (&row.id, *row)).collect();

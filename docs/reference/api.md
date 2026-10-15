@@ -183,7 +183,7 @@ Reads (`GET /v1/tasks`, `GET /v1/tasks/{id}`) use a read connection to the index
 | `context` | Only the tasks of this context. A context without a store gives an empty list. |
 | `status` | Only the tasks with this status: `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled`. Tasks with an invalid `task.md` or an unknown status are left out. |
 | `ranked` | `true`: the priority list, in its order, each task with its `rank`. `false` (default): every task, sorted by ID. |
-| `archived` | `true`: the archived tasks (in `archive/<yyyy>/`) only, instead of the others. `false` (default): the tasks of `tasks/` only. Archived tasks are never in the priority list. |
+| `archived` | `true`: the archived tasks (in `archive/<yyyy>/`) only, instead of the others. `false` (default): the tasks of `tasks/` only. Archived tasks are never in the priority list: `archived=true` with `ranked=true` gives an empty list. |
 
 The priority list holds the `ready` and `active` tasks, and the `waiting` tasks whose `until` is today or past; `inbox`, `done`, `cancelled`, unknown statuses and invalid files are never in it. Order, each rule breaking the ties of the previous one: pinned first; overdue or due today first, earliest due date first; importance, `p0` first; due date, earliest first, none last; oldest `created` first; ID. "Today" is the local date of `loomd` (`TZ`, otherwise `/etc/localtime`), read at each request. With `context` or `status`, the list is the priority list of the tasks they keep.
 

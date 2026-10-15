@@ -193,6 +193,11 @@ fn archived_tasks_are_listed_apart_and_never_ranked() {
     };
     // Prefixes stay unique across every task.
     assert_eq!(ids(&only_archived), ["k3r00000:k3r", "k3s00000:k3s"]);
+    let ranked_archived = TaskFilter {
+        ranked: true,
+        ..only_archived.clone()
+    };
+    assert_eq!(ids(&ranked_archived), [] as [&str; 0]);
     let done = TaskFilter {
         status: Some(StatusName::Done),
         ..only_archived
