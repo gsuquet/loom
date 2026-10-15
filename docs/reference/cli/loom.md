@@ -380,7 +380,7 @@ loom repo help [COMMAND]
 
 Search the tasks (title, notes, link keys) and the indexed repositories (name, slug, path, remote URL, context, branch).
 
-Every word of the query must start a word of the result (case and diacritics ignored). Results are ranked: active, ready and waiting tasks, then repositories, then inbox tasks, then done and cancelled tasks. Among tasks: the query as a link key (`CORE-1042`), then every word in the title, then most recently changed. Among repositories: exact name, then name prefix, then slug, then the other fields, and then most recently used. `-c` keeps one context, `--type` one kind. Starts loomd if it is stopped.
+Every word of the query must start a word of the result (case and diacritics ignored). Results are ranked: active, ready and waiting tasks, then repositories, then inbox tasks, then done and cancelled tasks. Among tasks: the query as a link key (`CORE-1042`), then every word in the title, then most recently changed. Among repositories: exact name, then name prefix, then slug, then the other fields. In each rank, the most recently used comes first. `-c` keeps one context, `--type` one kind. Starts loomd if it is stopped.
 
 ```text
 loom search [OPTIONS] <QUERY>...

@@ -32,7 +32,7 @@ pub struct EventLog {
 pub struct SkippedLine {
     /// Line number, from 1.
     pub line: usize,
-    /// The line as written, without its line end.
+    /// The line as written, without its line ending.
     pub raw: String,
     /// Why it is not replayed.
     pub reason: SkipReason,

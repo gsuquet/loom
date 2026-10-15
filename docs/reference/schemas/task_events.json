@@ -738,7 +738,7 @@
           "minimum": 0
         },
         "raw": {
-          "description": "The line as written, without its line end.",
+          "description": "The line as written, without its line ending.",
           "type": "string"
         },
         "reason": {
