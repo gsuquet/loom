@@ -51,9 +51,9 @@ The repository index is `<loom home>/index.db` (see [configuration](configuratio
 | `context` | Only the repositories of this context. A context name (the rule of `-c`), or `unassigned`. |
 | `query` | Only the repositories whose name, slug, path, remote URLs or context contain this text, ASCII case ignored. Plain substring: `%` and `_` match themselves. |
 
-Repositories are sorted by slug.
+`loomd` sorts the repositories by slug.
 
-`/v1/repos/{context}/{name}` addresses a repository by its slug `<context>/<name>`. The two parts of the slug are two path segments (`/v1/repos/personal/loom-2` for the slug `personal/loom-2`). The client percent-encodes the characters outside the URL path syntax.
+`/v1/repos/{context}/{name}` addresses a repository by its slug `<context>/<name>`. The two parts of the slug are two path segments (`/v1/repos/personal/loom-2` for the slug `personal/loom-2`). A client must percent-encode the characters outside the URL path syntax.
 
 `GET /v1/repos/{context}/{name}` takes this query parameter, which is optional. Any other parameter is an `invalid_request`:
 
@@ -64,7 +64,7 @@ Repositories are sorted by slug.
 `POST /v1/repos/scan` walks the roots (`[repos] roots`, then every `match.paths`, `~` expanded with `HOME`). It also reads every registered repository in place. Then it applies the changes to the index in one transaction:
 
 - The scan adds a repository that it finds, or updates it when its identity changed (remotes, context, forge or slug).
-- The scan removes a repository that it no longer finds under a scanned root. If an error hides the repository, the scan keeps it. Such an error is an unreadable directory above the repository, or an unreadable `.git` or config. The scan keeps the repositories under other roots.
+- The scan removes a repository that it no longer finds under a scanned root. If an error hides the repository, the scan keeps it. Such an error is an unreadable directory above the repository, or an unreadable `.git` or config. The scan keeps a repository that is not under a scanned root.
 - The scan keeps a registered repository while its `.git` exists, also when it is deeper than `max_depth`, excluded, or outside the roots. When its `.git` is gone, the scan removes it.
 - The scan computes the contexts of every repository again, so the slugs follow a rule change.
 
@@ -79,7 +79,7 @@ Scans run one at a time. A plain scan request has neither parameter `true`. If a
 
 `POST /v1/repos/register` takes a [`RegisterRequest`](#registerrequest). The repository is the path itself, or its nearest ancestor with a `.git` entry (directory, file or symbolic link). `loomd` keeps the symbolic links in the path. It identifies the repository like a scanned repository, adds or updates it, and marks it `registered`. A repository already indexed keeps its slug while its context and name do not change. Otherwise, it gets `<context>/<name>`, or the lowest free `<context>/<name>-N` (N ≥ 2).
 
-`on_use: true` is a registration on use, which `loom` sends. With `on_use: true`, `loomd` does not change a repository already in the index: it does not read it again or mark it `registered`. It sets only its `last_used` to now. `loomd` finds the repository by its path. Otherwise, it finds it by canonical path among the repositories with the same directory name (the same directory through other symbolic links). A repository not in the index is registered as above, then gets its `last_used`.
+`on_use: true` is a registration on use, which `loom` sends. With `on_use: true`, if the repository is already in the index, `loomd` only sets its `last_used` to now. It does not read the repository again and does not mark it `registered`. `loomd` looks for the repository by its path. If no repository of the index has this path, `loomd` looks for one with the same directory name and the same canonical path (the same directory through other symbolic links). A repository not in the index is registered as above, then gets its `last_used`.
 
 `DELETE /v1/repos/{context}/{name}` removes the repository from the index, registered or not. A scan adds a repository found under a root again.
 
@@ -104,7 +104,7 @@ Except on `?refresh=true`, `loomd` reads the states in the background. It uses a
 | First update | At once for a repository never updated (within a second of the scan that indexed it); otherwise one interval after its `last_update`. |
 | Interval | `[repos] fetch_interval` (default 1 hour) after the end of the previous update, ±10 % at random. `loomd` reads the index again every 10 seconds to find new repositories. |
 | Concurrency | At most `[repos] fetch_concurrency` updates at once (default 4, at most 64). |
-| Backoff | After a failed fetch, the next update of the repository waits 2, 4, then 8 times the interval (never more). The factor follows the count of consecutive failures. The host of a repository is the `host[:port]` of its primary remote, or its URL for a local path. Every repository of the same host waits as long, unless a fetch of that host that started earlier succeeded in the meantime. A successful fetch clears the host's backoff. Other hosts are not affected. A fetch that found a lock of another git process (`busy`) does not cause a backoff and does not count as a failure. The next update is then one interval later. |
+| Backoff | After a failed fetch, the next update of the repository waits 2, 4, then 8 times the interval (never more). The factor doubles with each consecutive failure. The host of a repository is the `host[:port]` of its primary remote, or its URL for a local path. Every repository of the same host waits as long, unless a fetch of that host that started earlier succeeded in the meantime. A successful fetch clears the host's backoff. Other hosts are not affected. A fetch that found a lock of another git process (`busy`) does not cause a backoff and does not count as a failure. The next update is then one interval later. |
 | Policy | `[repos."<path>"] update`, otherwise the context's `update`, otherwise `ff`; `fetch` for an `unassigned` repository without `[repos."<path>"] update`. |
 | git commands | `git fetch --no-prune --no-prune-tags --no-tags <primary>` (timeout 120 s; `loomd` fetches no tag, whatever `fetch.pruneTags`, `remote.<name>.pruneTags` or `remote.<name>.tagOpt` say); `git merge --ff-only --no-autostash <commit>` (10 min); `git fetch --no-prune --no-prune-tags --no-tags <primary> <merge ref>:refs/heads/<default branch>` (120 s). At the timeout, `loomd` sends `SIGTERM` to the process group of the command, then `SIGKILL` 5 s later. If a command fails only because another git process holds a lock of the repository (`Unable to create '….lock': File exists`, `cannot lock ref '…': is at … but expected …`), the skip reason is `busy`. `loomd` never removes the lock. |
 | git environment | `loomd`'s environment and the user's git configuration and hooks, plus `GIT_TERMINAL_PROMPT=0`, `GIT_CEILING_DIRECTORIES=<parent of the working tree>`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` unless `core.sshCommand` (read with `git config --get`), `GIT_SSH_COMMAND` or `GIT_SSH` is set; `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE` and `GIT_PREFIX` removed. |
@@ -139,7 +139,7 @@ If an update of a repository is in progress, `loomd` updates the repository agai
 The rules of the match:
 
 - The searched fields of a task are its title, its notes and the keys of its origin and related links (`CORE-1042`, `!88`). When its `task.md` is invalid, the notes are the whole file. The searched fields of a repository are its name, slug, path, remote URLs, context name and branch. The branch is the branch that `HEAD` is on in its stored [state](#repostate), also when it is unborn. The branch is empty when `HEAD` is detached or the state is not read yet.
-- Each character that is not a letter or a digit splits a field into words. For example, `loom-api` is `loom` and `api`, `CORE-1042` is `core` and `1042`, and `!88` is `88`. Case and diacritics are ignored: `cafe` finds `Café`, `viet` finds `Việt`.
+- Each character that is not a letter or a digit splits a field into words. For example, `loom-api` is `loom` and `api`, `CORE-1042` is `core` and `1042`, and `!88` is `88`. The search ignores case and diacritics: `cafe` finds `Café`, `viet` finds `Việt`.
 - A result matches when every word of the query starts a word of one of its fields, not necessarily the same field. The search ignores a query word that has only punctuation. A query without words returns no result.
 - Query words are text only. The characters `"`, `*`, `:`, `(`, `)`, `^`, `-`, `+`, `{`, `}` are word separators. `AND`, `OR`, `NOT` and `NEAR` are words to find.
 
@@ -150,9 +150,9 @@ Results are ranked by group first:
 3. Tasks `inbox`, tasks whose status was written by a newer loom, and tasks whose `task.md` is invalid.
 4. Tasks `done` and `cancelled`.
 
-Within a group, the tasks are ranked by these keys, in order:
+Within a group, the search ranks the tasks by these keys, in order:
 
-1. How the task matches, in this order:
+1. How the task matches, in this order, best first:
    1. The query is one of its link keys, case ignored (such as `core-1042` for `CORE-1042`).
    2. Every query word starts a word of its title.
    3. Other cases.
@@ -160,9 +160,9 @@ Within a group, the tasks are ranked by these keys, in order:
 3. Full-text relevance (SQLite FTS5 `bm25`), most relevant first.
 4. ID.
 
-The repositories are ranked by these keys, in order:
+The search ranks the repositories by these keys, in order:
 
-1. How the repository matches, in this order:
+1. How the repository matches, in this order, best first:
    1. Its name is the query: the same words, in order (such as `loom-api` for `loom api`).
    2. Every query word starts a word of its name.
    3. Every query word starts a word of its slug.
@@ -177,9 +177,9 @@ The repositories are ranked by these keys, in order:
 
 The tasks are files in the context stores (see [configuration](configuration.md#context-stores)). `loomd` indexes them in `<loom home>/index.db`. It reconciles them with the index when it starts and when their files change. The reconciliation records the hand edits (see [context stores](configuration.md#context-stores)).
 
-`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction. When the index is written, it answers with a [`ReindexResult`](#reindexresult). The rebuild drops the rows of tasks whose directory is gone. It indexes an invalid `task.md` as read-only and lists it, but never writes it again. The rebuild does not change the repositories of the index.
+`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction. When `loomd` has written the index, it answers with a [`ReindexResult`](#reindexresult). The rebuild drops the rows of tasks whose directory is gone. It indexes an invalid `task.md` as read-only and lists it, but never writes it again. The rebuild does not change the repositories of the index.
 
-Before the rebuild, `loomd` reconciles every task: a hand edit not recorded yet gets its `edited` event first. Thus a reindex can append events, and the rebuild never hides an edit. The reconciliation or the rebuild can fail to read the files of a task (permissions, I/O), or fail to list the `tasks/` of a store. `failed` lists such a task or store, and its rows stay as they were. The other tasks are indexed. Only a failure to write the index answers `500 internal`, and the index then stays unchanged.
+Before the rebuild, `loomd` reconciles every task: a hand edit not recorded yet gets its `edited` event first. Thus a reindex can append events, and the rebuild never hides an edit. The reconciliation or the rebuild can fail to read the files of a task (permissions, I/O), or fail to list the `tasks/` of a store. `failed` lists such a task or store, and its rows stay as they were. `loomd` indexes the other tasks. Only a failure to write the index answers `500 internal`, and the index then stays unchanged.
 
 #### Task endpoints
 
@@ -196,7 +196,7 @@ Creations, edits, actions, undos and event reads run on the task thread, one at 
 | Parameter | Content |
 | --- | --- |
 | `context` | Only the tasks of this context. A context without a store gives an empty list. |
-| `status` | Only the tasks with this status: `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled`. Tasks with an invalid `task.md` or an unknown status are left out. |
+| `status` | Only the tasks with this status: `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled`. Tasks with an invalid `task.md` or an unknown status are not in the list. |
 | `ranked` | `true`: the priority list, in its order, each task with its `rank`. `false` (default): every task, sorted by ID. |
 
 The priority list holds the `ready` and `active` tasks, and the `waiting` tasks whose `until` is today or past. Tasks with the status `inbox`, `done`, `cancelled` or an unknown status, and invalid files, are never in it. The list has this order, and each rule breaks the ties of the previous rule:
@@ -347,7 +347,7 @@ Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `c
 | Duration | Unsigned integer of whole seconds; the field name ends in `_secs`. | `90` |
 | Path | String. Paths that are not valid UTF-8 cannot be serialized. | `"/run/user/1000/loom/loomd.sock"` |
 
-`VersionInfo.commit_date` is older than `Timestamp`. It is the git committer date with its original offset (`2026-10-12T10:00:00+02:00`), or `unknown`.
+`VersionInfo.commit_date` existed before the `Timestamp` type. It is the git committer date with its original offset (`2026-10-12T10:00:00+02:00`), or `unknown`.
 
 ### `StatusResponse`
 
@@ -491,7 +491,7 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
 
 The state of a repository (its card). `loomd` reads it with `gix`, does not start git, and does not write to the repository.
 
-Every field but `refreshed_at` and `error` is either `{"known": <value>}` or the string `"unknown"`. A field is unknown when its time budget ran out or when `loomd` could not read it. `error` then gives the reason. A known `null` (`{"known": null}`) is a value: no operation, no upstream, and so on.
+Every field but `refreshed_at` and `error` is either `{"known": <value>}` or the string `"unknown"`. A field is unknown when its time budget ended or when `loomd` could not read it. `error` then gives the reason. A known `null` (`{"known": null}`) is a value: no operation, no upstream, and so on.
 
 The status walk (`dirty`), the untracked count and the ahead/behind counts share a time budget of 2 seconds per repository. The budget starts at the start of the read. A value not computed in time is unknown, and `loomd` still reads the other fields. The git configuration of the user (`HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_*`) and of the system applies (`core.excludesFile`, `status.renames`, `core.abbrev`…). The configuration of the git installation, which only git itself can find, does not apply.
 
@@ -537,7 +537,7 @@ The result of the last update of a repository, scheduled or requested.
 
 | `kind` | Other fields | Meaning |
 | --- | --- | --- |
-| `fetched` | | The primary remote was fetched. The branch `HEAD` is on had no new commit to receive, or the policy is `fetch`. |
+| `fetched` | | The primary remote was fetched. The branch of `HEAD` was not behind its upstream, or the policy is `fetch`. |
 | `fast_forwarded` | `branch`, `from`, `to` (full commit ids) | The branch `HEAD` is on was fast-forwarded. |
 | `default_branch_moved` | `branch`, `from`, `to` | The local default branch, checked out in no working tree, was fast-forwarded. |
 | `skipped` | `reason` | A step was not done (below). |
@@ -619,7 +619,7 @@ A repository (`kind` `repo`, the v0.2 shape):
 | `name` | string | Directory name of the repository. |
 | `context` | string | Context name, `unassigned` for a repository without context. |
 | `path` | string | Absolute path of the repository. |
-| `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. Only one of the sort keys: the order of `results` is the final order. |
+| `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. Only one of the keys that rank the results: the order of `results` is the final order. |
 | `matched_fields` | list of strings | Fields that hold at least one query word: `name`, `slug`, `path`, `remotes`, `context`, `branch`, in this order. |
 
 A task (`kind` `task`):
@@ -747,7 +747,7 @@ Body of `POST /v1/tasks`.
 | `pinned` | boolean | no | Default `false`. |
 | `links`, `relations` | list, object | no | As in the [task file](task-file.md). |
 
-`loomd` draws the ID. No other task of any context has this ID.
+`loomd` draws the ID. No task of the index, in any context, has this ID.
 
 ### `TaskEdit`
 
@@ -924,7 +924,7 @@ Error returned instead of a response body.
 | `invalid_request` | The request is malformed: unparsable body, unknown or absent field, invalid value. | No: the same request fails the same way. |
 | `not_found` | The addressed resource or endpoint does not exist. | No. |
 | `version_mismatch` | The client asked for an API version the daemon does not serve. | No: upgrade the client or the daemon. |
-| `unavailable` | The daemon cannot serve the request right now: the daemon starts or stops, or a dependency is down. | Yes, later. |
+| `unavailable` | The daemon cannot serve the request right now, because it stops. | Yes, later. |
 | `internal` | The daemon failed while it handled a valid request: a bug or an unexpected I/O failure. | Not expected to help. |
 | `ambiguous_prefix` | A task ID prefix matches several tasks; `details` lists them. | With a longer prefix. |
 | `read_only` | The task cannot be changed: unknown kind, format or status, or an invalid `task.md`. | No: fix the file, or upgrade loom. |
