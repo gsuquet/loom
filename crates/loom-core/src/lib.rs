@@ -11,6 +11,7 @@ mod event;
 mod event_log;
 mod id;
 mod priority;
+mod relations;
 mod task;
 mod task_file;
 mod timestamp;
@@ -33,6 +34,7 @@ pub use id::{
 /// A calendar date, written `YYYY-MM-DD` (due dates, waits).
 pub use jiff::civil::Date;
 pub use priority::{RankReason, Ranked, rank};
+pub use relations::{ParentLink, ParentProblem, check_parent};
 pub use task::{
     ContentFormat, ExternalRef, Importance, Kind, Link, ReadOnlyReason, Relations, Status,
     StatusName, Task, is_legal_transition,

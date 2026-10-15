@@ -10,8 +10,8 @@ use std::path::Path;
 
 use loom_core::{
     Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
-    Importance, Link, NewTask, Origin, RandomSource, Status, Task, TaskDocument, TaskId, Timestamp,
-    apply, create, undo,
+    Importance, Link, NewTask, Origin, ParentLink, RandomSource, Status, Task, TaskDocument,
+    TaskId, Timestamp, apply, check_parent, create, undo,
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
@@ -276,6 +276,9 @@ impl<P: StorePort> Tasks<P> {
             .stores
             .get(&new.context)
             .ok_or_else(|| TaskError::UnknownContext(new.context.clone()))?;
+        if let Some(parent) = &new.relations.parent {
+            check_parent::<TaskError>(None, &new.context, parent, |id| self.parent_link(id))?;
+        }
         let taken = self.index.ids()?;
         let (task, events) = create(new, random, &taken, now, origin)?;
         store.create(&TaskWrite {
@@ -302,7 +305,47 @@ impl<P: StorePort> Tasks<P> {
         origin: &Origin,
         random: &mut impl RandomSource,
     ) -> Result<Task, TaskError> {
+        if let Command::Edit(edit) = &command
+            && let Some(parent) = edit.relations.as_ref().and_then(|r| r.parent.as_ref())
+        {
+            let row = self
+                .index
+                .get(id)?
+                .ok_or_else(|| TaskError::NotFound(id.clone()))?;
+            // Only a new parent is checked: an edit of the other relations resends the current
+            // one, which may have become invalid since (a hand edit), and must not be refused for
+            // it. A read-only task is left to `change`, which refuses it as such.
+            let current = match &row.state {
+                IndexedState::Valid { task, .. } if task.read_only_reason().is_none() => {
+                    Some(task.relations.parent.as_ref())
+                }
+                IndexedState::Valid { .. } | IndexedState::Invalid { .. } => None,
+            };
+            if let Some(current) = current
+                && current != Some(parent)
+            {
+                check_parent::<TaskError>(Some(id), &row.context, parent, |task| {
+                    self.parent_link(task)
+                })?;
+            }
+        }
         self.change(id, |_, _| Ok(command), now, origin, random)
+    }
+
+    /// The context and parent of task `id` as indexed; `None` when it is not indexed. An
+    /// invalid file has no known parent.
+    fn parent_link(&self, id: &TaskId) -> Result<Option<ParentLink>, TaskError> {
+        let Some(row) = self.index.get(id)? else {
+            return Ok(None);
+        };
+        let parent = match row.state {
+            IndexedState::Valid { task, .. } => task.relations.parent,
+            IndexedState::Invalid { .. } => None,
+        };
+        Ok(Some(ParentLink {
+            context: row.context,
+            parent,
+        }))
     }
 
     /// Reverts the last change of task `id` at `now`: the compensating command is computed

@@ -519,3 +519,128 @@ fn concurrent_changes_of_one_task_are_all_recorded() {
     assert_eq!(read.summary.task.unwrap().title, replayed.title);
     daemon.stop();
 }
+
+#[test]
+fn a_parent_is_a_task_of_the_same_context_and_never_a_descendant() {
+    let sandbox = Sandbox::new();
+    let _daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let new = |context: &str, parent: Option<&str>| {
+        let mut body = json!({
+            "title": "Task",
+            "kind": "chore",
+            "context": context,
+            "status": "inbox",
+        });
+        if let Some(parent) = parent {
+            body["relations"] = json!({ "parent": parent });
+        }
+        body
+    };
+    let root = create(&socket, &new("work", None)).summary.id;
+    let child = create(&socket, &new("work", Some(root.as_str())))
+        .summary
+        .id;
+
+    // Create: another context, an unknown task.
+    let refused = |body: &Value| {
+        let error = problem(&call(&socket, "POST", "/v1/tasks", Some(body)), 400);
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        error.message
+    };
+    let message = refused(&new("home", Some(root.as_str())));
+    assert!(message.contains("it is in context work"), "{message}");
+    let message = refused(&new("work", Some("zzzzzzzz")));
+    assert!(message.contains("no task has this ID"), "{message}");
+
+    // Edit: the task itself, its descendant.
+    let edit = |id: &str, parent: &str| {
+        call(
+            &socket,
+            "PATCH",
+            &format!("/v1/tasks/{id}"),
+            Some(&json!({ "relations": { "parent": parent } })),
+        )
+    };
+    for parent in [root.as_str(), child.as_str()] {
+        let error = problem(&edit(root.as_str(), parent), 400);
+        assert!(
+            error.message.contains("its own ancestor"),
+            "{}",
+            error.message
+        );
+    }
+    // A valid move is accepted.
+    let other = create(&socket, &new("work", None)).summary.id;
+    let moved: TaskDetail = ok(&edit(child.as_str(), other.as_str()));
+    assert_eq!(moved.summary.task.unwrap().relations.parent, Some(other));
+}
+
+/// A `task.md` of task `id` in `context` whose parent is `parent`, written by hand.
+fn task_md_with_parent(id: &str, context: &str, kind: &str, parent: &str) -> String {
+    format!(
+        "+++\nid = \"{id}\"\ntitle = \"Task {id}\"\nkind = \"{kind}\"\ncontext = \"{context}\"\nstatus = \"ready\"\nimportance = \"p3\"\ncreated = 2026-10-12T09:14:00Z\n\n[relations]\nparent = \"{parent}\"\n+++\n\n## Notes\n"
+    )
+}
+
+#[test]
+fn only_a_new_parent_is_checked_and_an_invalid_file_is_a_known_task() {
+    let sandbox = Sandbox::new();
+    // `aaaa` points by hand to a task of another context; `bbbb` has an invalid file;
+    // `cccc` has an unknown kind (read-only) and a parent in another context.
+    sandbox.write_task("home", "hhhhhhhh", &task_md("hhhhhhhh", "home", "ready"));
+    sandbox.write_task(
+        "work",
+        "aaaaaaaa",
+        &task_md_with_parent("aaaaaaaa", "work", "chore", "hhhhhhhh"),
+    );
+    sandbox.write_task("work", "bbbbbbbb", "not a task file\n");
+    sandbox.write_task(
+        "work",
+        "cccccccc",
+        &task_md_with_parent("cccccccc", "work", "epic", "hhhhhhhh"),
+    );
+    let _daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let patch =
+        |id: &str, body: Value| call(&socket, "PATCH", &format!("/v1/tasks/{id}"), Some(&body));
+
+    // The other relations change; the parent, already invalid, is resent as it is.
+    let kept: TaskDetail = ok(&patch(
+        "aaaaaaaa",
+        json!({ "relations": { "parent": "hhhhhhhh", "blocks": ["bbbbbbbb"] } }),
+    ));
+    let relations = kept.summary.task.unwrap().relations;
+    assert_eq!(relations.parent.unwrap().as_str(), "hhhhhhhh");
+    assert_eq!(relations.blocks.len(), 1);
+
+    // A task whose file is invalid is a known task of its context.
+    let child = create(
+        &socket,
+        &json!({
+            "title": "Child of an invalid file",
+            "kind": "chore",
+            "context": "work",
+            "status": "inbox",
+            "relations": { "parent": "bbbbbbbb" },
+        }),
+    );
+    assert_eq!(
+        child
+            .summary
+            .task
+            .unwrap()
+            .relations
+            .parent
+            .unwrap()
+            .as_str(),
+        "bbbbbbbb"
+    );
+
+    // A read-only task is refused as such, even with a new parent that is invalid.
+    let error = problem(
+        &patch("cccccccc", json!({ "relations": { "parent": "zzzzzzzz" } })),
+        409,
+    );
+    assert_eq!(error.code, ErrorCode::ReadOnly);
+}

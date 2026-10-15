@@ -31,7 +31,7 @@ Kind = nature of the work. It drives the body template, the done condition and t
 | Learning | Me | Course or certification completed |
 
 - No Incident kind: an incident is an Investigation with high severity and a due date.
-- Epic / project = `parent` relation, not a kind nor an entity. Children see the parent's `files/` (design docs, ADRs).
+- Epic / project = `parent` relation, not a kind nor an entity. Children see the parent's `files/` (design docs, ADRs). A parent is a task of the child's context, never the child itself nor one of its descendants; loomd checks it when a parent is set (a hand edit is recorded as written).
 - Meetings are events (from the calendar), not tasks. Preparation is a task; action items are tasks with `spawned_from: <event>`.
 
 ### Sources

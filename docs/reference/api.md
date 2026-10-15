@@ -220,7 +220,7 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: `{id}` not 1 to 8 Crockford base32 characters | `400` | `invalid_request` |
 | Task: no task ID starts with `{id}` | `404` | `not_found` |
 | Task: several task IDs start with `{id}` | `400` | `ambiguous_prefix`, `details`: [`AmbiguousPrefix`](#problem-details) |
-| Task: body not a valid `NewTask`, `TaskEdit` or `TaskActionRequest` (unknown field, missing `text`, field the action does not take), empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status` or `ranked` | `400` | `invalid_request` |
+| Task: body not a valid `NewTask`, `TaskEdit` or `TaskActionRequest` (unknown field, missing `text`, field the action does not take), empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status` or `ranked`; `relations.parent` of a create or an edit naming no indexed task, a task of another context, the task itself or one of its descendants | `400` | `invalid_request` |
 | Task: unknown `{action}` | `404` | `not_found` |
 | Task: change of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
 | Task: status change the transitions forbid | `409` | `illegal_transition`, `details`: [`IllegalTransition`](#problem-details) |
