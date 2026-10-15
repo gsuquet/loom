@@ -93,7 +93,7 @@ impl RepoHead {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RepoOperation {
-    /// `git rebase`, including an interactive one.
+    /// `git rebase`, also an interactive one.
     Rebase,
     /// `git merge`.
     Merge,
@@ -103,7 +103,7 @@ pub enum RepoOperation {
     Revert,
     /// `git bisect`.
     Bisect,
-    /// `git am`: patches being applied from a mailbox.
+    /// `git am`: it applies patches from a mailbox.
     Am,
 }
 
@@ -149,7 +149,7 @@ pub struct Upstream {
     pub behind: MaybeKnown<u64>,
 }
 
-/// The state of a repository, read without starting git, at [`RepoState::refreshed_at`].
+/// The state of a repository, read without a git process, at [`RepoState::refreshed_at`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RepoState {
     /// When the state was read.
@@ -163,17 +163,17 @@ pub struct RepoState {
     pub untracked: MaybeKnown<Untracked>,
     /// Operation in progress, `null` when none.
     pub operation: MaybeKnown<Option<RepoOperation>>,
-    /// Upstream of the `HEAD` branch, `null` when detached, unconfigured, or when its ref is
-    /// missing (never fetched, or deleted on the remote and pruned).
+    /// Upstream of the `HEAD` branch, `null` when detached, unconfigured, or when its ref does
+    /// not exist (never fetched, or deleted on the remote and pruned).
     pub upstream: MaybeKnown<Option<Upstream>>,
     /// Default branch: the target of `refs/remotes/<primary remote>/HEAD`, otherwise `main`,
-    /// otherwise `master` when the branch exists; `null` when none of them.
+    /// otherwise `master` when the branch exists. `null` when none of them.
     pub default_branch: MaybeKnown<Option<String>>,
     /// Committer date of `HEAD`'s commit, `null` for an unborn branch.
     pub last_commit: MaybeKnown<Option<Timestamp>>,
     /// Modification time of `FETCH_HEAD`, `null` when the repository was never fetched.
     pub last_fetch: MaybeKnown<Option<Timestamp>>,
-    /// Why some fields are unknown, in English; `null` when every field is known.
+    /// Why some fields are unknown, in English. `null` when every field is known.
     pub error: Option<String>,
 }
 

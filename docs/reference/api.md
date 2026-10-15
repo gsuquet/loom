@@ -1,6 +1,6 @@
 # API reference
 
-> Transport and endpoints of the loomd API, and the types of the `loom-api` crate, shared by the loomd API and the CLI `--json` output, as shipped.
+> This page gives the transport and the endpoints of the loomd API, as shipped. It also gives the types of the `loom-api` crate, which the loomd API and the CLI `--json` output share.
 
 ## Transport
 
@@ -8,10 +8,10 @@
 | --- | --- |
 | Protocol | HTTP/1.1, JSON bodies. |
 | Socket | Unix socket `<loom home>/run/loomd.sock`, mode `0600` (see [configuration](configuration.md)). |
-| Authentication | None: access is limited by the socket and `run/` modes to the user running `loomd`. |
+| Authentication | None: the modes of the socket and of `run/` limit access to the user that runs `loomd`. |
 | Response `content-type` | `application/json`, for successes and errors. |
 
-`HEAD` is accepted wherever `GET` is.
+The API accepts `HEAD` on each path where it accepts `GET`.
 
 ## Endpoints
 
@@ -19,7 +19,7 @@
 | --- | --- | --- | --- |
 | `GET` | `/v1/status` | `200` | [`StatusResponse`](#statusresponse) |
 | `GET` | `/v1/repos` | `200` | [`RepoList`](#repolist) |
-| `GET` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary); with `?refresh=true`, after reading its state |
+| `GET` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary); with `?refresh=true`, after a new read of its state |
 | `DELETE` | `/v1/repos/{context}/{name}` | `200` | [`RepoSummary`](#reposummary) of the removed repository |
 | `POST` | `/v1/repos/scan` | `200` | [`ScanResult`](#scanresult); with `?rebuild=true`, of a rebuild; with `?dry_run=true`, nothing applied |
 | `POST` | `/v1/repos/register` | `200` | [`RepoSummary`](#reposummary) |
@@ -37,95 +37,98 @@
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
 | `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
 | `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
+| `GET` | `/v1/events` | `200` | `text/event-stream` of [`ChangeEvent`](#changeevent) objects ([change events](#change-events)) |
 
-`uptime_secs` is computed, and `<loom home>/state/update.json` read for `update`, when the request is handled. An unreadable state file is logged and reported as an empty state. `disk` is the last measure of the loom home while it is fresh, otherwise a new one ([cache](#diskusage)).
+`loomd` computes `uptime_secs` when it handles the request. At the same time, it reads `<loom home>/state/update.json` for `update`. If `loomd` cannot read the state file, it logs the error and reports an empty state. `disk` is the last measure of the loom home while that measure is fresh, otherwise a new measure ([cache](#diskusage)).
 
 ### Repositories
 
-The repository index is `<loom home>/index.db` (see [configuration](configuration.md#indexdb)). `loomd` scans when it starts and on `POST /v1/repos/scan`; reads never wait for a scan and return the index before or after it, never a part of it.
+The repository index is `<loom home>/index.db` (see [configuration](configuration.md#indexdb)). `loomd` scans when it starts and on `POST /v1/repos/scan`. Reads never wait for a scan. A read returns the index as it is before or after a scan, never a partly changed index.
 
-`GET /v1/repos` query parameters, both optional; an empty value is ignored, any other parameter is an `invalid_request`:
+`GET /v1/repos` takes these query parameters, both optional. `loomd` ignores an empty value. Any other parameter is an `invalid_request`:
 
 | Parameter | Content |
 | --- | --- |
 | `context` | Only the repositories of this context. A context name (the rule of `-c`), or `unassigned`. |
 | `query` | Only the repositories whose name, slug, path, remote URLs or context contain this text, ASCII case ignored. Plain substring: `%` and `_` match themselves. |
 
-Repositories are sorted by slug.
+`loomd` sorts the repositories by slug.
 
-`/v1/repos/{context}/{name}` addresses a repository by its slug `<context>/<name>`, the two parts as two path segments (`/v1/repos/personal/loom-2` for the slug `personal/loom-2`). Characters outside the URL path syntax are percent-encoded.
+`/v1/repos/{context}/{name}` addresses a repository by its slug `<context>/<name>`. The two parts of the slug are two path segments (`/v1/repos/personal/loom-2` for the slug `personal/loom-2`). A client must percent-encode the characters outside the URL path syntax.
 
-`GET /v1/repos/{context}/{name}` query parameter, optional; any other parameter is an `invalid_request`:
-
-| Parameter | Content |
-| --- | --- |
-| `refresh` | `true`: read the repository's [state](#repostate) now (within its time budget, on a thread of its own), store it, and return the repository with it. `false` (default): return the stored state. |
-
-`POST /v1/repos/scan` walks the roots (`[repos] roots`, then every `match.paths`, `~` expanded with `HOME`) and reads every registered repository in place, then applies the changes to the index in one transaction:
-
-- a repository found is added, or updated when its identity changed (remotes, context, forge or slug);
-- a repository no longer found under a scanned root is removed, unless an error hides it (an unreadable directory above it, an unreadable `.git` or config); the repositories under other roots are kept;
-- a registered repository is kept while its `.git` exists, even deeper than `max_depth`, excluded, or outside the roots, and removed once its `.git` is gone;
-- contexts are recomputed for every repository, so slugs follow a rule change.
-
-`POST /v1/repos/scan` query parameters, both optional, `true` or `false` (default); any other parameter is an `invalid_request`:
+`GET /v1/repos/{context}/{name}` takes this query parameter, which is optional. Any other parameter is an `invalid_request`:
 
 | Parameter | Content |
 | --- | --- |
-| `rebuild` | `true`: the index is replaced, in one transaction, by the repositories the roots hold. Registered repositories are not read; every repository, its state, `registered` flag and `last_used` is dropped. The result counts every repository of the index as removed and every repository found as added (`updated` is `0`). |
-| `dry_run` | `true`: the changes are computed and returned, nothing is applied, no state is read. |
+| `refresh` | `true`: `loomd` reads the repository's [state](#repostate) now (within its time budget, on a thread of its own), stores it, and returns the repository with it. `false` (default): `loomd` returns the stored state. |
 
-Scans run one at a time. A plain scan request (neither parameter `true`) made while a plain scan runs waits for that scan and receives its result; a rebuild or a dry run runs after it, on its own. Registration and removal requests wait for a running scan.
+`POST /v1/repos/scan` walks the roots (`[repos] roots`, then every `match.paths`, `~` expanded with `HOME`). It also reads every registered repository in place. Then it applies the changes to the index in one transaction:
 
-`POST /v1/repos/register` takes a [`RegisterRequest`](#registerrequest). The repository is the path itself or its nearest ancestor with a `.git` entry (directory, file or symbolic link); symbolic links in the path are kept. It is identified like a scanned repository, added or updated, and marked `registered`. A repository already indexed keeps its slug while its context and name do not change; otherwise it gets `<context>/<name>`, or the lowest free `<context>/<name>-N` (N ≥ 2).
+- The scan adds a repository that it finds, or updates it when its identity changed (remotes, context, forge or slug).
+- The scan removes a repository that it no longer finds under a scanned root. If an error hides the repository, the scan keeps it. Such an error is an unreadable directory above the repository, or an unreadable `.git` or config. The scan keeps a repository that is not under a scanned root.
+- The scan keeps a registered repository while its `.git` exists, also when it is deeper than `max_depth`, excluded, or outside the roots. When its `.git` is gone, the scan removes it.
+- The scan computes the contexts of every repository again, so the slugs follow a rule change.
 
-With `on_use: true` (registration on use, sent by `loom`), a repository already in the index is left as it is: not read again, not marked `registered`; only its `last_used` is set to now. It is found by its path, otherwise among the repositories with the same directory name by canonical path (the same directory through other symbolic links). A repository not in the index is registered as above, then gets its `last_used`.
+`POST /v1/repos/scan` takes these query parameters, both optional. Each one is `true` or `false` (default). Any other parameter is an `invalid_request`:
+
+| Parameter | Content |
+| --- | --- |
+| `rebuild` | `true`: the scan replaces the index, in one transaction, with the repositories that the roots hold. The scan does not read the registered repositories. It drops every repository, with its state, its `registered` flag and its `last_used`. The result counts every repository of the index as removed, and every repository found as added (`updated` is `0`). |
+| `dry_run` | `true`: the scan computes and returns the changes. It applies nothing and reads no state. |
+
+Scans run one at a time. A plain scan request has neither parameter `true`. If a plain scan request arrives while a plain scan runs, the request waits for that scan and receives its result. A rebuild or a dry run runs after that scan, on its own. Registration and removal requests wait for the scan that runs.
+
+`POST /v1/repos/register` takes a [`RegisterRequest`](#registerrequest). The repository is the path itself, or its nearest ancestor with a `.git` entry (directory, file or symbolic link). `loomd` keeps the symbolic links in the path. It identifies the repository like a scanned repository, adds or updates it, and marks it `registered`. A repository already indexed keeps its slug while its context and name do not change. Otherwise, it gets `<context>/<name>`, or the lowest free `<context>/<name>-N` (N ≥ 2).
+
+`on_use: true` is a registration on use, which `loom` sends. With `on_use: true`, if the repository is already in the index, `loomd` only sets its `last_used` to now. It does not read the repository again and does not mark it `registered`. `loomd` looks for the repository by its path. If no repository of the index has this path, `loomd` looks for one with the same directory name and the same canonical path (the same directory through other symbolic links). A repository not in the index is registered as above, then gets its `last_used`.
 
 `DELETE /v1/repos/{context}/{name}` removes the repository from the index, registered or not. A scan adds a repository found under a root again.
 
 #### State refresh
 
-`loomd` reads the [state](#repostate) of a repository with `gix`, never starting git, and stores it in the index. It reads it:
+`loomd` reads the [state](#repostate) of a repository with `gix`, and never starts git. It stores the state in the index. It reads the state at these times:
 
-- after each scan, for the repositories added or updated by the scan;
-- after the scan on start, then every `[repos] fetch_interval` (default 1 hour), for every repository;
-- after a registration, for the registered repository;
-- after each [update](#updates) that ran git, for that repository, stored with its result;
-- on `GET /v1/repos/{context}/{name}?refresh=true`, for that repository, before answering.
+- After each scan, for the repositories that the scan added or updated.
+- After the scan on start, then every `[repos] fetch_interval` (default 1 hour), for every repository.
+- After a registration, for the registered repository.
+- After each [update](#updates) that ran git, for that repository. `loomd` stores the state with the result of the update.
+- On `GET /v1/repos/{context}/{name}?refresh=true`, for that repository, before the answer.
 
-Except on `?refresh=true`, states are read in the background by at most 4 threads (fewer on a machine with fewer cores), one repository each, and each repository is queued at most once at a time. Reads of the index never wait for them. A repository without a state yet has `state: null`.
+Except on `?refresh=true`, `loomd` reads the states in the background. It uses at most 4 threads (fewer on a machine with fewer cores), and each thread reads one repository at a time. Each repository is in the queue at most once at a time. Reads of the index never wait for these threads. A repository without a state yet has `state: null`.
 
 #### Updates
 
-`loomd` updates every repository of the index on a schedule: fetch of the primary remote, then fast-forwards under the conditions of its update policy ([how updates work](../explanation/repo-updates.md)). Each update stores its result as the repository's [`last_update`](#lastupdate), and the state read after it.
+`loomd` updates every repository of the index on a schedule. An update fetches the primary remote, then fast-forwards under the conditions of the update policy of the repository ([how updates work](../explanation/repo-updates.md)). Each update stores its result as the repository's [`last_update`](#lastupdate), and the state that `loomd` reads after it.
 
 | Property | Value |
 | --- | --- |
 | First update | At once for a repository never updated (within a second of the scan that indexed it); otherwise one interval after its `last_update`. |
-| Interval | `[repos] fetch_interval` (default 1 hour) after the end of the previous update, ±10 % at random. The index is read again every 10 seconds for new repositories. |
+| Interval | `[repos] fetch_interval` (default 1 hour) after the end of the previous update, ±10 % at random. `loomd` reads the index again every 10 seconds to find new repositories. |
 | Concurrency | At most `[repos] fetch_concurrency` updates at once (default 4, at most 64). |
-| Backoff | After a failed fetch, the repository's next update waits 2, 4, then 8 times the interval (never more), counting consecutive failures. Every repository of the same host (`host[:port]` of the primary remote, or its URL for a local path) waits as long, unless a fetch of that host that started earlier succeeded in the meantime. A successful fetch clears the host's backoff. Other hosts are not affected. A fetch that met a lock held by another git process (`busy`) neither backs off nor counts as a failure: the next update is one interval away. |
+| Backoff | After a failed fetch, the next update of the repository waits 2, 4, then 8 times the interval (never more). The factor doubles with each consecutive failure. The host of a repository is the `host[:port]` of its primary remote, or its URL for a local path. Every repository of the same host waits as long, unless a fetch of that host that started earlier succeeded in the meantime. A successful fetch clears the host's backoff. Other hosts are not affected. A fetch that found a lock of another git process (`busy`) does not cause a backoff and does not count as a failure. The next update is then one interval later. |
 | Policy | `[repos."<path>"] update`, otherwise the context's `update`, otherwise `ff`; `fetch` for an `unassigned` repository without `[repos."<path>"] update`. |
-| git commands | `git fetch --no-prune --no-prune-tags --no-tags <primary>` (timeout 120 s; no tag is fetched, whatever `fetch.pruneTags`, `remote.<name>.pruneTags` or `remote.<name>.tagOpt` say); `git merge --ff-only --no-autostash <commit>` (10 min); `git fetch --no-prune --no-prune-tags --no-tags <primary> <merge ref>:refs/heads/<default branch>` (120 s). On timeout, the command's process group gets `SIGTERM`, then `SIGKILL` 5 s later. A command that fails only because another git process holds a lock of the repository (`Unable to create '….lock': File exists`, `cannot lock ref '…': is at … but expected …`) gives the skip reason `busy`; the lock is never removed. |
+| git commands | `git fetch --no-prune --no-prune-tags --no-tags <primary>` (timeout 120 s; `loomd` fetches no tag, whatever `fetch.pruneTags`, `remote.<name>.pruneTags` or `remote.<name>.tagOpt` say); `git merge --ff-only --no-autostash <commit>` (10 min); `git fetch --no-prune --no-prune-tags --no-tags <primary> <merge ref>:refs/heads/<default branch>` (120 s). At the timeout, `loomd` sends `SIGTERM` to the process group of the command, then `SIGKILL` 5 s later. If a command fails only because another git process holds a lock of the repository (`Unable to create '….lock': File exists`, `cannot lock ref '…': is at … but expected …`), the skip reason is `busy`. `loomd` never removes the lock. |
 | git environment | `loomd`'s environment and the user's git configuration and hooks, plus `GIT_TERMINAL_PROMPT=0`, `GIT_CEILING_DIRECTORIES=<parent of the working tree>`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` unless `core.sshCommand` (read with `git config --get`), `GIT_SSH_COMMAND` or `GIT_SSH` is set; `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE` and `GIT_PREFIX` removed. |
 
-`POST /v1/repos/sync` takes a [`SyncRequest`](#syncrequest) and updates the repositories it names (every repository of the index when it names none) now, regardless of their schedule and of the backoff, then answers with a [`SyncResult`](#syncresult), sorted by slug, after every result is stored. A repository already being updated is updated again once that update ends. The answer may take as long as the updates (each command has its timeout). With `dry_run: true`, nothing runs: each state is read now and the result says what an update would do.
+`POST /v1/repos/sync` takes a [`SyncRequest`](#syncrequest). It updates the repositories that the request names now, regardless of their schedule and of the backoff. If the request names no repository, it updates every repository of the index. After `loomd` stores every result, it answers with a [`SyncResult`](#syncresult), sorted by slug.
+
+If an update of a repository is in progress, `loomd` updates the repository again when that update ends. The answer can take as long as the updates (each command has its timeout). With `dry_run: true`, nothing runs: `loomd` reads each state now, and the result says what an update would do.
 
 #### Remote check
 
-`POST /v1/diagnostics/remote-check` (no body) checks that each remote endpoint of the index answers `loomd`'s git, and answers with a [`RemoteCheckResult`](#remotecheckresult) (the checks of `loom repo doctor`).
+`POST /v1/diagnostics/remote-check` (no body) checks that each remote endpoint of the index responds to the git of `loomd`. It answers with a [`RemoteCheckResult`](#remotecheckresult) (the checks of `loom repo doctor`).
 
 | Property | Value |
 | --- | --- |
 | Endpoints | One per distinct endpoint and scheme of the primary remotes of the index (see [`RemoteCheck`](#remotecheckresult)). |
 | Repository | One repository of the endpoint: one whose last update did not fail to fetch when there is one, then the lowest slug. |
-| git command | `git -C <repository> ls-remote --exit-code <primary remote> HEAD`, with the [git environment](#updates) of the updates: the user's git configuration (`core.sshCommand`, `includeIf`, credential helpers), `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode` unless an SSH command is configured. Nothing is written to the repository. |
+| git command | `git -C <repository> ls-remote --exit-code <primary remote> HEAD`, with the [git environment](#updates) of the updates: the user's git configuration (`core.sshCommand`, `includeIf`, credential helpers), `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode` unless an SSH command is configured. The check writes nothing to the repository. |
 | Timing | Every endpoint at once, each stopped after 20 s (process group `SIGTERM`, then `SIGKILL` 5 s later). |
 | Result | `reachable` when git exits with `0`, or with `2` (no `HEAD` on the remote, such as an empty repository); otherwise `failed` with the kind of failure read from git's error output. |
 
 ### Search
 
-`GET /v1/search` searches the tasks of the context stores and the repositories of the index. Query parameters; an empty `context` or `type` is ignored, any other parameter is an `invalid_request`:
+`GET /v1/search` searches the tasks of the context stores and the repositories of the index. It takes these query parameters. `loomd` ignores an empty `context` or `type`. Any other parameter is an `invalid_request`:
 
 | Parameter | Content |
 | --- | --- |
@@ -134,12 +137,12 @@ Except on `?refresh=true`, states are read in the background by at most 4 thread
 | `type` | Only the results of this kind: `task` or `repo`. |
 | `limit` | Most results returned, at least `1`. Default `20`. |
 
-Matching:
+The rules of the match:
 
-- The searched fields of a task are its title, its notes (the whole file when its `task.md` is invalid) and the keys of its origin and related links (`CORE-1042`, `!88`). Those of a repository are its name, slug, path, remote URLs, context name and branch (the branch `HEAD` is on in its stored [state](#repostate), unborn included; empty when detached or not read yet).
-- Each field is split into words on every character that is not a letter or a digit (`loom-api` is `loom` and `api`, `CORE-1042` is `core` and `1042`, `!88` is `88`). Case and diacritics are ignored: `cafe` finds `Café`, `viet` finds `Việt`.
-- A result matches when every word of the query starts a word of one of its fields, not necessarily the same field. A query word made of punctuation only is ignored; a query without words returns no result.
-- Query words are text only: `"`, `*`, `:`, `(`, `)`, `^`, `-`, `+`, `{`, `}` act as word separators, and `AND`, `OR`, `NOT`, `NEAR` are words to find.
+- The searched fields of a task are its title, its notes and the keys of its origin and related links (`CORE-1042`, `!88`). When its `task.md` is invalid, the notes are the whole file. The searched fields of a repository are its name, slug, path, remote URLs, context name and branch. The branch is the branch that `HEAD` is on in its stored [state](#repostate), also when it is unborn. The branch is empty when `HEAD` is detached or the state is not read yet.
+- Each character that is not a letter or a digit splits a field into words. For example, `loom-api` is `loom` and `api`, `CORE-1042` is `core` and `1042`, and `!88` is `88`. The search ignores case and diacritics: `cafe` finds `Café`, `viet` finds `Việt`.
+- A result matches when every word of the query starts a word of one of its fields, not necessarily the same field. The search ignores a query word that has only punctuation. A query without words returns no result.
+- Query words are text only. The characters `"`, `*`, `:`, `(`, `)`, `^`, `-`, `+`, `{`, `}` are word separators. `AND`, `OR`, `NOT` and `NEAR` are words to find.
 
 Results are ranked by group first:
 
@@ -148,44 +151,66 @@ Results are ranked by group first:
 3. Tasks `inbox`, tasks whose status was written by a newer loom, and tasks whose `task.md` is invalid.
 4. Tasks `done` and `cancelled`.
 
-Within the tasks of a group, by these keys, in order:
+Within a group, the search ranks the tasks by these keys, in order:
 
-1. How the task matches: the query is one of its link keys (case ignored, such as `core-1042` for `CORE-1042`), then every query word starts a word of its title, then the other cases.
-2. Last change, most recent first; invalid files last.
+1. How the task matches, in this order, best first:
+   1. The query is one of its link keys, case ignored (such as `core-1042` for `CORE-1042`).
+   2. Every query word starts a word of its title.
+   3. Other cases.
+2. Last change, most recent first, invalid files last.
 3. Full-text relevance (SQLite FTS5 `bm25`), most relevant first.
 4. ID.
 
-Within the repositories, by these keys, in order:
+The search ranks the repositories by these keys, in order:
 
-1. How the repository matches: its name is the query (the same words, in order, such as `loom-api` for `loom api`), then every query word starts a word of its name, then every query word starts a word of its slug, then the other cases.
-2. `last_used`, most recent first; never used last.
+1. How the repository matches, in this order, best first:
+   1. Its name is the query: the same words, in order (such as `loom-api` for `loom api`).
+   2. Every query word starts a word of its name.
+   3. Every query word starts a word of its slug.
+   4. Other cases.
+2. `last_used`, most recent first, never used last.
 3. Full-text relevance (SQLite FTS5 `bm25`), most relevant first.
 4. Slug.
 
-The ranking is computed on every match, then cut to `limit`. Repositories and tasks are read in one snapshot of the index. While `loomd` reconciles the tasks with the index after it starts, a search that covers tasks waits for the end of it (at most 10 s, then answers from the tasks indexed so far).
+`loomd` ranks every match, then keeps the first `limit` results. It reads the repositories and the tasks in one snapshot of the index. After `loomd` starts, it reconciles the tasks with the index. During this reconciliation, a search that covers tasks waits for its end. The search waits at most 10 s, then answers from the tasks indexed so far.
 
 ### Tasks
 
-The tasks are files in the context stores (see [configuration](configuration.md#context-stores)), indexed in `<loom home>/index.db`. `loomd` reconciles them with the index when it starts and when their files change, recording hand edits (see [context stores](configuration.md#context-stores)).
+The tasks are files in the context stores (see [configuration](configuration.md#context-stores)). `loomd` indexes them in `<loom home>/index.db`. It reconciles them with the index when it starts and when their files change. The reconciliation records the hand edits (see [context stores](configuration.md#context-stores)).
 
-`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction, and answers with a [`ReindexResult`](#reindexresult) once it is written. Rows of tasks whose directory is gone are dropped; an invalid `task.md` is indexed read-only and listed, never rewritten. Before the rebuild, every task is reconciled: a hand edit not recorded yet gets its `edited` event first, so a reindex may append events, and the rebuild never hides an edit. The repositories of the index are left as they are. A task whose files cannot be read (permissions, I/O), or a store whose `tasks/` cannot be listed, by the reconciliation or by the rebuild, is listed in `failed` and keeps the row it had; the other tasks are indexed. Only a failure to write the index answers `500 internal`, the index then unchanged.
+`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction. When `loomd` has written the index, it answers with a [`ReindexResult`](#reindexresult). The rebuild drops the rows of tasks whose directory is gone. It indexes an invalid `task.md` as read-only and lists it, but never writes it again. The rebuild does not change the repositories of the index.
+
+Before the rebuild, `loomd` reconciles every task: a hand edit not recorded yet gets its `edited` event first. Thus a reindex can append events, and the rebuild never hides an edit. The reconciliation or the rebuild can fail to read the files of a task (permissions, I/O), or fail to list the `tasks/` of a store. `failed` lists such a task or store, and its rows stay as they were. `loomd` indexes the other tasks. Only a failure to write the index answers `500 internal`, and the index then stays unchanged.
 
 #### Task endpoints
 
-`{id}` is a task ID or a prefix of one, read as Crockford base32: case ignored, `i` and `l` read as `1`, `o` as `0`, 1 to 8 characters. It is resolved against every indexed task, of every context. A prefix several tasks start with is an `ambiguous_prefix` error listing them; `/v1/tasks/reindex` is the reindex endpoint, never a task.
+`{id}` is a task ID or a prefix of one, from 1 to 8 characters. `loomd` reads it as Crockford base32: case ignored, `i` and `l` read as `1`, `o` as `0`. `loomd` resolves it against every indexed task, of every context. If several tasks start with the prefix, the error is `ambiguous_prefix`, and the error lists these tasks. `/v1/tasks/reindex` is the reindex endpoint, never a task.
 
-Reads (`GET /v1/tasks`, `GET /v1/tasks/{id}`) use a read connection to the index and never wait for a write. After `loomd` starts, a read, and the resolution of `{id}` by every endpoint, waits for the reconciliation and the first [archive](configuration.md#archive) pass on start (at most 10 s, then answers from the tasks indexed so far): a client should allow more than 10 s for its first request. Creations, edits, actions, undos and event reads run on the task thread, one at a time, after the hand edits and reindexes queued before them: two requests on one task never interleave and none is lost. Their events have the actor `user` and the `id` of [`machine.toml`](configuration.md#machinetoml). A request that changes nothing (pin a pinned task, edit a field to its value) writes nothing and answers the task as it is. A write is committed to the git repository of its context store before the answer, one commit per request ([store repository](configuration.md#store-repository)); a commit that fails does not fail the request.
+Reads (`GET /v1/tasks`, `GET /v1/tasks/{id}`) use a read connection to the index and never wait for a write. After `loomd` starts, a read waits for the reconciliation on start and for the first [archive](configuration.md#archive) pass. The resolution of `{id}` by every endpoint also waits for them. The wait is at most 10 s, then `loomd` answers from the tasks indexed so far. Thus a client should allow more than 10 s for its first request.
 
-`GET /v1/tasks` query parameters, all optional; an empty `context` or `status` is ignored, any other parameter is an `invalid_request`:
+Creations, edits, actions, undos and event reads run on the task thread, one at a time. They run after the hand edits and the reindexes queued before them. Thus two requests on one task never interleave, and no request is lost. Their events have the actor `user` and the `id` of [`machine.toml`](configuration.md#machinetoml). A request that changes nothing writes nothing and answers the task as it is. Examples are a pin of a pinned task, and an edit of a field to its value.
+
+`loomd` commits each write to the git repository of its context store before the answer, one commit per request ([store repository](configuration.md#store-repository)). If a commit fails, the request does not fail.
+
+`GET /v1/tasks` takes these query parameters, all optional. `loomd` ignores an empty `context` or `status`. Any other parameter is an `invalid_request`:
 
 | Parameter | Content |
 | --- | --- |
 | `context` | Only the tasks of this context. A context without a store gives an empty list. |
-| `status` | Only the tasks with this status: `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled`. Tasks with an invalid `task.md` or an unknown status are left out. |
+| `status` | Only the tasks with this status: `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled`. Tasks with an invalid `task.md` or an unknown status are not in the list. |
 | `ranked` | `true`: the priority list, in its order, each task with its `rank`. `false` (default): every task, sorted by ID. |
-| `archived` | `true`: the archived tasks (in `archive/<yyyy>/`) only, instead of the others. `false` (default): the tasks of `tasks/` only. Archived tasks are never in the priority list: `archived=true` with `ranked=true` gives an empty list. |
+| `archived` | `true`: only the archived tasks (in `archive/<yyyy>/`). `false` (default): only the tasks of `tasks/`. The priority list never contains an archived task: `archived=true` with `ranked=true` gives an empty list. |
 
-The priority list holds the `ready` and `active` tasks, and the `waiting` tasks whose `until` is today or past; `inbox`, `done`, `cancelled`, unknown statuses and invalid files are never in it. Order, each rule breaking the ties of the previous one: pinned first; overdue or due today first, earliest due date first; importance, `p0` first; due date, earliest first, none last; oldest `created` first; ID. "Today" is the local date of `loomd` (`TZ`, otherwise `/etc/localtime`), read at each request. With `context` or `status`, the list is the priority list of the tasks they keep.
+The priority list holds the `ready` and `active` tasks, and the `waiting` tasks whose `until` is today or past. Tasks with the status `inbox`, `done`, `cancelled` or an unknown status, and invalid files, are never in it. The list has this order, and each rule breaks the ties of the previous rule:
+
+1. Pinned first.
+2. Overdue or due today first, earliest due date first.
+3. Importance, `p0` first.
+4. Due date, earliest first, none last.
+5. Oldest `created` first.
+6. ID.
+
+"Today" is the local date of `loomd` (`TZ`, otherwise `/etc/localtime`), read at each request. With `context` or `status`, the list is the priority list of the tasks that these parameters keep.
 
 `{action}` of `POST /v1/tasks/{id}/actions/{action}`:
 
@@ -196,15 +221,55 @@ The priority list holds the `ready` and `active` tasks, and the `waiting` tasks 
 | `pin`, `unpin` | none | Pins or unpins the task. |
 | `log_note` | `text`, required | Logs a note as a `note_logged` event. |
 
-An open status (`inbox`, `ready`, `active`, `waiting`) can move to any other one, `waiting` to `waiting` too; `done` and `cancelled` only to `ready`. Any other action name is a `not_found`. An empty body (or only whitespace) is no body; a field the action does not take is an `invalid_request`.
+A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to any other status, and from `waiting` to `waiting` too. A task `done` or `cancelled` can move only to `ready`. Any other action name is a `not_found`. An empty body (or a body of only whitespace) is no body. A field that the action does not take is an `invalid_request`.
 
-`POST /v1/tasks/{id}/undo` reverts the last change of the task (an edit, a status change, a pin, a hand edit or an undo; notes and the creation are not changes) by appending an `undone` event with the inverse changes. Undoing an undo redoes the change. `loomd` computes the inverse from the task's log; the request has no body.
+`POST /v1/tasks/{id}/undo` reverts the last change of the task. It appends an `undone` event with the inverse changes. A change is an edit, a status change, a pin, a hand edit or an undo, but not a note or the creation. The undo of an undo does the change again. `loomd` computes the inverse from the log of the task. The request has no body.
 
 `GET /v1/tasks/{id}/events` answers the event log of the task as `events.jsonl` holds it, with the lines this version cannot replay listed apart.
 
-`GET /v1/tasks/backup` answers with the backup state of every context store held on this machine ([`BackupReport`](#backupreport)), without running git: the last commit failure and the last sync of each store since loomd started.
+`GET /v1/tasks/backup` answers with the backup state of every context store held on this machine ([`BackupReport`](#backupreport)). `loomd` does not run git for this answer. The backup state is the last commit failure and the last sync of each store since loomd started.
 
-`POST /v1/tasks/sync` with a [`BackupRequest`](#backuprequest) body syncs the stores ([store backup](configuration.md#store-backup)) and answers once every sync ended, with the stores synced. `400 invalid_request` when `context` names a context without `store.backup.remote`, one not held on this machine, or an unknown one, or when the body is invalid. A sync that fails is in the answer, not an error status.
+`POST /v1/tasks/sync` with a [`BackupRequest`](#backuprequest) body syncs the stores ([store backup](configuration.md#store-backup)). When every sync ended, it answers with the stores synced. The answer is `400 invalid_request` when `context` names a context without `store.backup.remote`, a context not held on this machine, or an unknown context. The answer is also `400 invalid_request` when the body is invalid. A sync that fails is in the answer, not an error status.
+
+### Change events
+
+`GET /v1/events` sends a Server-Sent Events stream (`text/event-stream`, chunked). The stream stays open. A client reads the changes from the stream, then gets only the data that changed. It does not poll.
+
+`loomd` sends an event after it writes the change to the task files and to the index. Before the event, `loomd` also tries to commit the change to the git repository of the store. If the commit fails, `loomd` sends the event and tries the commit again later.
+
+```text
+id: 1792051200000-7
+event: task.changed
+data: {"type":"task.changed","id":"k3q7zm2a","context":"work"}
+
+```
+
+| Field | Content |
+| --- | --- |
+| `id` | `<run>-<seq>`. `run` is the start time of the `loomd` process, in milliseconds since the Unix epoch. `seq` is the number of the event in the process, from 1. |
+| `event` | The `type` of the event. |
+| `data` | The [`ChangeEvent`](#changeevent) as JSON, with its `type`. |
+
+Events that `loomd` sends:
+
+| `type` | When |
+| --- | --- |
+| `task.changed` | An API request creates, edits, moves, pins, unpins or undoes a task, and writes a [task event](#taskevents). A request that changes nothing sends no change event. Also when `loomd` reconciles a hand edit of the task files: a new task, a changed task, or a removed task directory. Also when a [schedule](configuration.md#schedules) creates a task, and when the `replace` policy cancels the task of an earlier occurrence. |
+| `resync` | `loom reindex` builds the index again. A reconciliation of all the tasks changes one or more tasks (the watcher can miss events). A sync moves a context store forward to the commits of another machine. Also the first event to a client that cannot resume, and the last event to a client that is too far behind (see below). |
+
+`task.archived`, `repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
+
+Query parameter `context`: the stream has only the events of this context, and all the `resync` events. An invalid name or an unknown parameter gives `400 invalid_request`.
+
+Resume:
+
+- A client can connect again with the `Last-Event-ID` header. The header contains the `id` of the last event that the client received.
+- If the buffer of the last 1,024 events of the process has the next events, the client gets them.
+- If the buffer does not have them, the first event is `resync`. The same occurs if the `id` is from another `loomd` process (a restart), or if it is not an `id`. This `resync` has the `id` of the latest event. The client then gets all the data that it shows again.
+
+A client can be a maximum of 256 events behind. If it is more than 256 events behind, it gets a `resync` event and its stream stops. This `resync` has no `id`, so that the client can resume from its last `id`.
+
+While a stream has no events, it gets a `: heartbeat` comment every 15 s. When `loomd` stops, all the streams stop.
 
 ### Errors
 
@@ -221,7 +286,7 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: `{id}` not 1 to 8 Crockford base32 characters | `400` | `invalid_request` |
 | Task: no task ID starts with `{id}` | `404` | `not_found` |
 | Task: several task IDs start with `{id}` | `400` | `ambiguous_prefix`, `details`: [`AmbiguousPrefix`](#problem-details) |
-| Task: body not a valid `NewTask`, `TaskEdit` or `TaskActionRequest` (unknown field, missing `text`, field the action does not take), empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status`, `ranked` or `archived`; `relations.parent` of a create or an edit naming no indexed task, a task of another context, the task itself or one of its descendants | `400` | `invalid_request` |
+| Task: body not a valid `NewTask`, `TaskEdit` or `TaskActionRequest` (unknown field, absent `text`, field the action does not take), empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status`, `ranked` or `archived`; `relations.parent` of a create or an edit that names no indexed task, a task of another context, the task itself or one of its descendants | `400` | `invalid_request` |
 | Task: unknown `{action}` | `404` | `not_found` |
 | Task: change of an archived task (any action, edit or undo), or of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
 | Task: status change the transitions forbid | `409` | `illegal_transition`, `details`: [`IllegalTransition`](#problem-details) |
@@ -230,7 +295,7 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: the task files cannot be read or written | `500` | `internal` |
 | The index cannot be read or written | `500` | `internal` |
 | The daemon cannot read its clock as a timestamp | `500` | `internal` |
-| The daemon stops before answering a scan, register, remove, refresh, sync, reindex or task write request | `503` | `unavailable` |
+| The daemon stops before it answers a scan, register, remove, refresh, sync, reindex or task write request | `503` | `unavailable` |
 
 ```bash
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/status
@@ -258,7 +323,7 @@ curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/tasks/k3q/undo
 
 ## Types
 
-The JSON Schema (draft 2020-12) of each type is generated from the Rust types and committed under [`schemas/`](schemas/). A test fails when a committed schema differs from the types; `mise run docs` regenerates them.
+The JSON Schema (draft 2020-12) of each type is generated from the Rust types and committed under [`schemas/`](schemas/). If a committed schema is different from the types, a test fails. `mise run docs` regenerates the schemas.
 
 | Type | Schema |
 | --- | --- |
@@ -305,7 +370,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | --- | --- |
 | `v1` | First version of the API. Current version. |
 
-A breaking change to any API type adds a new value. Compatible changes (new optional fields, new endpoints) keep the current value.
+A change to any API type that breaks compatibility adds a new value. Compatible changes (new optional fields, new endpoints) keep the current value.
 
 ### Unknown fields
 
@@ -314,7 +379,7 @@ A breaking change to any API type adds a new value. Compatible changes (new opti
 | Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan` and `GET /v1/tasks`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`) are rejected, except the `kind`, `format` and `status` of a task, which a newer version may write: the task is then read-only.
+Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
 
 ### Scalar encodings
 
@@ -324,11 +389,11 @@ Unknown enum values (`api_version`, `code`, `channel`, `channel_source`, `profil
 | Duration | Unsigned integer of whole seconds; the field name ends in `_secs`. | `90` |
 | Path | String. Paths that are not valid UTF-8 cannot be serialized. | `"/run/user/1000/loom/loomd.sock"` |
 
-`VersionInfo.commit_date` predates `Timestamp`: it is the git committer date with its original offset (`2026-10-12T10:00:00+02:00`) or `unknown`.
+`VersionInfo.commit_date` existed before the `Timestamp` type. It is the git committer date with its original offset (`2026-10-12T10:00:00+02:00`), or `unknown`.
 
 ### `StatusResponse`
 
-State of a running loomd.
+State of a loomd that runs.
 
 | Field | Type | Content |
 | --- | --- | --- |
@@ -340,8 +405,8 @@ State of a running loomd.
 | `loom_home` | path | Absolute path of the loom home directory the daemon uses. |
 | `socket_path` | path | Absolute path of the unix socket the daemon listens on. |
 | `config_path` | path | Absolute path of the configuration file the daemon loaded. |
-| `update` | [`UpdateStatus`](#updatestatus) or `null` | Auto-upgrade policy and state. Always sent by this version; optional when reading, so that a client reads a daemon older than this field. |
-| `disk` | [`DiskUsage`](#diskusage) or `null` | Disk usage of the loom home. Sent by this version (`null` only when the measure failed unexpectedly); optional when reading, so that a client reads a daemon older than this field. |
+| `update` | [`UpdateStatus`](#updatestatus) or `null` | Auto-upgrade policy and state. Always sent by this version. Optional for a reader, so that a client can read a daemon older than this field. |
+| `disk` | [`DiskUsage`](#diskusage) or `null` | Disk usage of the loom home. Sent by this version (`null` only when the measure failed unexpectedly). Optional for a reader, so that a client can read a daemon older than this field. |
 
 Every field is required, except `update` and `disk`.
 
@@ -412,10 +477,10 @@ Disk usage of the loom home, measured by `loomd`.
 | Property | Value |
 | --- | --- |
 | Sizes | Allocated bytes: `st_blocks` × 512 of each entry, not file lengths. A directory counts its own blocks too. |
-| Symbolic links | Counted as links (their own blocks), never followed. The loom home itself may be a symbolic link: it is followed once. |
+| Symbolic links | Counted as links (their own blocks), never followed. The loom home itself can be a symbolic link, which the walk follows once. |
 | Hard links | A file with several links counts once. |
 | Bounds | Only entries under the loom home are read. Directories mounted under it are walked like any other. |
-| Errors | Never an error response. A directory or entry that cannot be read counts as 0 and adds a warning, also logged at `warn` level. A missing `versions/`, `log/`, `state/` or `contexts/` counts as 0 without a warning. An entry deleted during the walk is skipped. |
+| Errors | Never an error response. A directory or entry that cannot be read counts as 0 and adds a warning, also logged at `warn` level. An absent `versions/`, `log/`, `state/` or `contexts/` counts as 0 without a warning. An entry deleted during the walk is skipped. |
 | Cache | Measured on a blocking thread at the first `GET /v1/status`, then reused for 5 minutes. Measured again earlier when the modification time of `versions/` changed (a version saved, restored or pruned by an upgrade or a rollback). A new `loomd` (after an upgrade, a rollback or a restart) starts without a measure. |
 
 ### `UpdateStatus`
@@ -424,7 +489,7 @@ Disk usage of the loom home, measured by `loomd`.
 | --- | --- | --- |
 | `policy` | `auto` \| `notify` \| `off` | Effective `[update] policy` (configured, or the default of the build channel). |
 | `channel` | `stable` \| `dev` \| `null` | Effective channel: `[update] channel`, otherwise the channel chosen with `loom upgrade --channel`, otherwise the build channel ([channel resolution](configuration.md#channel-resolution)); `null` for a local build without a configured or chosen channel: nothing is checked. |
-| `channel_source` | `config` \| `chosen` \| `build` \| `null` | Where `channel` comes from; `null` when `channel` is. Always sent by this version; optional when reading, so that a client reads a daemon older than this field. |
+| `channel_source` | `config` \| `chosen` \| `build` \| `null` | Where `channel` comes from; `null` when `channel` is. Always sent by this version. Optional for a reader, so that a client can read a daemon older than this field. |
 | `check_interval_secs` | integer (u64) | Effective interval between checks, before jitter. |
 | `last_check` | `Timestamp` \| `null` | `last_check` of the state. |
 | `available` | string \| `null` | `available` of the state, `null` when it is not newer than the daemon's version. |
@@ -466,24 +531,24 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
 
 ### `RepoState`
 
-The state of a repository (its card), read with `gix` without starting git, and without writing to the repository.
+The state of a repository (its card). `loomd` reads it with `gix`, does not start git, and does not write to the repository.
 
-Every field but `refreshed_at` and `error` is either `{"known": <value>}` or the string `"unknown"`. A field is unknown when its time budget ran out or it could not be read; `error` then says why. A known `null` (`{"known": null}`) is a value: no operation, no upstream, and so on.
+Every field but `refreshed_at` and `error` is either `{"known": <value>}` or the string `"unknown"`. A field is unknown when its time budget ended or when `loomd` could not read it. `error` then gives the reason. A known `null` (`{"known": null}`) is a value: no operation, no upstream, and so on.
 
-The status walk (`dirty`), the untracked count and the ahead/behind counts share a time budget of 2 seconds per repository, counted from the start of the read; what is not computed in time is unknown, the other fields are still read. The git configuration of the user (`HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_*`) and of the system applies (`core.excludesFile`, `status.renames`, `core.abbrev`…); the configuration of the git installation, which only git itself can locate, does not.
+The status walk (`dirty`), the untracked count and the ahead/behind counts share a time budget of 2 seconds per repository. The budget starts at the start of the read. A value not computed in time is unknown, and `loomd` still reads the other fields. The git configuration of the user (`HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_*`) and of the system applies (`core.excludesFile`, `status.renames`, `core.abbrev`…). The configuration of the git installation, which only git itself can find, does not apply.
 
 | Field | Known value | Content |
 | --- | --- | --- |
 | `refreshed_at` | `Timestamp` | When the state was read. |
 | `head` | object | What `HEAD` points to, tagged by `kind`: `{"kind": "branch", "name": "main"}`, `{"kind": "unborn", "name": "main"}` (a branch without commits) or `{"kind": "detached", "commit": "abc1234"}` (commit id abbreviated per `core.abbrev`, at least 7 digits). A rebase in progress detaches `HEAD`. |
-| `dirty` | integer (u64) | Tracked paths with a change between `HEAD`, the index and the working tree: modified, added, deleted, renamed (one path), type-changed or conflicted, staged or not, each path once. A submodule follows its `ignore` configuration. Untracked files are not counted. Filter drivers (`filter.<driver>.clean` or `.process`, such as git-lfs) are never run; built-in conversions (end of line, `ident`, `working-tree-encoding`) apply. When a file changed on disk has a `filter` attribute naming a configured driver, its content cannot be compared: `dirty` is unknown and `error` names the driver and the file. |
+| `dirty` | integer (u64) | Tracked paths with a change between `HEAD`, the index and the working tree: modified, added, deleted, renamed (one path), type-changed or conflicted, staged or not, each path once. A submodule follows its `ignore` configuration. Untracked files are not counted. `loomd` never runs filter drivers (`filter.<driver>.clean` or `.process`, such as git-lfs). Built-in conversions (end of line, `ident`, `working-tree-encoding`) apply. When a file changed on disk has a `filter` attribute that names a configured driver, its content cannot be compared. Then `dirty` is unknown, and `error` names the driver and the file. |
 | `untracked` | object | `count`: untracked files, each counted (an untracked directory counts its files, an untracked nested repository counts as one), `.gitignore`, `.git/info/exclude` and `core.excludesFile` applied, empty directories ignored; at most 1,000. `capped`: `true` when the count stopped at 1,000. |
 | `operation` | string \| `null` | Operation in progress, from the markers of the git directory of the working tree: `rebase` (either backend), `merge`, `cherry-pick`, `revert`, `bisect`, `am`. When several markers exist, the first in this order wins: `am`, `rebase`, `cherry-pick`, `merge`, `bisect`, `revert`. |
 | `upstream` | object \| `null` | Upstream of the `HEAD` branch: `name` (short ref name, such as `origin/main`), `ahead` and `behind` (commits of `HEAD` not in the upstream and the reverse, each a known integer or `"unknown"`). `null` when `HEAD` is detached, the branch has no upstream configured, or the upstream ref does not exist (never fetched, or pruned). |
 | `default_branch` | string \| `null` | The branch `refs/remotes/<primary remote>/HEAD` points to; otherwise `main`, then `master`, when the branch exists locally or on the primary remote; otherwise `null`. |
 | `last_commit` | `Timestamp` \| `null` | Committer date of `HEAD`'s commit; `null` on an unborn branch. |
 | `last_fetch` | `Timestamp` \| `null` | Modification time of `FETCH_HEAD`, the latest of the working tree's git directory and of the main one (a linked worktree has its own); `null` when neither exists. |
-| `error` | string \| `null` | Why fields are unknown, one reason per field, joined with `; `, such as `dirty: time budget of 2s exceeded`. A repository that cannot be opened has every field unknown but `last_fetch`, and `cannot open the repository: …`. |
+| `error` | string \| `null` | Why fields are unknown, one reason per field, joined with `; `, such as `dirty: time budget of 2s exceeded`. A repository that cannot be opened has every field unknown except `last_fetch`, and the error `cannot open the repository: …`. |
 
 ```json
 {
@@ -514,7 +579,7 @@ The result of the last update of a repository, scheduled or requested.
 
 | `kind` | Other fields | Meaning |
 | --- | --- | --- |
-| `fetched` | | The primary remote was fetched; the branch `HEAD` is on had nothing to bring in, or the policy is `fetch`. |
+| `fetched` | | The primary remote was fetched. The branch of `HEAD` was not behind its upstream, or the policy is `fetch`. |
 | `fast_forwarded` | `branch`, `from`, `to` (full commit ids) | The branch `HEAD` is on was fast-forwarded. |
 | `default_branch_moved` | `branch`, `from`, `to` | The local default branch, checked out in no working tree, was fast-forwarded. |
 | `skipped` | `reason` | A step was not done (below). |
@@ -536,7 +601,7 @@ The result of the last update of a repository, scheduled or requested.
 | `diverged` | `branch`, `ahead`, `behind` | The branch and its upstream both have commits the other lacks. |
 | `merge_refused` | `stderr_tail` | `git merge --ff-only` refused (an untracked file in the way, a change made since the decision). Not retried before the next update. |
 | `default_branch_diverged` | `branch`, `ahead`, `behind` | The local default branch and its upstream both have commits the other lacks. |
-| `busy` | `step` (`fetch`, `fast_forward`, `move_default_branch`), `stderr_tail` | Another git process (an editor's automatic fetch, a command of the user) held a lock of the repository during this step: `index.lock` or another `*.lock` file existed, or a ref moved under the fetch. Retried at the next interval, without [backoff](#updates); the lock is never removed. Any other failure, or a lock along with another error, stays `failed`. |
+| `busy` | `step` (`fetch`, `fast_forward`, `move_default_branch`), `stderr_tail` | Another git process (an editor's automatic fetch, a command of the user) held a lock of the repository during this step. Either `index.lock` or another `*.lock` file existed, or a ref moved under the fetch. Retried at the next interval, without [backoff](#updates). The lock is never removed. Any other failure, or a lock along with another error, stays `failed`. |
 
 ```json
 {
@@ -558,7 +623,7 @@ The result of the last update of a repository, scheduled or requested.
 | Field | Type | Content |
 | --- | --- | --- |
 | `repos` | list of strings, optional | Slugs of the repositories to update; empty or absent: every repository of the index. |
-| `dry_run` | boolean, optional | `true`: run nothing, say what an update would do. Default `false`. |
+| `dry_run` | boolean, optional | `true`: nothing runs, and the result says what an update would do. Default `false`. |
 
 Unknown fields are rejected.
 
@@ -570,8 +635,8 @@ Unknown fields are rejected.
 
 | `kind` | Other fields | Content |
 | --- | --- | --- |
-| `updated` | `update`: [`LastUpdate`](#lastupdate) | The update ran; also stored as the repository's `last_update`. |
-| `planned` | `policy`, `actions` | Dry run. `actions`, in order, each tagged by `kind`: `skip` (with a `reason`, as in `LastUpdate`), `fetch`, `decide_after_fetch` (whether a branch moves depends on what the fetch brings). With policy `ff`, `decide_after_fetch` is replaced by a `skip` when the working tree already rules out a fast-forward of the branch `HEAD` is on (operation, tracked change, detached or unborn `HEAD`, or one of these unknown). The default branch is never predicted. |
+| `updated` | `update`: [`LastUpdate`](#lastupdate) | The update ran. The result is also stored as the repository's `last_update`. |
+| `planned` | `policy`, `actions` | Dry run. `actions`, in order, each tagged by `kind`: `skip` (with a `reason`, as in `LastUpdate`), `fetch`, `decide_after_fetch` (whether a branch moves depends on what the fetch brings). With policy `ff`, a `skip` replaces `decide_after_fetch` when the working tree already prevents a fast-forward of the branch `HEAD` is on. The causes are an operation, a tracked change, a detached or unborn `HEAD`, or one of these unknown. The default branch is never predicted. |
 
 ### `RepoList`
 
@@ -596,8 +661,8 @@ A repository (`kind` `repo`, the v0.2 shape):
 | `name` | string | Directory name of the repository. |
 | `context` | string | Context name, `unassigned` for a repository without context. |
 | `path` | string | Absolute path of the repository. |
-| `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. One of the ranking keys only: the order of `results` is the ranking. |
-| `matched_fields` | list of strings | Fields holding at least one query word: `name`, `slug`, `path`, `remotes`, `context`, `branch`, in this order. |
+| `score` | number | Full-text relevance: SQLite FTS5 `bm25` with its sign flipped, higher is more relevant. Only one of the keys that rank the results: the order of `results` is the final order. |
+| `matched_fields` | list of strings | Fields that hold at least one query word: `name`, `slug`, `path`, `remotes`, `context`, `branch`, in this order. |
 
 A task (`kind` `task`):
 
@@ -610,7 +675,7 @@ A task (`kind` `task`):
 | `status` | string or `null` | Status as written in `task.md`, a status of a newer loom included; `null` when `task.md` is invalid. |
 | `link_keys` | list of strings | Keys of the origin and related links, in file order. |
 | `score` | number | As for a repository. |
-| `matched_fields` | list of strings | Fields holding at least one query word: `title`, `notes`, `link_keys`, in this order. |
+| `matched_fields` | list of strings | Fields that hold at least one query word: `title`, `notes`, `link_keys`, in this order. |
 
 ### `BackupReport`
 
@@ -656,9 +721,9 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 
 | Field | Type | Content |
 | --- | --- | --- |
-| `context` | string | Context of the store holding the task. |
+| `context` | string | Context of the store that holds the task. |
 | `id` | string | Task ID, the name of its directory. |
-| `error` | string | Why the file cannot be read, starting with `line <n>: ` when the line is known: not UTF-8, no `+++` frontmatter, invalid TOML, a missing or invalid key, an `id` that is not the directory name, a `context` that is not the store's. |
+| `error` | string | Why the file cannot be read. It starts with `line <n>: ` when the line is known. Causes: not UTF-8, no `+++` frontmatter, invalid TOML, an absent or invalid key, an `id` that is not the directory name, a `context` that is not the store's. |
 
 `FailedTaskFile`:
 
@@ -666,6 +731,18 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 | --- | --- | --- |
 | `path` | path | The task directory, or the `tasks/` directory of a store that could not be listed. |
 | `error` | string | What failed, with the file when it is an I/O error. |
+
+### `ChangeEvent`
+
+An object. Its `type` field identifies the event ([schema](schemas/change_event.json)):
+
+| `type` | Fields |
+| --- | --- |
+| `task.changed` | `id` (task ID), `context` |
+| `task.archived` | `id`, `context` |
+| `repo.changed` | `slug` (`<context>/<name>`) |
+| `counts.changed` | `context`, `inbox`, `waiting` (numbers of tasks) |
+| `resync` | none |
 
 ### `TaskList`
 
@@ -681,12 +758,12 @@ Answer of `GET /v1/tasks`.
 | --- | --- | --- |
 | `id` | string | Task ID: 8 lowercase Crockford base32 characters. |
 | `prefix` | string | Shortest prefix of `id` no other task ID starts with, across every context (not only the listed tasks). |
-| `context` | string | Context of the store holding the task. |
-| `task` | `Task` \| `null` | The task, as `task.md` holds it, `updated` being the time of its last event; `null` when `task.md` is invalid. Fields: `id`, `title`, `kind` and `format`, `context`, `status`, `waiting_on` and `waiting_until`, `importance`, `due`, `pinned`, `links`, `relations`, `created`, `updated` (see the [task file](task-file.md)). |
+| `context` | string | Context of the store that holds the task. |
+| `task` | `Task` \| `null` | The task, as `task.md` holds it, with `updated` set to the time of its last event; `null` when `task.md` is invalid. Fields: `id`, `title`, `kind` and `format`, `context`, `status`, `waiting_on` and `waiting_until`, `importance`, `due`, `pinned`, `links`, `relations`, `created`, `updated` (see the [task file](task-file.md)). |
 | `read_only` | `TaskReadOnly`, optional | Why the task cannot be changed; absent when it can. |
 | `rank` | object, optional | With `ranked=true` only: `position` (from 1) and `reason`, the rule that placed the task after the previous one: `first`, `pinned`, `urgent`, `importance`, `due_date`, `age`, `id`. |
 
-`TaskReadOnly`, tagged by `reason`, with the name, the error or the year in `value`: `archived` (the year of `archive/<yyyy>/`; given before any other reason), `unknown_kind`, `unknown_content_format`, `unknown_status` (written by a newer version of loom), `invalid_file` (why `task.md` cannot be read). An archived task has no `actions`.
+`TaskReadOnly` is tagged by `reason`, with the name, the error or the year in `value`. The reasons are `archived` (the year of `archive/<yyyy>/`), `unknown_kind`, `unknown_content_format`, `unknown_status` (written by a newer version of loom), and `invalid_file` (why `task.md` cannot be read). If a task is archived, the reason is always `archived`. An archived task has no `actions`.
 
 ### `TaskDetail`
 
@@ -724,11 +801,11 @@ Body of `POST /v1/tasks`.
 | `pinned` | boolean | no | Default `false`. |
 | `links`, `relations` | list, object | no | As in the [task file](task-file.md). |
 
-The ID is drawn by `loomd`, free across every context.
+`loomd` draws the ID. No task of the index, in any context, has this ID.
 
 ### `TaskEdit`
 
-Body of `PATCH /v1/tasks/{id}`: the fields to change, each optional; an absent field is left as it is.
+Body of `PATCH /v1/tasks/{id}`: the fields to change, each optional. An absent field stays as it is.
 
 | Field | Type | Content |
 | --- | --- | --- |
@@ -739,7 +816,7 @@ Body of `PATCH /v1/tasks/{id}`: the fields to change, each optional; an absent f
 | `links` | list | Replaces every link. |
 | `relations` | object | Replaces every relation. |
 
-The status and the pin are changed by [actions](#task-endpoints); `status` or `pinned` in the body is an `invalid_request`.
+[Actions](#task-endpoints) change the status and the pin. `status` or `pinned` in the body is an `invalid_request`.
 
 ### `TaskActionRequest`
 
@@ -780,7 +857,7 @@ Body of `POST /v1/tasks/{id}/actions/{action}`, optional.
 
 | Field | Type | Content |
 | --- | --- | --- |
-| `path` | path | Absolute path of the repository or of a directory inside it. `.` components and a trailing `/` are ignored; `..` is rejected. |
+| `path` | path | Absolute path of the repository or of a directory inside it. `.` components and a `/` at the end are ignored. `..` is rejected. |
 | `on_use` | boolean, optional | `true`: registration on use (see [repositories](#repositories)). Default `false`, and omitted when `false`, so that a daemon older than this field still reads the request. |
 
 ### `ScanResult`
@@ -795,7 +872,7 @@ Body of `POST /v1/tasks/{id}/actions/{action}`, optional.
 
 ### `DaemonDiagnostics`
 
-The environment of `loomd` its git operations depend on, read at each request. No secret value is returned.
+The environment of `loomd` that its git operations depend on, read at each request. The answer contains no secret value.
 
 | Field | Type | Content |
 | --- | --- | --- |
@@ -868,7 +945,7 @@ Answer of [`POST /v1/diagnostics/remote-check`](#remote-check).
 
 ### `DoctorReport`
 
-Output of `loom repo doctor --json`; checks and their order: [CLI conventions](cli/conventions.md#loom-repo-doctor).
+Output of `loom repo doctor --json`. The checks and their order are in the [CLI conventions](cli/conventions.md#loom-repo-doctor).
 
 | Field | Type | Content |
 | --- | --- | --- |
@@ -880,9 +957,9 @@ Error returned instead of a response body.
 
 | Field | Type | Required | Content |
 | --- | --- | --- | --- |
-| `code` | `ErrorCode` | yes | Machine-readable category. Clients branch on it, never on `message`. |
+| `code` | `ErrorCode` | yes | Machine-readable category. Clients make decisions from it, never from `message`. |
 | `message` | string | yes | Human-readable explanation, in English. |
-| `details` | any JSON value | no | Structured context; its shape depends on `code` and the endpoint. Omitted when empty. |
+| `details` | any JSON value | no | Structured context. Its shape depends on `code` and the endpoint. Omitted when empty. |
 
 ```json
 {
@@ -898,13 +975,13 @@ Error returned instead of a response body.
 
 | Code | Meaning | Retry |
 | --- | --- | --- |
-| `invalid_request` | The request is malformed: unparsable body, unknown or missing field, invalid value. | No: the same request fails the same way. |
+| `invalid_request` | The request is malformed: unparsable body, unknown or absent field, invalid value. | No: the same request fails the same way. |
 | `not_found` | The addressed resource or endpoint does not exist. | No. |
 | `version_mismatch` | The client asked for an API version the daemon does not serve. | No: upgrade the client or the daemon. |
-| `unavailable` | The daemon cannot serve the request right now: starting, shutting down, or a dependency is down. | Yes, later. |
-| `internal` | The daemon failed while handling a valid request: a bug or an unexpected I/O failure. | Not expected to help. |
+| `unavailable` | The daemon stops and cannot serve the request. The same request can succeed after loomd starts again. | Yes, later. |
+| `internal` | The daemon failed while it handled a valid request: a bug or an unexpected I/O failure. | Not expected to help. |
 | `ambiguous_prefix` | A task ID prefix matches several tasks; `details` lists them. | With a longer prefix. |
-| `read_only` | The task cannot be changed: archived, unknown kind, format or status, or an invalid `task.md`. | No: an archived task stays read-only; otherwise fix the file, or upgrade loom. |
+| `read_only` | The task cannot be changed: archived, unknown kind, format or status, or an invalid `task.md`. | No. An archived task stays read-only. For the other reasons, fix the file or upgrade loom. |
 | `illegal_transition` | The task cannot move from its status to the requested one. | No. |
 | `conflict` | An undo found a field changed since the change it reverts. | After the hand edit is recorded, the undo reverts it instead. |
 | `nothing_to_undo` | The task has no change to undo. | No. |

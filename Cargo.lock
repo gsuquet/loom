@@ -2087,6 +2087,7 @@ version = "0.3.0"
 dependencies = [
  "globset",
  "loom-api",
+ "loom-core",
  "serde",
  "thiserror",
  "toml",
@@ -2184,6 +2185,7 @@ dependencies = [
  "assert_cmd",
  "axum",
  "clap",
+ "futures-util",
  "jiff",
  "jsonschema",
  "loom-api",

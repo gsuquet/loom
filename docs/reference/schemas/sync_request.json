@@ -5,12 +5,12 @@
   "type": "object",
   "properties": {
     "dry_run": {
-      "description": "`true`: decide from the stored state without fetching or merging.",
+      "description": "`true`: decide from the stored state, with no fetch and no merge.",
       "type": "boolean",
       "default": false
     },
     "repos": {
-      "description": "Slugs of the repositories to update; empty: every repository of the index.",
+      "description": "Slugs of the repositories to update. If empty: every repository of the index.",
       "type": "array",
       "default": [],
       "items": {

@@ -1,12 +1,15 @@
 # Manage tasks
 
-> Capture a task from any shell, list what to work on, change it, and close it.
+> Capture a task from any shell. Then list the tasks to work on, change a task, and close it.
 
-Before you start: `loom` and `loomd` are installed and your contexts are defined in `config.toml` ([configure contexts](configure-contexts.md)).
+Before you start, make sure that:
+
+- `loom` and `loomd` are installed.
+- Your contexts are defined in `config.toml` ([configure contexts](configure-contexts.md)).
 
 ## Capture a task
 
-From any directory:
+In any directory, run `loom add` with the title of the task:
 
 ```bash
 loom add Renew the passport
@@ -16,21 +19,26 @@ loom add Renew the passport
 k3q7 personal Renew the passport
 ```
 
-The task goes to the inbox of the context of the current directory: inside a repository, the context of the repository; otherwise the context of a `match.paths` prefix, then `default_context`. To choose it yourself, pass `-c`, or set `LOOM_CONTEXT` for a whole shell:
+The task goes to the inbox of the context of the current directory:
+
+- In a repository, this is the context of the repository.
+- Outside a repository, this is the context of a `match.paths` prefix, then `default_context`.
+
+To select the context yourself, give `-c`. To select it for a full shell, set `LOOM_CONTEXT`:
 
 ```bash
 loom add -c work Review the API draft
 export LOOM_CONTEXT=work
 ```
 
-Add details when you already know them:
+If you already know the details, add them:
 
 ```bash
 loom add --kind bug --importance p1 --due tomorrow --ready Login timeout on checkout
 loom add --parent k3q7 --due +2w Book the appointment
 ```
 
-`--ready` skips the inbox. `--due` takes a date (`2026-11-02`), `today`, `tomorrow`, or a number of days or weeks from today (`+3d`, `+2w`).
+`--ready` skips the inbox. `--due` accepts a date (`2026-11-02`), `today`, `tomorrow`, or a number of days or weeks from today (`+3d`, `+2w`).
 
 ## List what to work on
 
@@ -44,7 +52,7 @@ loom ls
 2  k3q8  work     ready   p1  bug   2026-10-15  Login timeout on checkout
 ```
 
-This is the priority list of the current context: ready and active tasks, and the waiting ones whose date has come. To see why a task is where it is:
+This is the priority list of the current context. It shows the ready and active tasks. It also shows the tasks with the status `waiting` whose date has come. To see why a task has its position in the list, run this command:
 
 ```bash
 loom ls --why
@@ -52,18 +60,18 @@ loom ls --why
 
 Other views:
 
-- every context: `loom ls --all-contexts`;
-- the inbox, or any status: `loom ls --status inbox`.
+- All contexts: `loom ls --all-contexts`.
+- The inbox, or any status: `loom ls --status inbox`.
 
 ## Look at a task
 
-Pass its ID, or the prefix `loom ls` shows:
+Give the ID of the task, or the prefix that `loom ls` shows:
 
 ```bash
 loom show k3q8
 ```
 
-The fields come first, then the notes. For scripts, every command takes `--json`.
+The output shows the fields first, then the notes. For scripts, each command accepts `--json`.
 
 ## Change a task
 
@@ -73,15 +81,15 @@ loom set k3q8 parent=h8w2 pinned=yes
 loom set k3q8 due=none
 ```
 
-To change the notes, or several fields at once, open the file:
+To change the notes, or several fields at the same time, open the file.
+
+**Caution:** While the file is open, do not change the task from a different terminal, for example to close it. `loom` does not lock the file. If the task changes, your save replaces that change and `loom` shows a warning. `loom undo` reverts your edit.
 
 ```bash
 loom edit k3q8
 ```
 
-`loom edit` uses `VISUAL`, then `EDITOR`. If the saved file is invalid, `loom` says why and keeps it as saved: run `loom edit` again to fix it.
-
-The file is not locked while it is open. If the task changes meanwhile (you close it from another terminal, for example), your save replaces that change and `loom` warns you; `loom undo` reverts your edit.
+`loom edit` uses `VISUAL`, then `EDITOR`. If the saved file is not valid, `loom` gives the reason and keeps the file as you saved it. To correct it, run `loom edit` again.
 
 ## Wait on someone
 
@@ -98,28 +106,53 @@ loom done k3q8
 loom cancel h8w2
 ```
 
-To revert a mistake, `loom undo k3q8` reverts the last change of the task, a closing included.
+To revert a mistake, run `loom undo k3q8`. It reverts the last change of the task, also if this change closed the task.
 
-A closed task leaves `loom ls --status done` 7 days after its closing (`[tasks] archive_after`): `loomd` moves it to the archive of its context store, where it is read-only.
+`loomd` archives a closed task 7 days after its closing (`[tasks] archive_after`). It moves the task to the archive of its context store. An archived task is read-only.
 
 ## Find an archived task
 
-```bash
-loom ls --archived
-loom ls --archived --status cancelled --all-contexts
-loom search certificates
-```
+1. List the archived tasks of the context:
 
-`loom show <id>` works on an archived task as on any other; it prints `read-only:  archived in archive/<yyyy>`. `loom search` lists archived tasks after every other result.
+   ```bash
+   loom ls --archived
+   ```
 
-An archived task cannot be changed: `loom done`, `set`, `undo`, `edit` and the others refuse it. To work on it again, move its directory back to `tasks/` in its store (`<loom home>/contexts/<context>` unless `store.path` says otherwise), then reopen it with `loom edit k3q8`, setting `status = "ready"`:
+2. To see only one status in all the contexts, add `--status` and `--all-contexts`:
 
-```bash
-mv ~/.loom/contexts/work/archive/2026/k3q8m2xa ~/.loom/contexts/work/tasks/
-loom edit k3q8
-```
+   ```bash
+   loom ls --archived --status cancelled --all-contexts
+   ```
 
-Reopen it right away: a task still closed goes back to the archive at the next hourly pass.
+3. To find a task by its words, use `loom search`. The archived tasks come after all the other results:
+
+   ```bash
+   loom search certificates
+   ```
+
+4. To see the task, use `loom show`. It prints `read-only:  archived in archive/<yyyy>`:
+
+   ```bash
+   loom show k3q8
+   ```
+
+## Open an archived task again
+
+`loom done`, `set`, `undo`, `edit` and the other commands refuse an archived task.
+
+1. Move the task directory back to `tasks/` in its store. The store is `<loom home>/contexts/<context>`, if `store.path` does not give a different path:
+
+   ```bash
+   mv ~/.loom/contexts/work/archive/2026/k3q8m2xa ~/.loom/contexts/work/tasks/
+   ```
+
+2. Open the task file, and set `status = "ready"`:
+
+   ```bash
+   loom edit k3q8
+   ```
+
+Do step 2 immediately after step 1. If the task is still closed at the next hourly pass, `loomd` moves it to the archive again.
 
 ## Reference
 

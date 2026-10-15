@@ -17,7 +17,7 @@
       "$ref": "#/$defs/ServicePlatform"
     },
     "running": {
-      "description": "The `loomd` process of the service is running.",
+      "description": "The `loomd` process of the service runs.",
       "type": "boolean"
     },
     "unit_path": {

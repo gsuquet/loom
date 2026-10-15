@@ -748,3 +748,46 @@ fn archived_tasks_are_listed_apart_shown_and_read_only() {
     let usage = sandbox.run(&sandbox.home(), None, &["ls", "--archived", "--why"]);
     assert_eq!(usage.status.code(), Some(2), "{}", stderr(&usage));
 }
+
+#[test]
+fn edit_of_the_notes_only_or_of_the_spacing_only_is_shown_at_once() {
+    let sandbox = Sandbox::new();
+    let id = sandbox
+        .add(&["-c", "work", "Original"])
+        .summary
+        .id
+        .to_string();
+
+    // Notes only: no event, the index holds the new notes.
+    let notes = editor(&sandbox, "notes", r#"printf 'Asked Alice.\n' >> "$1""#);
+    let output = sandbox.run_env(&sandbox.home(), None, &[("EDITOR", &notes)], &["edit", &id]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).ends_with(" work inbox Original\n"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(sandbox.ok(&["show", &id]).contains("Asked Alice."));
+
+    // Spacing only: the same task, shown at once, not after the 5 s wait.
+    let spacing = editor(
+        &sandbox,
+        "spacing",
+        r#"t=$(mktemp) && sed 's/^title = /title  =  /' "$1" > "$t" && cat "$t" > "$1" && rm "$t""#,
+    );
+    let started = Instant::now();
+    let output = sandbox.run_env(
+        &sandbox.home(),
+        None,
+        &[("EDITOR", &spacing)],
+        &["edit", &id],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let line = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(line.ends_with(" work inbox Original\n"), "{line}");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+}

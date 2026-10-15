@@ -8,3 +8,4 @@ pub mod home;
 pub mod layout;
 pub mod machine;
 pub mod repos;
+pub mod schedules;

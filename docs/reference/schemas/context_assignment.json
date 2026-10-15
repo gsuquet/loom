@@ -30,7 +30,7 @@
           "$ref": "#/$defs/ContextName"
         },
         "pattern": {
-          "description": "The matching entry, `host` or `host/path-prefix`, as normalized.",
+          "description": "The entry that matches, `host` or `host/path-prefix`, as normalized.",
           "type": "string"
         },
         "rule": {
@@ -53,7 +53,7 @@
           "$ref": "#/$defs/ContextName"
         },
         "prefix": {
-          "description": "The matching entry, as written in the configuration (before `~` expansion).",
+          "description": "The entry that matches, as written in the configuration (before `~` expansion).",
           "type": "string"
         },
         "rule": {
@@ -68,7 +68,7 @@
       ]
     },
     {
-      "description": "No rule matches; `default_context` is set.",
+      "description": "No rule matches, and `default_context` is set.",
       "type": "object",
       "properties": {
         "context": {
@@ -101,7 +101,7 @@
   ],
   "$defs": {
     "ContextName": {
-      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,

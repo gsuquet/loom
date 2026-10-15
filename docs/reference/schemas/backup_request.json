@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "context": {
-      "description": "The context to sync; absent: every context held here with a backup remote.",
+      "description": "The context to sync. If absent: every context held here with a backup remote.",
       "anyOf": [
         {
           "$ref": "#/$defs/ContextName"
@@ -19,7 +19,7 @@
   "additionalProperties": false,
   "$defs": {
     "ContextName": {
-      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,

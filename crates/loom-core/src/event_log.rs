@@ -30,7 +30,7 @@ pub struct EventLog {
 /// A line of `events.jsonl` that is not replayed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkippedLine {
-    /// Line number, starting at 1.
+    /// Line number, from 1.
     pub line: usize,
     /// The line as written, without its line ending.
     pub raw: String,

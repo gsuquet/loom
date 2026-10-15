@@ -10,13 +10,13 @@ use std::time::{Duration, Instant};
 use loom::cli::{AddArgs, EditArgs, GlobalArgs, LsArgs, SetArgs, ShowArgs, SnoozeArgs, TaskArgs};
 use loom::task::{
     AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
-    changed_meanwhile, context_with_parent, edit_recorded, editor, kind_of, list_api_path,
-    new_task, parse_date, render_change, render_detail, render_list, resolve_context, set_plan,
-    today, with_parent,
+    changed_after_save, changed_meanwhile, context_with_parent, editor, holds_saved, kind_of,
+    list_api_path, new_task, parse_date, render_change, render_detail, render_list,
+    resolve_context, set_plan, today, with_parent,
 };
 use loom_api::{
-    ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents, TaskList,
-    TaskReadOnly,
+    Actor, ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents,
+    TaskList, TaskReadOnly,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -248,8 +248,11 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     if saved == original {
         return print(&format!("{} unchanged\n", summary.prefix));
     }
-    let saved_notes = match loom_core::parse_task_md(&saved) {
-        Ok(document) => document.body().to_owned(),
+    let (saved_task, saved_notes) = match loom_core::parse_task_md(&saved) {
+        Ok(document) => (
+            document.task(loom_api::Timestamp::EPOCH),
+            document.body().to_owned(),
+        ),
         Err(error) => {
             return Err(miette!(
                 "{}: {error}\nThe file is kept as saved: loomd shows the task read-only until it is fixed (`loom edit {}` again).",
@@ -261,15 +264,13 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     let deadline = Instant::now() + EDIT_RECORD_TIMEOUT;
     loop {
         let after = runtime.block_on(get(&client, &id))?;
-        let log = runtime.block_on(events(&client, &id))?;
-        // The log is append-only, in the order loomd writes it: the events after the first
-        // `logged` arrived while the editor was open. (A merge of logs from several machines
-        // that reorders them would break this.)
-        let appended = log.get(logged..).unwrap_or_default();
-        // The saved notes, not any change of them: another actor may log a note meanwhile.
-        let notes_saved = saved_notes != before.body && after.body == saved_notes;
-        // The saved file is valid: an invalid state is the watcher reading it mid-write.
-        if after.summary.task.is_some() && edit_recorded(appended, notes_saved) {
+        if holds_saved(&after, &saved_task, &saved_notes) {
+            // Read once the save is indexed: its hand-edit event and what came before it.
+            let log = runtime.block_on(events(&client, &id))?;
+            // The log is append-only, in the order loomd writes it: the events after the first
+            // `logged` arrived while the editor was open. (A merge of logs from several
+            // machines that reorders them would break this.)
+            let appended = log.get(logged..).unwrap_or_default();
             let others = changed_meanwhile(appended);
             if !others.is_empty() {
                 warn!(
@@ -281,14 +282,38 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
             return print(&render_change(&after));
         }
         if Instant::now() >= deadline {
-            return print(&format!(
-                "{} saved; loomd recorded no change of the task within {} s (only spacing changed, or loomd has not read the file yet)\n",
-                summary.prefix,
-                EDIT_RECORD_TIMEOUT.as_secs()
+            let log = runtime.block_on(events(&client, &id))?;
+            return print(&timed_out(
+                log.get(logged..).unwrap_or_default(),
+                &summary.prefix,
+                &after,
             ));
         }
         std::thread::sleep(EDIT_POLL);
     }
+}
+
+/// What `loom edit` prints when the index did not hold the save in time. A hand-edit event in
+/// `appended` means loomd recorded the save and the task changed again after it (a `loom done`
+/// elsewhere, a schedule, a sync); that is told, with the actors.
+fn timed_out(appended: &[EventRecord], prefix: &str, after: &TaskDetail) -> String {
+    if !appended.iter().any(|record| record.actor == Actor::File) {
+        return format!(
+            "{prefix} saved; loomd has not recorded it within {} s\n",
+            EDIT_RECORD_TIMEOUT.as_secs()
+        );
+    }
+    let after_save = changed_after_save(appended);
+    let by = if after_save.is_empty() {
+        String::new()
+    } else {
+        format!(" (by {})", after_save.join(", "))
+    };
+    warn!("the task changed again after the save{by}: `loom show {prefix}` shows it");
+    format!(
+        "{prefix} saved; the task changed again after the save\n{}",
+        render_change(after)
+    )
 }
 
 /// `GET /v1/tasks/{id}/events`: the event log of the task.

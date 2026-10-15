@@ -15,6 +15,7 @@ use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
 use crate::machine::MachineName;
+use crate::schedules::Schedule;
 
 /// `[contexts.<name>]`: how repositories are matched to a context, and where its tasks live.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -32,6 +33,9 @@ pub struct ContextConfig {
     /// `machines`: the machines that hold the context (`machine.toml` `id`); `None` for all.
     #[serde(default, deserialize_with = "machines")]
     pub machines: Option<Vec<MachineName>>,
+    /// `[[contexts.<name>.schedules]]`: recurring tasks of the context.
+    #[serde(default)]
+    pub schedules: Vec<Schedule>,
 }
 
 impl ContextConfig {

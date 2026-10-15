@@ -23,13 +23,13 @@ static LONG_VERSION: LazyLock<String> = LazyLock::new(|| VERSION_INFO.to_string(
     about
 )]
 pub struct Cli {
-    /// Loom home directory. Overrides `LOOM_HOME`; default `~/.loom`.
+    /// Loom home directory. Overrides `LOOM_HOME`. Default: `~/.loom`.
     #[arg(long, value_name = "DIR")]
     pub loom_home: Option<PathBuf>,
     /// Print errors only on stderr.
     #[arg(short, long, conflicts_with = "verbose")]
     pub quiet: bool,
-    /// Print more diagnostics on stderr; repeat for more (`-vv`).
+    /// Print more diagnostics on stderr. Repeat the flag for more (`-vv`).
     #[arg(short, long, action = ArgAction::Count)]
     pub verbose: u8,
     /// When to use colors: `auto` colors a terminal unless `NO_COLOR` is set.

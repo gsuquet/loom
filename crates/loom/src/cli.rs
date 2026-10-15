@@ -40,13 +40,13 @@ pub struct Cli {
 /// Options accepted by every command, before or after the command name.
 #[derive(Debug, clap::Args)]
 pub struct GlobalArgs {
-    /// Context to work in (lowercase letters, digits and `-`, starting with a letter).
+    /// Context to work in (lowercase letters, digits and `-`, with a letter first).
     #[arg(short = 'c', long, global = true, value_name = "NAME")]
     pub context: Option<ContextName>,
     /// Print errors only on stderr.
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
-    /// Print more diagnostics on stderr; repeat for more (`-vv`).
+    /// Print more diagnostics on stderr. Repeat the flag for more (`-vv`).
     #[arg(short, long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
     /// When to use colors: `auto` colors a terminal unless `NO_COLOR` is set.
@@ -66,12 +66,12 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show the state of loomd, starting it when it is not running.
+    /// Show the state of loomd, and start loomd if it is stopped.
     Status {
         /// Print the daemon state as JSON (`StatusResponse` schema).
         #[arg(long)]
         json: bool,
-        /// Fail instead of starting loomd when it is not running.
+        /// Fail if loomd is stopped, and do not start it.
         #[arg(long)]
         no_start: bool,
     },
@@ -84,17 +84,17 @@ pub enum Command {
     /// Upgrade `loom` and `loomd` to the latest release of a channel, to a given release, or to
     /// a local build.
     ///
-    /// Both binaries are replaced in the directory of the running `loom`; the replaced version
-    /// is kept in `<loom home>/versions/`. Releases are verified (minisign signature of
-    /// `SHA256SUMS`, then the archive checksum) before anything is replaced.
+    /// The command replaces the two binaries in the directory of the `loom` that runs. It keeps
+    /// the replaced version in `<loom home>/versions/`. It verifies the releases (minisign
+    /// signature of `SHA256SUMS`, then the archive checksum) before it replaces anything.
     Upgrade(UpgradeArgs),
     /// Restore the previous version: the highest version kept in `<loom home>/versions/` other
-    /// than the running one.
+    /// than the version that runs.
     Rollback(RollbackArgs),
     /// List, show, scan, register and check the repositories loomd indexes.
     ///
-    /// Starts loomd when it is not running (except `doctor`). Run inside a repository the index
-    /// does not know, any `loom` command registers it.
+    /// Starts loomd if it is stopped (except `doctor`). If any `loom` command runs inside a
+    /// repository that the index does not know, the command registers that repository.
     Repo {
         /// Repository command to run.
         #[command(subcommand)]
@@ -107,67 +107,73 @@ pub enum Command {
     /// Results are ranked: active, ready and waiting tasks, then repositories, then inbox
     /// tasks, then done and cancelled tasks. Among tasks: the query as a link key
     /// (`CORE-1042`), then every word in the title, then most recently changed. Among
-    /// repositories: exact name, then name prefix, then slug, then the other fields; then most
-    /// recently used. `-c` keeps one context, `--type` one kind. Starts loomd when it is not
-    /// running.
+    /// repositories: exact name, then name prefix, then slug, then the other fields. In each
+    /// group, the most recently used comes first. `-c` keeps one context, `--type` one kind.
+    /// Starts loomd if it is stopped.
     Search(SearchArgs),
     /// Capture a task: in the inbox, unless `--ready`.
     ///
     /// The context is the first of: `-c`, `LOOM_CONTEXT`, the context of the repository of the
     /// current directory, its `match.paths` prefix, `default_context`. The kind is `chore`
-    /// unless `--kind` is given; the importance, the default of the kind. Starts loomd when it
-    /// is not running.
+    /// unless `--kind` is given. The importance is the default of the kind. Starts loomd if it
+    /// is stopped.
     Add(AddArgs),
     /// List the priority list of a context, or its tasks with a status.
     ///
-    /// The context is resolved as for `loom add`; `--all-contexts` lists every context. The
+    /// The context is resolved as for `loom add`. `--all-contexts` lists every context. The
     /// priority list holds the ready and active tasks, and the waiting ones whose date has
-    /// come, in priority order. Starts loomd when it is not running.
+    /// come, in priority order. Starts loomd if it is stopped.
     Ls(LsArgs),
     /// Show a task: its fields and notes. `ID` is a task ID or a unique prefix of one, of any
     /// context.
     Show(ShowArgs),
-    /// Change fields of a task: `key=value` pairs among `title`, `kind`, `format` (with
-    /// `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`) and
-    /// `pinned` (`yes` or `no`).
+    /// Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format`
+    /// (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or
+    /// `none`) and `pinned` (`yes` or `no`).
     Set(SetArgs),
     /// Mark a task done.
     Done(TaskArgs),
     /// Cancel a task.
     Cancel(TaskArgs),
-    /// Put a task in `waiting` until a date: hidden from the priority list until then.
+    /// Put a task in `waiting` until a date. Until then, the priority list does not show it.
     Snooze(SnoozeArgs),
     /// Revert the last change of a task (an edit, a status change, a pin, a hand edit, an
-    /// undo). Undoing an undo redoes the change.
+    /// undo). An undo of an undo applies the change again.
     Undo(TaskArgs),
     /// Open the `task.md` of a task in `VISUAL`, `EDITOR` or `vi`. loomd records the changes as
-    /// an edit; an invalid file is reported and kept as saved.
+    /// an edit. If the file is invalid, loomd reports it and keeps it as saved.
     Edit(EditArgs),
     /// Rebuild the tasks index from the task files of every context store.
     ///
-    /// The files are the source of truth: rows of tasks whose directory is gone are dropped,
-    /// an invalid `task.md` is indexed read-only and listed, never rewritten. A task that cannot
-    /// be read is listed and keeps its previous entry; the others are indexed. Hand edits not
-    /// recorded yet are recorded first, so a reindex may append `edited` events. The
-    /// repositories of the index are left as they are. Starts loomd when it is not running.
+    /// The files are the source of truth. The reindex drops the rows of tasks whose directory
+    /// is gone. It indexes an invalid `task.md` as read-only and lists it, but never rewrites
+    /// it. If a task cannot be read, the reindex lists it and keeps its previous entry. It
+    /// indexes the other tasks.
+    ///
+    /// Hand edits that are not recorded yet are recorded first, so a reindex can append
+    /// `edited` events. The repositories of the index stay as they are. Starts loomd if it is
+    /// stopped.
     Reindex(ReindexArgs),
     /// Back up the context stores: push their commits to `store.backup.remote`, or
     /// fast-forward them to it.
     ///
-    /// Syncs every context store held on this machine that has a `store.backup.remote`, or the
-    /// one `-c` names. Changes not committed yet are committed first. A store whose remote has
-    /// commits it lacks while it has commits the remote lacks has diverged: it is reported and
-    /// left as it is, never merged, rebased or forced. Fails when a store is not synced. loomd
-    /// also syncs at start and every `[tasks] sync_interval`. Starts loomd when it is not
-    /// running.
+    /// Syncs every context store on this machine that has a `store.backup.remote`, or only the
+    /// store that `-c` names. Changes that are not committed yet are committed first. A store
+    /// has diverged if the store and its remote each have commits that the other does not
+    /// have. The sync reports a diverged store and leaves it as it is: it never merges, rebases
+    /// or forces it.
+    ///
+    /// The command fails if a store is not synced. loomd also syncs at start and at each
+    /// `[tasks] sync_interval`. Starts loomd if it is stopped.
     Sync(SyncArgs),
     /// Print the shell integration to evaluate in the shell's startup file:
     /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in
     /// `~/.bashrc`.
     ///
-    /// The directory the shell starts in, then each directory it enters, once per shell
-    /// session, runs `loom repo register --on-use --background` detached, so that loomd
-    /// registers the repository it is in. Does nothing when `loom` is not on `PATH`.
+    /// The shell runs `loom repo register --on-use --background` detached in the directory
+    /// where it starts, and then in each directory that it enters. It does this one time for
+    /// each directory in a shell session. Thus loomd registers the repository of the
+    /// directory. The integration does nothing if `loom` is not on `PATH`.
     ShellInit(ShellInitArgs),
     /// Internal: started by loomd from the saved previous version after an auto-upgrade;
     /// waits for the new loomd and rolls back when it does not answer (ADR-0011).
@@ -202,12 +208,12 @@ pub struct UpgradeArgs {
     /// `--version` or `--from` is given).
     #[arg(long, value_name = "CHANNEL", value_enum)]
     pub channel: Option<ReleaseChannel>,
-    /// Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version
+    /// Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the version that runs
     /// (use `loom rollback`).
     #[arg(long, value_name = "VERSION", value_parser = parse_release_version)]
     pub version: Option<Version>,
-    /// Install a local build: a release archive (`.tar.gz`) or a directory holding `loom` and
-    /// `loomd`. Not verified; installed even when its version is not newer.
+    /// Install a local build: a release archive (`.tar.gz`) or a directory that holds `loom`
+    /// and `loomd`. Not verified. Installed even if its version is not newer.
     #[arg(long, value_name = "PATH")]
     pub from: Option<PathBuf>,
     /// Print the decision only: no download, nothing installed (a `--channel` is still
@@ -267,7 +273,7 @@ pub struct SyncArgs {
 /// Options of `loom search`.
 #[derive(Debug, clap::Args)]
 pub struct SearchArgs {
-    /// Words to search for, joined with spaces (quoting the query is optional).
+    /// Words to search for, joined with spaces (quotes around the query are optional).
     #[arg(value_name = "QUERY", required = true, num_args = 1..)]
     pub query: Vec<String>,
     /// Most results to print.
@@ -289,7 +295,7 @@ pub struct SearchArgs {
 /// Options of `loom add`.
 #[derive(Debug, clap::Args)]
 pub struct AddArgs {
-    /// Title, words joined with spaces (quoting it is optional).
+    /// Title, words joined with spaces (quotes around the title are optional).
     #[arg(value_name = "TITLE", required = true, num_args = 1..)]
     pub title: Vec<String>,
     /// Kind of the task.
@@ -298,15 +304,15 @@ pub struct AddArgs {
     /// Format of a `content` task.
     #[arg(long, value_enum)]
     pub format: Option<FormatArg>,
-    /// Importance; the default of the kind when absent (p1 for bug, investigation, support and
+    /// Importance. If absent, the default of the kind (p1 for bug, investigation, support and
     /// review; p3 for chore, research and learning; p2 otherwise).
     #[arg(long, value_enum)]
     pub importance: Option<ImportanceArg>,
     /// Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`.
     #[arg(long, value_name = "DATE")]
     pub due: Option<String>,
-    /// Parent task: an ID or a unique prefix of one. The task goes to the parent's context;
-    /// `-c` or `LOOM_CONTEXT` naming another context is an error.
+    /// Parent task: an ID or a unique prefix of one. The task goes to the parent's context. If
+    /// `-c` or `LOOM_CONTEXT` names another context, the command fails.
     #[arg(long, value_name = "ID", value_parser = task_prefix)]
     pub parent: Option<String>,
     /// Skip the inbox: the task is ready.
@@ -324,7 +330,7 @@ pub struct AddArgs {
     reason = "command-line flags; clap enforces their combinations"
 )]
 pub struct LsArgs {
-    /// List every context. `LOOM_CONTEXT` is ignored; `-c` is an error.
+    /// List every context. `LOOM_CONTEXT` is ignored. `-c` is an error.
     #[arg(long)]
     pub all_contexts: bool,
     /// The tasks with this status, sorted by ID, instead of the priority list.
@@ -468,18 +474,18 @@ pub enum RepoCommand {
     Show(RepoShowArgs),
     /// Scan the roots and the registered repositories now.
     Scan(RepoScanArgs),
-    /// Add a repository outside the roots to the index; scans keep it while it exists.
+    /// Add a repository outside the roots to the index. Scans keep it while it exists.
     Register(RepoRegisterArgs),
-    /// Remove a repository from the index (registering it again undoes it).
+    /// Remove a repository from the index (to undo, register it again).
     Forget(RepoForgetArgs),
-    /// Check roots, contexts, the disk usage of the loom home, unassigned repositories, loomd's
-    /// SSH agent, each remote host as loomd's git reaches it, and the last updates; print the
-    /// fixes. Exits with 1 when a check fails.
+    /// Check roots, contexts, the disk usage of the loom home and unassigned repositories. Check
+    /// loomd's SSH agent, each remote host as loomd's git reaches it, and the last updates.
+    /// Print the fixes. If a check fails, the command exits with 1.
     Doctor(RepoDoctorArgs),
     /// Update repositories now, as loomd does on its schedule: fetch the primary remote, then
     /// fast-forward only when no local work can be affected.
     ///
-    /// Ignores the schedule and the backoff of unreachable hosts; follows the update policy of
+    /// Ignores the schedule and the backoff of unreachable hosts. Follows the update policy of
     /// each repository. Prints one line per repository: its slug and what happened.
     Sync(RepoSyncArgs),
 }
@@ -487,11 +493,11 @@ pub enum RepoCommand {
 /// Options of `loom repo sync`.
 #[derive(Debug, clap::Args)]
 pub struct RepoSyncArgs {
-    /// Repositories to update: path, `<context>/<name>` or name; every repository of the index
-    /// when none is given.
+    /// Repositories to update: path, `<context>/<name>` or name. Default: every repository of
+    /// the index.
     #[arg(value_name = "REPO")]
     pub repos: Vec<String>,
-    /// Print what each update would do, decided from the state read now; fetch nothing, change
+    /// Print what each update would do, decided from the state read now. Fetch nothing, change
     /// nothing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
@@ -527,7 +533,7 @@ pub struct RepoShowArgs {
     /// directory. A path the index does not know is registered.
     #[arg(value_name = "REPO")]
     pub repo: Option<String>,
-    /// Read the repository's state now instead of showing the stored one.
+    /// Read the state of the repository now. Do not show the stored state.
     #[arg(long)]
     pub refresh: bool,
     /// Print the repository as JSON (`RepoSummary` schema).
@@ -619,20 +625,20 @@ pub struct RepoDoctorArgs {
 /// `loom service` commands.
 #[derive(Debug, Subcommand)]
 pub enum ServiceCommand {
-    /// Install loomd as a user service and start it; no-op when already installed and loaded.
-    /// Refused when `[daemon] service = false`.
+    /// Install loomd as a user service and start it. No-op if it is already installed and
+    /// loaded. Refused if `[daemon] service = false`.
     Install {
-        /// Print the file that would be written and the commands that would run; change nothing.
+        /// Print the file that would be written and the commands that would run. Change nothing.
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
-    /// Stop loomd, unload the user service and remove its file; no-op when not installed.
+    /// Stop loomd, unload the user service and remove its file. No-op if it is not installed.
     Uninstall {
-        /// Print the commands that would run and the file that would be removed; change nothing.
+        /// Print the commands that would run and the file that would be removed. Change nothing.
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
-    /// Report whether the user service is installed, loaded and running.
+    /// Report whether the user service is installed and loaded, and whether it runs.
     Status {
         /// Print the state as JSON (`ServiceStatus` schema).
         #[arg(long)]
@@ -641,10 +647,10 @@ pub enum ServiceCommand {
     /// Restart loomd and wait for the new one to answer, so a change to `config.toml` takes
     /// effect.
     ///
-    /// The configuration is checked first: when it is invalid, loomd is left running. A loaded
-    /// user service is restarted by its manager (`launchctl kickstart -k`, `systemctl --user
-    /// restart`); otherwise loomd gets `SIGTERM`, then a new one is started. Starts loomd when
-    /// it is not running.
+    /// The command checks the configuration first. If the configuration is invalid, loomd
+    /// continues to run. If the user service is loaded, its manager restarts it (`launchctl
+    /// kickstart -k`, `systemctl --user restart`). If not, loomd gets `SIGTERM`, then a new
+    /// loomd starts. Starts loomd if it is stopped.
     Restart {
         /// Print the report as JSON (`DaemonRestartReport` schema).
         #[arg(long)]
