@@ -145,6 +145,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         &layout.index_db,
         &store_paths,
         MachineId(machine.as_str().to_owned()),
+        config.tasks.archive_after.get(),
     )
     .wrap_err("cannot start the task store")?;
     let (sync_thread, sync_handle) = store_sync::start(

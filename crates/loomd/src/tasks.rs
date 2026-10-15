@@ -12,6 +12,8 @@
 //!   are read here, so that a read never sees an append in progress.
 //! - The other reads (list, one task) go through a read connection to the index, on a
 //!   blocking thread, without waiting for the task thread.
+//! - Closed tasks move to the archive (ADR-0013, decision 10) in a pass right after the
+//!   reconciliation on start, then every hour (`loomd::archiver`): each move is one commit.
 //! - Each change is committed to the store's git repository right after it is written
 //!   (`loomd::store_git`): a hand edit recorded as an event, a task removed, and at the end of a
 //!   reconciliation of every task, whatever no other commit took. A commit that fails is logged
@@ -21,6 +23,7 @@
 //! the I/O.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::fs::{self, File};
 use std::hash::{BuildHasher as _, Hasher as _, RandomState};
 use std::io::Read as _;
@@ -39,10 +42,13 @@ use loom_store::port::TaskLocation;
 use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskIndex, Tasks};
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
-use loomd::backup::{catch_up_message, commit_message, hand_edit_message, removed_message};
+use loomd::backup::{
+    archived_message, catch_up_message, commit_message, hand_edit_message, removed_message,
+};
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
-use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
+use loomd::task_api::{TEST_TODAY_ENV, TaskFilter, resolve, task_detail, task_list, task_problem};
+use loomd::task_archive::archive_now;
 use loomd::task_index::{failed_files, reindex_result, task_of_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
@@ -50,6 +56,7 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 use tokio::sync::{oneshot, watch};
 use tracing::{Span, debug, info, info_span, warn};
 
+use crate::archiver::{self, Archiver};
 use crate::repos::Failure;
 
 type Reply<T> = oneshot::Sender<Result<T, Failure>>;
@@ -87,6 +94,8 @@ enum Command {
     },
     /// Reconcile every task: at start, and when the watcher may have missed events.
     ReconcileAll,
+    /// Move the closed tasks whose time has come to the archive.
+    Archive,
     /// A file of this task changed.
     Changed {
         context: ContextName,
@@ -116,6 +125,8 @@ pub struct TaskStore {
     thread: JoinHandle<()>,
     /// Dropped on stop: no more events.
     watcher: Option<RecommendedWatcher>,
+    /// Asks for an archive pass every hour.
+    archiver: Option<Archiver>,
 }
 
 /// What the API handlers use: the command channel, the index for reads, and whether the
@@ -129,11 +140,13 @@ pub struct TaskHandle {
 
 /// Creates `tasks/` and `archive/` in every context store, opens `db` (created and migrated when needed),
 /// starts the file watcher, then the task thread, which reconciles every task at once. Events
-/// are recorded on the machine `machine_id`.
+/// are recorded on the machine `machine_id`; closed tasks are archived `archive_after` after
+/// their closing, at start and every hour.
 pub fn start(
     db: &Path,
     stores: &BTreeMap<ContextName, PathBuf>,
     machine_id: MachineId,
+    archive_after: Duration,
 ) -> Result<(TaskStore, TaskHandle)> {
     let mut files = Vec::with_capacity(stores.len());
     for (context, root) in stores {
@@ -149,6 +162,8 @@ pub fn start(
     // Before the reconciliation: an edit made while it runs is seen by one or the other.
     let watcher = watch(stores, &commands);
     let _ = commands.send(Command::ReconcileAll);
+    // After the reconciliation on start: the closings recorded by it count.
+    let _ = commands.send(Command::Archive);
     let (ready_sender, ready) = watch::channel(false);
     let worker = Worker {
         ready: Some(ready_sender),
@@ -164,6 +179,7 @@ pub fn start(
             machine_id,
         },
         random: OsRandom::open(),
+        archive_after,
     };
     info!(
         stores = ?stores.values().map(|root| root.display().to_string()).collect::<Vec<_>>(),
@@ -176,11 +192,16 @@ pub fn start(
         .spawn(move || worker.run(&received))
         .into_diagnostic()
         .wrap_err("cannot start the task store thread")?;
+    let timer = commands.clone();
+    let archiver = archiver::start(move || timer.send(Command::Archive).is_ok())
+        .inspect_err(|error| warn!(%error, "closed tasks are archived at start only"))
+        .ok();
     Ok((
         TaskStore {
             commands: commands.clone(),
             thread,
             watcher,
+            archiver,
         },
         TaskHandle {
             commands,
@@ -300,6 +321,9 @@ impl TaskStore {
     /// Stops the watcher, then the task thread after the command it is running; queued
     /// requests are answered `unavailable`.
     pub fn stop(mut self) {
+        if let Some(archiver) = self.archiver.take() {
+            archiver.stop();
+        }
         drop(self.watcher.take());
         let _ = self.commands.send(Command::Stop);
         if self.thread.join().is_err() {
@@ -489,6 +513,8 @@ struct Worker {
     random: OsRandom,
     /// Set once the reconciliation on start is over, then dropped.
     ready: Option<watch::Sender<bool>>,
+    /// `[tasks] archive_after`.
+    archive_after: Duration,
 }
 
 impl Worker {
@@ -523,6 +549,7 @@ impl Worker {
                         ready.send_replace(true);
                     }
                 }
+                Command::Archive => self.archive(),
                 Command::Changed { context, id } => self.reconcile(&context, &id),
                 Command::PrepareSync { context, reply } => {
                     let _ = reply.send(
@@ -712,6 +739,49 @@ impl Worker {
                 warn!(%error, "cannot drop the removed tasks from the index");
                 Vec::new()
             }
+        }
+    }
+
+    /// Moves the closed tasks whose time has come to the archive, one commit each; a task that
+    /// cannot be moved is logged and stays.
+    fn archive(&mut self) {
+        let _span = info_span!("tasks.archive").entered();
+        let now = archive_now(
+            env::var(TEST_TODAY_ENV).ok().as_deref(),
+            cfg!(debug_assertions),
+            now(),
+        );
+        let report = match self.tasks.archive_due(now, self.archive_after) {
+            Ok(report) => report,
+            Err(error) => {
+                warn!(%error, "cannot archive the closed tasks");
+                return;
+            }
+        };
+        for moved in &report.moved {
+            info!(context = %moved.context, id = %moved.id, year = moved.year, "task archived");
+            let result = self.commits.commit_task(
+                &moved.context,
+                &moved.id,
+                TaskLocation::Archived(moved.year),
+                &archived_message(&moved.id, moved.year),
+            );
+            log_commit(&moved.context, Some(&moved.id), result);
+        }
+        for failure in &report.failed {
+            warn!(
+                context = %failure.context,
+                id = failure.id.as_ref().map(TaskId::as_str),
+                error = %failure.error,
+                "cannot archive a task, it stays in tasks/"
+            );
+        }
+        if !report.moved.is_empty() || !report.failed.is_empty() {
+            info!(
+                archived = report.moved.len(),
+                failed = report.failed.len(),
+                "closed tasks archived"
+            );
         }
     }
 
