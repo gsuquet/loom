@@ -276,6 +276,10 @@ fn an_archived_task_reopened_by_hand_stays_archived_and_out_of_the_lists() {
     assert_eq!(listed(&sandbox, "/v1/tasks?ranked=true"), ["m0000000"]);
     assert_eq!(listed(&sandbox, "/v1/tasks?archived=true"), [ID]);
     assert_eq!(
+        listed(&sandbox, "/v1/tasks?archived=true&ranked=true"),
+        [] as [&str; 0]
+    );
+    assert_eq!(
         listed(&sandbox, "/v1/tasks?archived=true&status=done"),
         [] as [&str; 0]
     );
