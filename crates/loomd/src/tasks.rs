@@ -28,6 +28,7 @@ use std::fs::{self, File};
 use std::hash::{BuildHasher as _, Hasher as _, RandomState};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
@@ -173,8 +174,10 @@ pub fn start(
     }
     let index = TaskIndex::open(db).into_diagnostic()?;
     let (commands, received) = mpsc::channel();
+    // Set: the reconciliation on start is queued below, before any watcher event.
+    let reconcile_queued = Arc::new(AtomicBool::new(true));
     // Before the reconciliation: an edit made while it runs is seen by one or the other.
-    let watcher = watch(stores, &commands);
+    let watcher = watch(stores, &commands, Arc::clone(&reconcile_queued));
     let _ = commands.send(Command::ReconcileAll);
     // After the reconciliation on start: the closings recorded by it count.
     let _ = commands.send(Command::Archive);
@@ -195,6 +198,7 @@ pub fn start(
         random: OsRandom::open(),
         archive_after,
         archive_pending: false,
+        reconcile_queued,
         schedule_failures: BTreeMap::new(),
         events,
     };
@@ -233,6 +237,7 @@ pub fn start(
 fn watch(
     stores: &BTreeMap<ContextName, PathBuf>,
     commands: &mpsc::Sender<Command>,
+    reconcile_queued: Arc<AtomicBool>,
 ) -> Option<RecommendedWatcher> {
     // Events may name the canonical path (FSEvents resolves `/tmp` to `/private/tmp`): both
     // spellings of each root are matched.
@@ -249,7 +254,7 @@ fn watch(
     let handler = move |event: notify::Result<notify::Event>| match event {
         Ok(event) => {
             if event.need_rescan() {
-                let _ = sender.send(Command::ReconcileAll);
+                queue_reconcile_all(&reconcile_queued, &sender);
                 return;
             }
             if !relevant(event.kind) {
@@ -262,7 +267,7 @@ fn watch(
                     }
                     // Rare: the first move of a year, a sync, a hand copy or removal.
                     WatchedPath::ArchiveYear => {
-                        let _ = sender.send(Command::ReconcileAll);
+                        queue_reconcile_all(&reconcile_queued, &sender);
                     }
                     WatchedPath::Other => {}
                 }
@@ -270,7 +275,7 @@ fn watch(
         }
         Err(error) => {
             warn!(%error, "task file watcher error, reconciling every task");
-            let _ = sender.send(Command::ReconcileAll);
+            queue_reconcile_all(&reconcile_queued, &sender);
         }
     };
     let mut watcher = match notify::recommended_watcher(handler) {
@@ -289,6 +294,15 @@ fn watch(
         }
     }
     Some(watcher)
+}
+
+/// Queues a reconciliation of every task, unless one is queued and not started yet: a burst of
+/// watcher events (a sync of several archive years, coalesced events) costs at most two scans,
+/// the one queued and one for what changes while it runs.
+fn queue_reconcile_all(queued: &AtomicBool, sender: &mpsc::Sender<Command>) {
+    if !queued.swap(true, Ordering::SeqCst) {
+        let _ = sender.send(Command::ReconcileAll);
+    }
 }
 
 /// Whether an event of `kind` can change a file. Reads are not: loomd reads every file it
@@ -551,6 +565,9 @@ struct Worker {
     /// A pass reached [`ARCHIVE_BATCH`]: the next one runs once the queue is empty, after the
     /// requests waiting.
     archive_pending: bool,
+    /// A reconciliation of every task is queued and not started yet: shared with the watcher,
+    /// which then queues none more.
+    reconcile_queued: Arc<AtomicBool>,
     /// The last failure of each schedule (context, ID) to create its task: a failure that
     /// repeats at each check is warned once.
     schedule_failures: BTreeMap<(ContextName, String), String>,
@@ -783,6 +800,8 @@ impl Worker {
     /// the failures.
     fn reconcile_all(&mut self) -> Vec<TaskFailure> {
         let _span = info_span!("tasks.reconcile_all").entered();
+        // Before the scan: an event during it queues one more.
+        self.reconcile_queued.store(false, Ordering::SeqCst);
         let now = now();
         match self
             .tasks
@@ -1097,7 +1116,26 @@ mod tests {
 
     use tokio::sync::watch;
 
-    use super::TaskHandle;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{Command, TaskHandle, queue_reconcile_all};
+
+    #[test]
+    fn a_burst_of_events_queues_one_reconciliation_until_it_starts() {
+        let (sender, received) = mpsc::channel();
+        let queued = AtomicBool::new(false);
+        for _ in 0..3 {
+            queue_reconcile_all(&queued, &sender);
+        }
+        assert!(matches!(received.try_recv(), Ok(Command::ReconcileAll)));
+        assert!(received.try_recv().is_err());
+        // Started: the next event queues another one.
+        queued.store(false, Ordering::SeqCst);
+        queue_reconcile_all(&queued, &sender);
+        queue_reconcile_all(&queued, &sender);
+        assert!(matches!(received.try_recv(), Ok(Command::ReconcileAll)));
+        assert!(received.try_recv().is_err());
+    }
 
     fn handle() -> (TaskHandle, watch::Sender<bool>) {
         let (commands, _) = mpsc::channel();

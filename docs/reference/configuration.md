@@ -415,7 +415,8 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 | Only the notes changed, or `events.jsonl` has no `created` event, a line of a newer version, or changes that do not follow from each other | The task is indexed, no event. |
 | `task.md` is invalid | The task is indexed read-only, with the error and its line. No event. The file is never written again. |
 | The task directory moved between `tasks/` and `archive/<yyyy>/`, with the same `task.md` | The task is indexed at its new location. No event. |
-| An archive year directory `archive/<yyyy>/` is created or removed | `loomd` reconciles all the tasks. On Linux, the watcher gets no event for the tasks in a new directory. |
+| An archive year directory `archive/<yyyy>/` is created or removed | `loomd` reconciles all the tasks, one time for a series of these changes. On Linux, the watcher gets no event for the tasks in a new directory. |
+| `tasks/` or `archive/` is removed, then created again | The watcher does not watch the new directory. `loomd` sees its changes at the next start, or with `loom reindex`. |
 | The task directory or its `task.md` is gone | The task leaves the index. |
 | A file cannot be read (permissions, I/O), or `tasks/` cannot be listed | Logged with its path. The task keeps its index entry. The other tasks are reconciled. |
 
