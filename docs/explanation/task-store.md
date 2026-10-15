@@ -56,13 +56,13 @@ A write by `loomd` changes `task.md`, then appends its events. If `loomd` crashe
 
 ## Archived tasks
 
-A task that is done or cancelled is history that you can still need. But it does not belong in the store that you use each day. Thus, an archived task is in `<store>/archive/<yyyy>/<id>/`, where `<yyyy>` is the year of its closing. It is the same directory with the same two files, at a different location. Directories per year stay small, and you can copy or delete an old year easily.
+A task that is done or cancelled is history that you can still need. But it does not belong with the tasks that you use each day. Thus, an archived task is in `<store>/archive/<yyyy>/<id>/`, where `<yyyy>` is the year of its close time. It is the same directory with the same two files, at a different location. Directories per year stay small, and you can copy or delete an old year easily.
 
-`loomd` moves a task there `[tasks] archive_after` (7 days by default) after its closing. It does this when it starts, then every hour. The closing is the time of the last event that set the current status of the task. Thus a note that you add after `done` does not delay the move. A task that you open again and close again waits from its second closing.
+`loomd` moves a task there `[tasks] archive_after` (7 days by default) after its close time. It does this when it starts, then every hour. The close time is the time of the last event that set the current status of the task. Thus a note that you add after `done` does not delay the move. If you open a task again and close it again, the delay starts at the second close time.
 
-If the log shows no closing (for example, a lost `events.jsonl`), `loomd` never archives the task automatically. A date that `loomd` guesses could hide a task too early. The reconciliation on start runs before the pass. Thus `loomd` records a hand closing, made while it was stopped, before the pass looks for it.
+If no event in the log closed the task (for example, a lost `events.jsonl`), `loomd` never archives the task automatically. A date that `loomd` guesses could hide a task too early. The reconciliation on start runs before the pass. Thus, if you close a task by hand while `loomd` is stopped, `loomd` records the edit before the pass looks for the close time.
 
-The year is the UTC year of the closing, because `loom-core` has no time zone. A task closed near midnight on 31 December can go into the directory of one year or the other.
+The year is the UTC year of the close time, because `loom-core` has no time zone. A task closed near midnight on 31 December can go into the directory of one year or the other.
 
 Each move is one commit of the store repository, `archived(<id>): moved to archive/<yyyy>`. The commit contains the removal from `tasks/` and the addition to the archive. If the archive already contains a directory with the same ID (for example, a copy that you restored by hand), `loomd` refuses the move and logs it. `loomd` never deletes a task.
 
@@ -70,11 +70,11 @@ Each move is one commit of the store repository, `archived(<id>): moved to archi
 
 An archived task is read-only. `loomd` refuses each action, edit and undo with `read_only` and the reason `archived`, and a command adds nothing to its log. The location makes a task archived, not its status. If a hand edit sets an archived task to `ready`, `loomd` records the edit, but the task stays read-only and out of the priority list. To open the task again, move its directory back to `tasks/`. No command does this.
 
-A move is one `rename` of the task directory. Before the rename, `loomd` creates the year directory and syncs it to the disk. On one file system, a rename is atomic. Thus, after a crash, the task is in `tasks/` or in the archive, never in the two locations and never in neither.
+A move is one `rename` of the task directory. Before the rename, `loomd` creates the year directory and syncs it to the disk. On one file system, a rename is atomic. Thus, after a crash, the task is in `tasks/` or in the archive, in one location only.
 
-`loomd` writes the index row after the rename. If a crash occurs between the two, the reconciliation at the next start finds the same file at a new location. It then indexes the task as archived; the hash alone would show no change. The same rule applies to a directory that you move by hand, in the two directions.
+`loomd` writes the index row after the rename. If a crash occurs between the two, the reconciliation at the next start finds the same file at a new location. It then indexes the task as archived. The hash alone shows no change. The same rule applies to a directory that you move by hand, in the two directions.
 
-The file watcher monitors `archive/` and `tasks/`. `loomd` records and commits a hand edit of an archived file like any other edit, at its archive path. The commit of an archived task also removes from git what stays of it in `tasks/`. Thus, a move is one commit.
+The file watcher watches `archive/` and `tasks/`. `loomd` records and commits a hand edit of an archived file like any other edit, at its archive path. The commit of an archived task also removes from git what stays of it in `tasks/`. Thus, a move is one commit.
 
 ## When a file is invalid
 

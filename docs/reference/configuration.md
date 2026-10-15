@@ -56,7 +56,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
 | `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
-| `[tasks] archive_after` | string: duration | `"7d"` | The time after its closing (`done` or `cancelled`) at which a task moves from `tasks/<id>/` to `archive/<yyyy>/<id>/`. `<yyyy>` is the UTC year of the closing. Duration syntax of `[update] check_interval`. At least `"1d"`. See [archive](#archive). |
+| `[tasks] archive_after` | string: duration | `"7d"` | The time after its close time (when it became `done` or `cancelled`) at which a task moves from `tasks/<id>/` to `archive/<yyyy>/<id>/`. `<yyyy>` is the UTC year of the close time. Duration syntax of `[update] check_interval`. At least `"1d"`. See [archive](#archive). |
 | `[[contexts.<name>.schedules]]` | | | See [schedules](#schedules). |
 | `[tasks] sync_interval` | string: duration | `"15m"` | Time between two syncs of each context store with its `store.backup.remote`. Duration syntax of `[update] check_interval`. At least `"1m"`. See [store backup](#store-backup). |
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
@@ -404,7 +404,7 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 | `tasks/<id>/task.md` | `0600` | The task: TOML frontmatter between `+++` lines, then free notes ([format](task-file.md)). Replaced atomically: written to `.task.md.tmp` beside it, synced, renamed over it, and the directory synced. |
 | `tasks/<id>/events.jsonl` | `0600` | The task's events, one JSON object per line, appended and synced, never rewritten. If a crash cuts the last line, `loomd` adds a line ending to it before the next append. |
 | `tasks/.<id>.tmp/` | `0700` | A task during its creation: written whole, then renamed to `tasks/<id>/`. A leftover of a crash is ignored, and replaced when the same ID is created again. |
-| `archive/<yyyy>/<id>/` | `0700` | An archived task, with the same two files. `<yyyy>` is the UTC year of its closing. Read-only ([task files](task-file.md)). Other names in `archive/` and in its years are ignored. |
+| `archive/<yyyy>/<id>/` | `0700` | An archived task, with the same two files. `<yyyy>` is the UTC year of its close time. Read-only ([task files](task-file.md)). Other names in `archive/` and in its years are ignored. |
 
 `loomd` watches `tasks/` and `archive/` of every store (FSEvents on macOS, inotify on Linux) and reconciles each task whose files change, and every task when it starts:
 
@@ -422,15 +422,15 @@ When the watcher cannot start, `loomd` logs a warning and reads the hand edits a
 
 ### Archive
 
-`loomd` moves the closed tasks to the archive when it starts, after the reconciliation on start. Then it does this every hour. A `done` or `cancelled` task of `tasks/` moves to `archive/<yyyy>/<id>/` when its closing is at least `[tasks] archive_after` old. Thus `loomd` archives a task between `archive_after` and `archive_after` plus one hour after its closing.
+`loomd` moves the closed tasks to the archive when it starts, after the reconciliation on start. Then it does this every hour. A `done` or `cancelled` task of `tasks/` moves to `archive/<yyyy>/<id>/` when its close time is at least `[tasks] archive_after` old. Thus `loomd` archives a task between `archive_after` and `archive_after` plus one hour after its close time.
 
 No value disables the archive. To keep all the tasks in `tasks/`, set a very long duration, for example `"36500d"`.
 
 | Rule | Value |
 | --- | --- |
-| Closing | The time of the last event in `events.jsonl` that set the current status of the task (`status_changed`, `edited` by hand, `undone`, or `created` closed). A note or an edit after it does not delay the archive. |
-| No closing event (a lost log) | Never archived automatically. |
-| `<yyyy>` | The year of the closing, in UTC. |
+| Close time | The time of the last event in `events.jsonl` that set the current status of the task (`status_changed`, `edited` by hand, `undone`, or `created` with a closed status). A note or an edit after it does not delay the archive. |
+| No event that closed the task (a lost log) | Never archived automatically. |
+| `<yyyy>` | The year of the close time, in UTC. |
 | Move | One `rename` of the task directory under its lock, then the index. After a crash, the task is in one location, and `loomd` indexes it there at the next start. |
 | `archive/<yyyy>/<id>/` exists | No move. `loomd` logs a warning, and the task stays in `tasks/`. `loomd` deletes nothing. |
 | A move that fails | `loomd` logs a warning. The task stays in `tasks/`, and the next pass tries again. |

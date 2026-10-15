@@ -204,8 +204,9 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     // read-only, as the API does.
     if let Some(TaskReadOnly::Archived(year)) = summary.read_only {
         return Err(miette!(
-            "task {} is archived (archive/{year}): an archived task is read-only. To reopen it, move its directory back to tasks/.",
-            summary.prefix
+            "task {} is archived (archive/{year}): an archived task is read-only. To reopen it, set its status in archive/{year}/{}/task.md, then move its directory back to tasks/.",
+            summary.prefix,
+            summary.id
         ));
     }
     // The full ID from here: a task created while the editor is open may share the prefix.

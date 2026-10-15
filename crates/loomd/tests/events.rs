@@ -493,12 +493,20 @@ fn a_task_the_archive_pass_moves_reaches_a_client() {
             ChangeEvent::TaskArchived { id, context } => {
                 break (id.to_string(), context.to_string());
             }
-            ChangeEvent::TaskChanged { .. } | ChangeEvent::Resync => {}
+            // The done event is in the previous run: the move itself sends no `task.changed`.
+            ChangeEvent::TaskChanged { id: changed, .. } => {
+                assert_ne!(
+                    changed.to_string(),
+                    id,
+                    "task.changed for the archived task"
+                );
+            }
+            ChangeEvent::Resync => {}
             other => panic!("unexpected event: {other:?}"),
         }
     };
     assert_eq!(archived, (id.clone(), "work".to_owned()));
-    // The task is archived when the event arrives.
+    // The task is archived.
     let detail: TaskDetail = ok(&request(
         &sandbox.socket(),
         "GET",

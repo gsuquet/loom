@@ -108,51 +108,53 @@ loom cancel h8w2
 
 To revert a mistake, run `loom undo k3q8`. It reverts the last change of the task, also if this change closed the task.
 
-`loomd` archives a closed task 7 days after its closing (`[tasks] archive_after`). It moves the task to the archive of its context store. An archived task is read-only.
+`loomd` archives a closed task 7 days after its close time (`[tasks] archive_after`). It moves the task to the archive of its context store. An archived task is read-only.
 
 ## Find an archived task
 
-1. List the archived tasks of the context:
+List the archived tasks of the context:
 
-   ```bash
-   loom ls --archived
-   ```
+```bash
+loom ls --archived
+```
 
-2. To see only one status in all the contexts, add `--status` and `--all-contexts`:
+Other ways to find an archived task:
 
-   ```bash
-   loom ls --archived --status cancelled --all-contexts
-   ```
+- To see only one status in all the contexts, add `--status` and `--all-contexts`:
 
-3. To find a task by its words, use `loom search`. The archived tasks come after all the other results:
+  ```bash
+  loom ls --archived --status cancelled --all-contexts
+  ```
 
-   ```bash
-   loom search certificates
-   ```
+- To find a task by its words, use `loom search`. The archived tasks come after all the other results:
 
-4. To see the task, use `loom show`. It prints `read-only:  archived in archive/<yyyy>`:
+  ```bash
+  loom search certificates
+  ```
 
-   ```bash
-   loom show k3q8
-   ```
+- To see the task, use `loom show`. It prints `read-only:  archived in archive/<yyyy>`:
+
+  ```bash
+  loom show k3q8
+  ```
 
 ## Open an archived task again
 
-`loom done`, `set`, `undo`, `edit` and the other commands refuse an archived task.
+`loom done`, `set`, `undo`, `edit` and the other commands refuse an archived task. Change the file first, then move the directory: in this order, the archive pass cannot move the task back.
 
-1. Move the task directory back to `tasks/` in its store. The store is `<loom home>/contexts/<context>`, if `store.path` does not give a different path:
+1. Open `task.md` in the archive directory with your editor, and set `status = "ready"`. `loomd` records the edit.
+
+   ```bash
+   $EDITOR ~/.loom/contexts/work/archive/2026/k3q8m2xa/task.md
+   ```
+
+2. Move the task directory back to `tasks/` in its store. The store is `<loom home>/contexts/<context>`, if `store.path` does not give a different path.
 
    ```bash
    mv ~/.loom/contexts/work/archive/2026/k3q8m2xa ~/.loom/contexts/work/tasks/
    ```
 
-2. Open the task file, and set `status = "ready"`:
-
-   ```bash
-   loom edit k3q8
-   ```
-
-Do step 2 immediately after step 1. If the task is still closed at the next hourly pass, `loomd` moves it to the archive again.
+The task is open again, and the commands accept it.
 
 ## Reference
 

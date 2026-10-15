@@ -401,7 +401,7 @@ A malformed `key=value` or an unknown key is a usage error (exit `2`). A repeate
 
 `loom edit` opens the `task.md` of the task in an editor. The path is `<store>/tasks/<id>/task.md`, with the store of its context in `config.toml`. The editor is `VISUAL`, otherwise `EDITOR`, otherwise `vi`. `loom` runs it through `sh -c`, with the path as its argument.
 
-`loom edit` does not open an archived task. It exits with `1` and this message: `task <prefix> is archived (archive/<yyyy>): an archived task is read-only. To reopen it, move its directory back to tasks/.`
+`loom edit` does not open an archived task. It exits with `1` and this message: `task <prefix> is archived (archive/<yyyy>): an archived task is read-only. To reopen it, set its status in archive/<yyyy>/<id>/task.md, then move its directory back to tasks/.` See [open an archived task again](../../how-to-guides/manage-tasks.md#open-an-archived-task-again).
 
 For the other tasks, after the editor closes:
 

@@ -360,12 +360,26 @@ fn an_invalid_task_file_keeps_its_occurrence_and_counts_as_open() {
         plan(&context(), &skip, &rows, date("2026-10-23")),
         Outcome::Skipped {
             occurrence: date("2026-10-23"),
-            open: vec![broken.id],
+            open: vec![broken.id.clone()],
         }
     );
     let replace = schedule("FREQ=WEEKLY;BYDAY=FR", "replace");
     assert_eq!(
         created(&plan(&context(), &replace, &rows, date("2026-10-23"))),
+        Some((date("2026-10-23"), &[][..]))
+    );
+    // In the archive: its occurrence still counts, but it is not open for `skip`.
+    let archived = IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..broken
+    };
+    let archived_rows = [rows[0].clone(), archived];
+    assert_eq!(
+        plan(&context(), &skip, &archived_rows, date("2026-10-16")),
+        Outcome::NotDue
+    );
+    assert_eq!(
+        created(&plan(&context(), &skip, &archived_rows, date("2026-10-23"))),
         Some((date("2026-10-23"), &[][..]))
     );
     // Another schedule's key, or no key, is not this schedule's.
