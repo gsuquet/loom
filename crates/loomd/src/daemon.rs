@@ -146,13 +146,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         .iter()
         .map(|(context, store)| (context.clone(), store.path.clone()))
         .collect();
-    // The run of the event ids: the start of this process, in milliseconds.
-    let run = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        });
-    let events = Arc::new(Bus::new(run, events::BUFFER_LEN, events::CLIENT_CAPACITY));
+    let events = event_bus();
     let (task_store, task_handle) = tasks::start(
         &layout.index_db,
         &store_paths,
@@ -221,6 +215,17 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     task_store.stop();
     index.stop();
     served
+}
+
+/// The bus of the change events of this process.
+fn event_bus() -> Arc<Bus> {
+    // The run of the event ids: the start of this process, in milliseconds.
+    let run = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    Arc::new(Bus::new(run, events::BUFFER_LEN, events::CLIENT_CAPACITY))
 }
 
 /// Effective `[update]` settings, with the debug-only test hooks applied.

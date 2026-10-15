@@ -1,23 +1,28 @@
 # Create recurring tasks
 
-> Have loomd create a task for each occurrence of a schedule: a timesheet on the last working day of the month, a weekly review every Friday.
+> Configure `loomd` to create a task for each occurrence of a schedule. Examples: a timesheet on the last working day of the month, a weekly review each Friday.
 
-Before you start: `loom` and `loomd` are installed and the context is defined in `config.toml` ([configure contexts](configure-contexts.md)). Every key is described in the [schedules reference](../reference/configuration.md#schedules).
+Before you start, make sure of these conditions:
+
+- `loom` and `loomd` are installed.
+- The context is in `config.toml` ([configure contexts](configure-contexts.md)).
+
+The [schedules reference](../reference/configuration.md#schedules) gives all the keys.
 
 ## Add a schedule
 
-1. Write the rule as an RFC 5545 `RRULE`. loomd supports `FREQ=DAILY|WEEKLY|MONTHLY`, `INTERVAL`, `BYDAY`, `BYMONTHDAY` and `BYSETPOS`:
+1. Write the rule as an RFC 5545 `RRULE`. `loomd` supports `FREQ=DAILY|WEEKLY|MONTHLY`, `INTERVAL`, `BYDAY`, `BYMONTHDAY` and `BYSETPOS`:
 
-   | Every | `rrule` |
+   | Each | `rrule` |
    | --- | --- |
    | Working day | `FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR` |
    | Friday | `FREQ=WEEKLY;BYDAY=FR` |
-   | Other Thursday | `FREQ=WEEKLY;INTERVAL=2;BYDAY=TH`, with `start` |
+   | Second Thursday | `FREQ=WEEKLY;INTERVAL=2;BYDAY=TH`, with `start` |
    | First Monday of the month | `FREQ=MONTHLY;BYDAY=1MO` |
    | Last day of the month | `FREQ=MONTHLY;BYMONTHDAY=-1` |
    | Last working day of the month | `FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1` |
 
-2. Add a `[[contexts.<name>.schedules]]` table to `config.toml`, under the context the tasks belong to:
+2. Add a `[[contexts.<name>.schedules]]` table to `config.toml`, below the context of the tasks:
 
    ```toml
    [contexts.company-a]
@@ -31,37 +36,42 @@ Before you start: `loom` and `loomd` are installed and the context is defined in
    due = "same-day"
    ```
 
-   - `id` names the schedule in its tasks; keep it once the schedule has created tasks.
-   - `policy` decides what happens when the task of the previous occurrence is still open: `skip` (default) creates nothing until it is closed, `stack` keeps both, `replace` cancels the old one.
-   - For a rule with `INTERVAL` above 1, add `start = 2026-10-01`: the periods are counted from it.
+   - `id` identifies the schedule in its tasks. Do not change it after the schedule creates tasks.
+   - `policy` gives the result when the task of the previous occurrence is open. `skip` (the default) creates no task until you close the previous task. `stack` keeps the two tasks. `replace` cancels the previous task.
+   - If the rule has an `INTERVAL` of more than 1, add `start = 2026-10-01`. The count of periods starts at this date.
 
-   - If several machines hold the context, list them in `machines`: only the first one creates the tasks. Without `machines`, loomd warns at start, and two machines sharing the store would both create each task.
+3. If more than one machine holds the context, add the machines to `machines`. Only the first machine creates the tasks:
 
-     ```toml
-     [contexts.company-a]
-     machines = ["laptop", "tower"]
-     ```
+   ```toml
+   [contexts.company-a]
+   machines = ["laptop", "tower"]
+   ```
 
-3. Restart loomd to load the schedule. The configuration is checked first; a rule loomd does not support is refused with the part it names.
+   If you do not add `machines`, `loomd` writes a warning at start. Two machines that share the store create each task two times.
+
+4. Restart `loomd` to load the schedule. `loomd` examines the configuration first. If the rule has a part that `loomd` does not support, the error gives the name of the part.
 
    ```bash
    loom service restart
    ```
 
-## Check the tasks
+## Examine the tasks
 
-On the day of an occurrence, the task shows up in the priority list of the context, `ready` and due that day:
+On the day of an occurrence, the task is in the priority list of the context. Its status is `ready` and its due date is that day:
 
 ```bash
 loom ls -c company-a
 ```
 
-Each task carries the origin link `schedule` / `<id>/<occurrence date>` (`timesheet/2026-10-30`): a restart never creates the same occurrence twice.
+Each task has the origin link `schedule` / `<id>/<occurrence date>` (`timesheet/2026-10-30`). Thus a restart does not create the same occurrence again.
 
-If loomd was stopped over several occurrences, it creates only the latest one at its next start.
+If `loomd` was stopped for more than one occurrence, it creates only the latest occurrence at its next start.
 
-With `policy = "skip"`, a task of the schedule whose `task.md` is invalid counts as open: the schedule creates nothing until the file is fixed (`loom reindex` lists invalid files).
+With `policy = "skip"`, a task of the schedule with an invalid `task.md` counts as open. The schedule creates no task until you correct the file. `loom reindex` shows the invalid files.
 
 ## Stop a schedule
 
-Remove its table from `config.toml` and restart loomd. The tasks it created stay as they are.
+1. Remove the table of the schedule from `config.toml`.
+2. Restart `loomd`.
+
+The tasks that the schedule created do not change.

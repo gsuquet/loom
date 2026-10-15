@@ -12,6 +12,8 @@ pub const CHECK_INTERVAL_ENV: &str = "LOOM_UPDATE_CHECK_INTERVAL";
 pub const HEALTH_DEADLINE_ENV: &str = "LOOM_UPDATE_HEALTH_DEADLINE";
 /// Replaces the 15 s heartbeat of `GET /v1/events`.
 pub const EVENTS_HEARTBEAT_ENV: &str = "LOOM_TEST_EVENTS_HEARTBEAT";
+/// Replaces the 1 min interval between two checks of the schedules.
+pub const SCHEDULE_INTERVAL_ENV: &str = "LOOM_TEST_SCHEDULE_INTERVAL";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
 

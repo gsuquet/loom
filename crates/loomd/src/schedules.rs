@@ -3,6 +3,7 @@
 //! in `loomd::recurring`; the tasks are created by the task thread, between its other writes.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -11,6 +12,7 @@ use std::time::Duration;
 use loom_api::ContextName;
 use loom_config::config::{Config, StoreSettings};
 use loom_config::machine::MachineName;
+use loomd::hooks;
 use loomd::recurring::{Runner, runner};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tracing::{info, warn};
@@ -65,12 +67,13 @@ pub fn start(
     info!(schedules = count, "schedules loaded");
     let schedules = Arc::new(schedules);
     tasks.run_schedules(Arc::clone(&schedules), local_today());
+    let interval = check_interval();
     let (stop, stopped) = mpsc::channel();
     thread::Builder::new()
         .name("schedules".to_owned())
         .spawn(move || {
             loop {
-                match stopped.recv_timeout(CHECK_INTERVAL) {
+                match stopped.recv_timeout(interval) {
                     Err(RecvTimeoutError::Timeout) => {}
                     Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
                 }
@@ -82,6 +85,19 @@ pub fn start(
         .into_diagnostic()
         .wrap_err("cannot start the schedule thread")?;
     Ok(Some(ScheduleThread { stop }))
+}
+
+/// [`CHECK_INTERVAL`], or the debug-only test hook.
+fn check_interval() -> Duration {
+    hooks::duration_hook(
+        hooks::SCHEDULE_INTERVAL_ENV,
+        env::var(hooks::SCHEDULE_INTERVAL_ENV).ok().as_deref(),
+    )
+    .unwrap_or_else(|message| {
+        warn!("{message}");
+        None
+    })
+    .unwrap_or(CHECK_INTERVAL)
 }
 
 impl ScheduleThread {

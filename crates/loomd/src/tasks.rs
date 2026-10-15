@@ -41,8 +41,8 @@ use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskInd
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
 use loomd::backup::{catch_up_message, commit_message, hand_edit_message, removed_message};
-use loomd::recurring::{Outcome, plan};
 use loomd::events::Bus;
+use loomd::recurring::{Outcome, plan};
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
 use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
@@ -890,6 +890,7 @@ impl Worker {
                         };
                         info!(%context, schedule = %id, %occurrence, id = %task.id, "task of a schedule created");
                         self.commit_change(context, &task.id, 0);
+                        self.changed(context, &task.id);
                         for previous in cancel {
                             self.cancel_replaced(context, &previous, &daemon);
                         }
@@ -912,6 +913,10 @@ impl Worker {
             Ok(_) => {
                 info!(%context, %id, "task replaced by a newer occurrence cancelled");
                 self.commit_change(context, id, before);
+                // A task already cancelled writes no event: nothing to tell.
+                if self.event_count(id) > before {
+                    self.changed(context, id);
+                }
             }
             Err(error) => {
                 warn!(%context, %id, %error, "cannot cancel a task replaced by a newer occurrence");

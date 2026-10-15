@@ -35,18 +35,25 @@ const DELIVERY: Duration = Duration::from_secs(1);
 
 struct Sandbox {
     dir: TempDir,
+    /// `LOOM_TEST_TODAY`, if set.
+    today: Option<&'static str>,
 }
 
 impl Sandbox {
     fn new() -> Self {
+        Self::with_config(CONFIG, None)
+    }
+
+    /// A sandbox with `config` as `config.toml`, loomd started on `today`.
+    fn with_config(config: &str, today: Option<&'static str>) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("loomd-events-")
             .tempdir_in("/tmp")
             .unwrap();
-        let sandbox = Self { dir };
+        let sandbox = Self { dir, today };
         fs::create_dir_all(sandbox.loom_home()).unwrap();
         fs::create_dir_all(sandbox.user_home()).unwrap();
-        fs::write(sandbox.loom_home().join("config.toml"), CONFIG).unwrap();
+        fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
         sandbox
     }
 
@@ -71,10 +78,14 @@ impl Sandbox {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("LOOM_TEST_EVENTS_HEARTBEAT", "1s")
+            .env("LOOM_TEST_SCHEDULE_INTERVAL", "1s")
             .arg("--color=never")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some(today) = self.today {
+            command.env("LOOM_TEST_TODAY", today);
+        }
         Daemon::start(&mut command, &self.socket())
     }
 
@@ -351,5 +362,55 @@ fn a_request_that_changes_nothing_sends_no_event() {
     // Already pinned: no event is written, none is sent.
     pin();
     assert!(stream.event(Duration::from_millis(1500)).is_none());
+    daemon.stop();
+}
+
+#[test]
+fn a_task_a_schedule_creates_reaches_a_client() {
+    let config = format!(
+        "{CONFIG}\n[[contexts.work.schedules]]\nid = \"weekly\"\ntitle = \"Weekly review\"\nkind = \"chore\"\nrrule = \"FREQ=WEEKLY;BYDAY=FR\"\n"
+    );
+    let sandbox = Sandbox::with_config(&config, Some("2026-10-16"));
+    // Last week's task, still open: the policy `skip` holds this week's occurrence back.
+    let previous = "k3q7zm2a";
+    let dir = sandbox
+        .loom_home()
+        .join("contexts/work/tasks")
+        .join(previous);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("task.md"),
+        "+++\nid = \"k3q7zm2a\"\ntitle = \"Weekly review\"\nkind = \"chore\"\ncontext = \"work\"\nstatus = \"ready\"\nimportance = \"p3\"\ncreated = 2026-10-09T08:00:00Z\n\n[[links]]\nrole = \"origin\"\nprovider = \"schedule\"\nkey = \"weekly/2026-10-09\"\n+++\n\n## Notes\n",
+    )
+    .unwrap();
+    let daemon = sandbox.start();
+    let mut stream = Stream::open(&sandbox, "?context=work", None);
+    // The reconciliation on start may announce a resync: only task changes matter here.
+    let mut next_task_change = |within: Duration| loop {
+        let sse = stream.event(within).unwrap();
+        if change(&sse) != ChangeEvent::Resync {
+            return task_changed(&sse);
+        }
+    };
+    let _: TaskDetail = ok(&request(
+        &sandbox.socket(),
+        "POST",
+        &format!("/v1/tasks/{previous}/actions/done"),
+        None,
+    ));
+    assert_eq!(next_task_change(DELIVERY).0, previous);
+
+    // The next check, within a second, creates this week's task.
+    let (created, context) = next_task_change(DELIVERY * 3);
+    assert_eq!(context, "work");
+    let detail: TaskDetail = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        &format!("/v1/tasks/{created}"),
+        None,
+    ));
+    let task = detail.summary.task.unwrap();
+    assert_eq!(task.title, "Weekly review");
+    assert_ne!(created, previous);
     daemon.stop();
 }
