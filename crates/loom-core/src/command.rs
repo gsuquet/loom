@@ -7,6 +7,7 @@ use crate::Date;
 use crate::context::ContextName;
 use crate::event::{Change, Event, EventRecord, FieldChange, Origin};
 use crate::id::{EventId, IdError, RandomSource, TaskId};
+use crate::relations::ParentProblem;
 use crate::task::{
     Importance, Kind, Link, ReadOnlyReason, Relations, Status, StatusName, Task,
     is_legal_transition,
@@ -45,6 +46,14 @@ pub enum DomainError {
     /// No task ID could be generated.
     #[error(transparent)]
     Id(#[from] IdError),
+    /// The parent cannot be the parent of this task.
+    #[error("{parent} cannot be the parent: {problem}")]
+    InvalidParent {
+        /// The requested parent.
+        parent: TaskId,
+        /// Why.
+        problem: ParentProblem,
+    },
 }
 
 /// A change requested on a task.
@@ -374,7 +383,8 @@ fn replay_change(task: &mut Task, change: FieldChange) -> Result<(), ReplayError
         | DomainError::EmptyTitle
         | DomainError::EmptyNote
         | DomainError::NothingToUndo
-        | DomainError::Id(_) => ReplayError::Conflict("task"),
+        | DomainError::Id(_)
+        | DomainError::InvalidParent { .. } => ReplayError::Conflict("task"),
     })
 }
 

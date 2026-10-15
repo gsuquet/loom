@@ -10,8 +10,8 @@ use std::path::Path;
 
 use loom_core::{
     Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
-    Importance, Link, NewTask, Origin, RandomSource, Status, Task, TaskDocument, TaskId, Timestamp,
-    apply, create, undo,
+    Importance, Link, NewTask, Origin, ParentLink, RandomSource, Status, Task, TaskDocument,
+    TaskId, Timestamp, apply, check_parent, create, undo,
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
@@ -276,6 +276,9 @@ impl<P: StorePort> Tasks<P> {
             .stores
             .get(&new.context)
             .ok_or_else(|| TaskError::UnknownContext(new.context.clone()))?;
+        if let Some(parent) = &new.relations.parent {
+            check_parent(None, &new.context, parent, |id| self.parent_link(id))?;
+        }
         let taken = self.index.ids()?;
         let (task, events) = create(new, random, &taken, now, origin)?;
         store.create(&TaskWrite {
@@ -302,7 +305,31 @@ impl<P: StorePort> Tasks<P> {
         origin: &Origin,
         random: &mut impl RandomSource,
     ) -> Result<Task, TaskError> {
+        if let Command::Edit(edit) = &command
+            && let Some(parent) = edit.relations.as_ref().and_then(|r| r.parent.as_ref())
+        {
+            let context = self
+                .index
+                .get(id)?
+                .ok_or_else(|| TaskError::NotFound(id.clone()))?
+                .context;
+            check_parent(Some(id), &context, parent, |task| self.parent_link(task))?;
+        }
         self.change(id, |_, _| Ok(command), now, origin, random)
+    }
+
+    /// The context and parent of task `id` as indexed; `None` when it is not indexed or the
+    /// index cannot be read. An invalid file has no known parent.
+    fn parent_link(&self, id: &TaskId) -> Option<ParentLink> {
+        let row = self.index.get(id).ok().flatten()?;
+        let parent = match row.state {
+            IndexedState::Valid { task, .. } => task.relations.parent,
+            IndexedState::Invalid { .. } => None,
+        };
+        Some(ParentLink {
+            context: row.context,
+            parent,
+        })
     }
 
     /// Reverts the last change of task `id` at `now`: the compensating command is computed

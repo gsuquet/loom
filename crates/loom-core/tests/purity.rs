@@ -11,6 +11,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/event_log.rs", include_str!("../src/event_log.rs")),
     ("src/id.rs", include_str!("../src/id.rs")),
     ("src/priority.rs", include_str!("../src/priority.rs")),
+    ("src/relations.rs", include_str!("../src/relations.rs")),
     ("src/task.rs", include_str!("../src/task.rs")),
     ("src/task_file.rs", include_str!("../src/task_file.rs")),
     ("src/timestamp.rs", include_str!("../src/timestamp.rs")),

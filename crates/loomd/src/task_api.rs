@@ -419,9 +419,10 @@ fn domain_problem(refused: &DomainError, message: String) -> Problem {
             StatusCode::CONFLICT,
             ApiError::new(ErrorCode::NothingToUndo, message),
         ),
-        DomainError::UnknownValue(_) | DomainError::EmptyTitle | DomainError::EmptyNote => {
-            (StatusCode::BAD_REQUEST, invalid_request(message))
-        }
+        DomainError::UnknownValue(_)
+        | DomainError::EmptyTitle
+        | DomainError::EmptyNote
+        | DomainError::InvalidParent { .. } => (StatusCode::BAD_REQUEST, invalid_request(message)),
         DomainError::Id(_) => (StatusCode::INTERNAL_SERVER_ERROR, internal(message)),
     }
 }
