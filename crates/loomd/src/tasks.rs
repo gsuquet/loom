@@ -770,6 +770,8 @@ impl Worker {
     /// cannot be moved is logged and stays.
     fn archive(&mut self) {
         let _span = info_span!("tasks.archive").entered();
+        // Set again only by a pass that reaches its limit: a failing pass never loops.
+        self.archive_pending = false;
         let now = archive_now(
             env::var(TEST_TODAY_ENV).ok().as_deref(),
             cfg!(debug_assertions),
