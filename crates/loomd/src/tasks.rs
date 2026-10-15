@@ -181,7 +181,7 @@ pub fn start(
         },
         random: OsRandom::open(),
         archive_after,
-        commands: commands.clone(),
+        archive_pending: false,
     };
     info!(
         stores = ?stores.values().map(|root| root.display().to_string()).collect::<Vec<_>>(),
@@ -517,15 +517,31 @@ struct Worker {
     ready: Option<watch::Sender<bool>>,
     /// `[tasks] archive_after`.
     archive_after: Duration,
-    /// Its own queue: a pass that reached [`ARCHIVE_BATCH`] queues the next one behind the
+    /// A pass reached [`ARCHIVE_BATCH`]: the next one runs once the queue is empty, after the
     /// requests waiting.
-    commands: mpsc::Sender<Command>,
+    archive_pending: bool,
 }
 
 impl Worker {
+    /// The next command: the one waiting, else the archive pass left pending, else the next one
+    /// to come. `None` once every sender is gone.
+    fn next(&mut self, received: &mpsc::Receiver<Command>) -> Option<Command> {
+        if self.archive_pending {
+            match received.try_recv() {
+                Ok(command) => return Some(command),
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.archive_pending = false;
+                    return Some(Command::Archive);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+            }
+        }
+        received.recv().ok()
+    }
+
     /// Runs the commands in order until `Stop` or until every sender is gone.
     fn run(mut self, received: &mpsc::Receiver<Command>) {
-        while let Ok(command) = received.recv() {
+        while let Some(command) = self.next(received) {
             match command {
                 Command::Reindex { reply, parent } => {
                     let _ = reply.send(self.reindex(&parent));
@@ -787,9 +803,7 @@ impl Worker {
                 "cannot archive a task, it stays in tasks/"
             );
         }
-        if report.more {
-            let _ = self.commands.send(Command::Archive);
-        }
+        self.archive_pending = report.more;
         if !report.moved.is_empty() || !report.failed.is_empty() {
             info!(
                 archived = report.moved.len(),

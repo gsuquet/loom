@@ -10,7 +10,7 @@ use loom_api::{Date, Timestamp};
 pub const ARCHIVE_INTERVAL: Duration = Duration::from_hours(1);
 
 /// Most tasks one pass moves (one commit each, a few git processes): a larger backlog is moved
-/// by passes queued one after the other, so that the requests queued meanwhile run in between.
+/// by passes one after the other, each once the requests queued meanwhile have run.
 pub const ARCHIVE_BATCH: usize = 50;
 
 /// The time the archive rule compares closings with: `test` (`YYYY-MM-DD`, from
