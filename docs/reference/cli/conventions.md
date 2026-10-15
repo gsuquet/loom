@@ -403,7 +403,9 @@ A malformed `key=value` or an unknown key is a usage error (exit `2`). A repeate
 
 - File unchanged: prints `<prefix> unchanged`.
 - File invalid (`task.md` format): exit `1` with the path and the error. The file stays as you saved it. loomd shows the task as read-only until the file is correct.
-- Other cases: `loom` waits up to 5 s until loomd records the hand edit, then prints the task line. The record is an `edited` event of the actor `file`, or a change of the notes. If loomd records no change in that time, `loom` prints `<prefix> saved; loomd recorded no change of the task within 5 s (…)`. This occurs if only whitespace changed, or if loomd did not read the file yet.
+- Other cases: `loom` waits up to 5 s until the index of loomd holds the saved task and notes, then prints the task line. If only spacing changed, `loom` prints the line at once.
+- If the index does not hold the save in that time and loomd recorded the hand edit, the task changed again after the save. `loom` prints `<prefix> saved; the task changed again after the save`, a warning with the actors, and the task line.
+- If loomd did not record the hand edit in that time, `loom` prints `<prefix> saved; loomd has not recorded it within 5 s`. This occurs if loomd did not read the file yet.
 - Other events can be added to the log of the task while the editor is open. For example: a `loom done` in another terminal, a sync, an agent. In that case, `loom` prints a warning on stderr with their actors. The save replaced the file, and loomd recorded it as an edit that can revert these events. `loom undo <id>` reverts that edit.
 - The editor exits non-zero: exit `1`, the file left as it is.
 
