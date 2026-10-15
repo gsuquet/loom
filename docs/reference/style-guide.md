@@ -8,7 +8,7 @@
 
 - **Format:** Format the code with `cargo fmt`. Do not commit code that is not formatted.
 - **Linter:** `clippy` runs with the `pedantic` and `nursery` groups. It is part of `mise run check`.
-- **Zero Panics:** No crate uses `unwrap()` or `expect()` outside tests. Use `Result<T, DomainError>`.
+- **Zero Panics:** No crate uses `unwrap()` or `expect()` outside tests. Return a `Result`.
 - **Visibility:** Make items private by default. Give each public API complete Rustdoc comments (`///`).
 - **Error Types:** Use `thiserror` in libraries and `miette` in the CLI binary.
 
