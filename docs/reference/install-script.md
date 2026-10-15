@@ -17,7 +17,7 @@ A POSIX `sh` script. Each GitHub release has it as the `install.sh` asset. Give 
 | --- | --- | --- |
 | `--channel <CHANNEL>` | `stable` | `stable`: the release GitHub marks as latest. `dev`: among the 30 most recent releases, the non-draft release whose tag is `vX.Y.Z-dev.N` with the highest `N`. If you give this option, the script also records the channel for the auto-upgrade of `loomd` and for `loom upgrade` (see [Remembered channel](#remembered-channel)). |
 | `--version <VERSION>` | none | Installs release `v<VERSION>`. `VERSION` is `X.Y.Z` or `X.Y.Z-dev.N`, without the leading `v`. Cannot be combined with `--channel`. |
-| `--prefix <DIR>` | `$HOME/.local/bin` | The directory that receives `loom` and `loomd`. If the directory does not exist, the script creates it. A relative path starts from the current directory. |
+| `--prefix <DIR>` | `$HOME/.local/bin` | The directory that receives `loom` and `loomd`. If the directory does not exist, the script creates it. A relative path is relative to the current directory. |
 | `-h`, `--help` | | Prints the usage on stdout and exits with code 0. |
 
 ## Environment variables

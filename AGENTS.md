@@ -54,6 +54,7 @@ The quality gate is `mise run check`; CI runs it on Linux and macOS. Pull reques
 - No new crate without updating the crate table in `docs/design/architecture.md`.
 - No new dependency without a one-line justification in the PR description.
 - Default to private visibility; public items get `///` docs.
+- Doc comments that feed a generated reference (clap help, `///` on types that derive `JsonSchema`) follow the ASD-STE100 rules of the [style guide](docs/reference/style-guide.md#22-simplified-technical-english-asd-ste100).
 
 ## Tests
 

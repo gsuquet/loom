@@ -8,7 +8,7 @@
 
 - **Format:** Format the code with `cargo fmt`. Do not commit code that is not formatted.
 - **Linter:** `clippy` runs with the `pedantic` and `nursery` groups. It is part of `mise run check`.
-- **Zero Panics:** Library crates (`loom-core`) do not use `unwrap()` or `expect()`. Use `Result<T, DomainError>`.
+- **Zero Panics:** No crate uses `unwrap()` or `expect()` outside tests. Use `Result<T, DomainError>`.
 - **Visibility:** Make items private by default. Give each public API complete Rustdoc comments (`///`).
 - **Error Types:** Use `thiserror` in libraries and `miette` in the CLI binary.
 
@@ -42,7 +42,7 @@ The user documentation follows the rules of [ASD-STE100 Simplified Technical Eng
 #### Words
 
 - Use simple words that have one meaning. For one meaning, use one word, and use it each time. For example, if a page says "context store", do not also say "context repository".
-- Use a word as one part of speech only. For example, if you use "update" as a noun, do not also use it as a verb in the same page.
+- Use a word as one part of speech only. For example, if you use "update" as a noun, do not also use it as a verb in the same page. STE fixes the part of speech for all the text. This project applies the rule page by page.
 - Keep technical names as they are: commands, flags, keys, file names, fields, error codes, product names. Write them in code format when they are code.
 - Do not use an -ing form as a noun or as an adjective. Write "before you install", not "before installing". Write "the daemon that runs", not "the running daemon". An -ing form in a technical name stays as it is.
 - Do not use phrasal verbs such as "set up" or "carry out". Use one verb: "configure", "do". The name of a command stays as it is.
@@ -62,7 +62,7 @@ The user documentation follows the rules of [ASD-STE100 Simplified Technical Eng
 - Write one instruction in each sentence. Two actions that you do at the same time can be in one sentence.
 - Put the condition before the instruction: "If the check fails, do the backup again".
 - Use a numbered list for a sequence of steps. Use a bulleted list for items that have no order.
-- Put a warning or a caution before the step that it applies to. First give the instruction, then give the risk.
+- Put a warning or a caution before the step that it applies to. Start the warning with the instruction, then give the risk.
 
 #### Paragraphs
 

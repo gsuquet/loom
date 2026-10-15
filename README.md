@@ -24,12 +24,12 @@ Loom keeps all the work that I have to do in one prioritized list, for all my co
 
 * With _Loom_ you can _triage_ all your items in a single list, in the order of priority. The items are merge requests to review, tickets, incidents, alerts, support requests and your own ideas. The list shows one context or all of them.
 * With _Loom_ you can _edit and create_ Jira, GitLab and GitHub issues locally and sync them upstream. You can also _review_ merge requests from the terminal.
-* With _Loom_ you can _delegate_ a task, or a part of it, to specialist agents. Typed contracts, quality gates and approval rules control the agents, and you can watch them work live.
+* With _Loom_ you can _delegate_ a task, or a part of it, to specialist agents. Typed contracts, quality gates and approval rules control the agents, and you can watch the agents work live.
 * Unlike _a tracker or an agent wrapper_, _Loom_ keeps an auditable ledger of all work on disk, with one ledger for each context. Learnings go from one context to the next, but client data stays in its context.
 
 ## Project status
 
-[v0.2.0](https://github.com/gsuquet/loom/releases/tag/v0.2.0) does these functions:
+[v0.2.0](https://github.com/gsuquet/loom/releases/tag/v0.2.0) has these functions:
 
 * It installs, runs `loomd` as a user service and keeps itself up to date.
 * It indexes the git repositories of the machine: contexts, repo cards, `loom search`, automatic fetch and fast-forward.
