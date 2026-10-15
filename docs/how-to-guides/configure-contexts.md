@@ -1,12 +1,14 @@
 # Configure contexts
 
-> Give every repository on the machine a context (personal, a client…), check the assignments, and fix the repositories left `unassigned`.
+> Give a context (personal, a client…) to each repository on the machine. Then check the assignments and fix the repositories that stay `unassigned`.
 
-Before you start: `loom` and `loomd` are installed. The configuration is `<loom home>/config.toml`: `~/.loom/config.toml`, or under `LOOM_HOME` when it is set.
+Before you start, make sure that `loom` and `loomd` are installed.
+
+The configuration file is `<loom home>/config.toml`. This is `~/.loom/config.toml`, or the file under `LOOM_HOME` if `LOOM_HOME` is set.
 
 ## Define the contexts
 
-1. Add one `[contexts.<name>]` table per context to `config.toml`, with the directories (`match.paths`) and the remote hosts (`match.hosts`) of its repositories:
+1. For each context, add one `[contexts.<name>]` table to `config.toml`. In the table, give the directories (`match.paths`) and the remote hosts (`match.hosts`) of its repositories:
 
    ```toml
    [contexts.personal]
@@ -18,23 +20,30 @@ Before you start: `loom` and `loomd` are installed. The configuration is `<loom 
    match.hosts = ["gitlab.com/company-a", "gitlab.company-a.example"]
    ```
 
-   A repository gets the first rule that matches: a `[repos."<path>"] context` override, then the `match.hosts` entry of its primary remote (the longest prefix wins), then the longest `match.paths` prefix, then `default_context`. Nothing else: it is `unassigned`.
+   A repository gets the first rule that matches, in this order:
 
-2. Optional: give every repository that matches no rule a context:
+   1. A `[repos."<path>"] context` override.
+   2. The `match.hosts` entry of its primary remote. The longest prefix wins.
+   3. The longest `match.paths` prefix.
+   4. `default_context`.
+
+   If no rule matches, the repository is `unassigned`.
+
+2. Optional: give a context to each repository that matches no rule:
 
    ```toml
    default_context = "personal"
    ```
 
-3. Restart loomd: it reads the configuration only when it starts, then scans and assigns every repository again.
+3. Restart loomd. loomd reads the configuration only when it starts. Then it scans and assigns each repository again.
 
    ```bash
    loom service restart
    ```
 
-   It checks `config.toml` first: when the file is invalid, it prints the error and loomd keeps running with the previous configuration. With the service installed, its manager restarts loomd; without it, loomd is stopped and started again.
+   The command first checks `config.toml`. If the file is not valid, the command prints the error. loomd then continues to run with the previous configuration. If the service is installed, the service manager restarts loomd. Without the service, loomd is stopped and started again.
 
-   An invalid configuration stops loomd: `loom status` then prints the error and the end of `log/loomd.log`.
+   A configuration that is not valid stops loomd. Then `loom status` prints the error and the end of `log/loomd.log`.
 
 ## Check the assignments
 
@@ -44,17 +53,17 @@ Before you start: `loom` and `loomd` are installed. The configuration is `<loom 
    loom repo ls
    ```
 
-   A `!` in the first column marks a repository without context.
+   A `!` in the first column marks a repository without a context.
 
-2. See the rule that assigned a repository:
+2. Show the rule that assigned a repository:
 
    ```bash
    loom repo show company-a/api
    ```
 
-   The `context:` line names the context and the rule, such as `company-a (match.hosts "gitlab.com/company-a")`.
+   The `context:` line gives the context and the rule, for example `company-a (match.hosts "gitlab.com/company-a")`.
 
-3. List the repositories of one context, or those without one:
+3. List the repositories of one context, or the repositories without a context:
 
    ```bash
    loom repo ls -c company-a
@@ -69,22 +78,26 @@ Before you start: `loom` and `loomd` are installed. The configuration is `<loom 
    loom repo doctor
    ```
 
-   The `unassigned` line gives their count, one of them, and a `[contexts.<name>]` table that would match it.
+   The `unassigned` line gives the number of unassigned repositories and one of them. It also gives a `[contexts.<name>]` table that matches this repository.
 
-2. Pick the rule that fits, in `config.toml`:
+2. In `config.toml`, select the applicable rule:
 
    - All the repositories of a directory: add the directory to the `match.paths` of a context.
-   - All the repositories of a forge group: add `host/group` to its `match.hosts`.
-   - One repository: an override.
+   - All the repositories of a forge group: add `host/group` to the `match.hosts` of a context.
+   - One repository: add an override.
 
      ```toml
      [repos."~/src/tool"]
      context = "personal"
      ```
 
-   - Everything else: `default_context`.
+   - All other repositories: set `default_context`.
 
-3. Restart loomd (see above), then run `loom repo doctor` again. The `contexts` line fails when `match.paths` entries of two contexts are the same directory once `~` is expanded (`~/work` and `/home/me/work`): keep each directory in one context.
+3. Restart loomd (see above).
+
+4. Run `loom repo doctor` again.
+
+   The `contexts` line fails if `match.paths` entries of two contexts are the same directory after `~` expansion. For example, `~/work` and `/home/me/work` are the same directory. Keep each directory in one context only.
 
 ## Reference
 
