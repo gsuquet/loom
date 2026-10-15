@@ -132,18 +132,20 @@ impl FileStore {
             .find(|location| self.dir_at(id, *location).is_dir()))
     }
 
-    /// Creates `<root>/tasks` (mode `0700`) when missing.
+    /// Creates `<root>/tasks` and `<root>/archive` (mode `0700`) when missing.
     ///
     /// # Errors
     ///
-    /// [`PortError::Io`] when it cannot be created.
+    /// [`PortError::Io`] when one cannot be created.
     pub fn init(&self) -> Result<(), PortError> {
-        let tasks = self.tasks_dir();
-        DirBuilder::new()
-            .recursive(true)
-            .mode(TASK_DIR_MODE)
-            .create(&tasks)
-            .map_err(|source| io_error(&tasks, source))
+        for dir in [self.tasks_dir(), self.archive_dir()] {
+            DirBuilder::new()
+                .recursive(true)
+                .mode(TASK_DIR_MODE)
+                .create(&dir)
+                .map_err(|source| io_error(&dir, source))?;
+        }
+        Ok(())
     }
 
     /// The lock of task `id`, created on first use.
@@ -298,7 +300,10 @@ impl StorePort for FileStore {
         }
         let source = self.task_dir(id);
         let target = self.dir_at(id, TaskLocation::Archived(year));
-        // `rename` replaces an empty directory: a task already there is never overwritten.
+        // `rename` replaces an empty directory: a task already there is never overwritten. The
+        // check and the rename are two steps; the task lock covers loomd, not a hand `mv` in
+        // between. TODO: `renameat2(RENAME_NOREPLACE)` on Linux and `renamex_np(RENAME_EXCL)`
+        // on macOS make it one step.
         if target.exists() {
             return Err(PortError::AlreadyExists {
                 context: self.context.clone(),

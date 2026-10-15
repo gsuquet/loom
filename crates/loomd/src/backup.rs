@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use loom_api::{BackupReport, BackupSync, ContextBackup, ContextName, TaskId};
 use loom_config::config::StoreSettings;
 use loom_core::{Event, Status};
+use loom_store::port::TaskLocation;
 
 /// `.gitattributes` written when a store repository is created: `events.jsonl` only grows, so
 /// two histories of it merge by keeping both sides' lines.
@@ -23,23 +24,32 @@ pub const SUMMARY_MAX_CHARS: usize = 60;
 /// What a commit takes from the working tree of a store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
-    /// The directory of this task only.
-    Task(TaskId),
+    /// The directory of this task only, where it is; for an archived task, also what is left
+    /// of it in `tasks/` (its deletion after the move).
+    Task {
+        /// The task.
+        id: TaskId,
+        /// Where its directory is.
+        location: TaskLocation,
+    },
     /// Every change of the store.
     All,
 }
 
-/// What to stage for a change of task `id`.
+/// What to stage for a change of task `id` at `location`.
 ///
 /// Its directory, or every change of the store when an earlier commit failed (its changes are
 /// committed with this one) or when the store has no repository yet (its first commit holds
 /// every file).
 #[must_use]
-pub fn scope(id: &TaskId, pending: bool, repository: bool) -> Scope {
+pub fn scope(id: &TaskId, location: TaskLocation, pending: bool, repository: bool) -> Scope {
     if pending || !repository {
         Scope::All
     } else {
-        Scope::Task(id.clone())
+        Scope::Task {
+            id: id.clone(),
+            location,
+        }
     }
 }
 
@@ -305,6 +315,7 @@ mod tests {
 
     use loom_api::{BackupOutcome, BackupSync, ContextName, Timestamp};
     use loom_config::config::StoreSettings;
+    use loom_store::port::TaskLocation;
 
     use super::{
         Scope, Sides, SyncAction, catch_up_message, commit_message, decide_sync, hand_edit_message,
@@ -476,11 +487,26 @@ mod tests {
 
     #[test]
     fn a_change_of_a_known_task_takes_its_directory() {
-        assert_eq!(scope(&id(), false, true), Scope::Task(id()));
+        let active = TaskLocation::Active;
+        assert_eq!(
+            scope(&id(), active, false, true),
+            Scope::Task {
+                id: id(),
+                location: active
+            }
+        );
+        let archived = TaskLocation::Archived(2026);
+        assert_eq!(
+            scope(&id(), archived, false, true),
+            Scope::Task {
+                id: id(),
+                location: archived
+            }
+        );
         // An earlier commit failed: its changes go with this one.
-        assert_eq!(scope(&id(), true, true), Scope::All);
+        assert_eq!(scope(&id(), active, true, true), Scope::All);
         // The first commit of a store holds every file.
-        assert_eq!(scope(&id(), false, false), Scope::All);
+        assert_eq!(scope(&id(), active, false, false), Scope::All);
     }
 
     #[test]

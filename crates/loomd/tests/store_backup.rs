@@ -19,6 +19,7 @@ use std::time::Instant;
 use loom_api::{BackupOutcome, BackupReport, ContextName, ReindexResult, TaskId, Timestamp};
 use loom_core::{Actor, Event, Kind, MachineId, NewTask, Origin, Relations, Status};
 use loom_store::files::FileStore;
+use loom_store::port::TaskLocation;
 use loom_store::tasks::{TaskIndex, Tasks};
 use loomd::backup::commit_message;
 use loomd::repo_update::GitRunner;
@@ -420,7 +421,7 @@ fn each_mutation_through_the_store_is_one_commit() {
     };
     let message = commit_message(&task.id, &[&created]).unwrap();
     assert_eq!(
-        commits.commit_task(&context("work"), &task.id, &message),
+        commits.commit_task(&context("work"), &task.id, TaskLocation::Active, &message),
         Ok(Committed::Created)
     );
 
@@ -448,12 +449,12 @@ fn each_mutation_through_the_store_is_one_commit() {
     let last = &events.last().unwrap().event;
     let message = commit_message(&task.id, &[last]).unwrap();
     assert_eq!(
-        commits.commit_task(&context("work"), &task.id, &message),
+        commits.commit_task(&context("work"), &task.id, TaskLocation::Active, &message),
         Ok(Committed::Created)
     );
     // Nothing changed since: no empty commit.
     assert_eq!(
-        commits.commit_task(&context("work"), &task.id, &message),
+        commits.commit_task(&context("work"), &task.id, TaskLocation::Active, &message),
         Ok(Committed::Nothing)
     );
     assert_eq!(

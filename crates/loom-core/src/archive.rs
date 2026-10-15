@@ -7,10 +7,11 @@ use crate::event::{Event, EventRecord, FieldChange};
 use crate::task::{Status, Task};
 use crate::timestamp::Timestamp;
 
-/// When `task` was closed; `None` when it is not.
+/// When `task` was closed: the time of the last event of `events` (its log) that set its
+/// current status, `done` or `cancelled`.
 ///
-/// The time of the last event of `events` (its log) that set its current status, `done` or
-/// `cancelled`; its last change when no event did (a log lost, or a hand edit not recorded yet).
+/// `None` when it is not closed, or when no event closed it (a lost log, a hand edit not
+/// recorded yet): a closing the log does not show is never guessed.
 #[must_use]
 pub fn closed_at(task: &Task, events: &[EventRecord]) -> Option<Timestamp> {
     match task.status {
@@ -38,7 +39,7 @@ pub fn closed_at(task: &Task, events: &[EventRecord]) -> Option<Timestamp> {
         }
         Event::NoteLogged { .. } => false,
     });
-    Some(closing.map_or(task.updated, |record| record.at))
+    closing.map(|record| record.at)
 }
 
 /// The year of the archive directory `task` (with its log `events`) moves to at `now`, when it

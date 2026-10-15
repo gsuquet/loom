@@ -57,6 +57,8 @@ pub struct TaskListQuery {
     pub status: Option<String>,
     /// `true`: the priority list.
     pub ranked: Option<bool>,
+    /// `true`: the archived tasks instead of the others.
+    pub archived: Option<bool>,
 }
 
 /// The filter of a task list, checked.
@@ -68,6 +70,8 @@ pub struct TaskFilter {
     pub status: Option<StatusName>,
     /// The priority list: the tasks [`loom_core::rank`] lists, in its order.
     pub ranked: bool,
+    /// The archived tasks only; otherwise the tasks of `tasks/` only.
+    pub archived: bool,
 }
 
 /// The filter of `query`.
@@ -98,6 +102,7 @@ pub fn task_filter(query: TaskListQuery) -> Result<TaskFilter, ApiError> {
         context,
         status,
         ranked: query.ranked.unwrap_or(false),
+        archived: query.archived.unwrap_or(false),
     })
 }
 
@@ -113,10 +118,11 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
             .map_or_else(|| id.to_string(), |prefix| (*prefix).to_owned())
     };
     let kept = rows.iter().filter(|row| {
-        filter
-            .context
-            .as_ref()
-            .is_none_or(|context| row.context == *context)
+        (row.location != TaskLocation::Active) == filter.archived
+            && filter
+                .context
+                .as_ref()
+                .is_none_or(|context| row.context == *context)
             && filter.status.is_none_or(|status| {
                 task_of(row).and_then(|task| task.status.name()) == Some(status)
             })

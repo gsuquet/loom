@@ -152,10 +152,14 @@ fn a_task_created_closed_is_closed_at_its_creation() {
 }
 
 #[test]
-fn without_a_closing_event_the_last_change_counts() {
+fn without_a_closing_event_a_task_is_never_archived() {
     // A status set by hand and not recorded yet, or a lost log.
-    let (mut task, _) = created(Status::Ready);
+    let (mut task, log) = created(Status::Ready);
     task.status = Status::Done;
-    task.updated = at(3 * DAY);
-    assert_eq!(closed_at(&task, &[]), Some(at(3 * DAY)));
+    assert_eq!(closed_at(&task, &log), None);
+    assert_eq!(closed_at(&task, &[]), None);
+    assert_eq!(
+        archive_year(&task, &[], at(1000 * DAY), Duration::ZERO),
+        None
+    );
 }

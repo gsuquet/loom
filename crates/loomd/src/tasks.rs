@@ -3,7 +3,7 @@
 //!
 //! - At start, it reconciles every task with the index: new files are indexed, hand edits made
 //!   while loomd was stopped are recorded, rows of removed tasks dropped.
-//! - A file watcher on each `tasks/` directory sends the tasks whose files change; each is
+//! - A file watcher on each `tasks/` and `archive/` directory sends the tasks whose files change; each is
 //!   reconciled the same way. A change loomd made itself has the hash the index holds and is
 //!   skipped.
 //! - `POST /v1/tasks/reindex` reconciles every task, then rebuilds the task rows from the files.
@@ -35,6 +35,7 @@ use loom_api::{
 };
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
 use loom_store::files::FileStore;
+use loom_store::port::TaskLocation;
 use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskIndex, Tasks};
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
@@ -126,7 +127,7 @@ pub struct TaskHandle {
     ready: watch::Receiver<bool>,
 }
 
-/// Creates `tasks/` in every context store, opens `db` (created and migrated when needed),
+/// Creates `tasks/` and `archive/` in every context store, opens `db` (created and migrated when needed),
 /// starts the file watcher, then the task thread, which reconciles every task at once. Events
 /// are recorded on the machine `machine_id`.
 pub fn start(
@@ -189,7 +190,7 @@ pub fn start(
     ))
 }
 
-/// Watches `tasks/` of every store and sends the tasks whose files change. `None`, with a
+/// Watches `tasks/` and `archive/` of every store and sends the tasks whose files change. `None`, with a
 /// warning, when the watcher cannot start: hand edits are then picked up at the next start.
 fn watch(
     stores: &BTreeMap<ContextName, PathBuf>,
@@ -235,9 +236,11 @@ fn watch(
         }
     };
     for root in stores.values() {
-        let tasks = root.join(loom_store::files::TASKS_DIR);
-        if let Err(error) = watcher.watch(&tasks, RecursiveMode::Recursive) {
-            warn!(path = %tasks.display(), %error, "cannot watch a task store");
+        for dir in [loom_store::files::TASKS_DIR, loom_store::files::ARCHIVE_DIR] {
+            let dir = root.join(dir);
+            if let Err(error) = watcher.watch(&dir, RecursiveMode::Recursive) {
+                warn!(path = %dir.display(), %error, "cannot watch a task store");
+            }
         }
     }
     Some(watcher)
@@ -652,7 +655,10 @@ impl Worker {
         let Some(message) = commit_message(id, &new) else {
             return;
         };
-        let result = self.commits.commit_task(context, id, &message);
+        // Archived tasks refuse every change: an API change is always of an active task.
+        let result = self
+            .commits
+            .commit_task(context, id, TaskLocation::Active, &message);
         log_commit(context, Some(id), result);
     }
 
@@ -717,11 +723,12 @@ impl Worker {
         {
             Ok(reconciled) => {
                 log_reconciled(id, &reconciled);
+                let location = self.location(id);
                 let result = match &reconciled {
                     Reconciled::Unchanged => return,
                     Reconciled::Indexed => {
                         self.commits
-                            .commit_task(context, id, &hand_edit_message(id))
+                            .commit_task(context, id, location, &hand_edit_message(id))
                     }
                     Reconciled::Edited(changes) => {
                         let event = Event::Edited {
@@ -729,7 +736,7 @@ impl Worker {
                         };
                         let message =
                             commit_message(id, &[&event]).unwrap_or_else(|| hand_edit_message(id));
-                        self.commits.commit_task(context, id, &message)
+                        self.commits.commit_task(context, id, location, &message)
                     }
                     // Its directory may never have been committed: every change is taken.
                     Reconciled::Removed => self.commits.commit_all(context, &removed_message(id)),
@@ -754,8 +761,8 @@ impl Worker {
     /// Commits the hand edit of `changes` recorded on task `id`, found by a reconciliation of
     /// every task: its context is the one its index row names.
     fn commit_edit(&mut self, id: &TaskId, changes: &[loom_core::FieldChange]) {
-        let context = match self.tasks.index().get(id) {
-            Ok(Some(row)) => row.context,
+        let (context, location) = match self.tasks.index().get(id) {
+            Ok(Some(row)) => (row.context, row.location),
             // Left to the commit of every change that ends the reconciliation.
             Ok(None) => return,
             Err(error) => {
@@ -767,8 +774,21 @@ impl Worker {
             changes: changes.to_vec(),
         };
         let message = commit_message(id, &[&event]).unwrap_or_else(|| hand_edit_message(id));
-        let result = self.commits.commit_task(&context, id, &message);
+        let result = self.commits.commit_task(&context, id, location, &message);
         log_commit(&context, Some(id), result);
+    }
+
+    /// Where task `id` is, as just indexed: active when it cannot be read (the commit then
+    /// takes `tasks/<id>`, and the catch-up commit whatever is left).
+    fn location(&mut self, id: &TaskId) -> TaskLocation {
+        match self.tasks.index().get(id) {
+            Ok(Some(row)) => row.location,
+            Ok(None) => TaskLocation::Active,
+            Err(error) => {
+                warn!(%id, %error, "cannot read the location of a task");
+                TaskLocation::Active
+            }
+        }
     }
 }
 

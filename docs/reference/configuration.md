@@ -301,7 +301,7 @@ Error: invalid configuration /home/me/.loom/machine.toml:1:1: unknown field `nam
 
 ## Context stores
 
-Each context of `config.toml` held by this machine (see [`machines`](#contexts-and-repositories)) has a task store: `[contexts.<name>] store.path`, by default `<loom home>/contexts/<name>`. `loomd` creates `<store>/tasks/` (mode `0700`) when it starts; a store that cannot be created stops it with code 1.
+Each context of `config.toml` held by this machine (see [`machines`](#contexts-and-repositories)) has a task store: `[contexts.<name>] store.path`, by default `<loom home>/contexts/<name>`. `loomd` creates `<store>/tasks/` and `<store>/archive/` (mode `0700`) when it starts; a store that cannot be created stops it with code 1.
 
 | Path | Mode | Content |
 | --- | --- | --- |
@@ -309,8 +309,9 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 | `tasks/<id>/task.md` | `0600` | The task: TOML frontmatter between `+++` lines, then free notes ([format](task-file.md)). Replaced atomically: written to `.task.md.tmp` beside it, synced, renamed over it, and the directory synced. |
 | `tasks/<id>/events.jsonl` | `0600` | The task's events, one JSON object per line, appended and synced, never rewritten. A last line cut by a crash is closed by a line ending before the next append. |
 | `tasks/.<id>.tmp/` | `0700` | A task being created: written whole, then renamed to `tasks/<id>/`. A leftover of a crash is ignored, and replaced when the same ID is created again. |
+| `archive/<yyyy>/<id>/` | `0700` | An archived task, `<yyyy>` the UTC year it was closed, with the same two files; read-only ([task files](task-file.md)). Other names in `archive/` and its years are ignored. |
 
-`loomd` watches `tasks/` of every store (FSEvents on macOS, inotify on Linux) and reconciles each task whose files change, and every task when it starts:
+`loomd` watches `tasks/` and `archive/` of every store (FSEvents on macOS, inotify on Linux) and reconciles each task whose files change, and every task when it starts:
 
 | Change | Result |
 | --- | --- |
@@ -318,6 +319,7 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 | A field of the frontmatter differs from the task its `events.jsonl` describes | An `edited` event with the actor `{"type":"file"}` is appended, with each changed field (`title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`); the task is indexed. `task.md` is not written. |
 | Only the notes changed, or `events.jsonl` has no `created` event, a line of a newer version, or changes that do not follow from each other | The task is indexed, no event. |
 | `task.md` is invalid | The task is indexed read-only with the error and its line; no event; the file is never rewritten. |
+| The task directory moved between `tasks/` and `archive/<yyyy>/`, its `task.md` unchanged | The task is indexed at its new place, no event. |
 | The task directory or its `task.md` is gone | The task leaves the index. |
 | A file cannot be read (permissions, I/O), or `tasks/` cannot be listed | Logged with its path; the task keeps its index entry; the other tasks are reconciled. |
 
@@ -325,7 +327,7 @@ When the watcher cannot start, `loomd` logs a warning and picks the hand edits u
 
 ### Store repository
 
-Each store is a git repository, created by `loomd` at its first commit: when the store first changes, or at start when `tasks/` holds an entry. `loomd` runs `git init --initial-branch=main` in the store root and writes, when missing:
+Each store is a git repository, created by `loomd` at its first commit: when the store first changes, or at start when `tasks/` or `archive/` holds an entry. `loomd` runs `git init --initial-branch=main` in the store root and writes, when missing:
 
 | Path | Content |
 | --- | --- |
@@ -337,8 +339,8 @@ Each change is committed right after it is written, through the `git` CLI:
 | Change | Staged | Commit message |
 | --- | --- | --- |
 | A task created, edited, changed by an action (status, pin, note) or undone through the [API](api.md#tasks) | `tasks/<id>/` | `<event type>(<id>): <summary>` of its first event, such as `created(k3q7zm2a): Ship it`, `status_changed(k3q7zm2a): ready -> active`, `note_logged(k3q7zm2a): Asked Alice`, `undone(k3q7zm2a): event e0000003`; `(+<n> events)` when it recorded more. A request that records no event commits nothing. |
-| A hand edit recorded as an `edited` event | `tasks/<id>/` | `edited(<id>): <fields>`, such as `edited(k3q7zm2a): title, due` |
-| A hand edit that records no event (notes, a new or invalid file) | `tasks/<id>/` | `edited(<id>): changed by hand` |
+| A hand edit recorded as an `edited` event | `tasks/<id>/`, or `archive/<yyyy>/<id>/` and the removal of `tasks/<id>/` for an archived task | `edited(<id>): <fields>`, such as `edited(k3q7zm2a): title, due` |
+| A hand edit that records no event (notes, a new or invalid file, a move to the archive) | as above | `edited(<id>): changed by hand` |
 | A task directory removed | the whole store | `removed(<id>): task directory removed` |
 | The end of a reconciliation of every task (start, lost watcher events, `loom reindex`) | the whole store | `sync(<context>): uncommitted changes` |
 
