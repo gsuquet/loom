@@ -914,8 +914,9 @@ impl Worker {
                 let result = match &reconciled {
                     Reconciled::Unchanged => return,
                     // Nothing was written to either copy: nothing to commit, the clients refetch.
-                    Reconciled::Duplicate(_) => {
-                        self.changed(context, id);
+                    Reconciled::Duplicate(contexts) => {
+                        // The row is in the first context, not necessarily the watcher's.
+                        self.changed(contexts.first().unwrap_or(context), id);
                         return;
                     }
                     Reconciled::Indexed | Reconciled::Withheld => {

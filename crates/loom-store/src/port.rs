@@ -53,6 +53,14 @@ pub trait StorePort {
         change: impl FnOnce(StoredTask) -> Result<(TaskWrite, T), E>,
     ) -> Result<T, E>;
 
+    /// Whether the store holds a task with `id`, active or archived. Looks at the directories
+    /// only: no file is read.
+    ///
+    /// # Errors
+    ///
+    /// The read error of a directory.
+    fn contains(&self, id: &TaskId) -> Result<bool, PortError>;
+
     /// IDs of the tasks of the context, active and archived, sorted, each once.
     ///
     /// # Errors

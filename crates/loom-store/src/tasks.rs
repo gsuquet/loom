@@ -456,7 +456,7 @@ impl<P: StorePort> Tasks<P> {
         let store = store_of(&self.index, &self.stores, id)?;
         // The row of a duplicate ID is invalid in the index, but the file the store returns is
         // a valid copy: which of the copies the command is for is unknown.
-        let holders = self.holders(id)?;
+        let holders = self.holders(id);
         if holders.len() > 1 {
             return Err(TaskError::Invalid(InvalidTask::DuplicateId {
                 id: id.clone(),
@@ -585,6 +585,7 @@ impl<P: StorePort> Tasks<P> {
     pub fn reindex(&mut self) -> Result<Reindexed, TaskError> {
         let _span = debug_span!("tasks.reindex").entered();
         let mut read = Vec::new();
+        let mut listed = Vec::new();
         let mut failed = Vec::new();
         for (context, store) in &self.stores {
             let ids = match store.list() {
@@ -595,6 +596,7 @@ impl<P: StorePort> Tasks<P> {
                 }
             };
             for id in ids {
+                listed.push((context.clone(), id.clone()));
                 match store.read(&id) {
                     Ok(stored) => read.push(stored),
                     // Removed since it was listed.
@@ -603,8 +605,10 @@ impl<P: StorePort> Tasks<P> {
                 }
             }
         }
-        // An ID held by several stores gets one flagged row, at the place of its first copy.
-        let duplicates = duplicate_ids(read.iter().map(|stored| (&stored.context, &stored.id)));
+        // An ID held by several stores gets one flagged row, at the place of its first copy that
+        // could be read. The listing decides, not the reads: a copy that cannot be read still
+        // makes a duplicate, as in `reconcile_all`.
+        let duplicates = duplicate_ids(listed.iter().map(|(context, id)| (context, id)));
         let mut rows = Vec::with_capacity(read.len());
         let mut flagged = HashSet::new();
         for stored in &read {
@@ -642,21 +646,27 @@ impl<P: StorePort> Tasks<P> {
         origin: &Origin,
         random: &mut impl RandomSource,
     ) -> Result<Reconciled, TaskError> {
-        let holders = self.holders(id)?;
+        let holders = self.holders(id);
         self.reconcile_held(context, id, &holders, now, origin, random)
     }
 
     /// The contexts whose stores hold task `id`, in the order of the stores.
-    fn holders(&self, id: &TaskId) -> Result<Vec<ContextName>, TaskError> {
+    ///
+    /// A store that cannot be looked at (a permission, an I/O error) is skipped with a warning,
+    /// as a reindex goes on without it: one broken store never blocks the tasks of the others.
+    /// An ID that such a store holds is thus not seen as a duplicate until it can be read.
+    fn holders(&self, id: &TaskId) -> Vec<ContextName> {
         let mut holders = Vec::new();
         for (context, store) in &self.stores {
-            match store.read_events(id) {
-                Ok(_) => holders.push(context.clone()),
-                Err(PortError::NotFound { .. }) => {}
-                Err(error) => return Err(error.into()),
+            match store.contains(id) {
+                Ok(true) => holders.push(context.clone()),
+                Ok(false) => {}
+                Err(error) => {
+                    warn!(%context, %id, %error, "cannot tell whether this store holds the task");
+                }
             }
         }
-        Ok(holders)
+        holders
     }
 
     /// [`Tasks::reconcile`] of task `id`, which the stores of `holders` hold.

@@ -99,4 +99,6 @@ The index has one row for each ID, and a task ID is unique in every context. A t
 
 `loomd` does not choose. It indexes the ID once, as invalid, with the error `duplicate ID across contexts` and the contexts that hold it. The row has the context and the file of the first store, in the order of the contexts. The task is read-only: each action, edit and undo is refused with `read_only`, and `loomd` writes neither copy. `loom reindex` lists the ID in `invalid`, and `loomd` logs a warning when it finds it.
 
+`loomd` looks at the directories of the other stores to find a duplicate, and reads no file for it. A store that it cannot look at (a permission, a disk error) is skipped with a warning, so it never blocks the tasks of the other contexts. Until that store can be read, `loomd` does not see its copy as a duplicate. A reindex finds a duplicate from the listing of the stores, also when a copy cannot be read.
+
 To fix this, remove one task directory (or move it out of the stores). `loomd` then indexes the copy that is left as a valid task, and records the difference between the file and its log as a hand edit.
