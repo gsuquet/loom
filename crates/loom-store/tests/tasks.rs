@@ -100,14 +100,14 @@ fn rows(db: &Path) -> Vec<String> {
     let mut statement = conn
         .prepare(
             "SELECT t.id, t.context, t.hash, t.task, t.error, t.title, t.status, t.importance, \
-                    t.due, t.pinned, t.updated, t.body, t.link_keys, \
+                    t.due, t.pinned, t.updated, t.body, t.link_keys, t.archived, \
                     f.title, f.body, f.link_keys \
              FROM tasks t JOIN tasks_fts f ON f.rowid = t.key ORDER BY t.id",
         )
         .unwrap();
     statement
         .query_map([], |row| {
-            let values: Vec<String> = (0..16)
+            let values: Vec<String> = (0..17)
                 .map(|index| {
                     let value: rusqlite::types::Value = row.get(index)?;
                     Ok(format!("{value:?}"))

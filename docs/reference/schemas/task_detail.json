@@ -552,6 +552,26 @@
             "reason",
             "value"
           ]
+        },
+        {
+          "description": "The task is archived in `archive/<yyyy>/`: the year.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "const": "archived"
+            },
+            "value": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "required": [
+            "reason",
+            "value"
+          ]
         }
       ]
     },

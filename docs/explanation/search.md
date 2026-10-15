@@ -17,9 +17,8 @@ Full-text relevance alone answers "which text holds these words best", not "what
 1. tasks `active`, `ready` and `waiting`: the work in progress or next;
 2. repositories: the places you work in;
 3. tasks `inbox`, and tasks loom cannot fully read (a status from a newer loom, an invalid `task.md`): still to look at;
-4. tasks `done` and `cancelled`: history.
-
-Archived tasks do not exist yet; when they do, they will rank after every other group.
+4. tasks `done` and `cancelled`: history;
+5. archived tasks, whatever their status: older history, still found.
 
 Within a group, each kind keeps its own order. Tasks: link key, then title, then the rest; most recently changed first. Repositories: exact name, name prefix, slug, then the rest; most recently used first. FTS5 relevance (`bm25`) only breaks ties, and the ID or the slug makes the order total, so the same index always gives the same order.
 

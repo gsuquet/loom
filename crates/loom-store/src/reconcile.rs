@@ -6,26 +6,36 @@
 
 use loom_core::{FieldChange, hand_edit_changes, replay};
 
-use crate::port::{ContentHash, StoredTask};
+use crate::port::{ContentHash, StoredTask, TaskLocation};
 
 /// What to do with a task file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciliation {
-    /// The file is the one loomd last indexed: nothing to do.
+    /// The file is the one loomd last indexed, where it was: nothing to do.
     Unchanged,
-    /// Index the file as it is, without an event: it is invalid, its fields are those its log
-    /// describes (only the notes changed), or its log cannot be replayed.
+    /// Index the file as it is, without an event: it moved to or from the archive, it is
+    /// invalid, its fields are those its log describes (only the notes changed), or its log
+    /// cannot be replayed.
     Index,
     /// Record these changes as an `edited` event of the actor `file`, then index the file.
     Record(Vec<FieldChange>),
 }
 
-/// What to do with `stored`, whose `task.md` had the hash `indexed` when loomd last indexed it
-/// (`None` when it is not indexed).
+/// What to do with `stored`, whose `task.md` had the hash and location `indexed` when loomd
+/// last indexed it (`None` when it is not indexed).
 #[must_use]
-pub fn decide(indexed: Option<&ContentHash>, stored: &StoredTask) -> Reconciliation {
-    if indexed == Some(&stored.file.hash) {
-        return Reconciliation::Unchanged;
+pub fn decide(
+    indexed: Option<(&ContentHash, TaskLocation)>,
+    stored: &StoredTask,
+) -> Reconciliation {
+    if let Some((hash, location)) = indexed
+        && *hash == stored.file.hash
+    {
+        return if location == stored.location {
+            Reconciliation::Unchanged
+        } else {
+            Reconciliation::Index
+        };
     }
     let Ok(file) = stored.task() else {
         return Reconciliation::Index;

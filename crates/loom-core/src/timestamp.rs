@@ -45,6 +45,14 @@ impl Timestamp {
         self.unix_secs
     }
 
+    /// The year of the instant in UTC, 1970 to 9999.
+    #[must_use]
+    pub fn year(self) -> u16 {
+        let (year, _, _) = civil_from_days(self.unix_secs / SECS_PER_DAY);
+        // At most 9999: `from_unix_secs` refuses later instants.
+        u16::try_from(year).unwrap_or(u16::MAX)
+    }
+
     /// Parses the canonical form `YYYY-MM-DDTHH:MM:SSZ`; `None` for anything else.
     fn parse(text: &str) -> Option<Self> {
         let bytes = text.as_bytes();
@@ -270,6 +278,15 @@ mod tests {
             serde_json::from_value::<Timestamp>(json!("2026-10-12T10:00:00+02:00")).unwrap_err();
         assert!(error.to_string().contains("RFC 3339 in UTC"), "{error}");
         assert!(serde_json::from_value::<Timestamp>(json!(1_791_792_000)).is_err());
+    }
+
+    #[test]
+    fn year_is_the_utc_year() {
+        assert_eq!(at(0).year(), 1970);
+        // 2026-12-31T23:59:59Z, then 2027-01-01T00:00:00Z.
+        assert_eq!(at(1_798_761_599).year(), 2026);
+        assert_eq!(at(1_798_761_600).year(), 2027);
+        assert_eq!(at(MAX_UNIX_SECS).year(), 9999);
     }
 
     #[test]

@@ -222,7 +222,7 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: several task IDs start with `{id}` | `400` | `ambiguous_prefix`, `details`: [`AmbiguousPrefix`](#problem-details) |
 | Task: body not a valid `NewTask`, `TaskEdit` or `TaskActionRequest` (unknown field, missing `text`, field the action does not take), empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status` or `ranked`; `relations.parent` of a create or an edit naming no indexed task, a task of another context, the task itself or one of its descendants | `400` | `invalid_request` |
 | Task: unknown `{action}` | `404` | `not_found` |
-| Task: change of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
+| Task: change of an archived task (any action, edit or undo), or of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
 | Task: status change the transitions forbid | `409` | `illegal_transition`, `details`: [`IllegalTransition`](#problem-details) |
 | Task: undo of a change whose field changed since (a hand edit not recorded yet) | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) |
 | Task: undo of a task without a change | `409` | `nothing_to_undo` |
@@ -685,7 +685,7 @@ Answer of `GET /v1/tasks`.
 | `read_only` | `TaskReadOnly`, optional | Why the task cannot be changed; absent when it can. |
 | `rank` | object, optional | With `ranked=true` only: `position` (from 1) and `reason`, the rule that placed the task after the previous one: `first`, `pinned`, `urgent`, `importance`, `due_date`, `age`, `id`. |
 
-`TaskReadOnly`, tagged by `reason`, with the name or the error in `value`: `unknown_kind`, `unknown_content_format`, `unknown_status` (written by a newer version of loom), `invalid_file` (why `task.md` cannot be read).
+`TaskReadOnly`, tagged by `reason`, with the name, the error or the year in `value`: `archived` (the year of `archive/<yyyy>/`; given before any other reason), `unknown_kind`, `unknown_content_format`, `unknown_status` (written by a newer version of loom), `invalid_file` (why `task.md` cannot be read). An archived task has no `actions`.
 
 ### `TaskDetail`
 
@@ -903,7 +903,7 @@ Error returned instead of a response body.
 | `unavailable` | The daemon cannot serve the request right now: starting, shutting down, or a dependency is down. | Yes, later. |
 | `internal` | The daemon failed while handling a valid request: a bug or an unexpected I/O failure. | Not expected to help. |
 | `ambiguous_prefix` | A task ID prefix matches several tasks; `details` lists them. | With a longer prefix. |
-| `read_only` | The task cannot be changed: unknown kind, format or status, or an invalid `task.md`. | No: fix the file, or upgrade loom. |
+| `read_only` | The task cannot be changed: archived, unknown kind, format or status, or an invalid `task.md`. | No: an archived task stays read-only; otherwise fix the file, or upgrade loom. |
 | `illegal_transition` | The task cannot move from its status to the requested one. | No. |
 | `conflict` | An undo found a field changed since the change it reverts. | After the hand edit is recorded, the undo reverts it instead. |
 | `nothing_to_undo` | The task has no change to undo. | No. |

@@ -5,7 +5,7 @@ use loom_core::{
 };
 
 use super::{Reconciliation, decide};
-use crate::port::{ContentHash, StoredTask, TaskFile};
+use crate::port::{ContentHash, StoredTask, TaskFile, TaskLocation};
 
 fn new_task() -> (Task, Vec<EventRecord>) {
     let mut bits = 11_u64;
@@ -45,6 +45,7 @@ fn stored(
     StoredTask {
         id: task.id.clone(),
         context: task.context.clone(),
+        location: TaskLocation::Active,
         file: TaskFile::parse(text.as_bytes().to_vec(), &task.id, &task.context),
         events: EventLog { events, skipped },
     }
@@ -69,7 +70,27 @@ fn the_file_loomd_last_indexed_is_unchanged() {
     let text = retitled(&task, "After");
     let stored = stored(&task, &text, events, Vec::new());
     let hash = ContentHash::of(text.as_bytes());
-    assert_eq!(decide(Some(&hash), &stored), Reconciliation::Unchanged);
+    assert_eq!(
+        decide(Some((&hash, TaskLocation::Active)), &stored),
+        Reconciliation::Unchanged
+    );
+    // The same file moved to the archive, or back, is indexed again: its location changed.
+    assert_eq!(
+        decide(Some((&hash, TaskLocation::Archived(2026))), &stored),
+        Reconciliation::Index
+    );
+    let archived = StoredTask {
+        location: TaskLocation::Archived(2026),
+        ..stored
+    };
+    assert_eq!(
+        decide(Some((&hash, TaskLocation::Archived(2026))), &archived),
+        Reconciliation::Unchanged
+    );
+    assert_eq!(
+        decide(Some((&hash, TaskLocation::Archived(2025))), &archived),
+        Reconciliation::Index
+    );
 }
 
 #[test]
@@ -82,7 +103,10 @@ fn a_changed_field_the_log_does_not_explain_is_a_hand_edit() {
         from: "Before".to_owned(),
         to: "After".to_owned(),
     })]);
-    assert_eq!(decide(Some(&stale), &stored), expected);
+    assert_eq!(
+        decide(Some((&stale, TaskLocation::Active)), &stored),
+        expected
+    );
     // Not indexed yet (a deleted index): the log still tells the edit apart.
     assert_eq!(decide(None, &stored), expected);
 }

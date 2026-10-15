@@ -153,7 +153,7 @@ mod tests {
     use std::path::PathBuf;
 
     use loom_api::{ContextName, ReindexResult};
-    use loom_store::port::ContentHash;
+    use loom_store::port::{ContentHash, TaskLocation};
     use loom_store::tasks::{IndexedState, IndexedTask, Reindexed, TaskFailure};
 
     use super::{failed_files, reindex_result};
@@ -167,6 +167,7 @@ mod tests {
             id: id.parse().unwrap(),
             context: context(context_name),
             hash: ContentHash::of(b""),
+            location: TaskLocation::Active,
             state: IndexedState::Invalid {
                 error: error.to_owned(),
                 text: String::new(),

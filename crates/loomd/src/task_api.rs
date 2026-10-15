@@ -11,6 +11,7 @@ use loom_api::{
 };
 use loom_core::shortest_unique_prefixes;
 use loom_core::{Command, DomainError, PrefixError, available_actions, rank, resolve_prefix};
+use loom_store::port::TaskLocation;
 use loom_store::tasks::{IndexedState, IndexedTask, TaskError};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -206,10 +207,13 @@ pub fn task_detail(row: &IndexedTask, ids: &[TaskId]) -> TaskDetail {
         .position(|id| *id == row.id)
         .and_then(|index| shortest_unique_prefixes(ids).get(index).copied())
         .unwrap_or(row.id.as_str());
-    let (body, actions) = match &row.state {
+    let (body, mut actions) = match &row.state {
         IndexedState::Valid { task, body } => (body.clone(), available_actions(task)),
         IndexedState::Invalid { text, .. } => (text.clone(), Vec::new()),
     };
+    if row.location != TaskLocation::Active {
+        actions.clear();
+    }
     TaskDetail {
         summary: summary(row, prefix, None),
         body,
@@ -226,6 +230,11 @@ fn summary(row: &IndexedTask, prefix: &str, rank: Option<TaskRank>) -> TaskSumma
         IndexedState::Invalid { error, .. } => {
             (None, Some(TaskReadOnly::InvalidFile(error.clone())))
         }
+    };
+    // Archived comes first: fixing the file or upgrading loom would not make it writable.
+    let read_only = match row.location {
+        TaskLocation::Archived(year) => Some(TaskReadOnly::Archived(year)),
+        TaskLocation::Active => read_only,
     };
     TaskSummary {
         id: row.id.clone(),
@@ -378,6 +387,13 @@ pub fn task_problem(error: &TaskError) -> Problem {
             with_details(
                 ApiError::new(ErrorCode::ReadOnly, message),
                 &TaskReadOnly::InvalidFile(invalid.to_string()),
+            ),
+        ),
+        TaskError::Archived { year, .. } => (
+            StatusCode::CONFLICT,
+            with_details(
+                ApiError::new(ErrorCode::ReadOnly, message),
+                &TaskReadOnly::Archived(*year),
             ),
         ),
         TaskError::Domain(refused) => domain_problem(refused, message),

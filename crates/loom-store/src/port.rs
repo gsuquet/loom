@@ -53,12 +53,22 @@ pub trait StorePort {
         change: impl FnOnce(StoredTask) -> Result<(TaskWrite, T), E>,
     ) -> Result<T, E>;
 
-    /// IDs of the tasks of the context, sorted.
+    /// IDs of the tasks of the context, active and archived, sorted, each once.
     ///
     /// # Errors
     ///
     /// The read error.
     fn list(&self) -> Result<Vec<TaskId>, PortError>;
+
+    /// Moves the active task `id` to the archive of `year`, all at once and under its lock: a
+    /// crash leaves the task in exactly one place, active or archived.
+    ///
+    /// # Errors
+    ///
+    /// [`PortError::NotFound`] when there is no such task, [`PortError::Archived`] when it is
+    /// archived already, [`PortError::AlreadyExists`] when the archive already holds a task
+    /// with this ID, or the write error.
+    fn archive(&self, id: &TaskId, year: u16) -> Result<(), PortError>;
 
     /// The event log of the task with `id`; empty when it has none.
     ///
@@ -77,6 +87,26 @@ pub struct TaskWrite {
     pub events: Vec<EventRecord>,
 }
 
+/// Where the directory of a task is in its store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskLocation {
+    /// `tasks/<id>`.
+    Active,
+    /// `archive/<yyyy>/<id>`, `<yyyy>` the year the task was closed: read-only.
+    Archived(u16),
+}
+
+impl TaskLocation {
+    /// The year of the archive, `None` for an active task.
+    #[must_use]
+    pub const fn archive_year(self) -> Option<u16> {
+        match self {
+            Self::Active => None,
+            Self::Archived(year) => Some(year),
+        }
+    }
+}
+
 /// A task as read from its store.
 #[derive(Debug, Clone)]
 pub struct StoredTask {
@@ -84,6 +114,8 @@ pub struct StoredTask {
     pub id: TaskId,
     /// Context of its store.
     pub context: ContextName,
+    /// Where its directory is.
+    pub location: TaskLocation,
     /// `task.md`.
     pub file: TaskFile,
     /// `events.jsonl`.
@@ -231,6 +263,16 @@ pub enum PortError {
         /// The task.
         id: TaskId,
     },
+    /// The task is archived: it cannot move or change.
+    #[error("task `{id}` is archived in archive/{year} of the store of `{context}`")]
+    Archived {
+        /// Context of the store.
+        context: ContextName,
+        /// The task.
+        id: TaskId,
+        /// Year of its archive.
+        year: u16,
+    },
     /// A task with this ID already exists.
     #[error("task `{id}` already exists in the store of `{context}`")]
     AlreadyExists {
@@ -284,6 +326,19 @@ pub fn appended(last: Option<u8>, events: &[EventRecord]) -> Result<String, Even
         text.push_str(&render_event(event)?);
     }
     Ok(text)
+}
+
+/// The year of the archive directory `name`: four digits, 1970 to 9999. Other names are not
+/// archive years.
+#[must_use]
+pub fn archive_year_dir(name: &OsStr) -> Option<u16> {
+    let name = name.to_str()?;
+    if name.len() != 4 || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    name.parse()
+        .ok()
+        .filter(|year| (1970..=9999).contains(year))
 }
 
 /// The task whose directory is `name`: only canonical task IDs are tasks (temporary

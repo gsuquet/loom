@@ -170,7 +170,9 @@ fn groups_come_in_order_and_follow_the_status() {
         (None, Inbox),
     ];
     for (status, expected) in cases {
-        assert_eq!(Group::of_task(status), expected, "{status:?}");
+        assert_eq!(Group::of_task(status, false), expected, "{status:?}");
+        // Archived tasks come last, whatever their status.
+        assert_eq!(Group::of_task(status, true), Archived, "{status:?}");
     }
 }
 

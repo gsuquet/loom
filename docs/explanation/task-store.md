@@ -54,6 +54,16 @@ Comparing with the log rather than with the index keeps this right in every orde
 
 A write by `loomd` changes `task.md` and appends its events in that order. If it crashes in between, the next reconciliation sees a file its log does not explain and records the difference as a hand edit: the change is kept, with the actor `file` instead of yours.
 
+## Archived tasks
+
+A task that is done or cancelled is still history worth finding, but it no longer belongs in the store you work from every day. Its archived place is `<store>/archive/<yyyy>/<id>/`, `<yyyy>` the year it was closed: the same directory, the same two files, one rename away. Per-year directories keep each directory small and make an old year easy to back up or prune by hand.
+
+An archived task is indexed like the others, with its archive year: `loom show` finds it, `loom search` finds it after every other result, `loom reindex` rebuilds its row from the files. It is read-only: every action, edit and undo is refused with `read_only` and the reason `archived`, and nothing is appended to its log by a command. Reopening it would mean moving it back, which no command does.
+
+A move is one `rename` of the task directory, after the year directory is created and synced. The rename is atomic on one file system: a crash leaves the task in `tasks/` or in the archive, never in both and never in neither. The index row is written after the rename; when a crash comes in between, the reconciliation at the next start finds the same file at a new place, and indexes the task as archived (the hash alone would have said "unchanged"). The same holds for a directory moved by hand, in either direction.
+
+The file watcher covers `tasks/` only: a change inside the archive is picked up at the next start of `loomd` or by `loom reindex`.
+
 ## When a file is invalid
 
 A `task.md` that cannot be read (broken TOML, a missing key, an `id` that is not its directory, a `context` that is not its store's, bytes that are not UTF-8) is indexed anyway, marked invalid with the reason and its line. The task is read-only until the file is fixed: `loomd` never rewrites a file it cannot read, so nothing you typed is lost, and it records no event for it. `loom reindex` lists the invalid files. Once the file is fixed, the reconciliation records the fields that differ from the last state of the log, as for any hand edit.

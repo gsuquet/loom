@@ -4,7 +4,7 @@ use loom_api::{
     StatusName, Task, TaskActionName, TaskActionRequest, TaskEdit, TaskId, TaskReadOnly, Timestamp,
 };
 use loom_core::{Command, DomainError, ReadOnlyReason};
-use loom_store::port::ContentHash;
+use loom_store::port::{ContentHash, TaskLocation};
 use loom_store::tasks::{IndexedState, IndexedTask, TaskError};
 use serde_json::json;
 
@@ -41,6 +41,7 @@ fn row(task: Task) -> IndexedTask {
         id: task.id.clone(),
         context: task.context.clone(),
         hash: ContentHash::of(b""),
+        location: TaskLocation::Active,
         state: IndexedState::Valid {
             task: Box::new(task),
             body: "## Notes\n".to_owned(),
@@ -53,6 +54,7 @@ fn invalid(task_id: &str, context: &str) -> IndexedTask {
         id: id(task_id),
         context: context.parse().unwrap(),
         hash: ContentHash::of(b"x"),
+        location: TaskLocation::Active,
         state: IndexedState::Invalid {
             error: "line 2: invalid TOML".to_owned(),
             text: "+++\nbroken\n+++\n".to_owned(),
@@ -269,6 +271,30 @@ fn a_detail_has_the_body_and_the_actions() {
 }
 
 #[test]
+fn an_archived_task_is_read_only_with_no_action() {
+    let mut done = task("k3q7zm2a", "work", 100);
+    done.status = Status::Done;
+    let archived = IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..row(done)
+    };
+    let ids = [archived.id.clone()];
+    let detail = task_detail(&archived, &ids);
+    assert_eq!(detail.summary.read_only, Some(TaskReadOnly::Archived(2026)));
+    assert_eq!(detail.actions, []);
+    assert_eq!(detail.body, "## Notes\n");
+    // Archived first, whatever else makes it read-only.
+    let broken = IndexedTask {
+        location: TaskLocation::Archived(2025),
+        ..invalid("k3r00000", "home")
+    };
+    assert_eq!(
+        task_detail(&broken, &ids).summary.read_only,
+        Some(TaskReadOnly::Archived(2025))
+    );
+}
+
+#[test]
 fn a_new_task_rejects_unknown_fields() {
     let body = json!({
         "title": "Write the talk",
@@ -416,6 +442,17 @@ fn task_errors_are_typed_problems() {
             StatusCode::CONFLICT,
             ErrorCode::ReadOnly,
             Some(json!({ "reason": "unknown_kind", "value": "epic" }))
+        )
+    );
+    assert_eq!(
+        problem(TaskError::Archived {
+            id: id("k3q7zm2a"),
+            year: 2026,
+        }),
+        (
+            StatusCode::CONFLICT,
+            ErrorCode::ReadOnly,
+            Some(json!({ "reason": "archived", "value": 2026 }))
         )
     );
     let (status, code, details) =

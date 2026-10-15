@@ -439,6 +439,7 @@ fn read_only_text(read_only: &TaskReadOnly) -> String {
         TaskReadOnly::UnknownContentFormat(value) => format!("unknown content format {value}"),
         TaskReadOnly::UnknownStatus(value) => format!("unknown status {value}"),
         TaskReadOnly::InvalidFile(error) => format!("invalid task.md: {error}"),
+        TaskReadOnly::Archived(year) => format!("archived in archive/{year}"),
     }
 }
 

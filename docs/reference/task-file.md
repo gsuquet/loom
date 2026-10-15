@@ -4,7 +4,14 @@
 
 `loomd` reads these files to index the tasks (`loom reindex`); no command creates or changes a task yet.
 
-Path of both files: `<store>/tasks/<id>/`, where `<store>` is the context's `store.path`, `<loom home>/contexts/<context>` by default (see [context stores](configuration.md#context-stores)).
+Path of both files: `<store>/tasks/<id>/`, where `<store>` is the context's `store.path`, `<loom home>/contexts/<context>` by default (see [context stores](configuration.md#context-stores)). An archived task is in `<store>/archive/<yyyy>/<id>/`, `<yyyy>` the four-digit year it was closed, with the same two files.
+
+| Location | Read | Changed |
+| --- | --- | --- |
+| `tasks/<id>/` | Yes | Yes |
+| `archive/<yyyy>/<id>/` (`<yyyy>` from `1970` to `9999`) | Yes: listed, searched, shown | No: every change is refused (`read_only`) |
+
+A task ID is in one place. When a directory with the same ID is in both, `tasks/<id>/` is the task and the archived copy is ignored; between two archive years, the earlier year is the task.
 
 ## `task.md`
 
@@ -127,6 +134,7 @@ Each section is a `## <name>` heading followed by an empty line.
 | Unknown key, at any level | Kept, and reported (`estimate`, `relations.duplicates`, `links[0].branch`). |
 | Link of an unknown `role` | Kept after the known links, not read, and reported (`links[1]`). |
 | Unknown `kind`, `format` or `status` | Read. The task is read-only: the file is never rewritten. |
+| Task in `archive/<yyyy>/` | Read. The task is read-only: the file is never rewritten by a command. |
 
 ### Errors
 
