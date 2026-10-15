@@ -852,6 +852,11 @@ impl Worker {
                 &archived_message(&moved.id, moved.year),
             );
             log_commit(&moved.context, Some(&moved.id), result);
+            // After the move, its index row and its commit attempt, as for any change.
+            self.events.publish(ChangeEvent::TaskArchived {
+                id: moved.id.clone(),
+                context: moved.context.clone(),
+            });
         }
         for failure in &report.failed {
             warn!(

@@ -255,9 +255,10 @@ Events that `loomd` sends:
 | `type` | When |
 | --- | --- |
 | `task.changed` | An API request creates, edits, moves, pins, unpins or undoes a task, and writes a [task event](#taskevents). A request that changes nothing sends no change event. Also when `loomd` reconciles a hand edit of the task files: a new task, a changed task, or a removed task directory. Also when a [schedule](configuration.md#schedules) creates a task, and when the `replace` policy cancels the task of an earlier occurrence. |
+| `task.archived` | The [archive](configuration.md#archive) pass moves a closed task to `archive/<yyyy>/`. `loomd` sends the event after the move, the index write and the commit attempt. A directory that you move by hand sends `task.changed`. |
 | `resync` | `loom reindex` builds the index again. A reconciliation of all the tasks changes one or more tasks (the watcher can miss events). A sync moves a context store forward to the commits of another machine. Also the first event to a client that cannot resume, and the last event to a client that is too far behind (see below). |
 
-`task.archived`, `repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
+`repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
 
 Query parameter `context`: the stream has only the events of this context, and all the `resync` events. An invalid name or an unknown parameter gives `400 invalid_request`.
 
