@@ -771,6 +771,10 @@ pub fn render_change(detail: &TaskDetail) -> String {
 /// loomd takes the file as the truth, so the index ends with exactly this, whatever else
 /// changed the task meanwhile. Before that, the index may already list the hand-edit event
 /// but not its result, or show a change made by someone else.
+///
+/// Exact because the index builds its task from the file with the same parser and
+/// `TaskDocument::task`: the two sides differ only in `updated`. A field the index would take
+/// from the log or the configuration instead of the file breaks this comparison.
 #[must_use]
 pub fn holds_saved(indexed: &TaskDetail, saved: &Task, saved_notes: &str) -> bool {
     indexed.body == saved_notes

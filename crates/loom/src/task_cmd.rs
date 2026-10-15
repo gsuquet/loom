@@ -15,7 +15,8 @@ use loom::task::{
     with_parent,
 };
 use loom_api::{
-    ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents, TaskList,
+    Actor, ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents,
+    TaskList,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -272,6 +273,23 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
             return print(&render_change(&after));
         }
         if Instant::now() >= deadline {
+            // The save may be recorded and changed again since (a `loom done` elsewhere, a
+            // schedule, a sync): then the log has its hand-edit event.
+            let log = runtime.block_on(events(&client, &id))?;
+            let appended = log.get(logged..).unwrap_or_default();
+            if appended.iter().any(|record| record.actor == Actor::File) {
+                let others = changed_meanwhile(appended);
+                warn!(
+                    "the task changed again after the save (by {}): `loom show {}` shows it",
+                    others.join(", "),
+                    summary.prefix
+                );
+                return print(&format!(
+                    "{} saved; the task changed again after the save\n{}",
+                    summary.prefix,
+                    render_change(&after)
+                ));
+            }
             return print(&format!(
                 "{} saved; loomd has not recorded it within {} s\n",
                 summary.prefix,
