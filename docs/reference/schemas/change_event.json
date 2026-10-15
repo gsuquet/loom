@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ChangeEvent",
-  "description": "A change in loomd, sent as one Server-Sent Event: `event:` is its `type`, `data:` this\nobject as JSON.",
+  "description": "A change in loomd. loomd sends it as one Server-Sent Event: `event:` is its `type`, and\n`data:` is this object as JSON.",
   "oneOf": [
     {
-      "description": "A task was created or changed: through the API, a hand edit of its file, or a\nreconciliation.",
+      "description": "A task is new or changed. The change comes from the API, from a hand edit of its file,\nor from a reconciliation.",
       "type": "object",
       "properties": {
         "context": {
@@ -27,7 +27,7 @@
       ]
     },
     {
-      "description": "A task was archived.",
+      "description": "loomd moved a task to the archive.",
       "type": "object",
       "properties": {
         "context": {
@@ -50,7 +50,7 @@
       ]
     },
     {
-      "description": "A repository of the index was added, changed or removed.",
+      "description": "A repository of the index is new, changed or removed.",
       "type": "object",
       "properties": {
         "slug": {
@@ -68,7 +68,7 @@
       ]
     },
     {
-      "description": "The number of inbox or waiting tasks of a context changed.",
+      "description": "The number of inbox tasks or waiting tasks of a context changed.",
       "type": "object",
       "properties": {
         "context": {
@@ -100,7 +100,7 @@
       ]
     },
     {
-      "description": "Events were lost (a resume point too old, a client too slow, many changes at once): the\nclient refetches everything it shows.",
+      "description": "The client cannot get some events: its resume point is too old, it is too slow, or many\nchanges occurred at the same time. The client gets again all the data that it shows.",
       "type": "object",
       "properties": {
         "type": {
@@ -115,7 +115,7 @@
   ],
   "$defs": {
     "ContextName": {
-      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,

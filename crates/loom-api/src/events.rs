@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use loom_core::{ContextName, TaskId};
 
-/// A change in loomd, sent as one Server-Sent Event: `event:` is its `type`, `data:` this
-/// object as JSON.
+/// A change in loomd. loomd sends it as one Server-Sent Event: `event:` is its `type`, and
+/// `data:` is this object as JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum ChangeEvent {
-    /// A task was created or changed: through the API, a hand edit of its file, or a
-    /// reconciliation.
+    /// A task is new or changed. The change comes from the API, from a hand edit of its file,
+    /// or from a reconciliation.
     #[serde(rename = "task.changed")]
     TaskChanged {
         /// ID of the task.
@@ -22,7 +22,7 @@ pub enum ChangeEvent {
         /// Context of its store.
         context: ContextName,
     },
-    /// A task was archived.
+    /// loomd moved a task to the archive.
     #[serde(rename = "task.archived")]
     TaskArchived {
         /// ID of the task.
@@ -30,13 +30,13 @@ pub enum ChangeEvent {
         /// Context of its store.
         context: ContextName,
     },
-    /// A repository of the index was added, changed or removed.
+    /// A repository of the index is new, changed or removed.
     #[serde(rename = "repo.changed")]
     RepoChanged {
         /// Slug of the repository, `<context>/<name>`.
         slug: String,
     },
-    /// The number of inbox or waiting tasks of a context changed.
+    /// The number of inbox tasks or waiting tasks of a context changed.
     #[serde(rename = "counts.changed")]
     CountsChanged {
         /// The context.
@@ -46,8 +46,8 @@ pub enum ChangeEvent {
         /// Waiting tasks.
         waiting: usize,
     },
-    /// Events were lost (a resume point too old, a client too slow, many changes at once): the
-    /// client refetches everything it shows.
+    /// The client cannot get some events: its resume point is too old, it is too slow, or many
+    /// changes occurred at the same time. The client gets again all the data that it shows.
     #[serde(rename = "resync")]
     Resync,
 }

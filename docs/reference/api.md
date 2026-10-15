@@ -37,7 +37,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
 | `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
 | `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
-| `GET` | `/v1/events` | `200` | `text/event-stream` of [`ChangeEvent`](#changeevent)s, see [change events](#change-events) |
+| `GET` | `/v1/events` | `200` | `text/event-stream` of [`ChangeEvent`](#changeevent) objects ([change events](#change-events)) |
 
 `loomd` computes `uptime_secs` when it handles the request. At the same time, it reads `<loom home>/state/update.json` for `update`. If `loomd` cannot read the state file, it logs the error and reports an empty state. `disk` is the last measure of the loom home while that measure is fresh, otherwise a new measure ([cache](#diskusage)).
 
@@ -232,7 +232,9 @@ A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to a
 
 ### Change events
 
-`GET /v1/events` answers a Server-Sent Events stream (`text/event-stream`, chunked) that stays open: a client follows the changes and refetches what changed instead of polling. Each event is written once the change is in the task files and the index, after the commit to the store's git repository was attempted (a failed commit is retried later and does not hold the event):
+`GET /v1/events` sends a Server-Sent Events stream (`text/event-stream`, chunked). The stream stays open. A client reads the changes from the stream and gets again only the data that changed. It does not poll.
+
+`loomd` sends an event after it writes the change to the task files and to the index. Before the event, `loomd` also tries to commit the change to the git repository of the store. If the commit fails, `loomd` sends the event and tries the commit again later.
 
 ```text
 id: 1792051200000-7
@@ -243,24 +245,30 @@ data: {"type":"task.changed","id":"k3q7zm2a","context":"work"}
 
 | Field | Content |
 | --- | --- |
-| `id` | `<run>-<seq>`: `run` is the start of the loomd process in milliseconds since the Unix epoch, `seq` counts its events from 1. |
+| `id` | `<run>-<seq>`. `run` is the start time of the `loomd` process, in milliseconds since the Unix epoch. `seq` is the number of the event in the process, from 1. |
 | `event` | The `type` of the event. |
-| `data` | The [`ChangeEvent`](#changeevent) as JSON, `type` included. |
+| `data` | The [`ChangeEvent`](#changeevent) as JSON, with its `type`. |
 
-Events sent:
+Events that `loomd` sends:
 
 | `type` | When |
 | --- | --- |
-| `task.changed` | A request through the API created, edited, moved, pinned, unpinned or undid a task, and wrote an event (a request that changes nothing sends none); a hand edit of its files is reconciled (created, changed, or its directory removed). |
-| `resync` | `loom reindex` rebuilt the index; a reconciliation of every task changed some (the watcher may have missed events); a sync of a context store fast-forwarded it to commits of another machine. Also the first event of a client that cannot resume, or the last of a client that fell behind (below). |
+| `task.changed` | An API request creates, edits, moves, pins, unpins or undoes a task, and writes an event. A request that changes nothing sends no event. Also when `loomd` reconciles a hand edit of the task files: a new task, a changed task, or a removed task directory. |
+| `resync` | `loom reindex` builds the index again. A reconciliation of all the tasks changes one or more tasks (the watcher can miss events). A sync moves a context store forward to the commits of another machine. Also the first event to a client that cannot resume, and the last event to a client that is too slow (see below). |
 
-`task.archived`, `repo.changed` and `counts.changed` are types of the schema not sent yet.
+`task.archived`, `repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
 
-Query parameter `context`: only the events of this context (`resync` always); an invalid name or any other parameter is a `400 invalid_request`.
+Query parameter `context`: the stream has only the events of this context, and all the `resync` events. An invalid name or an unknown parameter gives `400 invalid_request`.
 
-Resume: a client that reconnects with the `Last-Event-ID` header of the last event it received gets the events since, from a buffer of the last 1,024 events of the process. When the buffer no longer holds them, when the id is of another loomd process (it restarted) or is not an id, the first event is `resync`, with the id of the latest event: the client refetches everything it shows.
+Resume:
 
-A client may fall up to 256 events behind; past that, it gets `resync` (without an id, so that it may resume from its last one) and its stream ends. An idle stream gets a `: heartbeat` comment every 15 s. When loomd stops, every stream ends.
+- A client can connect again with the `Last-Event-ID` header. The header contains the `id` of the last event that the client received.
+- If the buffer of the last 1,024 events of the process has the next events, the client gets them.
+- If the buffer does not have them, the first event is `resync`. The same occurs if the `id` is from another `loomd` process (a restart), or if it is not an `id`. This `resync` has the `id` of the latest event. The client then gets again all the data that it shows.
+
+A client can be a maximum of 256 events behind. If it is more than 256 events behind, it gets a `resync` event and its stream stops. This `resync` has no `id`, so that the client can resume from its last `id`.
+
+If a stream has no events for 15 s, it gets a `: heartbeat` comment. When `loomd` stops, all the streams stop.
 
 ### Errors
 
@@ -725,7 +733,7 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 
 ### `ChangeEvent`
 
-An object tagged by `type` ([schema](schemas/change_event.json)):
+An object. Its `type` field gives the kind of event ([schema](schemas/change_event.json)):
 
 | `type` | Fields |
 | --- | --- |
