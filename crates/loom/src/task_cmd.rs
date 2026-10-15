@@ -242,7 +242,8 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     let deadline = Instant::now() + EDIT_RECORD_TIMEOUT;
     loop {
         let after = runtime.block_on(get(&client, &args.id))?;
-        if after != before {
+        // The saved file is valid: an invalid state is the watcher reading it mid-write.
+        if after != before && after.summary.task.is_some() {
             return print(&render_change(&after));
         }
         if Instant::now() >= deadline {

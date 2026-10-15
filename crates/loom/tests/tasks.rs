@@ -74,6 +74,17 @@ impl Sandbox {
     /// `loom --color=never <args>` run in `cwd`, as a shell would (`PWD` set), with
     /// `LOOM_CONTEXT` set to `context` (unset when `None`).
     fn run(&self, cwd: &Path, context: Option<&str>, args: &[&str]) -> Output {
+        self.run_env(cwd, context, &[], args)
+    }
+
+    /// [`Self::run`] with the variables `env` set as well.
+    fn run_env(
+        &self,
+        cwd: &Path,
+        context: Option<&str>,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> Output {
         let mut command = Command::new(loom_bin());
         command
             .env("LOOM_HOME", self.loom_home())
@@ -81,6 +92,8 @@ impl Sandbox {
             .env("PWD", cwd)
             .env("LOOM_TEST_TODAY", TODAY)
             .env_remove("LOOM_CONTEXT")
+            .env_remove("VISUAL")
+            .env_remove("EDITOR")
             .env_remove("NO_COLOR")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
             .current_dir(cwd)
@@ -90,6 +103,7 @@ impl Sandbox {
         if let Some(context) = context {
             command.env("LOOM_CONTEXT", context);
         }
+        command.envs(env.iter().copied());
         command.output().unwrap()
     }
 
@@ -441,4 +455,176 @@ fn malformed_ids_are_usage_errors() {
             stderr(&output)
         );
     }
+}
+
+/// `loom <args> --json` in the user home: the task it answers.
+fn gesture(sandbox: &Sandbox, args: &[&str]) -> TaskDetail {
+    let mut full = args.to_vec();
+    full.push("--json");
+    serde_json::from_str(&sandbox.ok(&full)).unwrap()
+}
+
+#[test]
+fn a_task_is_changed_closed_snoozed_and_undone() {
+    let sandbox = Sandbox::new();
+    let task = sandbox.add(&["-c", "work", "--ready", "--kind", "bug", "Login timeout"]);
+    let id = task.summary.id.to_string();
+    let other = sandbox.add(&["-c", "work", "Hardening"]).summary.id;
+
+    let set = gesture(
+        &sandbox,
+        &[
+            "set",
+            &id,
+            "title=Login timeout on checkout",
+            "importance=p0",
+            "due=+3d",
+            "pinned=yes",
+            &format!("parent={other}"),
+        ],
+    );
+    let changed = set.summary.task.unwrap();
+    assert_eq!(changed.title, "Login timeout on checkout");
+    assert_eq!(changed.importance, loom_api::Importance::P0);
+    assert_eq!(changed.due, Some("2026-10-17".parse().unwrap()));
+    assert!(changed.pinned);
+    assert_eq!(changed.relations.parent, Some(other));
+    let cleared = gesture(&sandbox, &["set", &id, "parent=none", "due=none"]);
+    let cleared = cleared.summary.task.unwrap();
+    assert_eq!(cleared.relations.parent, None);
+    assert_eq!(cleared.due, None);
+
+    // One line per gesture.
+    let line = sandbox.ok(&["done", &id]);
+    assert!(
+        line.ends_with(" work done Login timeout on checkout\n"),
+        "{line}"
+    );
+    let undone = gesture(&sandbox, &["undo", &id]);
+    assert_eq!(undone.summary.task.unwrap().status, Status::Ready);
+
+    let snoozed = gesture(&sandbox, &["snooze", &id, "+1w", "--on", "Alice"]);
+    assert_eq!(
+        snoozed.summary.task.unwrap().status,
+        Status::Waiting {
+            on: Some("Alice".to_owned()),
+            until: Some("2026-10-21".parse().unwrap()),
+        }
+    );
+    assert!(!sandbox.ok(&["-c", "work", "ls"]).contains("Login timeout"));
+
+    let cancelled = gesture(&sandbox, &["cancel", &id]);
+    assert_eq!(cancelled.summary.task.unwrap().status, Status::Cancelled);
+    // `cancelled` moves to `ready` only: the refusal of loomd, exit 1.
+    let output = sandbox.run(&sandbox.home(), None, &["done", &id]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("illegal_transition"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn set_arguments_are_checked_before_loomd() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.add(&["-c", "work", "X"]).summary.id.to_string();
+    for args in [
+        &["set", &id][..],
+        &["set", &id, "colour=red"],
+        &["set", &id, "title"],
+    ] {
+        let output = sandbox.run(&sandbox.home(), None, args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    for args in [
+        &["set", &id, "format=talk"][..],
+        &["set", &id, "due=soon"],
+        &["set", &id, "due=today", "due=none"],
+        &["snooze", &id, "later"],
+    ] {
+        let output = sandbox.run(&sandbox.home(), None, args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+}
+
+/// An editor script in the sandbox: `body` runs with the file as `$1`.
+fn editor(sandbox: &Sandbox, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = sandbox.dir.path().join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn edit_opens_the_task_file_and_reports_an_invalid_one() {
+    let sandbox = Sandbox::new();
+    let task = sandbox.add(&["-c", "work", "Original"]);
+    let id = task.summary.id.to_string();
+    let file = sandbox
+        .loom_home()
+        .join("contexts/work/tasks")
+        .join(&id)
+        .join("task.md");
+
+    let unchanged = sandbox.run_env(&sandbox.home(), None, &[("EDITOR", "true")], &["edit", &id]);
+    assert_eq!(unchanged.status.code(), Some(0), "{}", stderr(&unchanged));
+    assert!(String::from_utf8_lossy(&unchanged.stdout).ends_with(" unchanged\n"));
+
+    // `VISUAL` first; the editor gets the file as its argument.
+    let retitle = editor(
+        &sandbox,
+        "retitle",
+        r#"t=$(mktemp) && sed 's/^title = .*/title = "Edited by hand"/' "$1" > "$t" && cat "$t" > "$1" && rm "$t""#,
+    );
+    let edited = sandbox.run_env(
+        &sandbox.home(),
+        None,
+        &[("VISUAL", &retitle), ("EDITOR", "false")],
+        &["edit", &id],
+    );
+    assert_eq!(edited.status.code(), Some(0), "{}", stderr(&edited));
+    let line = String::from_utf8_lossy(&edited.stdout).into_owned();
+    assert!(line.ends_with(" work inbox Edited by hand\n"), "{line}");
+
+    let breaker = editor(&sandbox, "breaker", r#"printf 'not a task file\n' > "$1""#);
+    let broken = sandbox.run_env(
+        &sandbox.home(),
+        None,
+        &[("EDITOR", &breaker)],
+        &["edit", &id],
+    );
+    assert_eq!(broken.status.code(), Some(1), "{}", stderr(&broken));
+    assert!(stderr(&broken).contains("task.md"), "{}", stderr(&broken));
+    assert!(
+        stderr(&broken).contains("kept as saved"),
+        "{}",
+        stderr(&broken)
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "not a task file\n");
+
+    // A failing editor changes nothing and says so.
+    let failing = sandbox.run_env(
+        &sandbox.home(),
+        None,
+        &[("EDITOR", "false")],
+        &["edit", &id],
+    );
+    assert_eq!(failing.status.code(), Some(1), "{}", stderr(&failing));
+    assert!(
+        stderr(&failing).contains("exited with"),
+        "{}",
+        stderr(&failing)
+    );
 }
