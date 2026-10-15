@@ -53,7 +53,7 @@ use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
 use loomd::task_api::{TEST_TODAY_ENV, TaskFilter, resolve, task_detail, task_list, task_problem};
 use loomd::task_archive::{ARCHIVE_BATCH, archive_now};
-use loomd::task_index::{failed_files, reindex_result, task_of_path};
+use loomd::task_index::{WatchedPath, failed_files, reindex_result, watched_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -256,8 +256,15 @@ fn watch(
                 return;
             }
             for path in &event.paths {
-                if let Some((context, id)) = task_of_path(&roots, path) {
-                    let _ = sender.send(Command::Changed { context, id });
+                match watched_path(&roots, path) {
+                    WatchedPath::Task(context, id) => {
+                        let _ = sender.send(Command::Changed { context, id });
+                    }
+                    // Rare: the first move of a year, a sync, a hand copy or removal.
+                    WatchedPath::ArchiveYear => {
+                        let _ = sender.send(Command::ReconcileAll);
+                    }
+                    WatchedPath::Other => {}
                 }
             }
         }

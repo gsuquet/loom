@@ -64,32 +64,47 @@ pub fn failed_files(
     files
 }
 
-/// The task a changed `path` belongs to, if any.
+/// What a changed path of a task store asks loomd to reconcile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchedPath {
+    /// A path in the directory of this task.
+    Task(ContextName, TaskId),
+    /// A year directory of an archive (`<root>/archive/<yyyy>`), new or removed: every task.
+    /// With inotify, a directory created with its content (a first move of the year, a sync, a
+    /// hand copy) gives one event for the directory only, none for the tasks inside it.
+    ArchiveYear,
+    /// Nothing to reconcile.
+    Other,
+}
+
+/// What `path`, changed in one of `stores` (context and store root, as watched), asks to
+/// reconcile.
 ///
-/// A task path is under `<root>/tasks/<id>/` or `<root>/archive/<yyyy>/<id>/` of one of
-/// `stores` (context and store root, as watched), `<id>` a task ID and `<yyyy>` a year.
-/// Temporary directories of a creation (`.<id>.tmp`) and other names are not tasks.
+/// A task path is under `<root>/tasks/<id>/` or `<root>/archive/<yyyy>/<id>/`, `<id>` a task
+/// ID and `<yyyy>` a year. Temporary directories of a creation (`.<id>.tmp`) and other names
+/// are not tasks. When stores are nested, the longest root wins.
 #[must_use]
-pub fn task_of_path(
-    stores: &[(ContextName, PathBuf)],
-    path: &Path,
-) -> Option<(ContextName, TaskId)> {
+pub fn watched_path(stores: &[(ContextName, PathBuf)], path: &Path) -> WatchedPath {
     stores
         .iter()
         .filter_map(|(context, root)| {
             // Component-wise: `tasks-nested` is not under `tasks`.
-            let id = if let Ok(rest) = path.strip_prefix(root.join(TASKS_DIR)) {
-                task_dir_id(rest.components().next()?.as_os_str())?
+            let watched = if let Ok(rest) = path.strip_prefix(root.join(TASKS_DIR)) {
+                let id = task_dir_id(rest.components().next()?.as_os_str())?;
+                WatchedPath::Task(context.clone(), id)
             } else {
                 let rest = path.strip_prefix(root.join(ARCHIVE_DIR)).ok()?;
                 let mut components = rest.components();
                 archive_year_dir(components.next()?.as_os_str())?;
-                task_dir_id(components.next()?.as_os_str())?
+                match components.next() {
+                    None => WatchedPath::ArchiveYear,
+                    Some(dir) => WatchedPath::Task(context.clone(), task_dir_id(dir.as_os_str())?),
+                }
             };
-            Some((root.as_os_str().len(), context, id))
+            Some((root.as_os_str().len(), watched))
         })
-        .max_by_key(|(len, _, _)| *len)
-        .map(|(_, context, id)| (context.clone(), id))
+        .max_by_key(|(len, _)| *len)
+        .map_or(WatchedPath::Other, |(_, watched)| watched)
 }
 
 #[cfg(test)]
@@ -98,7 +113,7 @@ mod path_tests {
 
     use loom_api::ContextName;
 
-    use super::task_of_path;
+    use super::{WatchedPath, watched_path};
 
     fn stores() -> Vec<(ContextName, PathBuf)> {
         vec![
@@ -113,8 +128,10 @@ mod path_tests {
     }
 
     fn found(path: &str) -> Option<(String, String)> {
-        task_of_path(&stores(), Path::new(path))
-            .map(|(context, id)| (context.to_string(), id.to_string()))
+        match watched_path(&stores(), Path::new(path)) {
+            WatchedPath::Task(context, id) => Some((context.to_string(), id.to_string())),
+            WatchedPath::ArchiveYear | WatchedPath::Other => None,
+        }
     }
 
     #[test]
@@ -156,11 +173,36 @@ mod path_tests {
             "/l/contexts/workshop/tasks/k3q7zm2a/task.md",
             "/elsewhere/tasks/k3q7zm2a/task.md",
             "/l/contexts/work/archive",
-            "/l/contexts/work/archive/2026",
             "/l/contexts/work/archive/26/k3q7zm2a/task.md",
             "/l/contexts/work/archive/2026/notes/task.md",
         ] {
-            assert_eq!(found(path), None, "{path}");
+            assert_eq!(
+                watched_path(&stores(), Path::new(path)),
+                WatchedPath::Other,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_year_directory_of_an_archive_asks_for_every_task() {
+        for path in [
+            "/l/contexts/work/archive/2026",
+            "/u/stores/home/archive/1999",
+        ] {
+            assert_eq!(
+                watched_path(&stores(), Path::new(path)),
+                WatchedPath::ArchiveYear,
+                "{path}"
+            );
+        }
+        // Not a year, or not an archive.
+        for path in ["/l/contexts/work/archive/26", "/l/contexts/work/tasks/2026"] {
+            assert_eq!(
+                watched_path(&stores(), Path::new(path)),
+                WatchedPath::Other,
+                "{path}"
+            );
         }
     }
 }
