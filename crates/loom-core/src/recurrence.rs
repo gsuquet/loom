@@ -164,15 +164,15 @@ impl FromStr for Rule {
             let name = name.to_ascii_uppercase();
             // Values are matched in upper case and quoted as written.
             match name.as_str() {
-                "FREQ" => set(&mut freq, "FREQ", parse_frequency(&value)?)?,
-                "INTERVAL" => set(&mut interval, "INTERVAL", parse_interval(&value)?)?,
-                "BYDAY" => set(&mut by_day, "BYDAY", parse_list(&value, by_day_entry)?)?,
+                "FREQ" => set(&mut freq, "FREQ", parse_frequency(value)?)?,
+                "INTERVAL" => set(&mut interval, "INTERVAL", parse_interval(value)?)?,
+                "BYDAY" => set(&mut by_day, "BYDAY", parse_list(value, by_day_entry)?)?,
                 "BYMONTHDAY" => set(
                     &mut by_month_day,
                     "BYMONTHDAY",
-                    parse_list(&value, month_day)?,
+                    parse_list(value, month_day)?,
                 )?,
-                "BYSETPOS" => set(&mut by_set_pos, "BYSETPOS", parse_list(&value, set_pos)?)?,
+                "BYSETPOS" => set(&mut by_set_pos, "BYSETPOS", parse_list(value, set_pos)?)?,
                 _ => return Err(RuleError::Unsupported(name)),
             }
         }
@@ -447,10 +447,7 @@ impl Recurrence {
 
     fn weekly(&self, monday: Date) -> Vec<Date> {
         let weekdays: Vec<Weekday> = if self.rule.by_day.is_empty() {
-            self.start
-                .map(|start| start.weekday())
-                .into_iter()
-                .collect()
+            self.start.map(Date::weekday).into_iter().collect()
         } else {
             self.rule.by_day.iter().map(|by| by.weekday).collect()
         };
@@ -483,15 +480,13 @@ impl Recurrence {
             self.rule
                 .by_day
                 .iter()
-                .flat_map(|by| match by.nth {
-                    Some(nth) => first
-                        .nth_weekday_of_month(nth, by.weekday)
-                        .ok()
+                .flat_map(|by| {
+                    // Without a rank, every such weekday: the 1st to the 5th.
+                    let ranks: Vec<i8> = by.nth.map_or_else(|| (1..=5).collect(), |nth| vec![nth]);
+                    ranks
                         .into_iter()
-                        .collect::<Vec<_>>(),
-                    None => (1..=5)
                         .filter_map(|nth| first.nth_weekday_of_month(nth, by.weekday).ok())
-                        .collect(),
+                        .collect::<Vec<_>>()
                 })
                 .collect()
         });
@@ -543,10 +538,11 @@ fn days_between(from: Date, to: Date) -> Option<i64> {
     to.since(from).ok().map(|span| i64::from(span.get_days()))
 }
 
-/// The occurrence to create a task for on `today`, if any: the latest occurrence of
-/// `recurrence` that is not after `today` nor before its start, and after `last_created` (the
-/// occurrence of the latest task created for it). Without any, only an occurrence on `today`
-/// itself: a new schedule never creates a task for a date already past.
+/// The occurrence to create a task for on `today`, if any.
+///
+/// The latest occurrence of `recurrence` that is not after `today` nor before its start, and
+/// after `last_created` (the occurrence of the latest task created for it). Without any, only an
+/// occurrence on `today` itself: a new schedule never creates a task for a date already past.
 ///
 /// Older missed occurrences are never returned: after a week offline, one task is created, not
 /// one per missed day.

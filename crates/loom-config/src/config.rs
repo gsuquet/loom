@@ -1294,12 +1294,12 @@ start = 2026-10-02
         for (line_text, line, column, needle) in cases {
             // The case first, then the valid keys it does not replace.
             let key = format!("{} ", line_text.split(' ').next().unwrap());
-            let rest: String = VALID
+            let rest: Vec<&str> = VALID
                 .lines()
                 .filter(|valid| !valid.starts_with(&key))
-                .map(|valid| format!("{valid}\n"))
                 .collect();
-            let text = format!("{HEAD}{line_text}\n{rest}");
+            let rest = rest.join("\n");
+            let text = format!("{HEAD}{line_text}\n{rest}\n");
             assert_rejected(&text, *line, *column, needle);
         }
         let missing = format!("{HEAD}id = \"s\"\ntitle = \"T\"\nkind = \"chore\"\n");

@@ -193,6 +193,15 @@ impl TaskIndex {
         get(&self.conn, id)
     }
 
+    /// Every indexed task, sorted by ID.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or a row is invalid.
+    pub fn tasks(&self) -> Result<Vec<IndexedTask>, StoreError> {
+        list(&self.conn, None)
+    }
+
     /// Every indexed task ID, sorted.
     ///
     /// # Errors

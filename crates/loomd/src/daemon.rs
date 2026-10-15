@@ -59,6 +59,7 @@ use tracing::{debug, info, warn};
 
 use crate::disk_usage::DiskCache;
 use crate::repos::{self, Failure, RepoHandle};
+use crate::schedules;
 use crate::sync::{self as store_sync, SyncHandle};
 use crate::tasks::{self, TaskHandle};
 use crate::updater::{self, Settings};
@@ -147,6 +148,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         MachineId(machine.as_str().to_owned()),
     )
     .wrap_err("cannot start the task store")?;
+    let schedule_thread = schedules::start(&config, &stores.held, task_handle.clone())?;
     let (sync_thread, sync_handle) = store_sync::start(
         store_sync::Stores {
             machine: machine.as_str().to_owned(),
@@ -199,6 +201,9 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     updater.stop();
     sync_thread.stop();
+    if let Some(schedule_thread) = schedule_thread {
+        schedule_thread.stop();
+    }
     task_store.stop();
     index.stop();
     served
@@ -706,8 +711,9 @@ where
     then(id).await
 }
 
-/// The date of the priority list: the local date, or `LOOM_TEST_TODAY` in a debug build.
-fn local_today() -> loom_api::Date {
+/// The date of the priority list and of the schedules: the local date, or `LOOM_TEST_TODAY` in
+/// a debug build.
+pub fn local_today() -> loom_api::Date {
     today(
         env::var(TEST_TODAY_ENV).ok().as_deref(),
         cfg!(debug_assertions),

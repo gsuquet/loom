@@ -56,6 +56,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
 | `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[[contexts.<name>.schedules]]` | | | See [schedules](#schedules). |
 | `[tasks] sync_interval` | string: duration | `"15m"` | Time between two syncs of each context store with its `store.backup.remote`. Duration syntax of `[update] check_interval`. At least `"1m"`. See [store backup](#store-backup). |
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
@@ -146,6 +147,66 @@ Error: invalid configuration /home/me/.loom/config.toml:5:16: match.paths `~/wor
 ```
 
 Errors in an array element (`roots`, `exclude`, `match.paths`, `match.hosts`) are located at the start of the array.
+
+### Schedules
+
+`[[contexts.<name>.schedules]]` tables define recurring tasks: `loomd` creates one task in the context per occurrence of each schedule. It reads them when it starts, like the rest of the file: a change takes effect after a restart. Only the contexts this machine holds (see [`machines`](#contexts-and-repositories)) run their schedules.
+
+```toml
+[contexts.company-a]
+
+[[contexts.company-a.schedules]]
+id = "timesheet"
+title = "Fill in the timesheet"
+kind = "admin"
+importance = "p1"
+rrule = "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"
+policy = "replace"
+due = "same-day"
+
+[[contexts.company-a.schedules]]
+id = "one-on-one"
+title = "Prepare the 1:1"
+kind = "chore"
+rrule = "FREQ=WEEKLY;INTERVAL=2;BYDAY=TH"
+start = 2026-10-01
+```
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `id` | string | required | 1 to 64 lowercase ASCII letters, digits and `-`, not starting with `-`. Unique among the schedules of the context. Part of the dedup key of each task: changing it starts the schedule over. |
+| `title` | string | required | One line, not blank. Title of each task. |
+| `kind` | string | required | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview` or `learning`. |
+| `importance` | string: `"p0"` to `"p3"` | the default of the kind | Importance of each task. |
+| `rrule` | string: recurrence rule | required | The supported subset of an RFC 5545 `RRULE`, below. |
+| `start` | date: `2026-10-01` or `"2026-10-01"` | none | No occurrence before this date. Required when `INTERVAL` is above 1 (periods are counted from the one holding `start`), for `FREQ=WEEKLY` without `BYDAY` (the weekday of `start`), and for `FREQ=MONTHLY` without `BYDAY` nor `BYMONTHDAY` (the day of the month of `start`). |
+| `policy` | string: `"skip"`, `"stack"`, `"replace"` | `"skip"` | What happens when an occurrence is due while a task of an earlier occurrence is open (`inbox`, `ready`, `active` or `waiting`). `skip`: no task; the occurrence is created once no earlier task is open, if it is still the latest. `stack`: the task is created, the open ones are kept. `replace`: the task is created, then the open ones are cancelled. |
+| `due` | string: `"same-day"` | none | `same-day`: each task is due on the date of its occurrence. Without it, tasks have no due date. |
+
+`rrule` parts are separated by `;`, names and values in any case, each part at most once:
+
+| Part | Values | Effect |
+| --- | --- | --- |
+| `FREQ` | `DAILY`, `WEEKLY`, `MONTHLY` | Required. The period: a day, a week (Monday to Sunday), a month. |
+| `INTERVAL` | positive integer | Default 1. Every `INTERVAL` periods, counted from the period of `start`. |
+| `BYDAY` | comma-separated `MO`, `TU`, `WE`, `TH`, `FR`, `SA`, `SU`; with `FREQ=MONTHLY`, each may carry a rank, `1` to `5` or `-1` to `-5` (`1MO`: first Monday, `-1FR`: last Friday) | `DAILY`: only these weekdays. `WEEKLY`: these days of the week. `MONTHLY`: these days of the month, every such weekday without a rank. |
+| `BYMONTHDAY` | comma-separated `1` to `31` or `-1` (last day) to `-31`; `FREQ=MONTHLY` only | These days of the month; a day the month does not have is skipped. With `BYDAY`, the days both give. |
+| `BYSETPOS` | comma-separated `1` to `366` or `-1` (last) to `-366`; `FREQ=WEEKLY` or `MONTHLY`, with `BYDAY` or `BYMONTHDAY` | Keeps the days at these positions among the period's days, in date order. |
+
+Any other part (`COUNT`, `UNTIL`, `BYHOUR`, `BYMINUTE`, `BYSECOND`, `BYMONTH`, `BYWEEKNO`, `BYYEARDAY`, `WKST`, `X-…`) or frequency is refused, naming it:
+
+```text
+Error: invalid configuration /home/me/.loom/config.toml:8:9: rrule `FREQ=DAILY;BYHOUR=9`: `BYHOUR` is not supported: use FREQ=DAILY|WEEKLY|MONTHLY, INTERVAL, BYDAY, BYMONTHDAY and BYSETPOS
+```
+
+A missing `start` is reported at the `[[contexts.<name>.schedules]]` header; the other errors at their value; a repeated `id` at the second one, naming the first.
+
+Occurrences are dates. `loomd` checks every schedule when it starts, then every minute, against the local date (system time zone): a task is created on the day of its occurrence, at the first check after local midnight, whatever the change of UTC offset. Each check creates at most one task per schedule:
+
+- The occurrence is the latest one on or before today, after the latest occurrence that already has a task, and not before `start`. After a week offline, one task is created, not one per missed occurrence.
+- A schedule without any task creates its first one on its first occurrence from today: a new schedule never creates a task for a past date.
+- The task is `ready`, with the schedule's title, kind, importance and due date, and the origin link `provider = "schedule"`, `key = "<id>/<occurrence date>"` (`timesheet/2026-10-30`), the dedup key: a restart or a second check never creates an occurrence twice. A task whose `task.md` is invalid, or that left the index, does not count.
+- Its events, and the cancellations of `replace`, have the actor `{"type":"daemon"}`; each change is committed to the store like the changes of the API. A failure is logged and retried at the next check.
 
 ### Channel resolution
 
