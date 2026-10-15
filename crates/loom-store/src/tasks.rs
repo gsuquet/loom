@@ -20,7 +20,7 @@ use loom_core::{
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
-use tracing::{debug_span, warn};
+use tracing::{debug, debug_span, warn};
 
 use crate::port::{
     ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskLocation, TaskWrite,
@@ -652,8 +652,9 @@ impl<P: StorePort> Tasks<P> {
 
     /// The contexts whose stores hold task `id`, in the order of the stores.
     ///
-    /// A store that cannot be looked at (a permission, an I/O error) is skipped with a warning,
-    /// as a reindex goes on without it: one broken store never blocks the tasks of the others.
+    /// A store that cannot be looked at (a permission, an I/O error) is skipped, as a reindex goes
+    /// on without it: one broken store never blocks the tasks of the others. The skip is logged at
+    /// `debug` only: it repeats for every command, and a reindex reports the store in `failed`.
     /// An ID that such a store holds is thus not seen as a duplicate until it can be read.
     fn holders(&self, id: &TaskId) -> Vec<ContextName> {
         let mut holders = Vec::new();
@@ -662,7 +663,7 @@ impl<P: StorePort> Tasks<P> {
                 Ok(true) => holders.push(context.clone()),
                 Ok(false) => {}
                 Err(error) => {
-                    warn!(%context, %id, %error, "cannot tell whether this store holds the task");
+                    debug!(%context, %id, %error, "cannot tell whether this store holds the task");
                 }
             }
         }
