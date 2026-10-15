@@ -6,8 +6,9 @@ use std::fmt::Write as _;
 
 use jiff::Span;
 use loom_api::{
-    ContentFormat, ContextAssignment, ContextName, Date, Importance, Kind, NewTask, RankReason,
-    Relations, Status, TaskDetail, TaskEdit, TaskId, TaskReadOnly, TaskSummary,
+    Actor, ContentFormat, ContextAssignment, ContextName, Date, EventRecord, Importance, Kind,
+    NewTask, RankReason, Relations, Status, TaskDetail, TaskEdit, TaskId, TaskReadOnly,
+    TaskSummary,
 };
 use thiserror::Error;
 
@@ -674,25 +675,24 @@ pub fn set_plan(assignments: &[Assignment], today: Date) -> Result<SetPlan, SetE
             key: key.name(),
             reason,
         };
-        let choice = |values: &[&str]| format!("expected one of {}", values.join(", "));
+        let choice = |values: &[String]| format!("expected one of {}", values.join(", "));
         match key {
             SetKey::Title => plan.edit.title = Some(value.clone()),
             SetKey::Kind => {
                 kind = Some(
                     <KindArg as clap::ValueEnum>::from_str(value, false)
-                        .map_err(|_| invalid(choice(&KIND_NAMES)))?,
+                        .map_err(|_| invalid(choice(&value_names::<KindArg>())))?,
                 );
             }
             SetKey::Format => {
                 format = Some(
-                    <FormatArg as clap::ValueEnum>::from_str(value, false).map_err(|_| {
-                        invalid(choice(&["talk", "article", "training", "workshop"]))
-                    })?,
+                    <FormatArg as clap::ValueEnum>::from_str(value, false)
+                        .map_err(|_| invalid(choice(&value_names::<FormatArg>())))?,
                 );
             }
             SetKey::Importance => {
                 let importance = <ImportanceArg as clap::ValueEnum>::from_str(value, false)
-                    .map_err(|_| invalid(choice(&["p0", "p1", "p2", "p3"])))?;
+                    .map_err(|_| invalid(choice(&value_names::<ImportanceArg>())))?;
                 plan.edit.importance = Some(importance.into());
             }
             SetKey::Due => {
@@ -713,7 +713,7 @@ pub fn set_plan(assignments: &[Assignment], today: Date) -> Result<SetPlan, SetE
                 plan.pinned = Some(match value.as_str() {
                     "yes" | "true" => true,
                     "no" | "false" => false,
-                    _ => return Err(invalid(choice(&["yes", "no"]))),
+                    _ => return Err(invalid(choice(&["yes".to_owned(), "no".to_owned()]))),
                 });
             }
         }
@@ -729,20 +729,14 @@ pub fn set_plan(assignments: &[Assignment], today: Date) -> Result<SetPlan, SetE
     Ok(plan)
 }
 
-/// Names of [`KindArg`], for messages.
-const KIND_NAMES: [&str; 11] = [
-    "story",
-    "bug",
-    "chore",
-    "research",
-    "investigation",
-    "review",
-    "support",
-    "content",
-    "admin",
-    "interview",
-    "learning",
-];
+/// The names `clap` accepts for `T`, in declaration order.
+fn value_names<T: clap::ValueEnum>() -> Vec<String> {
+    T::value_variants()
+        .iter()
+        .filter_map(clap::ValueEnum::to_possible_value)
+        .map(|value| value.get_name().to_owned())
+        .collect()
+}
 
 /// The relations of a task with `parent` as its parent, the others kept.
 #[must_use]
@@ -769,6 +763,35 @@ pub fn render_change(detail: &TaskDetail) -> String {
             )
         },
     )
+}
+
+/// Whether loomd has recorded a `loom edit` save.
+///
+/// From the events appended to the task's log since the editor opened and whether its notes
+/// changed: a changed field is an event of the actor `file`; a notes-only change has no event.
+#[must_use]
+pub fn edit_recorded(new_events: &[EventRecord], notes_changed: bool) -> bool {
+    notes_changed || new_events.iter().any(|record| record.actor == Actor::File)
+}
+
+/// Who changed the task while it was open in the editor: the actors of the events appended
+/// since then other than the hand edit itself, in order, without repeats. Empty when nothing
+/// else changed it.
+#[must_use]
+pub fn changed_meanwhile(new_events: &[EventRecord]) -> Vec<String> {
+    let mut actors: Vec<String> = Vec::new();
+    for record in new_events {
+        let name = match &record.actor {
+            Actor::File => continue,
+            Actor::User => "user".to_owned(),
+            Actor::Daemon => "loomd".to_owned(),
+            Actor::Agent { name } => format!("agent {name}"),
+        };
+        if !actors.contains(&name) {
+            actors.push(name);
+        }
+    }
+    actors
 }
 
 /// The editor of `loom edit`: `VISUAL`, then `EDITOR`, then `vi`; an empty value is unset.
@@ -1197,5 +1220,56 @@ mod tests {
             actions: Vec::new(),
         };
         assert_eq!(render_change(&detail), "k3q7 work active Login timeout\n");
+    }
+
+    fn record(actor: Actor) -> EventRecord {
+        let origin = loom_core::Origin {
+            actor,
+            machine_id: loom_api::MachineId("desk".to_owned()),
+        };
+        EventRecord::new(
+            "aaaaaaaa".parse().unwrap(),
+            loom_api::Event::NoteLogged {
+                text: "x".to_owned(),
+            },
+            Timestamp::from_unix_secs(1_791_792_000).unwrap(),
+            &origin,
+        )
+    }
+
+    #[test]
+    fn an_edit_is_recorded_by_a_file_event_or_a_notes_change() {
+        assert!(!edit_recorded(&[], false));
+        assert!(edit_recorded(&[], true));
+        assert!(!edit_recorded(&[record(Actor::User)], false));
+        assert!(edit_recorded(
+            &[record(Actor::User), record(Actor::File)],
+            false
+        ));
+    }
+
+    #[test]
+    fn changes_by_others_while_editing_are_named() {
+        assert_eq!(
+            changed_meanwhile(&[record(Actor::File)]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            changed_meanwhile(&[
+                record(Actor::User),
+                record(Actor::File),
+                record(Actor::User),
+                record(Actor::Agent {
+                    name: "reviewer".to_owned()
+                }),
+            ]),
+            ["user", "agent reviewer"]
+        );
+    }
+
+    #[test]
+    fn value_names_follow_the_cli() {
+        assert_eq!(value_names::<ImportanceArg>(), ["p0", "p1", "p2", "p3"]);
+        assert!(value_names::<KindArg>().contains(&"investigation".to_owned()));
     }
 }

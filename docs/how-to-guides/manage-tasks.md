@@ -81,6 +81,8 @@ loom edit k3q8
 
 `loom edit` uses `VISUAL`, then `EDITOR`. If the saved file is invalid, `loom` says why and keeps it as saved: run `loom edit` again to fix it.
 
+The file is not locked while it is open. If the task changes meanwhile (you close it from another terminal, for example), your save replaces that change and `loom` warns you; `loom undo` reverts your edit.
+
 ## Wait on someone
 
 ```bash

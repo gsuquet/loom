@@ -10,14 +10,17 @@ use std::time::{Duration, Instant};
 use loom::cli::{AddArgs, EditArgs, GlobalArgs, LsArgs, SetArgs, ShowArgs, SnoozeArgs, TaskArgs};
 use loom::task::{
     AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
-    context_with_parent, editor, kind_of, list_api_path, new_task, parse_date, render_change,
-    render_detail, render_list, resolve_context, set_plan, today, with_parent,
+    changed_meanwhile, context_with_parent, edit_recorded, editor, kind_of, list_api_path,
+    new_task, parse_date, render_change, render_detail, render_list, resolve_context, set_plan,
+    today, with_parent,
 };
-use loom_api::{ContextName, Date, TaskActionRequest, TaskDetail, TaskEdit, TaskList};
+use loom_api::{
+    ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents, TaskList,
+};
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
 use serde::Serialize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::client::Client;
 use crate::repo_cmd::{api_error, connect, cwd_assignments};
@@ -195,6 +198,9 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     let client = runtime.block_on(client(layout))?;
     let before = runtime.block_on(get(&client, &args.id))?;
     let summary = &before.summary;
+    // The full ID from here: a task created while the editor is open may share the prefix.
+    let id = summary.id.to_string();
+    let logged = runtime.block_on(events(&client, &id))?.len();
     let path: PathBuf = config
         .store_paths(&layout.home, &user_home)
         .get(&summary.context)
@@ -241,19 +247,39 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     }
     let deadline = Instant::now() + EDIT_RECORD_TIMEOUT;
     loop {
-        let after = runtime.block_on(get(&client, &args.id))?;
+        let after = runtime.block_on(get(&client, &id))?;
+        let log = runtime.block_on(events(&client, &id))?;
+        let appended = log.get(logged..).unwrap_or_default();
         // The saved file is valid: an invalid state is the watcher reading it mid-write.
-        if after != before && after.summary.task.is_some() {
+        if after.summary.task.is_some() && edit_recorded(appended, after.body != before.body) {
+            let others = changed_meanwhile(appended);
+            if !others.is_empty() {
+                warn!(
+                    "the task changed while it was open in the editor (by {}): your save replaced the file and loomd recorded it as an edit; `loom undo {}` reverts it",
+                    others.join(", "),
+                    summary.prefix
+                );
+            }
             return print(&render_change(&after));
         }
         if Instant::now() >= deadline {
             return print(&format!(
-                "{} saved; loomd has not recorded it yet\n",
-                summary.prefix
+                "{} saved; loomd recorded no change of the task within {} s (only spacing changed, or loomd has not read the file yet)\n",
+                summary.prefix,
+                EDIT_RECORD_TIMEOUT.as_secs()
             ));
         }
         std::thread::sleep(EDIT_POLL);
     }
+}
+
+/// `GET /v1/tasks/{id}/events`: the event log of the task.
+async fn events(client: &Client, id: &str) -> Result<Vec<EventRecord>> {
+    let log: TaskEvents = client
+        .get(&format!("{TASKS_PATH}/{id}/events"))
+        .await
+        .map_err(|error| api_error(&error))?;
+    Ok(log.events)
 }
 
 /// `POST /v1/tasks/{prefix}/actions/{name}`.

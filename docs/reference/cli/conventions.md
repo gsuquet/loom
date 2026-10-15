@@ -369,7 +369,7 @@ The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importanc
 | --- | --- |
 | `title` | The new title. |
 | `kind` | A kind of `loom add --kind`. |
-| `format` | `talk`, `article`, `training` or `workshop`; only with `kind=content`. |
+| `format` | `talk`, `article`, `training` or `workshop`; only together with `kind=content`, even for a task that is already `content`. |
 | `importance` | `p0` to `p3`. |
 | `due` | A date as for `--due`, or `none` to remove it. |
 | `parent` | An ID or prefix, or `none`. The other relations are kept. loomd refuses a task of another context, the task itself or one of its descendants. |
@@ -383,7 +383,8 @@ Opens the `task.md` of the task (`<store>/tasks/<id>/task.md`, the store of its 
 
 - File unchanged: prints `<prefix> unchanged`.
 - File invalid (`task.md` format): exit `1` with the path and the error. The file is kept as saved; loomd shows the task read-only until it is fixed.
-- Otherwise `loom` waits up to 5 s for loomd to record the hand edit (an `edited` event of the actor `file`) and prints the task line, or `<prefix> saved; loomd has not recorded it yet`.
+- Otherwise `loom` waits up to 5 s for loomd to record the hand edit (an `edited` event of the actor `file`, or a change of the notes) and prints the task line. When loomd records no change in that time (only spacing changed, or loomd has not read the file yet), it prints `<prefix> saved; loomd recorded no change of the task within 5 s (…)`.
+- When other events were appended to the task's log while the editor was open (a `loom done` in another terminal, a sync, an agent), `loom` warns on stderr, naming their actors: the save replaced the file, and loomd recorded it as an edit that may revert them. `loom undo <id>` reverts that edit.
 - The editor exits non-zero: exit `1`, the file left as it is.
 
 ## `loom upgrade`

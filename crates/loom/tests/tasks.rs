@@ -628,3 +628,36 @@ fn edit_opens_the_task_file_and_reports_an_invalid_one() {
         stderr(&failing)
     );
 }
+
+#[test]
+fn edit_warns_when_the_task_changed_while_the_editor_was_open() {
+    let sandbox = Sandbox::new();
+    let task = sandbox.add(&["-c", "work", "--ready", "Original"]);
+    let id = task.summary.id.to_string();
+    // The editor reads its buffer, another terminal closes the task, then the editor saves
+    // the buffer it read, with a new title.
+    let concurrent = editor(
+        &sandbox,
+        "concurrent",
+        &format!(
+            r#"buf=$(mktemp) && cp "$1" "$buf" && "$LOOM_BIN" --color=never done {id} > /dev/null && sed 's/^title = .*/title = "Saved over"/' "$buf" > "$1" && rm "$buf""#
+        ),
+    );
+    let loom = loom_bin().display().to_string();
+    let output = sandbox.run_env(
+        &sandbox.home(),
+        None,
+        &[("EDITOR", &concurrent), ("LOOM_BIN", &loom)],
+        &["edit", &id],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let warning = stderr(&output);
+    assert!(
+        warning.contains("changed while it was open in the editor (by user)"),
+        "{warning}"
+    );
+    assert!(warning.contains("loom undo"), "{warning}");
+    // The save won: the status is back to ready, recorded as a hand edit.
+    let line = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(line.ends_with(" work ready Saved over\n"), "{line}");
+}
