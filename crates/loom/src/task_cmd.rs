@@ -12,7 +12,7 @@ use loom::task::{
     AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
     changed_after_save, changed_meanwhile, context_with_parent, editor, holds_saved, kind_of,
     list_api_path, new_task, parse_date, render_change, render_detail, render_list,
-    resolve_context, set_plan, today, with_parent,
+    resolve_context, set_plan, skipped_notice, today, with_parent,
 };
 use loom_api::{
     Actor, ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents,
@@ -113,6 +113,16 @@ pub fn show(args: &ShowArgs, layout: &Layout) -> Result<()> {
     block_on(async {
         let client = client(layout).await?;
         let detail = get(&client, &args.id).await?;
+        // On standard error, so that `--json` stays one document. A log that cannot be read does
+        // not stop the display of the task.
+        match event_log(&client, &detail.summary.id.to_string()).await {
+            Ok(log) => {
+                if let Some(notice) = skipped_notice(&log.skipped) {
+                    warn!("{}", notice.trim_end());
+                }
+            }
+            Err(error) => debug!(%error, "cannot read the event log of the task"),
+        }
         output(&detail, args.json, || render_detail(&detail))
     })
 }
@@ -318,12 +328,16 @@ fn timed_out(appended: &[EventRecord], prefix: &str, after: &TaskDetail) -> Stri
 }
 
 /// `GET /v1/tasks/{id}/events`: the event log of the task.
-async fn events(client: &Client, id: &str) -> Result<Vec<EventRecord>> {
-    let log: TaskEvents = client
+async fn event_log(client: &Client, id: &str) -> Result<TaskEvents> {
+    client
         .get(&format!("{TASKS_PATH}/{id}/events"))
         .await
-        .map_err(|error| api_error(&error))?;
-    Ok(log.events)
+        .map_err(|error| api_error(&error))
+}
+
+/// The events of the task, in log order.
+async fn events(client: &Client, id: &str) -> Result<Vec<EventRecord>> {
+    Ok(event_log(client, id).await?.events)
 }
 
 /// `POST /v1/tasks/{prefix}/actions/{name}`.

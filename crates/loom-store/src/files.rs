@@ -284,6 +284,10 @@ impl StorePort for FileStore {
         read_log(&self.dir_at(id, location).join(EVENTS_FILE))
     }
 
+    fn contains(&self, id: &TaskId) -> Result<bool, PortError> {
+        Ok(self.locate(id)?.is_some())
+    }
+
     fn archive(&self, id: &TaskId, year: u16) -> Result<(), PortError> {
         let lock = self.lock(id);
         let _held = lock_guard(&lock);

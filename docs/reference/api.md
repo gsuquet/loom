@@ -178,7 +178,7 @@ The search ranks the repositories by these keys, in order:
 
 The tasks are files in the context stores (see [configuration](configuration.md#context-stores)). `loomd` indexes them in `<loom home>/index.db`. It reconciles them with the index when it starts and when their files change. The reconciliation records the hand edits (see [context stores](configuration.md#context-stores)).
 
-`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction. When `loomd` has written the index, it answers with a [`ReindexResult`](#reindexresult). The rebuild drops the rows of tasks whose directory is gone. It indexes an invalid `task.md` as read-only and lists it, but never writes it again. The rebuild does not change the repositories of the index.
+`POST /v1/tasks/reindex` (no body) rebuilds the tasks index from the files of every context store, in one transaction. When `loomd` has written the index, it answers with a [`ReindexResult`](#reindexresult). The rebuild drops the rows of tasks whose directory is gone. It indexes an invalid `task.md` as read-only and lists it, but never writes it again. An ID that the stores of several contexts hold gets one row only: an invalid row, listed once, whose error names the contexts. The rebuild does not choose a copy. The rebuild does not change the repositories of the index.
 
 Before the rebuild, `loomd` reconciles every task: a hand edit not recorded yet gets its `edited` event first. Thus a reindex can append events, and the rebuild never hides an edit. The reconciliation or the rebuild can fail to read the files of a task (permissions, I/O), or fail to list the `tasks/` of a store. `failed` lists such a task or store, and its rows stay as they were. `loomd` indexes the other tasks. Only a failure to write the index answers `500 internal`, and the index then stays unchanged.
 
@@ -724,7 +724,7 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 | --- | --- | --- |
 | `context` | string | Context of the store that holds the task. |
 | `id` | string | Task ID, the name of its directory. |
-| `error` | string | Why the file cannot be read. It starts with `line <n>: ` when the line is known. Causes: not UTF-8, no `+++` frontmatter, invalid TOML, an absent or invalid key, an `id` that is not the directory name, a `context` that is not the store's. |
+| `error` | string | Why the file cannot be read. It starts with `line <n>: ` when the line is known. Causes: not UTF-8, no `+++` frontmatter, invalid TOML, an absent or invalid key, an `id` that is not the directory name, a `context` that is not the store's, an ID that the stores of several contexts hold (`duplicate ID across contexts`, with their names). |
 
 `FailedTaskFile`:
 

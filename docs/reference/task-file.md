@@ -211,3 +211,5 @@ A field change is `{"field":"<field>","from":<value>,"to":<value>}`, with `field
 | Not JSON, not an object, `v` or `type` absent, or invalid payload | Kept as is, not replayed, reported as `invalid`. |
 
 A line that is not replayed is never an error for the rest of the log. Lines are never rewritten.
+
+A line reported as `newer_version` stops the recording of hand edits of the task: `loomd` indexes the file without an `edited` event, and logs a warning. A line reported as `unknown_type` or `invalid` does not stop it: `loomd` replays the other lines. `loom show` lists the lines that are not replayed as a warning on standard error.

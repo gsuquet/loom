@@ -354,6 +354,90 @@ fn an_invalid_hand_edit_is_flagged_read_only_and_never_rewritten() {
 }
 
 #[test]
+fn a_damaged_log_line_does_not_stop_hand_edits_from_being_recorded_or_undone() {
+    let sandbox = Sandbox::new();
+    let id = create_task(&sandbox, "Before");
+    let daemon = sandbox.start();
+    sandbox.reindex();
+
+    // A cut line, as a crash in the middle of an append leaves it.
+    let log = sandbox.task_dir("work", id.as_str()).join("events.jsonl");
+    let mut text = fs::read_to_string(&log).unwrap();
+    text.push_str("{\"garbage\"\n");
+    fs::write(&log, text).unwrap();
+    hand_edit(&sandbox, &id, "title = \"Before\"", "title = \"After\"");
+    wait_for(&sandbox, &id, TIMEOUT, |row| row.title() == "After");
+
+    let lines = fs::read_to_string(&log).unwrap();
+    let recorded: Vec<Value> = lines
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    assert_eq!(recorded.len(), 2, "{lines}");
+    assert_eq!(recorded[1]["type"], "edited");
+    assert_eq!(recorded[1]["actor"], json!({ "type": "file" }));
+    assert!(
+        lines.contains("{\"garbage\""),
+        "the damaged line is kept: {lines}"
+    );
+
+    // The edit is in the log, so the undo has something to revert.
+    let undone = request(
+        &sandbox.socket(),
+        "POST",
+        &format!("/v1/tasks/{id}/undo"),
+        None,
+    );
+    assert_eq!(undone.status, 200, "{}", undone.body);
+    wait_for(&sandbox, &id, TIMEOUT, |row| row.title() == "Before");
+    daemon.stop();
+}
+
+#[test]
+fn an_id_copied_into_two_contexts_is_flagged_and_no_command_writes_either_copy() {
+    let sandbox = Sandbox::new();
+    let (work, home) = (
+        task_md("eeeeeeee", "work", "Twice"),
+        task_md("eeeeeeee", "home", "Twice"),
+    );
+    sandbox.write_task("work", "eeeeeeee", &work);
+    sandbox.write_task("home", "eeeeeeee", &home);
+    let daemon = sandbox.start();
+
+    let result = sandbox.reindex();
+    assert_eq!(result.tasks, 1);
+    assert_eq!(result.invalid.len(), 1);
+    assert_eq!(result.invalid[0].id.as_str(), "eeeeeeee");
+    assert!(
+        result.invalid[0]
+            .error
+            .starts_with("duplicate ID across contexts"),
+        "{}",
+        result.invalid[0].error
+    );
+    // The row does not change with another reindex: no flip-flop between the copies.
+    let first = sandbox.indexed();
+    sandbox.reindex();
+    assert_eq!(sandbox.indexed(), first);
+
+    let done = sandbox.post("/v1/tasks/eeeeeeee/actions/done");
+    assert_eq!(done.status, 409, "{}", done.body);
+    assert!(done.body.contains("read_only"), "{}", done.body);
+    for (context, text) in [("work", &work), ("home", &home)] {
+        let dir = sandbox.task_dir(context, "eeeeeeee");
+        assert_eq!(fs::read_to_string(dir.join("task.md")).unwrap(), *text);
+        assert!(!dir.join("events.jsonl").exists());
+    }
+
+    // Removing one copy makes the other a valid task again.
+    fs::remove_dir_all(sandbox.task_dir("work", "eeeeeeee")).unwrap();
+    let again = sandbox.reindex();
+    assert_eq!((again.tasks, again.invalid.len()), (1, 0));
+    assert_eq!(sandbox.indexed()[0].context, context("home"));
+    daemon.stop();
+}
+
+#[test]
 fn a_hand_edit_made_while_loomd_was_stopped_is_recorded_at_start() {
     let sandbox = Sandbox::new();
     let id = create_task(&sandbox, "Offline");

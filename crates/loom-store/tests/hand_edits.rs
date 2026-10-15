@@ -7,6 +7,7 @@
 )]
 
 use std::fs;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use loom_core::{
@@ -349,4 +350,55 @@ fn an_unreadable_task_does_not_stop_the_reconciliation_of_the_others() {
     // The unreadable task keeps its row: it is not "removed".
     let reader = Reader::open(&fixture.db()).unwrap();
     assert_eq!(reader.task(&locked.id).unwrap().unwrap().title(), "Locked");
+}
+
+/// Appends `line` to the `events.jsonl` of `id`, as a crash in the middle of an append or a
+/// newer loom would leave it.
+fn append_to_log(fixture: &Fixture, id: &TaskId, line: &str) {
+    let path = fixture.file(id).with_file_name("events.jsonl");
+    let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "{line}").unwrap();
+}
+
+#[test]
+fn a_damaged_log_line_does_not_stop_the_recording_of_hand_edits() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = Fixture::create(&mut tasks, "Before");
+    append_to_log(&fixture, &task.id, "{\"garbage\"");
+    fixture.edit(&task.id, "title = \"Before\"", "title = \"After\"");
+
+    assert!(matches!(
+        reconcile(&mut tasks, &task.id, 200),
+        Reconciled::Edited(changes) if changes.len() == 1
+    ));
+    let log = tasks.stores()[&context("work")]
+        .read_events(&task.id)
+        .unwrap();
+    assert_eq!(log.events.len(), 2);
+    assert!(matches!(log.events[1].event, Event::Edited { .. }));
+    // The damaged line is kept as written.
+    assert_eq!(log.skipped.len(), 1);
+}
+
+#[test]
+fn a_line_of_a_newer_loom_withholds_the_recording_of_hand_edits() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = Fixture::create(&mut tasks, "Before");
+    append_to_log(&fixture, &task.id, "{\"v\":99,\"type\":\"edited\"}");
+    fixture.edit(&task.id, "title = \"Before\"", "title = \"After\"");
+
+    assert_eq!(reconcile(&mut tasks, &task.id, 200), Reconciled::Withheld);
+    let log = tasks.stores()[&context("work")]
+        .read_events(&task.id)
+        .unwrap();
+    assert_eq!(log.events.len(), 1);
+    // Indexed all the same.
+    let indexed = Reader::open(&fixture.db())
+        .unwrap()
+        .task(&task.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(indexed.title(), "After");
 }

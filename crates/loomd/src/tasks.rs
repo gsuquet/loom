@@ -913,7 +913,13 @@ impl Worker {
                 let location = self.location(id);
                 let result = match &reconciled {
                     Reconciled::Unchanged => return,
-                    Reconciled::Indexed => {
+                    // Nothing was written to either copy: nothing to commit, the clients refetch.
+                    Reconciled::Duplicate(contexts) => {
+                        // The row is in the first context, not necessarily the watcher's.
+                        self.changed(contexts.first().unwrap_or(context), id);
+                        return;
+                    }
+                    Reconciled::Indexed | Reconciled::Withheld => {
                         self.commits
                             .commit_task(context, id, location, &hand_edit_message(id))
                     }
@@ -1095,10 +1101,19 @@ fn log_reconciled(id: &TaskId, reconciled: &Reconciled) {
     match reconciled {
         Reconciled::Unchanged => {}
         Reconciled::Indexed => debug!(%id, "task indexed"),
+        Reconciled::Withheld => warn!(
+            %id,
+            "task indexed without an `edited` event: its events.jsonl has a line written by a newer loom, upgrade loom to record hand edits"
+        ),
         Reconciled::Edited(changes) => {
             let fields: Vec<&str> = changes.iter().map(loom_core::FieldChange::field).collect();
             info!(%id, ?fields, "hand edit recorded");
         }
+        Reconciled::Duplicate(contexts) => warn!(
+            %id,
+            ?contexts,
+            "duplicate task ID across contexts: the task is read-only until one copy is removed"
+        ),
         Reconciled::Removed => info!(%id, "removed task dropped from the index"),
     }
 }
