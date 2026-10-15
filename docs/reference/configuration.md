@@ -152,7 +152,7 @@ Errors in an array element (`roots`, `exclude`, `match.paths`, `match.hosts`) ar
 
 `[[contexts.<name>.schedules]]` tables define recurring tasks: `loomd` creates one task in the context per occurrence of each schedule. It reads them when it starts, like the rest of the file: a change takes effect after a restart.
 
-One machine runs the schedules of a context: the first one of its [`machines`](#contexts-and-repositories). The other machines that hold the context log at start that its schedules run on that machine, and create no task for them; their tasks reach them through the [store backup](#store-backup). A context without `machines` is held by every machine, and each one runs its schedules, with this warning at start: two machines sharing its store would both create each occurrence.
+One machine runs the schedules of a context: the first one of its [`machines`](#contexts-and-repositories). The other machines that hold the context log at start that its schedules run on that machine, and create no task for them; their tasks reach them through the [store backup](#store-backup). While that first machine is off, no task is created; when it starts again, it creates the latest missed occurrence only. To hand the schedules over, put another machine first in `machines` and restart `loomd` on both. A context without `machines` is held by every machine, and each one runs its schedules, with this warning at start: two machines sharing its store would both create each occurrence.
 
 ```text
 WARN schedules run on every machine holding the context: set `machines` so that only its first machine creates their tasks context=company-a
