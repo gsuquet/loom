@@ -10,7 +10,7 @@ use crate::Channel;
 /// Output of `loom upgrade`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpgradeReport {
-    /// Version of the running `loom`.
+    /// Version of the `loom` that runs.
     pub current_version: String,
     /// Where the new version comes from.
     pub source: UpgradeSource,
@@ -49,7 +49,7 @@ pub enum UpgradeSource {
 pub enum UpgradeDecision {
     /// No version to move to.
     UpToDate,
-    /// A newer version exists; the policy says to report it only.
+    /// A newer version exists. The policy says to report it only.
     Available {
         /// Version to report.
         version: String,
@@ -92,7 +92,7 @@ pub enum UpgradeSkipReason {
 /// Output of `loom rollback`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RollbackReport {
-    /// Version of the running `loom`, replaced by the rollback.
+    /// Version of the `loom` that runs, replaced by the rollback.
     pub current_version: String,
     /// `true` with `--dry-run`: nothing installed.
     pub dry_run: bool,
@@ -105,22 +105,23 @@ pub struct RollbackReport {
 pub struct InstallReport {
     /// Version installed, or that would be with `--dry-run`.
     pub version: String,
-    /// Directory holding `loom` and `loomd`: the directory of the running `loom`.
+    /// Directory that holds `loom` and `loomd`: the directory of the `loom` that runs.
     pub install_dir: PathBuf,
     /// `true` when the signature of `SHA256SUMS` and the archive checksum were verified.
     /// `false` for `--from` and `loom rollback` (local files).
     pub verified: bool,
-    /// `true` when the binaries were replaced; `false` with `--dry-run`.
+    /// `true` when the binaries were replaced. `false` with `--dry-run`.
     pub installed: bool,
     /// Directory where the replaced version was saved (`<loom home>/versions/<version>`).
     pub saved_to: Option<PathBuf>,
     /// Saved versions deleted to keep the most recent ones.
     pub pruned: Vec<String>,
-    /// What happened to a running loomd.
+    /// What happened to a loomd that runs.
     pub daemon: DaemonRestart,
 }
 
-/// What `loom upgrade` and `loom rollback` did to a running loomd after replacing the binaries.
+/// What `loom upgrade` and `loom rollback` did to a loomd that runs, after they replaced the
+/// binaries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DaemonRestart {
@@ -128,13 +129,13 @@ pub enum DaemonRestart {
     Skipped,
     /// No loomd holds the lock of the loom home.
     NotRunning,
-    /// `SIGTERM` was sent; a service manager restarts loomd on the new binary, otherwise the
+    /// `SIGTERM` was sent. A service manager restarts loomd on the new binary, otherwise the
     /// next `loom` command starts it.
     Signalled {
         /// PID of the loomd that was signalled.
         pid: u32,
     },
-    /// loomd runs, but `SIGTERM` could not be sent: it keeps running the replaced binary.
+    /// loomd runs, but `SIGTERM` could not be sent: it continues to run the replaced binary.
     Failed {
         /// PID read from the lock file, when there is one.
         pid: Option<u32>,

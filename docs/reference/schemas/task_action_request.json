@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TaskActionRequest",
-  "description": "Body of `POST /v1/tasks/{id}/actions/{action}`, optional; each field belongs to one action.",
+  "description": "Body of `POST /v1/tasks/{id}/actions/{action}`, optional. Each field belongs to one action.",
   "type": "object",
   "properties": {
     "on": {
@@ -19,7 +19,7 @@
       ]
     },
     "until": {
-      "description": "`waiting` only: hidden from the priority list until this date.",
+      "description": "`waiting` only: the priority list does not show the task until this date.",
       "type": [
         "string",
         "null"

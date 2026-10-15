@@ -33,7 +33,7 @@ impl LastUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UpdateOutcome {
-    /// The primary remote was fetched; no branch had to move.
+    /// The primary remote was fetched. No branch had to move.
     Fetched,
     /// The branch `HEAD` is on was fast-forwarded to its upstream.
     FastForwarded {
@@ -252,7 +252,7 @@ pub enum SkipReason {
     },
     /// Another git process (an editor's automatic fetch, a command of the user) held a lock of
     /// the repository (`index.lock`, a ref lock) during this step. Retried at the next
-    /// interval, without backoff; the lock is never removed.
+    /// interval, without backoff. The lock is never removed.
     Busy {
         /// The step that met the lock.
         step: UpdateStep,
@@ -314,10 +314,10 @@ impl fmt::Display for SkipReason {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SyncRequest {
-    /// Slugs of the repositories to update; empty: every repository of the index.
+    /// Slugs of the repositories to update. If empty: every repository of the index.
     #[serde(default)]
     pub repos: Vec<String>,
-    /// `true`: decide from the stored state without fetching or merging.
+    /// `true`: decide from the stored state, with no fetch and no merge.
     #[serde(default)]
     pub dry_run: bool,
 }
@@ -342,7 +342,7 @@ pub struct RepoSync {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SyncOutcome {
-    /// The update ran; also stored as the repository's `last_update`.
+    /// The update ran. It is also stored as the repository's `last_update`.
     Updated {
         /// The update.
         update: LastUpdate,

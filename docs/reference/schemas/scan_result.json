@@ -17,7 +17,7 @@
       "minimum": 0
     },
     "errors": {
-      "description": "Paths that could not be read; the repositories below them are kept as they were.",
+      "description": "Paths that could not be read. The repositories below them are kept as they were.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/ScanIssue"

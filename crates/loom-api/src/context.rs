@@ -18,17 +18,17 @@ pub enum ContextAssignment {
     Host {
         /// Assigned context.
         context: ContextName,
-        /// The matching entry, `host` or `host/path-prefix`, as normalized.
+        /// The entry that matches, `host` or `host/path-prefix`, as normalized.
         pattern: String,
     },
     /// An entry of `match.paths` is the longest prefix of the repository path.
     Path {
         /// Assigned context.
         context: ContextName,
-        /// The matching entry, as written in the configuration (before `~` expansion).
+        /// The entry that matches, as written in the configuration (before `~` expansion).
         prefix: String,
     },
-    /// No rule matches; `default_context` is set.
+    /// No rule matches, and `default_context` is set.
     Default {
         /// Assigned context.
         context: ContextName,

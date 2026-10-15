@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ApiVersion, DiskUsage, Timestamp, UpdateStatus, VersionInfo};
 
-/// State of a running loomd.
+/// State of a loomd that runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatusResponse {
     /// API version the daemon serves.

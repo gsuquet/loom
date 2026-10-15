@@ -17,7 +17,7 @@
   ],
   "$defs": {
     "ContextName": {
-      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
@@ -233,7 +233,7 @@
           "$ref": "#/$defs/Importance"
         },
         "kind": {
-          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning; any other name makes the task read-only.",
+          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning. Any other name makes the task read-only.",
           "type": "string"
         },
         "links": {
@@ -257,7 +257,7 @@
           }
         },
         "status": {
-          "description": "inbox, ready, active, waiting, done or cancelled; any other name makes the task read-only.",
+          "description": "inbox, ready, active, waiting, done or cancelled. Any other name makes the task read-only.",
           "type": "string"
         },
         "title": {
@@ -269,14 +269,14 @@
           "$ref": "#/$defs/Timestamp"
         },
         "waiting_on": {
-          "description": "Waiting only: what or whom the task waits on.",
+          "description": "`waiting` only: what or whom the task waits on.",
           "type": [
             "string",
             "null"
           ]
         },
         "waiting_until": {
-          "description": "Waiting only: hidden from the priority list until this date.",
+          "description": "`waiting` only: the priority list does not show the task until this date.",
           "type": [
             "string",
             "null"
@@ -398,7 +398,7 @@
       "type": "object",
       "properties": {
         "context": {
-          "description": "Context of the store holding the task.",
+          "description": "Context of the store that holds the task.",
           "$ref": "#/$defs/ContextName"
         },
         "id": {
@@ -410,7 +410,7 @@
           "type": "string"
         },
         "rank": {
-          "description": "Its place in the priority list; present with `ranked=true` only.",
+          "description": "Its place in the priority list. Present with `ranked=true` only.",
           "anyOf": [
             {
               "$ref": "#/$defs/TaskRank"
@@ -421,7 +421,7 @@
           ]
         },
         "read_only": {
-          "description": "Why the task cannot be changed; absent when it can.",
+          "description": "Why the task cannot be changed. Absent when it can.",
           "anyOf": [
             {
               "$ref": "#/$defs/TaskReadOnly"
@@ -432,7 +432,7 @@
           ]
         },
         "task": {
-          "description": "The task; `null` when its `task.md` is invalid.",
+          "description": "The task. `null` when its `task.md` is invalid.",
           "anyOf": [
             {
               "$ref": "#/$defs/Task"
