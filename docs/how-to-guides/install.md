@@ -1,24 +1,26 @@
 # Install loom
 
-Install `loom` and `loomd` on macOS or Linux (arm64 or x86_64) with the install script. Options and exact behavior: [install script reference](../reference/install-script.md).
+Install `loom` and `loomd` on macOS or Linux (arm64 or x86_64) with the install script. For the options and the exact behavior, see the [install script reference](../reference/install-script.md).
 
-Requirements: `curl`, `tar`, and `sha256sum` or `shasum`. Install [minisign](https://jedisct1.github.io/minisign/) as well to have the script verify the release signature; without it, the script only verifies checksums and prints a warning.
+You need `curl`, `tar`, and `sha256sum` or `shasum`. If you want the script to verify the release signature, also install [minisign](https://jedisct1.github.io/minisign/). Without minisign, the script verifies only the checksums and prints a warning.
 
 ## Install the latest stable release
 
-```bash
-curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh | sh
-```
+1. Run the install script:
 
-The binaries go to `~/.local/bin`. If that directory is not in your `PATH`, the script prints the line to add to your shell profile; it never edits the profile itself.
+   ```bash
+   curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh | sh
+   ```
 
-Check the result:
+   The script puts the binaries in `~/.local/bin`. If that directory is not in your `PATH`, the script prints the line to add to your shell profile. The script never edits the profile.
 
-```bash
-loom -V
-```
+2. Check the result:
 
-Running the same command again does nothing when that version is already installed.
+   ```bash
+   loom -V
+   ```
+
+If that version is already installed and you run the install command again, the script does nothing.
 
 ## Choose a channel, a version or a directory
 
@@ -35,17 +37,19 @@ curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh |
 curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh | sh -s -- --prefix /opt/loom/bin
 ```
 
-Installing another version replaces both binaries. `--channel` and `--version` cannot be combined. A channel given with `--channel` is remembered: `loomd` and `loom upgrade` keep following it, even after an upgrade to a stable release.
+If you install a different version, the script replaces the two binaries. Do not use `--channel` and `--version` together. The script records the channel that you give with `--channel`. `loomd` and `loom upgrade` then continue to use this channel, also after an upgrade to a stable release.
 
-If GitHub answers with HTTP 403 or 429 (API rate limit), set a token and run the command again:
+If GitHub returns HTTP 403 or 429 (API rate limit), set a token:
 
 ```bash
 export LOOM_GITHUB_TOKEN="$(gh auth token)"
 ```
 
+Then run the install command again.
+
 ## Verify a release by hand
 
-1. Download the archive for your platform, `SHA256SUMS` and `SHA256SUMS.minisig` from the release page, `https://github.com/gsuquet/loom/releases/tag/v<version>`. Archive names are `loom-<version>-<target>.tar.gz`, for example `loom-0.1.0-aarch64-apple-darwin.tar.gz`.
+1. Download the archive for your platform, `SHA256SUMS` and `SHA256SUMS.minisig` from the release page, `https://github.com/gsuquet/loom/releases/tag/v<version>`. The archive name is `loom-<version>-<target>.tar.gz`, for example `loom-0.1.0-aarch64-apple-darwin.tar.gz`.
 
 2. Verify the signature of `SHA256SUMS`:
 
@@ -55,7 +59,7 @@ export LOOM_GITHUB_TOKEN="$(gh auth token)"
 
    The output must contain `Signature and comment signature verified`.
 
-3. Verify the archive against `SHA256SUMS`, replacing the archive name:
+3. Verify the archive against `SHA256SUMS`. In the command, use the name of your archive:
 
    ```bash
    # Linux
@@ -68,10 +72,10 @@ export LOOM_GITHUB_TOKEN="$(gh auth token)"
 
 ## Uninstall
 
-Remove the two binaries from the install directory (`~/.local/bin` by default):
+1. Remove the two binaries from the install directory (`~/.local/bin` by default):
 
-```bash
-rm ~/.local/bin/loom ~/.local/bin/loomd
-```
+   ```bash
+   rm ~/.local/bin/loom ~/.local/bin/loomd
+   ```
 
-If you added the directory to your `PATH` only for loom, remove that line from your shell profile.
+2. If you added the directory to your `PATH` only for loom, remove that line from your shell profile.

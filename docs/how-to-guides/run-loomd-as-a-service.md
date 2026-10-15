@@ -1,18 +1,21 @@
 # Run loomd as a service
 
-> Keep `loomd` running in the background: started at login, restarted when it stops. macOS uses a launchd user agent, Linux a systemd user unit.
+> Make `loomd` run in the background at all times. The service starts `loomd` at login and starts it again when it stops. macOS uses a launchd user agent. Linux uses a systemd user unit.
 
-Before you start: `loom` and `loomd` are installed, either in the same directory or with `loomd` on your `PATH`. On Linux, your session has a systemd user instance (`systemctl --user` works).
+Before you start, make sure that:
+
+- `loom` and `loomd` are installed. They are in the same directory, or `loomd` is on your `PATH`.
+- On Linux, your session has a systemd user instance (`systemctl --user` works).
 
 ## Install the service
 
-1. Check what would change:
+1. Check what the command changes:
 
    ```bash
    loom service install --dry-run
    ```
 
-   It prints the service file and the commands, and changes nothing.
+   The command prints the service file and the commands. It changes nothing.
 
 2. Install and start the service:
 
@@ -20,9 +23,9 @@ Before you start: `loom` and `loomd` are installed, either in the same directory
    loom service install
    ```
 
-   Running it again is safe: when the file is unchanged and the service is loaded, it prints `loomd service already installed` and does nothing. After you move `loomd` or change `LOOM_HOME`, run it again to rewrite the file and reload the service.
+   You can run this command again safely. If the file has no change and the service is loaded, it prints `loomd service already installed`. It then does nothing. If you move `loomd` or change `LOOM_HOME`, run the command again. It writes the file again and reloads the service.
 
-The service uses the loom home of the shell you run `install` from: `LOOM_HOME` if set, otherwise `~/.loom`.
+The service uses the loom home of the shell where you run `install`. This is `LOOM_HOME` if it is set, otherwise `~/.loom`.
 
 ## Check the service
 
@@ -38,11 +41,11 @@ loaded:    yes
 running:   yes
 ```
 
-`running: no` with `loaded: yes` means the service manager knows the service but `loomd` is not running: read the logs. For scripts, `loom service status --json` prints the same fields as JSON.
+If the output shows `running: no` with `loaded: yes`, the service manager knows the service but `loomd` does not run. Then read the logs. For scripts, `loom service status --json` prints the same fields as JSON.
 
 ## Restart loomd
 
-After a change to `config.toml`:
+After a change to `config.toml`, run this command:
 
 ```bash
 loom service restart
@@ -52,7 +55,7 @@ loom service restart
 loomd restarted (pid 812 -> 9431, 0.3.0, via launchd) in 640 ms
 ```
 
-The configuration is checked first: when it is invalid, loomd is left running. The service manager restarts loomd (`launchctl kickstart -k` on macOS, `systemctl --user restart` on Linux), and the command returns once the new loomd answers. It fails, naming the step and the log, when the new loomd does not answer within 15 s.
+The command first checks the configuration. If the configuration is not valid, loomd continues to run. The service manager restarts loomd (`launchctl kickstart -k` on macOS, `systemctl --user restart` on Linux). The command returns when the new loomd answers. If the new loomd does not answer within 15 s, the command fails and gives the step and the log.
 
 ## Read the logs
 
@@ -74,19 +77,19 @@ The configuration is checked first: when it is invalid, loomd is left running. T
 loom service uninstall
 ```
 
-It stops `loomd`, unloads the service and removes its file. `--dry-run` shows the steps first. With nothing installed, it prints `loomd service not installed` and does nothing.
+The command stops `loomd`, unloads the service and removes its file. To see the steps first, add `--dry-run`. If no service is installed, it prints `loomd service not installed` and does nothing.
 
 ## Keep loomd from being installed as a service
 
-1. Uninstall the service if it is installed (see above): the setting below does not remove it.
-2. Add to `<loom home>/config.toml`:
+1. If the service is installed, uninstall it (see above). The key below does not remove the service.
+2. Add these lines to `<loom home>/config.toml`:
 
    ```toml
    [daemon]
    service = false
    ```
 
-`loom service install` then refuses with exit code 1 and names this key. Remove the key, or set it to `true`, to allow the service again.
+After this change, `loom service install` refuses with exit code 1 and gives the name of this key. To allow the service again, remove the key or set it to `true`.
 
 ## Reference
 
