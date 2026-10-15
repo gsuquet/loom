@@ -100,7 +100,7 @@
       ]
     },
     {
-      "description": "The client cannot get some events: its resume point is too old, it is too slow, or many\nchanges occurred at the same time. The client gets again all the data that it shows.",
+      "description": "The client cannot get some events: its resume point is too old, it is too far behind, or\nmany changes occurred at the same time. The client gets all the data that it shows again.",
       "type": "object",
       "properties": {
         "type": {

@@ -46,8 +46,8 @@ pub enum ChangeEvent {
         /// Waiting tasks.
         waiting: usize,
     },
-    /// The client cannot get some events: its resume point is too old, it is too slow, or many
-    /// changes occurred at the same time. The client gets again all the data that it shows.
+    /// The client cannot get some events: its resume point is too old, it is too far behind, or
+    /// many changes occurred at the same time. The client gets all the data that it shows again.
     #[serde(rename = "resync")]
     Resync,
 }
