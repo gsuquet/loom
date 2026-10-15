@@ -107,7 +107,7 @@ The two machines can sync the same store. If you edit the store on the two machi
 
 ## Fix a diverged store
 
-loom never merges a store. The store diverges if the store and its remote each have commits that the other does not have. Then `loom sync` and `loom repo doctor` report `diverged`. loom no longer syncs that store, but it continues to sync the other stores.
+loom never merges a store. The store diverges if the store and its remote each have commits that the other does not have. Then `loom sync` and `loom repo doctor` report `diverged`. The sync of that store stops. The sync of the other stores continues.
 
 1. Stop loomd (`launchctl bootout gui/$(id -u)/io.github.gsuquet.loomd` on macOS, `systemctl --user stop loomd.service` on Linux). If loomd runs, it can write the store while you fix it.
 
