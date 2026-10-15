@@ -22,6 +22,8 @@ globset = { version = "0.4", default-features = false }
 # HEAD, refs, revision walks and the in-progress operation are in the core. No `parallel`: one
 # repository is read per state thread, and the walks stay interruptible without it.
 gix = { version = "0.89", default-features = false, features = ["sha1", "status"] }
+# Already compiled through axum and hyper: `Stream` combinators for the SSE streams.
+futures-util = { version = "0.3.34", default-features = false }
 gix-config = { version = "0.62", default-features = false, features = ["sha1"] }
 http = "1"
 # Already compiled through gix-date. No default features: loom-core needs neither the time zone

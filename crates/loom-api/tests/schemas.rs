@@ -16,18 +16,18 @@ use loom_api::{
 };
 use loom_api::{
     ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
-    Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment, ContextBackup,
-    ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart, DaemonRestartReport,
-    DiskUsage, DoctorCheck, DoctorReport, ErrorCode, ForgeKind, InstallReport, LastUpdate,
-    MaybeKnown, PendingUpgrade, PlannedAction, Profile, RegisterRequest, ReindexResult, Remote,
-    RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl,
-    RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RestartVia, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
-    SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
-    StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField, Timestamp,
-    Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState,
-    UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource,
-    Upstream, VersionInfo,
+    ChangeEvent, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
+    ContextBackup, ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart,
+    DaemonRestartReport, DiskUsage, DoctorCheck, DoctorReport, ErrorCode, ForgeKind, InstallReport,
+    LastUpdate, MaybeKnown, PendingUpgrade, PlannedAction, Profile, RegisterRequest, ReindexResult,
+    Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme,
+    RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary,
+    RepoSync, RepoUpdatePolicy, RestartVia, RollbackReport, ScanIssue, ScanResult, SearchField,
+    SearchResult, SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket,
+    StateField, StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField,
+    Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult,
+    UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason,
+    UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -41,6 +41,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("api_version", schema_for!(ApiVersion)),
         ("backup_report", schema_for!(BackupReport)),
         ("backup_request", schema_for!(BackupRequest)),
+        ("change_event", schema_for!(ChangeEvent)),
         ("context_assignment", schema_for!(ContextAssignment)),
         ("daemon_diagnostics", schema_for!(DaemonDiagnostics)),
         ("daemon_restart_report", schema_for!(DaemonRestartReport)),

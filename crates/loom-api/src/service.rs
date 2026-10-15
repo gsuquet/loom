@@ -38,7 +38,7 @@ pub struct ServiceStatus {
     pub installed: bool,
     /// The service manager knows the service: loaded in launchd, or enabled in systemd.
     pub loaded: bool,
-    /// The `loomd` process of the service is running.
+    /// The `loomd` process of the service runs.
     pub running: bool,
 }
 
@@ -50,9 +50,9 @@ pub enum RestartVia {
     Launchd,
     /// The systemd user unit: `systemctl --user restart`.
     Systemd,
-    /// No service: `SIGTERM` to the loomd holding the lock, then a new loomd started detached.
+    /// No service: `SIGTERM` to the loomd that holds the lock, then a new loomd started detached.
     Signal,
-    /// No service and no loomd running: a new loomd started detached.
+    /// No service and no loomd that runs: a new loomd started detached.
     Start,
 }
 
@@ -74,7 +74,7 @@ impl RestartVia {
 pub struct DaemonRestartReport {
     /// A loomd held the lock of the loom home when the command started.
     pub was_running: bool,
-    /// PID of the loomd that was running, `null` when none was.
+    /// PID of the loomd that ran before the restart, `null` if there was none.
     pub previous_pid: Option<u32>,
     /// PID of the loomd that answers now.
     pub pid: u32,

@@ -331,8 +331,7 @@ struct Invalid {
 
 /// Checks across keys: contexts named by `default_context` and `[repos."<path>"] context`
 /// exist, no `match.paths`, `match.hosts`, `store.path` or `store.backup.remote` entry is in
-/// two contexts, no
-/// repository path is given twice.
+/// two contexts, no repository path is given twice, no schedule ID twice in a context.
 fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let check_defined = |name: &Spanned<ContextName>, key: &str| {
         if name.get_ref().is_unassigned() {
@@ -381,6 +380,20 @@ fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let mut stores = BTreeMap::new();
     let mut remotes = BTreeMap::new();
     for (name, context) in &config.contexts {
+        // The ID is the dedup key of the schedule's tasks in the context.
+        let mut ids = BTreeMap::new();
+        for schedule in &context.schedules {
+            if let Some(first) = ids.insert(schedule.id.get_ref(), &schedule.id) {
+                let Location { line, column } = location(text, first.span().start);
+                return Err(Invalid {
+                    span: schedule.id.span(),
+                    message: format!(
+                        "schedule id `{}` of context `{name}` is already used (line {line}, column {column})",
+                        schedule.id.get_ref()
+                    ),
+                });
+            }
+        }
         // Two stores pushed to one repository would diverge at once.
         if let Some(backup) = &context.store.backup
             && let Some((other, first)) =
@@ -464,7 +477,9 @@ mod tests {
         ConfigPath, ContextConfig, DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_INTERVAL,
         DEFAULT_MAX_DEPTH, DEFAULT_ROOTS, ForgeHost, ReposConfig,
     };
+    use crate::schedules::DueRule;
     use loom_api::{ContextName, ForgeKind, RepoUpdatePolicy, UpdateChannel, UpdatePolicyMode};
+    use loom_core::{Importance, Kind, Policy};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -1179,6 +1194,135 @@ kind = "gitlab"
             ])
         );
         assert_eq!(stores.not_held, [name("lab")]);
+    }
+
+    #[test]
+    fn schedules_are_read() {
+        let text = r#"[contexts.company-a]
+
+[[contexts.company-a.schedules]]
+id = "timesheet"
+title = "Fill in the timesheet"
+kind = "admin"
+importance = "p1"
+rrule = "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"
+policy = "replace"
+due = "same-day"
+
+[[contexts.company-a.schedules]]
+id = "review-1on1"
+title = "Prepare the 1:1"
+kind = "chore"
+rrule = "freq=weekly;interval=2;byday=fr"
+start = 2026-10-02
+"#;
+        let config = parse_config(text, Path::new(PATH)).unwrap();
+        let context = &config.contexts[&"company-a".parse::<ContextName>().unwrap()];
+        let [timesheet, review] = context.schedules.as_slice() else {
+            panic!("two schedules expected: {:?}", context.schedules);
+        };
+        assert_eq!(timesheet.id.get_ref().as_str(), "timesheet");
+        assert_eq!(timesheet.title, "Fill in the timesheet");
+        assert_eq!(timesheet.kind, Kind::Admin);
+        assert_eq!(timesheet.importance, Some(Importance::P1));
+        assert_eq!(
+            timesheet.recurrence.rule().to_string(),
+            "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"
+        );
+        assert_eq!(timesheet.recurrence.start(), None);
+        assert_eq!(timesheet.policy, Policy::Replace);
+        assert_eq!(timesheet.due, Some(DueRule::SameDay));
+        // Defaults: importance of the kind, policy skip, no due date.
+        assert_eq!(review.importance, None);
+        assert_eq!(review.policy, Policy::Skip);
+        assert_eq!(review.due, None);
+        assert_eq!(
+            review.recurrence.rule().to_string(),
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"
+        );
+        assert_eq!(
+            review.recurrence.start(),
+            Some("2026-10-02".parse().unwrap())
+        );
+        // A start may also be a string.
+        let quoted = text.replace("start = 2026-10-02", "start = \"2026-10-02\"");
+        assert_eq!(parse_config(&quoted, Path::new(PATH)).unwrap(), config);
+    }
+
+    #[test]
+    fn invalid_schedules_are_rejected_with_a_location() {
+        const HEAD: &str = "[contexts.a]\n[[contexts.a.schedules]]\n";
+        const VALID: &str = "id = \"s\"\ntitle = \"T\"\nkind = \"chore\"\nrrule = \"FREQ=DAILY\"\n";
+        // (the line given, then line, column and message excerpt of the error)
+        let cases: &[(&str, usize, usize, &str)] = &[
+            (
+                "rrule = \"FREQ=YEARLY\"",
+                3,
+                9,
+                "`FREQ=YEARLY` is not supported",
+            ),
+            (
+                "rrule = \"FREQ=DAILY;BYHOUR=9\"",
+                3,
+                9,
+                "`BYHOUR` is not supported",
+            ),
+            (
+                "rrule = \"FREQ=DAILY;COUNT=2\"",
+                3,
+                9,
+                "`COUNT` is not supported",
+            ),
+            ("rrule = \"BYDAY=FR\"", 3, 9, "FREQ is missing"),
+            ("kind = \"meeting\"", 3, 8, "unknown kind `meeting`"),
+            ("importance = \"high\"", 3, 14, "high"),
+            ("policy = \"merge\"", 3, 10, "merge"),
+            ("due = \"next-day\"", 3, 7, "next-day"),
+            ("start = 2026-10-02T09:00:00", 3, 9, "a date is expected"),
+            ("start = \"tomorrow\"", 3, 9, "a date is expected"),
+            ("title = \"\"", 3, 9, "not empty"),
+            ("id = \"Weekly\"", 3, 6, "invalid schedule id `Weekly`"),
+            ("id = \"a/b\"", 3, 6, "invalid schedule id"),
+            ("cron = \"0 9 * * 5\"", 3, 1, "unknown field `cron`"),
+            (
+                "rrule = \"FREQ=WEEKLY\"",
+                2,
+                1,
+                "schedule `s`: `FREQ=WEEKLY` needs `start`",
+            ),
+        ];
+        for (line_text, line, column, needle) in cases {
+            // The case first, then the valid keys it does not replace.
+            let key = format!("{} ", line_text.split(' ').next().unwrap());
+            let rest: Vec<&str> = VALID
+                .lines()
+                .filter(|valid| !valid.starts_with(&key))
+                .collect();
+            let rest = rest.join("\n");
+            let text = format!("{HEAD}{line_text}\n{rest}\n");
+            assert_rejected(&text, *line, *column, needle);
+        }
+        let missing = format!("{HEAD}id = \"s\"\ntitle = \"T\"\nkind = \"chore\"\n");
+        assert_rejected(&missing, 2, 1, "missing field `rrule`");
+    }
+
+    #[test]
+    fn a_schedule_id_twice_in_a_context_is_rejected() {
+        let schedule = "id = \"s\"\ntitle = \"T\"\nkind = \"chore\"\nrrule = \"FREQ=DAILY\"\n";
+        let text = format!(
+            "[contexts.a]\n[[contexts.a.schedules]]\n{schedule}[[contexts.a.schedules]]\n{schedule}"
+        );
+        assert_rejected(
+            &text,
+            8,
+            6,
+            "schedule id `s` of context `a` is already used (line 3, column 6)",
+        );
+        // Two contexts may use the same ID.
+        let text = format!(
+            "[contexts.a]\n[[contexts.a.schedules]]\n{schedule}[contexts.b]\n[[contexts.b.schedules]]\n{schedule}"
+        );
+        assert!(parse_config(&text, Path::new(PATH)).is_ok());
     }
 
     #[test]

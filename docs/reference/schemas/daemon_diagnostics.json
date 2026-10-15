@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "home": {
-      "description": "`HOME` of `loomd` (expands `~` in the configuration); `null` when unset or empty.",
+      "description": "`HOME` of `loomd` (expands `~` in the configuration). `null` if unset or empty.",
       "type": [
         "string",
         "null"

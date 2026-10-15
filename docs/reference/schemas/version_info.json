@@ -62,12 +62,12 @@
       "description": "Cargo profile family, as reported by Cargo's `PROFILE` build variable.",
       "oneOf": [
         {
-          "description": "`dev` or `test` profile, or a custom profile inheriting from them.",
+          "description": "`dev` or `test` profile, or a custom profile that inherits from them.",
           "type": "string",
           "const": "debug"
         },
         {
-          "description": "`release` or `bench` profile, or a custom profile inheriting from them.",
+          "description": "`release` or `bench` profile, or a custom profile that inherits from them.",
           "type": "string",
           "const": "release"
         }

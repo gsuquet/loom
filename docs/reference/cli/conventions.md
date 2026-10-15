@@ -7,14 +7,14 @@
 - `-h`/`--help` on every binary and command, `-V`/`--version` on every binary.
 - Short flags can be grouped: `-yv` is `-y -v`.
 - Values are given as `--opt value` or `--opt=value`, `-c value` or `-cvalue`.
-- `--` ends option parsing.
+- After `--`, no argument is read as an option.
 - Global options of `loom` are accepted before or after the command name: `loom -c personal version` and `loom version -c personal` are equivalent.
 
 ## Global options
 
 | Option | Behavior |
 | --- | --- |
-| `-c`, `--context <NAME>` | Context to work in. `NAME`: 1 to 64 characters, lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`. A path (contains `/`, starts with `.` or `~`) or a `key=value` pair is rejected with a usage error. |
+| `-c`, `--context <NAME>` | Context to work in. `NAME`: 1 to 64 characters, lowercase ASCII letters, digits and `-`, first character a letter, last character not `-`. A path (contains `/`, starts with `.` or `~`) or a `key=value` pair is rejected with a usage error. |
 | `-q`, `--quiet` | Errors only on stderr. Cannot be combined with `-v`. |
 | `-v`, `--verbose` | More diagnostics on stderr. Repeatable: `-vv`. |
 | `--color <WHEN>` | `auto` (default): color only when the stream is a terminal and `NO_COLOR` is unset or empty. `always`, `never`: ignore both. |
@@ -51,7 +51,7 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | `2` | Usage error: unknown option, missing command, invalid value, conflicting options. |
 | `130` | Interrupted by `SIGINT` (Ctrl-C). |
 
-`loomd` stopped by `SIGTERM` (a service manager stopping it, or `kill`) exits with `0` after a graceful shutdown; stopped by `SIGINT`, it exits with `130` after the same shutdown. After the auto-upgrade replaced the binaries, it stops by itself with the same graceful shutdown and exits with `0`.
+If `SIGTERM` stops `loomd` (from a service manager or from `kill`), `loomd` exits with `0` after a graceful shutdown. If `SIGINT` stops `loomd`, it exits with `130` after the same shutdown. After the auto-upgrade replaced the binaries, `loomd` stops by itself with the same graceful shutdown and exits with `0`.
 
 ## Environment variables
 
@@ -69,8 +69,10 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 | `LOOM_UPDATE_CHECK_INTERVAL` | Test hook, debug builds only: duration (`"1s"`) replacing `[update] check_interval` in `loomd`, without its 10 min minimum. An invalid value is logged and ignored. Ignored by release builds. |
 | `LOOM_UPDATE_HEALTH_DEADLINE` | Test hook, debug builds only: duration replacing the 60 s deadline of the auto-upgrade watchdog. Ignored by release builds. |
 | `LOOM_TEST_BUILD_VERSION` | Test hook, debug builds only: version reported by `loom` and `loomd` (`--version`, `loom version`, `/v1/status`) instead of the build's. Ignored by release builds. |
-| `LOOM_TEST_TODAY` | Test hook, debug builds only: date (`YYYY-MM-DD`) of the priority list of `loomd` (`GET /v1/tasks?ranked=true`) instead of the local date. An invalid value is ignored. Ignored by release builds. |
-| `TZ` | Time zone of the local date of the priority list in `loomd`; `/etc/localtime` when unset, UTC when neither can be read. |
+| `LOOM_TEST_TODAY` | Test hook, debug builds only: date (`YYYY-MM-DD`) of the priority list of `loomd` (`GET /v1/tasks?ranked=true`) and of its [schedules](../configuration.md#schedules), instead of the local date. An invalid value is ignored. Ignored by release builds. |
+| `TZ` | Time zone of the local date of the priority list and of the [schedules](../configuration.md#schedules) in `loomd`; `/etc/localtime` when unset, UTC when neither can be read. |
+| `LOOM_TEST_EVENTS_HEARTBEAT` | Test hook, debug builds only: duration that replaces the 15 s interval between two heartbeats of `GET /v1/events`. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
+| `LOOM_TEST_SCHEDULE_INTERVAL` | Test hook, debug builds only: duration that replaces the 1 min interval between two checks of the [schedules](../configuration.md#schedules) in `loomd`. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
 | `LOOM_TEST_FAIL_UNLESS_HOME_PREFIX` | Test hook, debug builds only: `loomd` exits with code `1` at start when its loom home path does not start with this text. Ignored by release builds. |
 | `OTEL_SDK_DISABLED` | `true` (any case): no traces are exported, even with `[telemetry] enabled = true`. See [`[telemetry]`](../configuration.md#telemetry). |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Traces endpoint, used as given, when `[telemetry] otlp_endpoint` is not set. |
@@ -107,15 +109,15 @@ JSON output (`loom version --json`), `VersionInfo` schema:
 | `channel` | `stable` \| `dev` \| `local` | `LOOM_CHANNEL` at build time; `local` when unset. |
 | `profile` | `debug` \| `release` | Cargo profile family of the build. |
 
-`loomd --version` prints the same build information prefixed with `loomd`; `loomd -V` prints only `loomd <version>`. Both binaries built together report identical build information.
+`loomd --version` prints the same build information, with the prefix `loomd`. `loomd -V` prints only `loomd <version>`. Both binaries built together report identical build information.
 
 ## `loom status` output
 
-`loom status` queries `GET /v1/status` on the socket of the loom home (`LOOM_HOME`, otherwise `~/.loom`; `loom` has no `--loom-home` flag). Each request times out after 5 s.
+`loom status` queries `GET /v1/status` on the socket of the loom home. The loom home is `LOOM_HOME`, otherwise `~/.loom` (`loom` has no `--loom-home` flag). Each request times out after 5 s.
 
 ### Starting loomd
 
-When nothing accepts connections on the socket (no socket file, or no process listening on it), `loom status` starts `loomd`, unless `--no-start` is given:
+If nothing accepts connections on the socket (no socket file, or no process listens on it), `loom status` starts `loomd`, unless `--no-start` is given:
 
 1. It runs the first `loomd` that exists: next to the `loom` executable, then in each `PATH` entry in order.
 2. `loomd` runs in its own process group, with `LOOM_HOME` set to the loom home, stdin and stdout closed, and stderr appended to `<loom home>/log/loomd.log` (see [configuration](../configuration.md)). `loom` does not wait for it to exit.
@@ -146,13 +148,13 @@ failed:      0.1.1
 last_result: upgraded 0.1.0-dev.41 -> 0.1.0-dev.42 at 2026-10-12T08:00:30Z
 ```
 
-The `disk` line comes from the `disk` object of the status ([API reference](../api.md#diskusage)), as `<total> (versions <versions>, index <index>, logs <logs>, contexts <sum of the context stores>)`; a daemon without it prints no `disk` line. Sizes use decimal units (`B`, `KB`, `MB`, `GB`, `TB`, `PB`, `EB`; 1 KB = 1,000 bytes), rounded to one decimal below 10 (`4.2 MB`) and to a whole number from 10 (`35 MB`).
+The `disk` line comes from the `disk` object of the status ([API reference](../api.md#diskusage)). Its format is `<total> (versions <versions>, index <index>, logs <logs>, contexts <sum of the context stores>)`. If the status has no `disk` object, `loom status` prints no `disk` line. Sizes use decimal units (`B`, `KB`, `MB`, `GB`, `TB`, `PB`, `EB`), and 1 KB is 1,000 bytes. A size below 10 is rounded to one decimal (`4.2 MB`), A size of 10 or more is rounded to a whole number (`35 MB`).
 
-The update lines come from the `update` object of the status ([API reference](../api.md#updatestatus)); a daemon without it prints none of them.
+The update lines come from the `update` object of the status ([API reference](../api.md#updatestatus)). If the status has no `update` object, `loom status` prints none of these lines.
 
 | Line | Content |
 | --- | --- |
-| `updates` | `off`; `<policy>, no channel: not checked` for a local build without a configured or chosen channel; otherwise `<policy>, channel <channel> (<source>), every <check_interval>`. `<source>` says where the channel comes from: `config` (`[update] channel`), `chosen` (last `loom upgrade --channel`, or `install.sh --channel`), `build` (the build channel); see [channel resolution](../configuration.md#channel-resolution). A daemon that does not report the source prints no parenthesis. |
+| `updates` | `off`; `<policy>, no channel: not checked` for a local build without a configured or chosen channel; otherwise `<policy>, channel <channel> (<source>), every <check_interval>`. `<source>` says where the channel comes from: `config` (`[update] channel`), `chosen` (last `loom upgrade --channel`, or `install.sh --channel`), `build` (the build channel). See [channel resolution](../configuration.md#channel-resolution). If the daemon does not report the source, the line has no parenthesis. |
 | `last_check` | Instant of the last check, `never` before the first. |
 | `available` | Newer version recorded under `notify`, `none` otherwise or once that version runs. |
 | `pending` | `<from> -> <to> since <instant>`, only while an upgrade is in progress. |
@@ -161,11 +163,11 @@ The update lines come from the `update` object of the status ([API reference](..
 
 ### JSON output
 
-`loom status --json` prints the `StatusResponse` returned by loomd, unchanged, as pretty JSON followed by a newline. Fields: [API reference](../api.md#statusresponse); schema: [`status_response.json`](../schemas/status_response.json).
+`loom status --json` prints the `StatusResponse` that loomd returns, unchanged, as pretty JSON followed by a newline. Fields: [API reference](../api.md#statusresponse). Schema: [`status_response.json`](../schemas/status_response.json).
 
 ### Version mismatch
 
-When the `version` or `commit` of the daemon differs from the `loom` binary's, `loom status` prints a warning on stderr (hidden by `-q`) and exits with `0`:
+If the daemon and the `loom` binary have a different `version` or `commit`, `loom status` prints a warning on stderr (hidden by `-q`), then exits with `0`:
 
 ```text
  WARN loom 0.1.0-dev.43 (commit 89abcdef0123) and the running loomd 0.1.0-dev.42 (commit 0123456789ab) are different builds: restart loomd (PID 4242) to run the same build
@@ -176,7 +178,7 @@ When the `version` or `commit` of the daemon differs from the `loom` binary's, `
 | Code | Case | Message on stderr |
 | --- | --- | --- |
 | `0` | The daemon answered, including after a version mismatch warning. | |
-| `1` | `--no-start` and the daemon is not running. | ``Error: loomd is not running: cannot connect to <socket>: <cause>; run `loom status` without --no-start to start it`` |
+| `1` | `--no-start` and the daemon does not run. | ``Error: loomd is not running: cannot connect to <socket>: <cause>; run `loom status` without --no-start to start it`` |
 | `1` | No `loomd` next to `loom` or in `PATH`. | `Error: cannot start loomd: no loomd next to <loom executable> or in PATH; install loomd next to loom` |
 | `1` | The started `loomd` exited, or did not answer within 5 s. | `Error: cannot start loomd: <reason>; last lines of <loom home>/log/loomd.log:` followed by up to 5 lines that this start wrote to the log. |
 | `1` | The daemon answered with an error. | `Error: loomd returned an error (HTTP <status>, <code>): <message>` |
@@ -184,12 +186,13 @@ When the `version` or `commit` of the daemon differs from the `loom` binary's, `
 | `1` | The socket path is too long. | See [socket path length](../configuration.md#socket-path-length). |
 | `2` | Usage error. | |
 
-`loomd` exits with code `1` both on a failure and when another `loomd` holds the lock. When the started `loomd` exits with `1`, `loom status` probes `run/loomd.lock` without blocking (and releases it at once):
+`loomd` exits with code `1` on a failure, and also when another `loomd` holds the lock. If the `loomd` that `loom status` started exits with `1`, `loom status` probes `run/loomd.lock`. It tries once to take the lock, does not wait, and releases the lock at once. Then:
 
-- Nobody holds it (or the file is missing): no other `loomd` is starting, and `loom status` fails at once with the end of the log.
-- Another process holds it: another `loomd` won the race. `loom status` keeps querying the socket until the 5 s end, and succeeds with that daemon's status if it answers.
+- No process holds the lock, or the file does not exist: no other `loomd` starts. `loom status` fails at once with the end of the log.
+- Another process holds the lock: another `loomd` won the race. `loom status` continues to query the socket until the end of the 5 s. If that daemon answers, `loom status` succeeds with its status.
 
-A started `loomd` that is still running but did not answer within 5 s is left running.
+If a `loomd` that `loom status` started still runs but did not answer within 5 s, `loom status` does not stop it.
+
 ## `loom service` output
 
 `loom service` manages `loomd` as a user service: a launchd user agent on macOS, a systemd user unit on Linux. Files and keys: [configuration](../configuration.md#user-service).
@@ -229,7 +232,7 @@ On success, one line on stdout:
 | `uninstall` | Something changed | `loomd service uninstalled: <unit path>` |
 | `uninstall` | No file and service not loaded: nothing run | `loomd service not installed: <unit path>` |
 
-With `-n`/`--dry-run`, when something would change, stdout lists the steps instead, one per line, in order: `write <path>:` followed by the full file content, `create directory <path>`, `remove <path>`, `run <command>`. Arguments with spaces or quotes are shown single-quoted.
+With `-n`/`--dry-run`, if something would change, stdout lists the steps instead, in order, one step per line. Each step is one of: `write <path>:` followed by the full file content, `create directory <path>`, `remove <path>` or `run <command>`. Single quotes enclose the arguments that contain spaces or quotes.
 
 ```text
 write /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist:
@@ -240,7 +243,7 @@ create directory /Users/me/.loom/log
 run launchctl bootstrap gui/501 /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist
 ```
 
-Commands run, by case. "Loaded" and "running" are as in `status`.
+The table gives the commands that `install` and `uninstall` run in each case. "Loaded" and "running" have the same meaning as in `status`.
 
 | Platform | Command | Case | Commands that change state |
 | --- | --- | --- | --- |
@@ -251,9 +254,9 @@ Commands run, by case. "Loaded" and "running" are as in `status`.
 | Linux | `install` | Identical file, not enabled | `systemctl --user daemon-reload`, `systemctl --user enable --now loomd.service` |
 | Linux | `uninstall` | Any | `systemctl --user disable --now loomd.service` if enabled or running; if the file exists, it is removed, then `systemctl --user daemon-reload` |
 
-On macOS, `<uid>` comes from `id -u`, and `install` creates `<loom home>/log` (mode `0700`) before `bootstrap`. `install` creates the missing parent directories of the unit file.
+On macOS, `<uid>` comes from `id -u`. On macOS, `install` also creates `<loom home>/log` (mode `0700`) before `bootstrap`. `install` creates the parent directories of the unit file that do not exist.
 
-When `bootstrap` follows a `bootout` in the same run (the plist changed while the service was loaded), launchd may still be unloading the service. That `bootstrap` is retried while it exits non-zero: up to 5 attempts, 200 ms apart, and the last attempt's stderr is reported if all fail. A `bootstrap` without a preceding `bootout` runs once.
+A `bootstrap` follows a `bootout` in the same run when the plist changed while the service was loaded. launchd can then still be in the unload of the service. Thus `loom` tries that `bootstrap` again while it exits non-zero: up to 5 attempts, 200 ms apart. If all attempts fail, `loom` reports the stderr of the last attempt. A `bootstrap` that does not follow a `bootout` runs once.
 
 `install` and `uninstall` never ask for confirmation.
 
@@ -261,11 +264,13 @@ When `bootstrap` follows a `bootout` in the same run (the plist changed while th
 
 Steps, in order:
 
-1. `config.toml` is parsed and validated as `loomd` does. Invalid: the error is printed, exit `1`, `loomd` untouched.
-2. The service is installed for this loom home and loaded (as for the [auto-upgrade watchdog](../configuration.md)): its manager restarts `loomd`, macOS `launchctl kickstart -k gui/<uid>/io.github.gsuquet.loomd`, Linux `systemctl --user reset-failed loomd.service` then `systemctl --user restart loomd.service`. `loom` sends no signal. When the manager reports the service not running while a `loomd` holds the lock (one a `loom` command started while the service was down), that `loomd` gets `SIGTERM` first and `loom` waits up to 10 s for the lock, as in step 3: the service's own `loomd` would fail on the lock.
-3. No service and a `loomd` holds the lock: `SIGTERM` to the PID in the lock, then `loom` waits up to 10 s for the lock to be released and starts `loomd` detached, as any command does.
-4. No service and no `loomd`: `loomd` is started detached.
-5. `loom` waits for `GET /v1/status` from a `loomd` with a PID other than the previous one: up to 15 s after the service manager, the usual start window otherwise.
+1. `loom` parses and validates `config.toml` as `loomd` does. If the file is invalid, `loom` prints the error, exits with `1` and does not touch `loomd`.
+2. If the service is installed for this loom home and loaded (as for the [auto-upgrade watchdog](../configuration.md)), its manager restarts `loomd`. On macOS, `loom` runs `launchctl kickstart -k gui/<uid>/io.github.gsuquet.loomd`. On Linux, `loom` runs `systemctl --user reset-failed loomd.service`, then `systemctl --user restart loomd.service`. `loom` sends no signal.
+
+   If the manager reports that the service does not run but a `loomd` holds the lock, `loom` first sends `SIGTERM` to that `loomd`. A `loom` command started this `loomd` while the service was stopped. Then it waits up to 10 s for the lock, as in step 3. Without this step, the `loomd` of the service would fail on the lock.
+3. If there is no service and a `loomd` holds the lock, `loom` sends `SIGTERM` to the PID in the lock. Then it waits up to 10 s until the lock is released. Then it starts `loomd` detached, as any command does.
+4. If there is no service and no `loomd`, `loom` starts `loomd` detached.
+5. `loom` waits for an answer to `GET /v1/status` from a `loomd` with a PID other than the previous one. It waits up to 15 s after the service manager, otherwise for the usual start window.
 
 On success, one line on stdout:
 
@@ -274,7 +279,14 @@ loomd restarted (pid 812 -> 9431, 0.3.0, via launchd) in 640 ms
 loomd was not running: started (pid 9431, 0.3.0, via start) in 640 ms
 ```
 
-Failures exit `1` with the step, the PID and the path of the log: the old `loomd` does not exit within 10 s (it keeps running: `SIGKILL` is never sent), the old `loomd` still answers after the service manager's restart, no new `loomd` answers in time, or `SIGTERM` cannot be sent. `loomd restarted (pid ? -> …)`: a `loomd` held the lock but had not written its PID yet.
+On a failure, `loom` exits with `1` and prints the step, the PID and the path of the log. These failures can occur:
+
+- The old `loomd` does not exit within 10 s. It continues to run, because `loom` never sends `SIGKILL`.
+- The old `loomd` still answers after the restart by the service manager.
+- No new `loomd` answers in time.
+- `loom` cannot send `SIGTERM`.
+
+The output `loomd restarted (pid ? -> …)` means that a `loomd` held the lock but did not write its PID yet.
 
 JSON output (`loom service restart --json`), `DaemonRestartReport` schema ([daemon_restart_report.json](../schemas/daemon_restart_report.json)):
 
@@ -301,39 +313,45 @@ Refusal message:
 the loomd service is disabled by `[daemon] service = false` in /Users/me/.loom/config.toml: set it to true or remove it to install the service
 ```
 
-A failing manager command:
+The message when a service manager command fails:
 
 ```text
 `launchctl bootstrap gui/501 /Users/me/Library/LaunchAgents/io.github.gsuquet.loomd.plist` exited with code 5: Bootstrap failed: 5: Input/output error
 ```
 
-`install` reads `config.toml` before anything else: when refused, no command runs and no file is written. The steps of a plan run in order and stop at the first failure.
+`install` reads `config.toml` first. If the configuration refuses `install`, no command runs and no file is written. The steps of a plan run in order and stop at the first failure.
 
 ## Task commands
 
-The task commands start `loomd` when it is not running. Their requests time out after 15 s: right after it starts, `loomd` waits up to 10 s for the tasks it indexes before answering.
+If `loomd` does not run, the task commands start it. Their requests time out after 15 s. The reason is that right after it starts, `loomd` waits up to 10 s for the tasks that it indexes, and then answers.
 
 ### Context
 
 `loom add` and `loom ls` work in one context, the first of:
 
-1. `-c`/`--context`;
-2. `LOOM_CONTEXT`, when non-empty (an invalid name is an error);
-3. the context of the indexed repository holding the current directory (its `[repos."<path>"]` override, its remote's `match.hosts`, its `match.paths` prefix, or `default_context`); an unassigned repository gives none;
-4. the `match.paths` prefix of the current directory;
+1. `-c`/`--context`.
+2. `LOOM_CONTEXT`, if it is not empty. An invalid name is an error.
+3. The context of the indexed repository that contains the current directory: its `[repos."<path>"]` override, the `match.hosts` of its remote, its `match.paths` prefix, or `default_context`. An unassigned repository gives no context.
+4. The `match.paths` prefix of the current directory.
 5. `default_context`.
 
-A repository of the current directory that is not indexed yet (a fresh clone) is registered first, so its remote decides. None: exit `1` with `no context: pass -c <name>, …`. `loom ls --all-contexts` lists every context: it ignores `LOOM_CONTEXT` (set for a whole shell) but cannot be combined with `-c` (given for this command). `loom show` takes an ID of any context.
+If the repository of the current directory is not in the index yet (for example, a new clone), `loom` registers it first. Thus its remote decides the context. If no rule gives a context, `loom` exits with `1` and the message `no context: pass -c <name>, …`.
 
-IDs (`loom show`, `--parent`) are 1 to 8 letters and digits of Crockford base32 (no `u`; `i`, `l`, `o` read as `1`, `1`, `0`); anything else is a usage error (exit `2`).
+`loom ls --all-contexts` lists every context. It ignores `LOOM_CONTEXT`, which applies to a full shell. It cannot be combined with `-c`, which applies to this command. `loom show` takes an ID of any context.
+
+An ID (`loom show`, `--parent`) is 1 to 8 letters and digits of Crockford base32. Crockford base32 has no `u`, and reads `i`, `l` and `o` as `1`, `1` and `0`. Any other value is a usage error (exit `2`).
 
 ### `loom add`
 
-The title is the arguments joined with spaces. The task is `inbox`, or `ready` with `--ready`; its kind `chore` unless `--kind`; its importance, `--importance` or the default of the kind. `--due` takes `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`, relative to the local date. `--parent` takes an ID or a unique prefix; the task goes to the parent's context, and `-c` or `LOOM_CONTEXT` naming another context is an error. `--format` (`talk`, `article`, `training`, `workshop`) applies to `--kind content` only. Output: the shortest unique prefix, the context and the title, or the `TaskDetail` with `--json`.
+The title is the arguments, with spaces between them. The status of the task is `inbox`, or `ready` with `--ready`. Its kind is `chore`, unless `--kind` is given. Its importance is `--importance`, otherwise the default of the kind.
+
+`--due` takes `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`, relative to the local date. `--parent` takes an ID or a unique prefix. The task goes to the context of the parent. If `-c` or `LOOM_CONTEXT` names another context, it is an error.
+
+`--format` (`talk`, `article`, `training`, `workshop`) applies to `--kind content` only. Output: the shortest unique prefix, the context and the title, or the `TaskDetail` with `--json`.
 
 ### `loom ls`
 
-Without `--status`, the priority list of the context (ready and active tasks, waiting ones whose date has come), with its position in a `#` column. With `--status`, the tasks with that status, sorted by ID. Columns: `ID` (shortest unique prefix), `CONTEXT`, `STATUS`, `P`, `KIND`, `DUE`, `TITLE` (`* ` before a pinned task; the error for an invalid `task.md`). `--why` (not with `--status`) adds `WHY`, the rule that placed the task after the previous one:
+Without `--status`, `loom ls` prints the priority list of the context, with the position of each task in a `#` column. The list has the `ready` and `active` tasks, and the `waiting` tasks whose date has come. With `--status`, it prints the tasks with that status, sorted by ID. Columns: `ID` (shortest unique prefix), `CONTEXT`, `STATUS`, `P`, `KIND`, `DUE`, `TITLE` (`* ` before a pinned task, and the error for an invalid `task.md`). `--why` (not with `--status`) adds `WHY`, the rule that placed the task after the previous one:
 
 | `WHY` | Rule |
 | --- | --- |
@@ -345,15 +363,17 @@ Without `--status`, the priority list of the context (ready and active tasks, wa
 | `older` | The previous task was created earlier. |
 | `tie, by id` | Every other rule ties. |
 
-`--json`: the `TaskList`. No task: empty output.
+`--json`: the `TaskList`. If there is no task, the output is empty.
 
 ### `loom show`
 
-The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importance`, then `due`, `pinned`, `parent` when set, `created`, `updated`, `read-only` for a task this version cannot change), a blank line and the notes. `--json`: the `TaskDetail`. An unknown ID exits `1`; a prefix several tasks start with exits `1` and lists them.
+`loom show` prints one field per line: `id`, `context`, `title`, `kind`, `status` and `importance`. Then it prints `due`, `pinned` and `parent` if they are set, then `created` and `updated`. A task that this version cannot change also has `read-only`. Then come a blank line and the notes. `--json`: the `TaskDetail`.
+
+For an unknown ID, `loom show` exits with `1`. If several tasks start with the prefix, it exits with `1` and lists them.
 
 ### Gestures on a task
 
-`loom set`, `done`, `cancel`, `snooze` and `undo` take a task ID or prefix and print one line, `<prefix> <context> <status> <title>`, or the `TaskDetail` with `--json`. loomd refuses what the transitions forbid (`done` and `cancelled` move to `ready` only) and changes of a read-only task: exit `1` with its error code.
+`loom set`, `done`, `cancel`, `snooze` and `undo` take a task ID or prefix. They print one line, `<prefix> <context> <status> <title>`, or the `TaskDetail` with `--json`. loomd refuses a transition that the rules forbid (`done` and `cancelled` move to `ready` only). It also refuses a change of a read-only task. Then the command exits with `1` and the error code of loomd.
 
 | Command | Request |
 | --- | --- |
@@ -363,7 +383,7 @@ The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importanc
 | `loom undo <id>` | `POST /v1/tasks/{id}/undo` |
 | `loom set <id> <key>=<value>…` | `PATCH /v1/tasks/{id}`, then `pin` or `unpin` for `pinned` |
 
-`loom set` keys, each at most once (a value may hold `=`):
+`loom set` keys (each key at most once, and a value can contain `=`):
 
 | Key | Value |
 | --- | --- |
@@ -375,47 +395,53 @@ The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importanc
 | `parent` | An ID or prefix, or `none`. The other relations are kept. loomd refuses a task of another context, the task itself or one of its descendants. |
 | `pinned` | `yes`/`true` or `no`/`false`. |
 
-A malformed `key=value` or an unknown key is a usage error (exit `2`); a repeated key or an invalid value exits `1` before loomd is asked.
+A malformed `key=value` or an unknown key is a usage error (exit `2`). A repeated key or an invalid value exits with `1` before `loom` sends a request to loomd.
 
 ### `loom edit`
 
-Opens the `task.md` of the task (`<store>/tasks/<id>/task.md`, the store of its context in `config.toml`) in `VISUAL`, otherwise `EDITOR`, otherwise `vi`, run through `sh -c` with the path as its argument. Then:
+`loom edit` opens the `task.md` of the task in an editor. The path is `<store>/tasks/<id>/task.md`, with the store of its context in `config.toml`. The editor is `VISUAL`, otherwise `EDITOR`, otherwise `vi`. `loom` runs it through `sh -c`, with the path as its argument. Then:
 
 - File unchanged: prints `<prefix> unchanged`.
-- File invalid (`task.md` format): exit `1` with the path and the error. The file is kept as saved; loomd shows the task read-only until it is fixed.
-- Otherwise `loom` waits up to 5 s for loomd to record the hand edit (an `edited` event of the actor `file`, or a change of the notes) and prints the task line. When loomd records no change in that time (only spacing changed, or loomd has not read the file yet), it prints `<prefix> saved; loomd recorded no change of the task within 5 s (…)`.
-- When other events were appended to the task's log while the editor was open (a `loom done` in another terminal, a sync, an agent), `loom` warns on stderr, naming their actors: the save replaced the file, and loomd recorded it as an edit that may revert them. `loom undo <id>` reverts that edit.
+- File invalid (`task.md` format): exit `1` with the path and the error. The file stays as you saved it. loomd shows the task as read-only until the file is correct.
+- Other cases: `loom` waits up to 5 s until the index of loomd holds the saved task and notes, then prints the task line. If only spacing changed, `loom` prints the line at once.
+- If the index does not hold the save in that time and loomd recorded the hand edit, the task changed again after the save. `loom` prints `<prefix> saved; the task changed again after the save`, a warning with the actors, and the task line.
+- If loomd did not record the hand edit in that time, `loom` prints `<prefix> saved; loomd has not recorded it within 5 s`. This occurs if loomd did not read the file yet.
+- Other events can be added to the log of the task while the editor is open. For example: a `loom done` in another terminal, a sync, an agent. In that case, `loom` prints a warning on stderr with their actors. The save replaced the file, and loomd recorded it as an edit that can revert these events. `loom undo <id>` reverts that edit.
 - The editor exits non-zero: exit `1`, the file left as it is.
 
 ## `loom upgrade`
 
 ### What it does
 
-1. Looks up a release through the GitHub REST API (`https://api.github.com`, or `LOOM_RELEASES_URL`). Server certificates are checked against the operating system's trust store (Keychain on macOS, the system CA bundle on Linux), so a TLS-inspecting proxy trusted by the system works. Proxy variables are honoured: `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY` (first set wins) and `NO_PROXY`, upper or lower case.
+1. Looks up a release through the GitHub REST API (`https://api.github.com`, or `LOOM_RELEASES_URL`). `loom upgrade` checks server certificates against the trust store of the operating system (Keychain on macOS, the system CA bundle on Linux). Thus a proxy that inspects TLS works if the system trusts it. `loom upgrade` uses the proxy variables `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY` (the first that is set wins) and `NO_PROXY`, in upper or lower case.
 
    | Options | Request | Release considered |
    | --- | --- | --- |
    | `--channel stable`, or none with the effective channel `stable` | `GET /repos/gsuquet/loom/releases/latest` | The latest stable release. |
-   | `--channel dev`, or none with the effective channel `dev` | `GET /repos/gsuquet/loom/releases?per_page=30` | Every non-draft release tagged `vX.Y.Z` or `vX.Y.Z-dev.N` in the 30 most recent; other tags are skipped. The highest by semver precedence wins, so a stable release above every dev build is installed. |
-   | `--version X.Y.Z` | `GET /repos/gsuquet/loom/releases/tags/vX.Y.Z` | That release; a 404 means not released. |
+   | `--channel dev`, or none with the effective channel `dev` | `GET /repos/gsuquet/loom/releases?per_page=30` | Every non-draft release tagged `vX.Y.Z` or `vX.Y.Z-dev.N` in the 30 most recent. Other tags are skipped. The highest by semver precedence wins, so a stable release above every dev build is installed. |
+   | `--version X.Y.Z` | `GET /repos/gsuquet/loom/releases/tags/vX.Y.Z` | That release. A 404 means not released. |
    | `--from PATH` | none | The local build. |
 
    Without `--channel`, `--version` or `--from`, the effective channel is `[update] channel`, otherwise the channel last given to `--channel`, otherwise the build channel ([channel resolution](../configuration.md#channel-resolution)). A local build (channel `local`) has no channel of its own: without any of them, `loom upgrade` fails.
 
-   `--channel` is remembered: once the command succeeds (`--check` and up to date included, `--dry-run` excluded), the channel is written to `channel` of `<loom home>/state/update.json`, for the auto-upgrade of loomd and the next `loom upgrade`. When `[update] channel` names another channel, a warning says that it takes precedence. A failure to write the state fails `--check` (exit code `1`) and is a warning otherwise. `--version` and `--from` leave the remembered channel unchanged.
+   `loom upgrade` remembers `--channel`. When the command succeeds, it writes the channel to `channel` of `<loom home>/state/update.json`. This includes `--check` and the up-to-date case. With `--dry-run`, it does not write the channel. The auto-upgrade of loomd and the next `loom upgrade` use this channel.
 
-   Before the lookup, except with `--check`, `loom upgrade` reads `<loom home>/state/update.json` and fails while loomd's auto-upgrade is in progress (a `pending` upgrade started less than one hour ago): `loomd is upgrading from <from> to <to> (started <instant>): retry when it is done, in a minute or two`.
+   If `[update] channel` names another channel, a warning says that it takes precedence. If `loom` cannot write the state, `--check` fails (exit code `1`). In the other cases, it is a warning. `--version` and `--from` leave the remembered channel unchanged.
 
-2. Decides by semver precedence: a newer release is installed, the same version is up to date, and a `--version` lower than the running version is refused (use `loom rollback`). `--from` always installs, whatever its version. With `--channel` or the effective channel, versions in `failed_versions` of `state/update.json` are skipped, as by the auto-upgrade (decision `skipped`, reason `failed`, when every newer version failed); `--version` installs a failed version anyway, so it can be retried on purpose.
+   Before the lookup, `loom upgrade` reads `<loom home>/state/update.json`, except with `--check`. It fails while an auto-upgrade of loomd is in progress (a `pending` upgrade that started less than one hour ago). The message is `loomd is upgrading from <from> to <to> (started <instant>): retry when it is done, in a minute or two`.
+
+2. Decides by semver precedence. A newer release is installed, and the same version is up to date. A `--version` lower than the current version is refused (use `loom rollback`). `--from` always installs, whatever its version.
+
+   With `--channel` or the effective channel, `loom upgrade` skips the versions in `failed_versions` of `state/update.json`, as the auto-upgrade does. If all newer versions failed, the decision is `skipped`, with the reason `failed`. `--version` installs a failed version anyway, so that you can try it again on purpose.
 3. Checks that the install directory is writable, before any download.
-4. Downloads `SHA256SUMS` and `SHA256SUMS.minisig`, verifies the signature with the public key embedded at build time ([releases](../releases.md#signature)), then downloads `loom-<version>-<target>.tar.gz` and checks its SHA-256 against `SHA256SUMS`. A `*-linux-gnu` build takes the `*-linux-musl` archive. Any failure stops here: nothing installed has changed.
-5. Extracts the archive into `<loom home>/staging/`. Only the regular files `loom`, `loomd`, `LICENSE` and `README.md` at the archive root are accepted; any other entry (directory, link, path) rejects the archive. Then runs `loom version --json` and `loomd -V` from the staging directory: both must report the release version.
+4. Downloads `SHA256SUMS` and `SHA256SUMS.minisig`, and verifies the signature with the public key embedded at build time ([releases](../releases.md#signature)). Then downloads `loom-<version>-<target>.tar.gz` and checks its SHA-256 against `SHA256SUMS`. A `*-linux-gnu` build takes the `*-linux-musl` archive. If a step fails, the upgrade stops here, and no installed file has changed.
+5. Extracts the archive into `<loom home>/staging/`. Only the regular files `loom`, `loomd`, `LICENSE` and `README.md` at the archive root are accepted. Any other entry (directory, link, path) rejects the archive. Then runs `loom version --json` and `loomd -V` from the staging directory: both must report the release version.
 6. Copies the installed `loom` and `loomd` into `<loom home>/versions/<running version>/`.
-7. Replaces `loomd`, then `loom`, in the directory of the running `loom` (symbolic links resolved): each new file is written next to its target, synced, set to mode `0755`, then renamed over it. A missing `loomd` is created.
+7. Replaces `loomd`, then `loom`, in the directory of the current `loom` (symbolic links resolved). Each new file is written next to its target, synced, set to mode `0755`, then renamed over the target. If `loomd` does not exist, it is created.
 8. Keeps two previous versions in `versions/` (see [configuration](../configuration.md#versions)).
-9. If a loomd holds `<loom home>/run/loomd.lock`, sends `SIGTERM` to the PID in the file (`kill -TERM`), without waiting. A service manager restarts it on the new binary. A PID in a lock file no process holds is stale and is not signalled.
+9. If a loomd holds `<loom home>/run/loomd.lock`, sends `SIGTERM` to the PID in the file (`kill -TERM`), and does not wait. A service manager restarts it on the new binary. If no process holds the lock file, its PID is stale, and `loom upgrade` sends no signal to it.
 
-`--from PATH` takes a `.tar.gz` archive with the release layout, or a directory holding `loom` and `loomd`. Its signature and checksum are not verified; a warning says so on stderr. Steps 5 to 9 apply.
+`--from PATH` takes a `.tar.gz` archive with the release layout, or a directory that contains `loom` and `loomd`. `loom upgrade` does not verify its signature and checksum. A warning on stderr says so. Steps 5 to 9 apply.
 
 `--check` stops after step 2. `--dry-run` stops after step 5.
 
@@ -435,7 +461,7 @@ $ loom upgrade --dry-run
 would upgrade loom and loomd from 0.1.0 to 0.2.0 in /home/me/.local/bin
 ```
 
-The `removed` line appears only when saved versions were deleted. The last line is `loomd is not running` when no loomd holds the lock. With `--from`, a last line `source:   <path> (not verified)` is added. Progress (`downloading …`, `verified …`) goes to stderr, except with `-q`.
+The `removed` line appears only when saved versions were deleted. If no loomd holds the lock, the last line is `loomd is not running`. With `--from`, a last line `source:   <path> (not verified)` is added. Progress (`downloading …`, `verified …`) goes to stderr, except with `-q`.
 
 ### JSON output
 
@@ -443,7 +469,7 @@ The `removed` line appears only when saved versions were deleted. The last line 
 
 | Field | Content |
 | --- | --- |
-| `current_version` | Version of the running `loom`. |
+| `current_version` | Version of the current `loom`. |
 | `source` | `{"kind": "release", "channel": "stable" \| "dev" \| null, "pinned": "<version>" \| null}` or `{"kind": "local", "path": "<absolute path>"}`. |
 | `decision` | `{"kind": "up_to_date"}`, `{"kind": "apply", "version": …}`, or `{"kind": "skipped", "reason": {…}}` with reason `kind` `pinned_not_released` or `pinned_below_current` (and `pinned`), or `failed` (and `version`). `available` and `updates_off` are defined for the daemon and not produced by `loom upgrade`. |
 | `check`, `dry_run` | Flags given. |
@@ -454,7 +480,7 @@ Install report (also in `loom rollback`):
 | Field | Content |
 | --- | --- |
 | `version` | Version installed, or that would be with `--dry-run`. |
-| `install_dir` | Directory of the running `loom`. |
+| `install_dir` | Directory of the current `loom`. |
 | `verified` | `true` for a release (signature and checksum verified); `false` for `--from` and `loom rollback`. |
 | `installed` | `false` with `--dry-run`. |
 | `saved_to` | `<loom home>/versions/<previous version>`; `null` with `--dry-run`. |
@@ -465,13 +491,15 @@ Install report (also in `loom rollback`):
 
 | Code | Cases |
 | --- | --- |
-| `0` | Installed; up to date; `--check` whatever the decision; `--dry-run` verified. Also when loomd could not be signalled: a warning on stderr says it keeps running the replaced version. |
-| `1` | Auto-upgrade of loomd in progress; every newer version failed; local build without `--channel`, `--version` or `--from`; `--version` not released or lower than the running version; install directory not writable; HTTP error (`401`, `403` and `429` name `LOOM_GITHUB_TOKEN`); missing asset; invalid signature; checksum mismatch; rejected archive; binaries not reporting the expected version; I/O error. Every download or verification error ends with `nothing was installed`. |
+| `0` | Installed; up to date; `--check` whatever the decision; `--dry-run` verified. Also when `loom` cannot send the signal to loomd: a warning on stderr says that it continues to run the replaced version. |
+| `1` | Auto-upgrade of loomd in progress; every newer version failed; local build without `--channel`, `--version` or `--from`; `--version` not released or lower than the current version; install directory not writable; HTTP error (`401`, `403` and `429` name `LOOM_GITHUB_TOKEN`); missing asset; invalid signature; checksum mismatch; rejected archive; binaries that do not report the expected version; I/O error. Every download or verification error ends with `nothing was installed`. |
 | `2` | Usage error, including `--channel`, `--version` and `--from` together, or `--check` with `--from` or `--dry-run`. |
 
 ## `loom rollback`
 
-Fails, like `loom upgrade`, while loomd's auto-upgrade is in progress. Restores the highest version in `<loom home>/versions/` other than the running one (semver precedence). Only directories holding both `loom` and `loomd` count. The saved `loom version --json` and `loomd -V` must report the directory's version. Then steps 6 to 9 of `loom upgrade` apply: the running version is saved, the binaries replaced, two previous versions kept, loomd signalled. A second rollback returns to the version rolled back from when no higher version is saved.
+`loom rollback` fails, like `loom upgrade`, while an auto-upgrade of loomd is in progress. It restores the highest version in `<loom home>/versions/` other than the current one (semver precedence). Only directories that contain both `loom` and `loomd` count. The saved `loom version --json` and `loomd -V` must report the version of the directory. Then steps 6 to 9 of `loom upgrade` apply. The current version is saved, the binaries are replaced, two previous versions are kept, and loomd gets a signal.
+
+If no higher version is saved, a second rollback returns to the version that the first rollback replaced.
 
 Human output: as `loom upgrade`, with `rolled back` (`would roll back` with `--dry-run`).
 
@@ -480,12 +508,12 @@ JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `cu
 | Code | Cases |
 | --- | --- |
 | `0` | Restored, or would be with `--dry-run`. |
-| `1` | Auto-upgrade of loomd in progress; `nothing to roll back to: no saved version other than <version> in <dir>`; install directory not writable; saved binaries not reporting their version; I/O error. |
+| `1` | Auto-upgrade of loomd in progress; `nothing to roll back to: no saved version other than <version> in <dir>`; install directory not writable; saved binaries that do not report their version; I/O error. |
 | `2` | Usage error. |
 
 ## `loom repo`
 
-`loom repo` reads and changes the repository index of loomd through the [API](../api.md#repositories). `ls`, `show`, `scan`, `register` (without `-n` or `--on-use`), `forget` and `sync` start loomd as [`loom status`](#starting-loomd) does when it is not running, then wait for its scan on start, so that the index they read is complete. `doctor`, `register -n` and `register --on-use` never start it.
+`loom repo` reads and changes the repository index of loomd through the [API](../api.md#repositories). If loomd does not run, these commands start it as [`loom status`](#starting-loomd) does: `ls`, `show`, `scan`, `register` (without `-n` or `--on-use`), `forget` and `sync`. Then they wait for the scan of loomd on start, so that the index that they read is complete. `doctor`, `register -n` and `register --on-use` never start it.
 
 ### Repository argument
 
@@ -496,11 +524,11 @@ JSON output (`--json`): [`RollbackReport`](../schemas/rollback_report.json): `cu
 | None (`show` only) | The repository of the current directory. |
 | Starts with `/`, `.` or `~` | A path: absolute, relative to the current directory, or under `HOME` (`~`, `~/…`). `.` and `..` components are applied lexically. |
 | Contains `/` | The repository with this exact slug (`<context>/<name>`); when none has it, a path relative to the current directory. |
-| Anything else | The repositories with this name (directory name). One: that repository. Several: narrowed by the first context, in this order, that holds at least one of them: `-c`, then the context of the current directory (the context of its repository when the index has it, otherwise the context its path gets from `match.paths`). When that context holds one, it is the answer; otherwise, or when no context holds any, the command fails with the candidates. None: a path relative to the current directory. |
+| Anything else | The repositories with this name (directory name). One: that repository. Several: narrowed by the first context, in this order, that holds at least one of them: `-c`, then the context of the current directory (the context of its repository when the index has it, otherwise the context its path gets from `match.paths`). If that context holds one, it is the answer. In the other cases, or if no context holds one of them, the command fails and lists the candidates. None: a path relative to the current directory. |
 
-A path must exist. It is walked up to the nearest directory with a `.git` entry (the repository root), symbolic links kept. That root is looked up in the index by path, then, for repositories with the same directory name, by canonical path (the same directory reached through other symbolic links). The current directory is `PWD` when it names the same directory as the process's working directory and has no `.` or `..` component, otherwise the working directory.
+A path must exist. `loom` goes up from the path to the nearest directory with a `.git` entry (the repository root), and keeps symbolic links. `loom` looks for that root in the index by path. Then, for repositories with the same directory name, it looks by canonical path (the same directory through other symbolic links). The current directory is `PWD` if `PWD` names the same directory as the working directory of the process and has no `.` or `..` component. Otherwise, it is the working directory.
 
-`show` registers a root the index does not have; `forget` fails on it.
+`show` registers a root that is not in the index. `forget` fails on such a root.
 
 Ambiguous name, exit code `1`:
 
@@ -512,13 +540,15 @@ Error: `loom` names several repositories; give one of:
 
 ### Registration on use
 
-Every `loom` command run inside a git repository, except `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync`, `shell-init` and the internal watchdog, sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory, on a thread of its own: loomd registers it when the index does not have it, and sets its `last_used`. The command waits for it at most 50 ms after it started, and never fails because of it. Nothing is sent when the socket file does not exist; loomd is never started for it. `loom repo show` sets `last_used` the same way. `loom repo register --on-use --background`, run by the [shell integration](#loom-shell-init), sends the same request for its `<PATH>` (default: the current directory).
+A `loom` command that runs inside a git repository sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory. The exceptions are `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync`, `shell-init` and the internal watchdog. The request goes on a separate thread. loomd registers the repository if the index does not have it, and sets its `last_used`.
+
+The command waits for the request at most 50 ms after the command started, and never fails because of it. If the socket file does not exist, nothing is sent. The registration on use never starts loomd. `loom repo show` sets `last_used` the same way. `loom repo register --on-use --background`, run by the [shell integration](#loom-shell-init), sends the same request for its `<PATH>` (default: the current directory).
 
 ### `loom repo ls`
 
 Repositories sorted by context name, then name, then slug. `-c <NAME>` keeps the repositories of one context (`-c unassigned` keeps those without one).
 
-`--format table` (default): a header, then one row per repository, columns aligned, the path last. The first column is `!` for a repository without context. When there is one, a warning on stderr names their count and `loom repo doctor`. Nothing is printed for an empty index.
+`--format table` (default): a header, then one row per repository, columns aligned, the path last. The first column is `!` for a repository without context. If there is at least one such repository, a warning on stderr gives their count and names `loom repo doctor`. If the index is empty, nothing is printed.
 
 ```text
   SLUG             HEAD     STATE                PATH
@@ -538,7 +568,7 @@ Repositories sorted by context name, then name, then slug. `-c <NAME>` keeps the
 
 ### `loom repo show`
 
-Marks the repository used (registering it when the index does not have it), reads its state when it has none yet, or when `--refresh` is given (`GET /v1/repos/{context}/{name}?refresh=true`), then prints one `field: value` line per field, named as in the JSON output:
+`loom repo show` marks the repository as used, and registers it if the index does not have it. It reads the state of the repository if it has no state yet, or if `--refresh` is given (`GET /v1/repos/{context}/{name}?refresh=true`). Then it prints one `field: value` line for each field, with the names of the JSON output:
 
 ```text
 slug:           personal/loom
@@ -573,21 +603,30 @@ error:          untracked: time budget of 2s exceeded
 
 `POST /v1/repos/scan`. Human output: `<added> added, <updated> updated, <removed> removed in <ms> ms`, then one `cannot read <path>: <message>` line per path the scan could not read. `-n`/`--dry-run`: `would add <n>, update <n>, remove <n>`, nothing changed. `--json`: [`ScanResult`](../schemas/scan_result.json).
 
-`--rebuild` drops the whole index (states, results of the last updates, `last_used`, registrations) and scans the roots again: registered repositories outside the roots are lost. Before asking, it warns on stderr, naming the registered repositories outside the roots. It then follows the [confirmations](#confirmations) rules; on the terminal it asks `Rebuild the repository index (<n> registered repositories outside the roots lost)? [y/N]`, and any answer other than `y` or `yes` fails with `rebuild cancelled: nothing changed`. With `-n`, it neither asks nor changes anything, and reports the counts of a rebuild: every repository of the index removed, every repository found added.
+`--rebuild` drops the whole index (states, results of the last updates, `last_used`, registrations) and scans the roots again. Thus the registered repositories outside the roots are lost. Before it asks, it prints a warning on stderr with the names of the registered repositories outside the roots.
+
+Then it follows the [confirmations](#confirmations) rules. On the terminal, it asks `Rebuild the repository index (<n> registered repositories outside the roots lost)? [y/N]`. Any answer other than `y` or `yes` fails with `rebuild cancelled: nothing changed`. With `-n`, it does not ask and changes nothing. It reports the counts of a rebuild: every repository of the index removed, every repository found added.
 
 ### `loom repo register` and `forget`
 
-`register [<PATH>]` (default: the current directory) finds the repository root at or above the path and registers it: `registered <slug>: <path>`. `-n`: `would register <root>`, without contacting loomd. `--json`: [`RepoSummary`](../schemas/repo_summary.json).
+`register [<PATH>]` (default: the current directory) finds the repository root at or above the path and registers it: `registered <slug>: <path>`. `-n`: `would register <root>`, and no request to loomd. `--json`: [`RepoSummary`](../schemas/repo_summary.json).
 
-`register --on-use` sends the request as a [registration on use](#registration-on-use) (`on_use: true`): an indexed repository is left as it is and only its `last_used` is set; one not in the index is registered. It never starts loomd and fails when loomd is not running. Human output: `used <slug>: <path>`.
+`register --on-use` sends the request as a [registration on use](#registration-on-use) (`on_use: true`). For a repository in the index, only its `last_used` is set. A repository that is not in the index is registered. The command never starts loomd, and fails if loomd does not run. Human output: `used <slug>: <path>`.
 
-`register --on-use --background` is the registration on use itself: it waits for loomd at most 50 ms after it started, prints nothing on stdout or stderr (whatever `-v` asks), and exits with `0` in every case: loomd not running (no socket file), not answering in time, no git repository at or above the path, invalid configuration. Only usage errors exit with `2`. `--background` requires `--on-use` and cannot be combined with `-n` or `--json`.
+`register --on-use --background` is the registration on use itself. It waits for loomd at most 50 ms after it started. It prints nothing on stdout or stderr, whatever `-v` asks. It exits with `0` in each of these cases:
 
-`forget <REPO>` removes the repository from the index without confirmation: `forgot <slug>: <path>`. `-n`: `would forget <slug>: <path>`. `--json`: the removed [`RepoSummary`](../schemas/repo_summary.json). A scan adds a repository under a root back; `register` adds any repository back.
+- loomd does not run (no socket file).
+- loomd does not answer in time.
+- No git repository is at or above the path.
+- The configuration is invalid.
+
+Only usage errors exit with `2`. `--background` requires `--on-use` and cannot be combined with `-n` or `--json`.
+
+`forget <REPO>` removes the repository from the index without confirmation: `forgot <slug>: <path>`. `-n`: `would forget <slug>: <path>`. `--json`: the removed [`RepoSummary`](../schemas/repo_summary.json). A scan adds a repository under a root back. `register` adds any repository back.
 
 ### `loom repo doctor`
 
-Runs the checks below, in this order, and prints one line per check, its fix indented below it:
+`loom repo doctor` runs the checks below, in this order. It prints one line for each check, with its fix indented below it:
 
 ```text
 ok    config: /home/me/.loom/config.toml is valid
@@ -621,18 +660,18 @@ fail  backup work: ~/.loom/contexts/work and /srv/work-store.git: diverged: 1 lo
 
 | Check | Status |
 | --- | --- |
-| `config` | `fail` when `config.toml` cannot be read or is invalid; the checks of the roots and contexts are then skipped. |
-| `roots` | One `warn` per scan root (`[repos] roots`, then each `match.paths`, `~` expanded) that is not a directory, naming where it comes from; otherwise one `ok`. |
+| `config` | `fail` when `config.toml` cannot be read or is invalid. Then the checks of the roots and contexts are skipped. |
+| `roots` | One `warn` per scan root (`[repos] roots`, then each `match.paths`, `~` expanded) that is not a directory, with its origin; otherwise one `ok`. |
 | `contexts` | `fail` when `match.paths` entries of two contexts are the same directory once `~` is expanded, or two `[repos."<path>"]` keys name the same repository: loomd refuses such a configuration. Nested entries of different contexts are valid (the longest prefix wins) and are listed in the `ok` line. |
-| `loomd` | `warn` when loomd is not running: the checks below are skipped, and loomd is not started. `fail` when it answers with an error. |
-| `disk` | The disk usage loomd measured ([`DiskUsage`](../api.md#diskusage)): `ok` with the total and its parts; `warn` when a part could not be measured (counted as 0), listing the warnings. `warn` when loomd is older than this field; the other `disk-*` checks are then skipped. |
-| `disk-versions` | `warn` when `versions/` holds a version `loom rollback` does not need, by the retention rule of the upgrades (the 2 highest versions other than the running one are kept, a copy of the running version is not needed; by count alone when the running version is not a semantic version), naming them and how to delete them. Directories not named after a version are ignored. |
-| `disk-wal` | `warn` when `index.db-wal` is larger than 64 MB (64,000,000 bytes): SQLite is not copying it into `index.db`. The fix is to restart loomd. |
+| `loomd` | `warn` when loomd does not run: the checks below are skipped, and loomd is not started. `fail` when it answers with an error. |
+| `disk` | The disk usage loomd measured ([`DiskUsage`](../api.md#diskusage)): `ok` with the total and its parts. `warn` when a part could not be measured (counted as 0), with the list of warnings. `warn` when loomd is older than this field. Then the other `disk-*` checks are skipped. |
+| `disk-versions` | `warn` when `versions/` holds a version that `loom rollback` does not need, with the names of these versions and how to delete them. The retention rule of the upgrades applies: the 2 highest versions other than the version that loomd runs are kept, and a copy of the version that loomd runs is not needed. If the version of loomd is not a semantic version, the rule uses the count only. Directories not named after a version are ignored. |
+| `disk-wal` | `warn` when `index.db-wal` is larger than 64 MB (64,000,000 bytes): SQLite did not copy it into `index.db` yet. The fix is to restart loomd. |
 | `disk-free` | `warn` when less than 1 GB (1,000,000,000 bytes) is free for an unprivileged process on the volume of the loom home. Absent when the free space is unknown (the `disk` check then warns). |
 | `unassigned` | `warn` with the count, one example and the configuration that would assign it. |
-| `ssh-agent` | `SSH_AUTH_SOCK` in loomd's environment ([`GET /v1/diagnostics`](../api.md#daemondiagnostics)): `ok` when it is a socket; otherwise `fail` when an indexed remote uses SSH, `warn` when none does. The fix depends on the platform (systemd: `systemctl --user import-environment SSH_AUTH_SOCK`, then restart; launchd: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`). `warn` when loomd is older than this endpoint. |
+| `ssh-agent` | `SSH_AUTH_SOCK` in loomd's environment ([`GET /v1/diagnostics`](../api.md#daemondiagnostics)): `ok` when it is a socket. Otherwise, `fail` when an indexed remote uses SSH, `warn` when none does. The fix depends on the platform (systemd: `systemctl --user import-environment SSH_AUTH_SOCK`, then restart; launchd: `launchctl kickstart -k gui/$(id -u)/io.github.gsuquet.loomd`). `warn` when loomd is older than this endpoint. |
 | `home` | `warn` when loomd's `HOME` differs from the one of `loom`: `~` in the configuration then expands elsewhere. |
-| `remote <endpoint> (<scheme>, via <slug>)` | One per distinct endpoint and scheme of the primary remotes of the index, from [`POST /v1/diagnostics/remote-check`](../api.md#remote-check): loomd runs `git -C <repo> ls-remote --exit-code <primary remote> HEAD` in one repository of the endpoint, with the environment, git configuration (`core.sshCommand`, `includeIf`, credential helpers) and non-interactive settings of its updates. Endpoint: `<user>@<host>[:<port>]` for SSH (user `git` when the URL has none, an SSH alias as written), `<scheme>://<host>[:<port>]` for HTTP(S) and `git://`, the URL of a local or other remote. Scheme: `ssh`, `https`, `http`, `git`, `local`, `other`. `ok` (`reachable`) when the remote answers, even without `HEAD`; `fail` otherwise, with the last line of git's error output that is not git's generic `Could not read from remote repository` text as detail, and the fix of the kind of failure: SSH authentication (agent, `core.sshCommand`, host key), HTTPS authentication (credential helper, or switch the remote to SSH), not found (update the remote or forget the clone), network (no answer within 20 s, name resolution, connection: network or VPN), other (run the same `git ls-remote` in a terminal). One `ok` when no repository has a remote; `warn` when loomd is older than the endpoint. |
+| `remote <endpoint> (<scheme>, via <slug>)` | One per distinct endpoint and scheme of the primary remotes of the index, from [`POST /v1/diagnostics/remote-check`](../api.md#remote-check): loomd runs `git -C <repo> ls-remote --exit-code <primary remote> HEAD` in one repository of the endpoint. It uses the environment, git configuration (`core.sshCommand`, `includeIf`, credential helpers) and non-interactive settings of its updates. Endpoint: `<user>@<host>[:<port>]` for SSH (user `git` when the URL has none, an SSH alias as written), `<scheme>://<host>[:<port>]` for HTTP(S) and `git://`, the URL of a local or other remote. Scheme: `ssh`, `https`, `http`, `git`, `local`, `other`. `ok` (`reachable`) when the remote answers, even without `HEAD`. `fail` otherwise. The detail is the last line of the git error output that is not the generic git text `Could not read from remote repository`. The fix matches the kind of failure: SSH authentication (agent, `core.sshCommand`, host key), HTTPS authentication (credential helper, or switch the remote to SSH), not found (update the remote or forget the clone), network (no answer within 20 s, name resolution, connection: network or VPN), other (run the same `git ls-remote` in a terminal). One `ok` when no repository has a remote. `warn` when loomd is older than the endpoint. |
 | `machine` | `ok`, naming this machine (the `id` of [`machine.toml`](../configuration.md#machinetoml)) and the contexts whose `machines` does not name it ([`GET /v1/tasks/backup`](../api.md#tasks)). `warn` when loomd is older than this endpoint. |
 | `backup <context>` | One per context store held here. Without `store.backup.remote`: `ok` (commits stay local). Before the first sync since loomd started: `ok`. After a sync that left the store and its remote equal (`up to date`, `pushed`, `pulled`): `ok`. `fail` when they diverged, or when the remote refused the push (the commits stay local), with the fix. `warn` when a step failed (`commit`, `remote`, `fetch`, `compare`, `push`, `fast-forward`), or when changes of the store are not committed, with git's error. |
 | `updates` | The last update of every repository ([`last_update`](../api.md#lastupdate)), skips asked for (`policy_off`, `no_remote`) left out: one `warn` per reason, as `<reason> (<count>): <slug>, <slug>, <slug>, …` (at most 3 slugs, sorted), with its fix. Reasons, in this order: `fetch refused by SSH`, `fetch without HTTPS credential`, `remote not found`, `remote unreachable`, `fetch failed` (a failed fetch, classified from git's error output as for `remote`), `fast-forward failed`, `default branch move failed`, `repository unreadable`, `repository busy`, `state unknown`, `operation in progress`, `local changes`, `HEAD detached`, `branch without commit`, `branch without upstream`, `diverged from upstream`, `fast-forward refused by git`, `default branch diverged`. One `ok` when there is none. |
@@ -644,12 +683,12 @@ fail  backup work: ~/.loom/contexts/work and /srv/work-store.git: diverged: 1 lo
 | Code | Cases |
 | --- | --- |
 | `0` | Success, including `-n`; `doctor` without any `fail`; `register --on-use --background` always. |
-| `1` | loomd cannot be started, is not running (`register --on-use`), or answers with an error; `<REPO>` not found, ambiguous, not inside a git repository, or (for `forget`) not in the index; `register` outside a git repository; `--rebuild` refused or cancelled; `doctor` with at least one `fail` (after printing the report: `Error: 1 check failed`, `Error: <n> checks failed`). |
+| `1` | loomd cannot be started, does not run (`register --on-use`), or answers with an error; `<REPO>` not found, ambiguous, not inside a git repository, or (for `forget`) not in the index; `register` outside a git repository; `--rebuild` refused or cancelled; `doctor` with at least one `fail` (after printing the report: `Error: 1 check failed`, `Error: <n> checks failed`). |
 | `2` | Usage error: missing subcommand or `forget` argument, `--json` with `--format`, unknown `--format`. |
 
 ## `loom sync`
 
-Syncs the [context stores](../configuration.md#store-backup) held on this machine with their `store.backup.remote` through loomd ([`POST /v1/tasks/sync`](../api.md#tasks)), every store that has one, or the store of the context `-c` names. Starts loomd when it is not running. Waits for every sync, at most 600 s. Prints one line per store synced, `<context>: <outcome>`, and the changes not committed:
+`loom sync` syncs the [context stores](../configuration.md#store-backup) held on this machine with their `store.backup.remote`, through loomd ([`POST /v1/tasks/sync`](../api.md#tasks)). It syncs every store that has a `store.backup.remote`, or the store of the context that `-c` names. If loomd does not run, `loom sync` starts it. It waits for every sync, at most 600 s. It prints one line for each store synced, `<context>: <outcome>`, and the changes not committed:
 
 ```text
 personal: pushed 2 commits
@@ -666,7 +705,7 @@ work: diverged: 1 local and 2 remote commits (nothing merged)
 | `push rejected, commits kept local: <git error>` | The remote refused the push. |
 | `<step> failed: <error>` | A step failed: `commit`, `remote`, `fetch`, `compare`, `push`, `fast-forward`. |
 
-`No context store has a store.backup.remote.` when no store held here has one.
+If no store held here has a `store.backup.remote`, `loom sync` prints `No context store has a store.backup.remote.`
 
 `--json`: [`BackupReport`](../schemas/backup_report.json), the stores synced only.
 
@@ -678,9 +717,11 @@ work: diverged: 1 local and 2 remote commits (nothing merged)
 
 ### `loom repo sync`
 
-`loom repo sync [<REPO>...] [-n] [--json]` asks loomd to update repositories now ([`POST /v1/repos/sync`](../api.md#updates)), as it does on its schedule ([how updates work](../../explanation/repo-updates.md)): fetch of the primary remote, fast-forward of the branch `HEAD` is on and of the default branch only under the conditions of the update policy. It ignores the schedule and the backoff of unreachable hosts. Each `<REPO>` is resolved as described in [repository argument](#repository-argument) and must be in the index; without any, every repository of the index is updated. Like `ls`, it starts loomd when needed and waits for its scan on start. It never registers the repository of the current directory on use.
+`loom repo sync [<REPO>...] [-n] [--json]` asks loomd for an update of repositories now ([`POST /v1/repos/sync`](../api.md#updates)). The update is the same as on the schedule of loomd ([how updates work](../../explanation/repo-updates.md)). It fetches the primary remote. It fast-forwards the branch that `HEAD` is on, and the default branch, only under the conditions of the update policy. It ignores the schedule and the backoff of unreachable hosts.
 
-The command waits for every update to end (at most one hour); updates run `fetch_concurrency` at a time.
+`loom` resolves each `<REPO>` as [repository argument](#repository-argument) describes, and each `<REPO>` must be in the index. Without `<REPO>`, the update applies to every repository of the index. Like `ls`, the command starts loomd when necessary and waits for its scan on start. It never registers the repository of the current directory on use.
+
+The command waits until every update ends (at most one hour). Updates run `fetch_concurrency` at a time.
 
 #### Human output
 
@@ -705,7 +746,7 @@ work/legacy  skipped: update policy is off
 | `skipped: <reason>` | A step was not done; the reasons are listed in [`SkipReason`](../api.md#lastupdate). |
 | `failed: <step>: <error>[: <last line of git's stderr>]` | A git command failed or timed out; `step` is `fetch`, `fast_forward` or `move_default_branch`. |
 
-With `-n`/`--dry-run`, nothing is fetched or merged: each line says what an update would do, decided from the state read now. Whether a branch moves depends on what the fetch brings, so it is not predicted (`then decide`), unless the working tree already rules out a fast-forward of the branch `HEAD` is on. The default branch is never predicted.
+With `-n`/`--dry-run`, nothing is fetched or merged. Each line says what an update would do, from the state that is read now. A branch move depends on what the fetch brings, so the dry run does not predict it (`then decide`). The exception is when the working tree already prevents a fast-forward of the branch that `HEAD` is on. The dry run never predicts a move of the default branch.
 
 ```text
 $ loom repo sync -n
@@ -729,20 +770,20 @@ work/legacy  skip: update policy is off
 
 ## `loom search`
 
-`loom search <QUERY>...` searches the repositories of the index through `GET /v1/search` (see [search](../api.md#search)), starting loomd when it is not running, like `loom repo ls`. The words given are joined with spaces: `loom search lo api` and `loom search "lo api"` are the same query. `-c <NAME>` keeps the repositories of one context; `--limit <N>` (default `20`, at least `1`) caps the results.
+`loom search <QUERY>...` searches the repositories of the index through `GET /v1/search` (see [search](../api.md#search)). Like `loom repo ls`, it starts loomd if loomd does not run. The command joins the words with spaces: `loom search lo api` and `loom search "lo api"` are the same query. `-c <NAME>` keeps the repositories of one context. `--limit <N>` (default `20`, at least `1`) sets the maximum number of results.
 
-Matching: every word of the query must start a word of the repository's name, slug, path, remote URLs, context or branch; words are split on every character that is not a letter or a digit; case and diacritics are ignored. Characters such as `"`, `*`, `(`, `:` and words such as `OR` or `NOT` are searched as text, never as operators.
+Match rules: each word of the query must start a word of the name, slug, path, remote URLs, context or branch of the repository. Words are split at each character that is not a letter or a digit. Case and diacritics are ignored. Characters such as `"`, `*`, `(`, `:` and words such as `OR` or `NOT` are searched as text, never as operators.
 
-Ranking, best first:
+Rank order, best first:
 
-1. the name is the query (`loom-api` for `loom api`);
-2. every query word starts a word of the name;
-3. every query word starts a word of the slug;
-4. the other matches (path, remotes, context, branch, or words spread over several fields);
+1. The name is the query (`loom-api` for `loom api`).
+2. Each query word starts a word of the name.
+3. Each query word starts a word of the slug.
+4. The other matches (path, remotes, context, branch, or words in several fields).
 
-then, within each rank, the most recently used repository first (`last_used`, set by registration on use and `loom repo show`; never used last), then full-text relevance, then slug.
+In each rank, the order is the most recently used repository first, then full-text relevance, then slug. The last use is `last_used`, which registration on use and `loom repo show` set. A repository that was never used comes last.
 
-Human output: a header, then one row per result, best first, columns aligned, the path last. `MATCHED` lists the fields holding at least one query word (`name`, `slug`, `path`, `remotes`, `context`, `branch`). Nothing is printed when nothing matches; the exit code is still `0`.
+Human output: a header, then one row per result, best first, columns aligned, the path last. `MATCHED` lists the fields that contain at least one query word (`name`, `slug`, `path`, `remotes`, `context`, `branch`). If nothing matches, nothing is printed, and the exit code is still `0`.
 
 ```text
 SLUG               MATCHED         PATH
@@ -761,16 +802,16 @@ work/tool          remotes         /home/me/work/tool
 
 ## `loom shell-init`
 
-`loom shell-init <SHELL>` prints, on stdout, a script to evaluate in the shell's startup file (`eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`). The script is fixed text embedded in the binary; the command reads no configuration, never contacts loomd, and sends no [registration on use](#registration-on-use). Setup: [shell integration](../../how-to-guides/shell-integration.md).
+`loom shell-init <SHELL>` prints on stdout a script to evaluate in the startup file of the shell (`eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`). The script is fixed text embedded in the binary. The command reads no configuration, never sends a request to loomd, and sends no [registration on use](#registration-on-use). Setup: [shell integration](../../how-to-guides/shell-integration.md).
 
-When evaluated, the script does nothing when `command -v loom` finds no `loom`. Otherwise it installs a hook that runs `loom repo register --on-use --background` for the current directory, at most once per directory (`$PWD`, symbolic links kept) per shell session:
+If `command -v loom` finds no `loom`, the evaluated script does nothing. Otherwise, it installs a hook. The hook runs `loom repo register --on-use --background` for the current directory, at most once per directory (`$PWD`, symbolic links kept) in each shell session:
 
 | Shell | Hook | Runs |
 | --- | --- | --- |
 | `zsh` | `_loom_chpwd`, added to `chpwd_functions` with `add-zsh-hook`; directories seen in the associative array `_loom_seen`. | When the script is evaluated (the start directory), then on each directory change. |
-| `bash` (3.2 or later) | `__loom_prompt`, appended to `PROMPT_COMMAND` on a line of its own (an existing value is kept; evaluating the script twice adds it once); directories seen in the string `__loom_seen`, last directory in `__loom_pwd`. | At each prompt where `$PWD` differs from the previous prompt's, the first prompt included. Returns the exit status it was called with. |
+| `bash` (3.2 or later) | `__loom_prompt`, appended to `PROMPT_COMMAND` on a line of its own (an existing value is kept, and if the script is evaluated twice, the hook is added once); directories seen in the string `__loom_seen`, last directory in `__loom_pwd`. | At each prompt where `$PWD` differs from the previous prompt's, the first prompt included. Returns the exit status it was called with. |
 
-The hook starts `loom` detached (zsh `&!`, bash `( … & )`), with stdin, stdout and stderr on `/dev/null`: no job is created, nothing is printed, and the prompt does not wait. It runs no `git`: `loom` finds the repository root at or above the directory, and does nothing outside a repository. When `loom` is no longer on `PATH`, the hook fails silently.
+The hook starts `loom` detached (zsh `&!`, bash `( … & )`), with stdin, stdout and stderr on `/dev/null`. Thus no job is created, nothing is printed, and the prompt does not wait. The hook runs no `git`. `loom` finds the repository root at or above the directory, and does nothing outside a repository. If `loom` is no longer on `PATH`, the hook fails silently.
 
 | Code | Cases |
 | --- | --- |

@@ -15,9 +15,9 @@ loom [OPTIONS] <COMMAND>
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `-c <NAME>`, `--context <NAME>` |  |  | Context to work in (lowercase letters, digits and `-`, starting with a letter) |
+| `-c <NAME>`, `--context <NAME>` |  |  | Context to work in (lowercase letters, digits and `-`, with a letter first) |
 | `-q`, `--quiet` |  |  | Print errors only on stderr |
-| `-v`, `--verbose` | repeatable |  | Print more diagnostics on stderr; repeat for more (`-vv`) |
+| `-v`, `--verbose` | repeatable |  | Print more diagnostics on stderr. Repeat the flag for more (`-vv`) |
 | `--color <WHEN>` | `auto`, `always`, `never` | `auto` | When to use colors: `auto` colors a terminal unless `NO_COLOR` is set |
 | `-y`, `--yes` |  |  | Answer yes to every confirmation (the only way to skip one) |
 | `-h`, `--help` |  |  | Print help |
@@ -44,7 +44,7 @@ Global options apply.
 
 ### `loom status`
 
-Show the state of loomd, starting it when it is not running
+Show the state of loomd, and start loomd if it is stopped
 
 ```text
 loom status [OPTIONS]
@@ -55,7 +55,7 @@ loom status [OPTIONS]
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
 | `--json` |  |  | Print the daemon state as JSON (`StatusResponse` schema) |
-| `--no-start` |  |  | Fail instead of starting loomd when it is not running |
+| `--no-start` |  |  | Fail if loomd is stopped, and do not start it |
 | `-h`, `--help` |  |  | Print help |
 
 Global options apply.
@@ -78,7 +78,7 @@ Global options apply.
 
 ### `loom service install`
 
-Install loomd as a user service and start it; no-op when already installed and loaded. Refused when `[daemon] service = false`
+Install loomd as a user service and start it. No-op if it is already installed and loaded. Refused if `[daemon] service = false`
 
 ```text
 loom service install [OPTIONS]
@@ -88,14 +88,14 @@ loom service install [OPTIONS]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `-n`, `--dry-run` |  |  | Print the file that would be written and the commands that would run; change nothing |
+| `-n`, `--dry-run` |  |  | Print the file that would be written and the commands that would run. Change nothing |
 | `-h`, `--help` |  |  | Print help |
 
 Global options apply.
 
 ### `loom service uninstall`
 
-Stop loomd, unload the user service and remove its file; no-op when not installed
+Stop loomd, unload the user service and remove its file. No-op if it is not installed
 
 ```text
 loom service uninstall [OPTIONS]
@@ -105,14 +105,14 @@ loom service uninstall [OPTIONS]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `-n`, `--dry-run` |  |  | Print the commands that would run and the file that would be removed; change nothing |
+| `-n`, `--dry-run` |  |  | Print the commands that would run and the file that would be removed. Change nothing |
 | `-h`, `--help` |  |  | Print help |
 
 Global options apply.
 
 ### `loom service status`
 
-Report whether the user service is installed, loaded and running
+Report whether the user service is installed and loaded, and whether it runs
 
 ```text
 loom service status [OPTIONS]
@@ -131,7 +131,7 @@ Global options apply.
 
 Restart loomd and wait for the new one to answer, so a change to `config.toml` takes effect.
 
-The configuration is checked first: when it is invalid, loomd is left running. A loaded user service is restarted by its manager (`launchctl kickstart -k`, `systemctl --user restart`); otherwise loomd gets `SIGTERM`, then a new one is started. Starts loomd when it is not running.
+The command checks the configuration first. If the configuration is invalid, loomd continues to run. If the user service is loaded, its manager restarts it (`launchctl kickstart -k`, `systemctl --user restart`). If not, loomd gets `SIGTERM`, then a new loomd starts. Starts loomd if it is stopped.
 
 ```text
 loom service restart [OPTIONS]
@@ -158,7 +158,7 @@ loom service help [COMMAND]
 
 Upgrade `loom` and `loomd` to the latest release of a channel, to a given release, or to a local build.
 
-Both binaries are replaced in the directory of the running `loom`; the replaced version is kept in `<loom home>/versions/`. Releases are verified (minisign signature of `SHA256SUMS`, then the archive checksum) before anything is replaced.
+The command replaces the two binaries in the directory of the `loom` that runs. It keeps the replaced version in `<loom home>/versions/`. It verifies the releases (minisign signature of `SHA256SUMS`, then the archive checksum) before it replaces anything.
 
 ```text
 loom upgrade [OPTIONS]
@@ -169,8 +169,8 @@ loom upgrade [OPTIONS]
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
 | `--channel <CHANNEL>` | `stable`, `dev` |  | Release channel to upgrade on, remembered in `state/update.json` for loomd and the next `loom upgrade` (not with `--dry-run`). Default: `[update] channel`, otherwise the channel last given here, otherwise the channel of this build (required for a local build, unless `--version` or `--from` is given) |
-| `--version <VERSION>` |  |  | Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the running version (use `loom rollback`) |
-| `--from <PATH>` |  |  | Install a local build: a release archive (`.tar.gz`) or a directory holding `loom` and `loomd`. Not verified; installed even when its version is not newer |
+| `--version <VERSION>` |  |  | Release to install: `X.Y.Z` or `X.Y.Z-dev.N`. Never lower than the version that runs (use `loom rollback`) |
+| `--from <PATH>` |  |  | Install a local build: a release archive (`.tar.gz`) or a directory that holds `loom` and `loomd`. Not verified. Installed even if its version is not newer |
 | `--check` |  |  | Print the decision only: no download, nothing installed (a `--channel` is still remembered) |
 | `-n`, `--dry-run` |  |  | Download and verify, print what would be replaced, change nothing |
 | `--json` |  |  | Print the result as JSON (`UpgradeReport` schema) |
@@ -180,7 +180,7 @@ Global options apply.
 
 ### `loom rollback`
 
-Restore the previous version: the highest version kept in `<loom home>/versions/` other than the running one
+Restore the previous version: the highest version kept in `<loom home>/versions/` other than the version that runs
 
 ```text
 loom rollback [OPTIONS]
@@ -200,7 +200,7 @@ Global options apply.
 
 List, show, scan, register and check the repositories loomd indexes.
 
-Starts loomd when it is not running (except `doctor`). Run inside a repository the index does not know, any `loom` command registers it.
+Starts loomd if it is stopped (except `doctor`). If any `loom` command runs inside a repository that the index does not know, the command registers that repository.
 
 ```text
 loom repo [OPTIONS] <COMMAND>
@@ -250,7 +250,7 @@ loom repo show [OPTIONS] [REPO]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--refresh` |  |  | Read the repository's state now instead of showing the stored one |
+| `--refresh` |  |  | Read the state of the repository now. Do not show the stored state |
 | `--json` |  |  | Print the repository as JSON (`RepoSummary` schema) |
 | `-h`, `--help` |  |  | Print help |
 
@@ -277,7 +277,7 @@ Global options apply.
 
 ### `loom repo register`
 
-Add a repository outside the roots to the index; scans keep it while it exists
+Add a repository outside the roots to the index. Scans keep it while it exists
 
 ```text
 loom repo register [OPTIONS] [PATH]
@@ -303,7 +303,7 @@ Global options apply.
 
 ### `loom repo forget`
 
-Remove a repository from the index (registering it again undoes it)
+Remove a repository from the index (to undo, register it again)
 
 ```text
 loom repo forget [OPTIONS] <REPO>
@@ -327,7 +327,7 @@ Global options apply.
 
 ### `loom repo doctor`
 
-Check roots, contexts, the disk usage of the loom home, unassigned repositories, loomd's SSH agent, each remote host as loomd's git reaches it, and the last updates; print the fixes. Exits with 1 when a check fails
+Check roots, contexts, the disk usage of the loom home and unassigned repositories. Check loomd's SSH agent, each remote host as loomd's git reaches it, and the last updates. Print the fixes. If a check fails, the command exits with 1
 
 ```text
 loom repo doctor [OPTIONS]
@@ -346,7 +346,7 @@ Global options apply.
 
 Update repositories now, as loomd does on its schedule: fetch the primary remote, then fast-forward only when no local work can be affected.
 
-Ignores the schedule and the backoff of unreachable hosts; follows the update policy of each repository. Prints one line per repository: its slug and what happened.
+Ignores the schedule and the backoff of unreachable hosts. Follows the update policy of each repository. Prints one line per repository: its slug and what happened.
 
 ```text
 loom repo sync [OPTIONS] [REPO]...
@@ -356,13 +356,13 @@ loom repo sync [OPTIONS] [REPO]...
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `<REPO>` |  |  | Repositories to update: path, `<context>/<name>` or name; every repository of the index when none is given |
+| `<REPO>` |  |  | Repositories to update: path, `<context>/<name>` or name. Default: every repository of the index |
 
 #### Options
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `-n`, `--dry-run` |  |  | Print what each update would do, decided from the state read now; fetch nothing, change nothing |
+| `-n`, `--dry-run` |  |  | Print what each update would do, decided from the state read now. Fetch nothing, change nothing |
 | `--json` |  |  | Print the result as JSON (`SyncResult` schema) |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |
 
@@ -380,7 +380,7 @@ loom repo help [COMMAND]
 
 Search the tasks (title, notes, link keys) and the indexed repositories (name, slug, path, remote URL, context, branch).
 
-Every word of the query must start a word of the result (case and diacritics ignored). Results are ranked: active, ready and waiting tasks, then repositories, then inbox tasks, then done and cancelled tasks. Among tasks: the query as a link key (`CORE-1042`), then every word in the title, then most recently changed. Among repositories: exact name, then name prefix, then slug, then the other fields; then most recently used. `-c` keeps one context, `--type` one kind. Starts loomd when it is not running.
+Every word of the query must start a word of the result (case and diacritics ignored). Results are ranked: active, ready and waiting tasks, then repositories, then inbox tasks, then done and cancelled tasks. Among tasks: the query as a link key (`CORE-1042`), then every word in the title, then most recently changed. Among repositories: exact name, then name prefix, then slug, then the other fields. In each group, the most recently used comes first. `-c` keeps one context, `--type` one kind. Starts loomd if it is stopped.
 
 ```text
 loom search [OPTIONS] <QUERY>...
@@ -390,7 +390,7 @@ loom search [OPTIONS] <QUERY>...
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `<QUERY>` |  |  | Words to search for, joined with spaces (quoting the query is optional) |
+| `<QUERY>` |  |  | Words to search for, joined with spaces (quotes around the query are optional) |
 
 #### Options
 
@@ -407,7 +407,7 @@ Global options apply.
 
 Capture a task: in the inbox, unless `--ready`.
 
-The context is the first of: `-c`, `LOOM_CONTEXT`, the context of the repository of the current directory, its `match.paths` prefix, `default_context`. The kind is `chore` unless `--kind` is given; the importance, the default of the kind. Starts loomd when it is not running.
+The context is the first of: `-c`, `LOOM_CONTEXT`, the context of the repository of the current directory, its `match.paths` prefix, `default_context`. The kind is `chore` unless `--kind` is given. The importance is the default of the kind. Starts loomd if it is stopped.
 
 ```text
 loom add [OPTIONS] <TITLE>...
@@ -417,7 +417,7 @@ loom add [OPTIONS] <TITLE>...
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `<TITLE>` |  |  | Title, words joined with spaces (quoting it is optional) |
+| `<TITLE>` |  |  | Title, words joined with spaces (quotes around the title are optional) |
 
 #### Options
 
@@ -425,9 +425,9 @@ loom add [OPTIONS] <TITLE>...
 | --- | --- | --- | --- |
 | `--kind <KIND>` | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview`, `learning` | `chore` | Kind of the task |
 | `--format <FORMAT>` | `talk`, `article`, `training`, `workshop` |  | Format of a `content` task |
-| `--importance <IMPORTANCE>` | `p0`, `p1`, `p2`, `p3` |  | Importance; the default of the kind when absent (p1 for bug, investigation, support and review; p3 for chore, research and learning; p2 otherwise) |
+| `--importance <IMPORTANCE>` | `p0`, `p1`, `p2`, `p3` |  | Importance. If absent, the default of the kind (p1 for bug, investigation, support and review; p3 for chore, research and learning; p2 otherwise) |
 | `--due <DATE>` |  |  | Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w` |
-| `--parent <ID>` |  |  | Parent task: an ID or a unique prefix of one. The task goes to the parent's context; `-c` or `LOOM_CONTEXT` naming another context is an error |
+| `--parent <ID>` |  |  | Parent task: an ID or a unique prefix of one. The task goes to the parent's context. If `-c` or `LOOM_CONTEXT` names another context, the command fails |
 | `--ready` |  |  | Skip the inbox: the task is ready |
 | `--json` |  |  | Print the created task as JSON (`TaskDetail` schema) |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |
@@ -438,7 +438,7 @@ Global options apply.
 
 List the priority list of a context, or its tasks with a status.
 
-The context is resolved as for `loom add`; `--all-contexts` lists every context. The priority list holds the ready and active tasks, and the waiting ones whose date has come, in priority order. Starts loomd when it is not running.
+The context is resolved as for `loom add`. `--all-contexts` lists every context. The priority list holds the ready and active tasks, and the waiting ones whose date has come, in priority order. Starts loomd if it is stopped.
 
 ```text
 loom ls [OPTIONS]
@@ -448,7 +448,7 @@ loom ls [OPTIONS]
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--all-contexts` |  |  | List every context. `LOOM_CONTEXT` is ignored; `-c` is an error |
+| `--all-contexts` |  |  | List every context. `LOOM_CONTEXT` is ignored. `-c` is an error |
 | `--status <STATUS>` | `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled` |  | The tasks with this status, sorted by ID, instead of the priority list |
 | `--why` |  |  | Add a `WHY` column: the rule that placed each task after the previous one |
 | `--json` |  |  | Print the list as JSON (`TaskList` schema) |
@@ -481,7 +481,7 @@ Global options apply.
 
 ### `loom set`
 
-Change fields of a task: `key=value` pairs among `title`, `kind`, `format` (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`) and `pinned` (`yes` or `no`)
+Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format` (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`) and `pinned` (`yes` or `no`)
 
 ```text
 loom set [OPTIONS] <ID> <KEY=VALUE>...
@@ -551,7 +551,7 @@ Global options apply.
 
 ### `loom snooze`
 
-Put a task in `waiting` until a date: hidden from the priority list until then
+Put a task in `waiting` until a date. Until then, the priority list does not show it
 
 ```text
 loom snooze [OPTIONS] <ID> <UNTIL>
@@ -576,7 +576,7 @@ Global options apply.
 
 ### `loom undo`
 
-Revert the last change of a task (an edit, a status change, a pin, a hand edit, an undo). Undoing an undo redoes the change
+Revert the last change of a task (an edit, a status change, a pin, a hand edit, an undo). An undo of an undo applies the change again
 
 ```text
 loom undo [OPTIONS] <ID>
@@ -599,7 +599,7 @@ Global options apply.
 
 ### `loom edit`
 
-Open the `task.md` of a task in `VISUAL`, `EDITOR` or `vi`. loomd records the changes as an edit; an invalid file is reported and kept as saved
+Open the `task.md` of a task in `VISUAL`, `EDITOR` or `vi`. loomd records the changes as an edit. If the file is invalid, loomd reports it and keeps it as saved
 
 ```text
 loom edit [OPTIONS] <ID>
@@ -623,7 +623,9 @@ Global options apply.
 
 Rebuild the tasks index from the task files of every context store.
 
-The files are the source of truth: rows of tasks whose directory is gone are dropped, an invalid `task.md` is indexed read-only and listed, never rewritten. A task that cannot be read is listed and keeps its previous entry; the others are indexed. Hand edits not recorded yet are recorded first, so a reindex may append `edited` events. The repositories of the index are left as they are. Starts loomd when it is not running.
+The files are the source of truth. The reindex drops the rows of tasks whose directory is gone. It indexes an invalid `task.md` as read-only and lists it, but never rewrites it. If a task cannot be read, the reindex lists it and keeps its previous entry. It indexes the other tasks.
+
+Hand edits that are not recorded yet are recorded first, so a reindex can append `edited` events. The repositories of the index stay as they are. Starts loomd if it is stopped.
 
 ```text
 loom reindex [OPTIONS]
@@ -642,7 +644,9 @@ Global options apply.
 
 Back up the context stores: push their commits to `store.backup.remote`, or fast-forward them to it.
 
-Syncs every context store held on this machine that has a `store.backup.remote`, or the one `-c` names. Changes not committed yet are committed first. A store whose remote has commits it lacks while it has commits the remote lacks has diverged: it is reported and left as it is, never merged, rebased or forced. Fails when a store is not synced. loomd also syncs at start and every `[tasks] sync_interval`. Starts loomd when it is not running.
+Syncs every context store on this machine that has a `store.backup.remote`, or only the store that `-c` names. Changes that are not committed yet are committed first. A store has diverged if the store and its remote each have commits that the other does not have. The sync reports a diverged store and leaves it as it is: it never merges, rebases or forces it.
+
+The command fails if a store is not synced. loomd also syncs at start and at each `[tasks] sync_interval`. Starts loomd if it is stopped.
 
 ```text
 loom sync [OPTIONS]
@@ -661,7 +665,7 @@ Global options apply.
 
 Print the shell integration to evaluate in the shell's startup file: `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`.
 
-The directory the shell starts in, then each directory it enters, once per shell session, runs `loom repo register --on-use --background` detached, so that loomd registers the repository it is in. Does nothing when `loom` is not on `PATH`.
+The shell runs `loom repo register --on-use --background` detached in the directory where it starts, and then in each directory that it enters. It does this one time for each directory in a shell session. Thus loomd registers the repository of the directory. The integration does nothing if `loom` is not on `PATH`.
 
 ```text
 loom shell-init [OPTIONS] <SHELL>
