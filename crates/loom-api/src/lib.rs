@@ -10,6 +10,7 @@ mod context;
 mod disk;
 mod doctor;
 mod error;
+mod events;
 mod repo;
 mod repo_state;
 mod repo_update;
@@ -41,6 +42,7 @@ pub use loom_core::{
     CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, TaskId, Timestamp, UNASSIGNED,
 };
 // The task domain, as the task endpoints send and receive it.
+pub use events::{ChangeEvent, EventCursor, EventCursorError};
 pub use loom_core::{
     Action, Actor, Change, ContentFormat, Date, Event, EventId, EventRecord, ExternalRef,
     FieldChange, Importance, Kind, Link, MachineId, NewTask, RankReason, Relations, SkippedLine,

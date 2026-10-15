@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 /// Version of the loomd API a message belongs to.
 ///
-/// A breaking change to any API type adds a variant; compatible changes (new optional fields,
-/// new endpoints) keep the current one.
+/// An incompatible change to any API type adds a variant. Compatible changes (new optional
+/// fields, new endpoints) keep the current one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum ApiVersion {
     /// First version of the API.

@@ -111,7 +111,7 @@ impl JsonSchema for ContextName {
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+            "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
             "type": "string",
             "minLength": 1,
             "maxLength": CONTEXT_NAME_MAX_LEN,

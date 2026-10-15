@@ -228,7 +228,7 @@ impl ContentFormat {
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct KindRepr {
     /// story, bug, chore, research, investigation, review, support, content, admin, interview
-    /// or learning; any other name makes the task read-only.
+    /// or learning. Any other name makes the task read-only.
     kind: String,
     /// Content only: talk, article, training or workshop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -394,15 +394,15 @@ impl Status {
     }
 }
 
-/// Serialized form of [`Status`]: `status`, plus `waiting_on` and `waiting_until` when waiting.
+/// Serialized form of [`Status`]: `status`, plus `waiting_on` and `waiting_until` for `waiting`.
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct StatusRepr {
-    /// inbox, ready, active, waiting, done or cancelled; any other name makes the task read-only.
+    /// inbox, ready, active, waiting, done or cancelled. Any other name makes the task read-only.
     status: String,
-    /// Waiting only: what or whom the task waits on.
+    /// `waiting` only: what or whom the task waits on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     waiting_on: Option<String>,
-    /// Waiting only: hidden from the priority list until this date.
+    /// `waiting` only: the priority list does not show the task until this date.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     waiting_until: Option<Date>,
 }

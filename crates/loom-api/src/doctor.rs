@@ -35,7 +35,7 @@ pub enum SshAgentSocket {
 pub struct DaemonDiagnostics {
     /// The SSH agent socket `loomd` and its `git` processes see.
     pub ssh_auth_sock: SshAgentSocket,
-    /// `HOME` of `loomd` (expands `~` in the configuration); `null` when unset or empty.
+    /// `HOME` of `loomd` (expands `~` in the configuration). `null` if unset or empty.
     pub home: Option<PathBuf>,
 }
 
@@ -47,7 +47,7 @@ pub struct DaemonDiagnostics {
 pub enum CheckStatus {
     /// Nothing to fix.
     Ok,
-    /// Something to look at; loom still works.
+    /// Something to look at. loom still works.
     Warn,
     /// Something loom needs is broken.
     Fail,
@@ -203,7 +203,7 @@ pub struct DoctorCheck {
     pub status: CheckStatus,
     /// What was found, in English.
     pub detail: String,
-    /// How to fix it, in English; absent when there is nothing to fix.
+    /// How to fix it, in English. Absent if there is nothing to fix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
 }

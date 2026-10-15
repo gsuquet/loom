@@ -31,7 +31,8 @@ use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ContextName, Date, NewTask, ReindexResult, TaskDetail, TaskEvents, TaskId, TaskList, Timestamp,
+    ChangeEvent, ContextName, Date, NewTask, ReindexResult, TaskDetail, TaskEvents, TaskId,
+    TaskList, Timestamp,
 };
 use loom_config::schedules::Schedule;
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
@@ -41,6 +42,7 @@ use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
 use loomd::backup::{catch_up_message, commit_message, hand_edit_message, removed_message};
 use loomd::recurring::{Outcome, plan};
+use loomd::events::Bus;
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
 use loomd::task_api::{TaskFilter, resolve, task_detail, task_list, task_problem};
@@ -143,6 +145,7 @@ pub fn start(
     db: &Path,
     stores: &BTreeMap<ContextName, PathBuf>,
     machine_id: MachineId,
+    events: Arc<Bus>,
 ) -> Result<(TaskStore, TaskHandle)> {
     let mut files = Vec::with_capacity(stores.len());
     for (context, root) in stores {
@@ -174,6 +177,7 @@ pub fn start(
         },
         random: OsRandom::open(),
         schedule_failures: BTreeMap::new(),
+        events,
     };
     info!(
         stores = ?stores.values().map(|root| root.display().to_string()).collect::<Vec<_>>(),
@@ -509,6 +513,8 @@ struct Worker {
     /// The last failure of each schedule (context, ID) to create its task: a failure that
     /// repeats at each check is warned once.
     schedule_failures: BTreeMap<(ContextName, String), String>,
+    /// Where each change is announced, once written and indexed (its commit attempted).
+    events: Arc<Bus>,
 }
 
 impl Worker {
@@ -551,7 +557,13 @@ impl Worker {
                     );
                 }
                 Command::FastForward { context, to, reply } => {
-                    let _ = reply.send(self.commits.fast_forward(&context, &to));
+                    let result = self.commits.fast_forward(&context, &to);
+                    // Commits of another machine came in: any task of the store may have
+                    // changed, and the watcher may report them late or merged.
+                    if result.is_ok() {
+                        self.events.publish(ChangeEvent::Resync);
+                    }
+                    let _ = reply.send(result);
                 }
                 Command::RunSchedules { schedules, today } => {
                     self.run_schedules(&schedules, today);
@@ -592,6 +604,7 @@ impl Worker {
                     failed = result.failed.len(),
                     "tasks indexed"
                 );
+                self.events.publish(ChangeEvent::Resync);
                 Ok(result)
             }
             Err(error) => {
@@ -612,6 +625,7 @@ impl Worker {
             .map_err(|error| refused(&error))?;
         info!(id = %task.id, context = %task.context, "task created");
         self.commit_change(&task.context, &task.id, 0);
+        self.changed(&task.context, &task.id);
         self.detail(&task.id)
     }
 
@@ -629,6 +643,10 @@ impl Worker {
             .map_err(|error| refused(&error))?;
         debug!(%id, "task changed");
         self.commit_change(&task.context, id, before);
+        // A request that changes nothing (pin a pinned task) writes no event: nothing to tell.
+        if self.event_count(id) > before {
+            self.changed(&task.context, id);
+        }
         self.detail(id)
     }
 
@@ -641,6 +659,10 @@ impl Worker {
             .map_err(|error| refused(&error))?;
         info!(%id, "task change undone");
         self.commit_change(&task.context, id, before);
+        // A request that changes nothing (pin a pinned task) writes no event: nothing to tell.
+        if self.event_count(id) > before {
+            self.changed(&task.context, id);
+        }
         self.detail(id)
     }
 
@@ -726,6 +748,14 @@ impl Worker {
                     failed = report.failed.len(),
                     "tasks reconciled"
                 );
+                // Any number of tasks may have changed: clients refetch everything.
+                if report
+                    .results
+                    .iter()
+                    .any(|(_, reconciled)| !matches!(reconciled, Reconciled::Unchanged))
+                {
+                    self.events.publish(ChangeEvent::Resync);
+                }
                 report.failed
             }
             Err(error) => {
@@ -761,6 +791,7 @@ impl Worker {
                     Reconciled::Removed => self.commits.commit_all(context, &removed_message(id)),
                 };
                 log_commit(context, Some(id), result);
+                self.changed(context, id);
             }
             Err(error) => warn!(%context, %id, %error, "cannot reconcile a task"),
         }
@@ -777,6 +808,15 @@ fn refused(error: &TaskError) -> Failure {
 }
 
 impl Worker {
+    /// Announces that task `id` of `context` changed: written and indexed, its commit attempted
+    /// (a failed commit is retried later and does not hold the event).
+    fn changed(&self, context: &ContextName, id: &TaskId) {
+        self.events.publish(ChangeEvent::TaskChanged {
+            id: id.clone(),
+            context: context.clone(),
+        });
+    }
+
     /// Commits the hand edit of `changes` recorded on task `id`, found by a reconciliation of
     /// every task: its context is the one its index row names.
     fn commit_edit(&mut self, id: &TaskId, changes: &[loom_core::FieldChange]) {

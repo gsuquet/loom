@@ -16,11 +16,11 @@ pub struct ContextDiskUsage {
 
 /// Space the loom home takes on disk, by part.
 ///
-/// Sizes are allocated bytes (blocks, not file lengths), symbolic links are counted as links
-/// and never followed, and a file with several hard links in the home is counted once.
+/// Sizes are allocated bytes (blocks, not file lengths). Symbolic links are counted as links
+/// and never followed. A file with several hard links in the home is counted once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiskUsage {
-    /// Instant the sizes were measured; loomd keeps them for a while (see the API reference).
+    /// Instant the sizes were measured. loomd keeps them for a while (see the API reference).
     pub computed_at: Timestamp,
     /// Every part below, added up: the whole loom home.
     pub total_bytes: u64,
@@ -37,11 +37,11 @@ pub struct DiskUsage {
     /// Everything else: the home directory itself, `config.toml`, `run/`, `staging/`,
     /// `contexts/` itself and files directly in it, unknown entries.
     pub other_bytes: u64,
-    /// One entry per directory under `contexts/`, sorted by name; empty without context stores.
+    /// One entry per directory under `contexts/`, sorted by name. Empty without context stores.
     pub contexts: Vec<ContextDiskUsage>,
     /// Names of the directories in `versions/`, sorted.
     pub kept_versions: Vec<String>,
-    /// Bytes an unprivileged process can still write on the volume of the loom home;
+    /// Bytes an unprivileged process can still write on the volume of the loom home.
     /// `null` when the volume could not be queried.
     pub available_bytes: Option<u64>,
     /// What could not be measured (a directory that cannot be read counts as 0), in English.

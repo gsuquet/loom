@@ -30,6 +30,8 @@ pub const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
 pub const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
 /// Path of the tasks reindex: the tasks index rebuilt from the files of every context store.
 pub const TASKS_REINDEX_PATH: &str = "/v1/tasks/reindex";
+/// Path of the change events, a Server-Sent Events stream.
+pub const EVENTS_PATH: &str = "/v1/events";
 /// Path of the task list and of task creation.
 pub const TASKS_PATH: &str = "/v1/tasks";
 /// Route of one task, by ID or ID prefix.

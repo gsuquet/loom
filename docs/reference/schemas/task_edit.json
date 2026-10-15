@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "TaskEdit",
-  "description": "Fields to change; `None` leaves a field as it is.",
+  "description": "Fields to change. `None` leaves a field as it is.",
   "type": "object",
   "properties": {
     "due": {
-      "description": "New due date; `Some(None)` (`null`) removes it.",
+      "description": "New due date. `Some(None)` (`null`) removes it.",
       "type": [
         "string",
         "null"
@@ -35,7 +35,7 @@
       ]
     },
     "links": {
-      "description": "New links, replacing all of them.",
+      "description": "New links, which replace all the links.",
       "type": [
         "array",
         "null"
@@ -45,7 +45,7 @@
       }
     },
     "relations": {
-      "description": "New relations, replacing all of them.",
+      "description": "New relations, which replace all the relations.",
       "anyOf": [
         {
           "$ref": "#/$defs/Relations"
@@ -126,7 +126,7 @@
           ]
         },
         "kind": {
-          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning; any other name makes the task read-only.",
+          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning. Any other name makes the task read-only.",
           "type": "string"
         }
       },

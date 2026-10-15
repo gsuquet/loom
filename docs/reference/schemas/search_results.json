@@ -17,7 +17,7 @@
   ],
   "$defs": {
     "ContextName": {
-      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
@@ -32,7 +32,7 @@
           "type": "string"
         },
         "matched_fields": {
-          "description": "Fields holding at least one of the query terms, in column order.",
+          "description": "Fields that hold at least one of the query terms, in column order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SearchField"
@@ -47,7 +47,7 @@
           "type": "string"
         },
         "score": {
-          "description": "Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only\none of the ranking keys; the order of the results is the ranking.",
+          "description": "Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only\none of the sort keys. The order of the results gives the rank.",
           "type": "number",
           "format": "double"
         },
@@ -158,26 +158,26 @@
           }
         },
         "matched_fields": {
-          "description": "Fields holding at least one of the query terms, in column order.",
+          "description": "Fields that hold at least one of the query terms, in column order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/TaskSearchField"
           }
         },
         "score": {
-          "description": "Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only\none of the ranking keys; the order of the results is the ranking.",
+          "description": "Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only\none of the sort keys. The order of the results gives the rank.",
           "type": "number",
           "format": "double"
         },
         "status": {
-          "description": "Status as written in `task.md`, a status of a newer loom included; `null` when\n`task.md` is invalid.",
+          "description": "Status as written in `task.md`, a status of a newer loom included. `null` when\n`task.md` is invalid.",
           "type": [
             "string",
             "null"
           ]
         },
         "title": {
-          "description": "Title; empty when `task.md` is invalid.",
+          "description": "Title. Empty when `task.md` is invalid.",
           "type": "string"
         }
       },
@@ -194,12 +194,12 @@
       "description": "A searched field of a task.",
       "oneOf": [
         {
-          "description": "Title; empty when `task.md` is invalid.",
+          "description": "Title. Empty when `task.md` is invalid.",
           "type": "string",
           "const": "title"
         },
         {
-          "description": "The notes after the frontmatter; the whole file when `task.md` is invalid.",
+          "description": "The notes after the frontmatter. The whole file when `task.md` is invalid.",
           "type": "string",
           "const": "notes"
         },

@@ -97,9 +97,9 @@ impl fmt::Display for SearchField {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum TaskSearchField {
-    /// Title; empty when `task.md` is invalid.
+    /// Title. Empty when `task.md` is invalid.
     Title,
-    /// The notes after the frontmatter; the whole file when `task.md` is invalid.
+    /// The notes after the frontmatter. The whole file when `task.md` is invalid.
     Notes,
     /// Keys of the origin and related links (`CORE-1042`, `!88`).
     LinkKeys,
@@ -159,9 +159,9 @@ pub struct RepoMatch {
     /// Absolute path of the repository.
     pub path: PathBuf,
     /// Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only
-    /// one of the ranking keys; the order of the results is the ranking.
+    /// one of the sort keys. The order of the results gives the rank.
     pub score: f64,
-    /// Fields holding at least one of the query terms, in column order.
+    /// Fields that hold at least one of the query terms, in column order.
     pub matched_fields: Vec<SearchField>,
 }
 
@@ -172,17 +172,17 @@ pub struct TaskMatch {
     pub id: TaskId,
     /// Context of its store.
     pub context: ContextName,
-    /// Title; empty when `task.md` is invalid.
+    /// Title. Empty when `task.md` is invalid.
     pub title: String,
-    /// Status as written in `task.md`, a status of a newer loom included; `null` when
+    /// Status as written in `task.md`, a status of a newer loom included. `null` when
     /// `task.md` is invalid.
     pub status: Option<String>,
     /// Keys of the origin and related links, in file order.
     pub link_keys: Vec<String>,
     /// Full-text relevance (SQLite FTS5 `bm25`, sign flipped): higher is more relevant. Only
-    /// one of the ranking keys; the order of the results is the ranking.
+    /// one of the sort keys. The order of the results gives the rank.
     pub score: f64,
-    /// Fields holding at least one of the query terms, in column order.
+    /// Fields that hold at least one of the query terms, in column order.
     pub matched_fields: Vec<TaskSearchField>,
 }
 

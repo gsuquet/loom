@@ -8,6 +8,7 @@ pub mod api;
 pub mod backup;
 pub mod cli;
 pub mod disk;
+pub mod events;
 pub mod exit;
 pub mod hooks;
 pub mod recurring;
