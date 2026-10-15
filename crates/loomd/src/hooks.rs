@@ -1,5 +1,5 @@
-//! Test hooks of the auto-upgrade (ADR-0011), honoured by debug builds only. The binary reads
-//! the environment; these functions decide.
+//! Test hooks of loomd (auto-upgrade, ADR-0011; event heartbeat; schedule interval), honoured
+//! by debug builds only. The binary reads the environment; these functions decide.
 
 use std::path::Path;
 use std::time::Duration;

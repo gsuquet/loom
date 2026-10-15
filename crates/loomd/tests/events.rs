@@ -365,43 +365,51 @@ fn a_request_that_changes_nothing_sends_no_event() {
     daemon.stop();
 }
 
-#[test]
-fn a_task_a_schedule_creates_reaches_a_client() {
+/// A sandbox on Friday 2026-10-16 whose schedule `weekly` of `work` has `policy`, with last
+/// week's task `k3q7zm2a` still open.
+fn weekly_with_open_task(policy: &str) -> Sandbox {
     let config = format!(
-        "{CONFIG}\n[[contexts.work.schedules]]\nid = \"weekly\"\ntitle = \"Weekly review\"\nkind = \"chore\"\nrrule = \"FREQ=WEEKLY;BYDAY=FR\"\n"
+        "{CONFIG}\n[[contexts.work.schedules]]\nid = \"weekly\"\ntitle = \"Weekly review\"\nkind = \"chore\"\nrrule = \"FREQ=WEEKLY;BYDAY=FR\"\npolicy = \"{policy}\"\n"
     );
     let sandbox = Sandbox::with_config(&config, Some("2026-10-16"));
-    // Last week's task, still open: the policy `skip` holds this week's occurrence back.
-    let previous = "k3q7zm2a";
-    let dir = sandbox
-        .loom_home()
-        .join("contexts/work/tasks")
-        .join(previous);
+    let dir = sandbox.loom_home().join("contexts/work/tasks/k3q7zm2a");
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("task.md"),
         "+++\nid = \"k3q7zm2a\"\ntitle = \"Weekly review\"\nkind = \"chore\"\ncontext = \"work\"\nstatus = \"ready\"\nimportance = \"p3\"\ncreated = 2026-10-09T08:00:00Z\n\n[[links]]\nrole = \"origin\"\nprovider = \"schedule\"\nkey = \"weekly/2026-10-09\"\n+++\n\n## Notes\n",
     )
     .unwrap();
-    let daemon = sandbox.start();
-    let mut stream = Stream::open(&sandbox, "?context=work", None);
-    // The reconciliation on start may announce a resync: only task changes matter here.
-    let mut next_task_change = |within: Duration| loop {
+    sandbox
+}
+
+/// The next `task.changed` of `stream`, as (id, context); resyncs (the reconciliation on start
+/// may send one) are skipped.
+fn next_task_change(stream: &mut Stream, within: Duration) -> (String, String) {
+    loop {
         let sse = stream.event(within).unwrap();
         if change(&sse) != ChangeEvent::Resync {
             return task_changed(&sse);
         }
-    };
+    }
+}
+
+#[test]
+fn a_task_a_schedule_creates_reaches_a_client() {
+    // `skip` holds this week's occurrence back while last week's task is open.
+    let sandbox = weekly_with_open_task("skip");
+    let previous = "k3q7zm2a";
+    let daemon = sandbox.start();
+    let mut stream = Stream::open(&sandbox, "?context=work", None);
     let _: TaskDetail = ok(&request(
         &sandbox.socket(),
         "POST",
         &format!("/v1/tasks/{previous}/actions/done"),
         None,
     ));
-    assert_eq!(next_task_change(DELIVERY).0, previous);
+    assert_eq!(next_task_change(&mut stream, DELIVERY).0, previous);
 
     // The next check, within a second, creates this week's task.
-    let (created, context) = next_task_change(DELIVERY * 3);
+    let (created, context) = next_task_change(&mut stream, DELIVERY * 3);
     assert_eq!(context, "work");
     let detail: TaskDetail = ok(&request(
         &sandbox.socket(),
@@ -409,8 +417,37 @@ fn a_task_a_schedule_creates_reaches_a_client() {
         &format!("/v1/tasks/{created}"),
         None,
     ));
-    let task = detail.summary.task.unwrap();
-    assert_eq!(task.title, "Weekly review");
+    assert_eq!(detail.summary.task.unwrap().title, "Weekly review");
     assert_ne!(created, previous);
+    daemon.stop();
+}
+
+#[test]
+fn a_task_a_schedule_replaces_reaches_a_client() {
+    let sandbox = weekly_with_open_task("replace");
+    let previous = "k3q7zm2a";
+    let daemon = sandbox.start();
+    // The check on start runs before any client connects: learn the run of the event ids from
+    // a later event, then resume from the start of the run to get every event of that check.
+    let mut probe = Stream::open(&sandbox, "?context=home", None);
+    sandbox.create("home", "Probe");
+    let id = probe.event(DELIVERY).unwrap().id.unwrap();
+    let run = id.split_once('-').unwrap().0;
+    let mut stream = Stream::open(&sandbox, "?context=work", Some(&format!("{run}-0")));
+    let (created, context) = next_task_change(&mut stream, DELIVERY);
+    assert_eq!(context, "work");
+    assert_ne!(created, previous);
+    // The cancel of last week's task follows the creation of this week's.
+    assert_eq!(next_task_change(&mut stream, DELIVERY).0, previous);
+    let detail: TaskDetail = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        &format!("/v1/tasks/{previous}"),
+        None,
+    ));
+    assert_eq!(
+        detail.summary.task.unwrap().status.name(),
+        Some(loom_api::StatusName::Cancelled)
+    );
     daemon.stop();
 }

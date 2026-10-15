@@ -1,6 +1,6 @@
 # Create recurring tasks
 
-> Configure `loomd` to create a task for each occurrence of a schedule. Examples: a timesheet on the last working day of the month, a weekly review each Friday.
+> Configure `loomd` to create a task for each occurrence of a schedule. Examples: a timesheet on the last weekday of the month, a weekly review each Friday.
 
 Before you start, make sure of these conditions:
 
@@ -15,12 +15,12 @@ The [schedules reference](../reference/configuration.md#schedules) gives all the
 
    | Each | `rrule` |
    | --- | --- |
-   | Working day | `FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR` |
+   | Monday to Friday | `FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR` |
    | Friday | `FREQ=WEEKLY;BYDAY=FR` |
-   | Second Thursday | `FREQ=WEEKLY;INTERVAL=2;BYDAY=TH`, with `start` |
+   | Thursday, one week in two | `FREQ=WEEKLY;INTERVAL=2;BYDAY=TH`, with `start` |
    | First Monday of the month | `FREQ=MONTHLY;BYDAY=1MO` |
    | Last day of the month | `FREQ=MONTHLY;BYMONTHDAY=-1` |
-   | Last working day of the month | `FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1` |
+   | Last weekday of the month | `FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1` |
 
 2. Add a `[[contexts.<name>.schedules]]` table to `config.toml`, below the context of the tasks:
 
@@ -57,7 +57,7 @@ The [schedules reference](../reference/configuration.md#schedules) gives all the
 
 ## Examine the tasks
 
-On the day of an occurrence, the task is in the priority list of the context. Its status is `ready` and its due date is that day:
+On the day of an occurrence, the task is in the priority list of the context. Its status is `ready`. With `due = "same-day"`, its due date is that day:
 
 ```bash
 loom ls -c company-a
