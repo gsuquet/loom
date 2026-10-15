@@ -48,7 +48,7 @@ use loomd::backup::{
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
 use loomd::task_api::{TEST_TODAY_ENV, TaskFilter, resolve, task_detail, task_list, task_problem};
-use loomd::task_archive::archive_now;
+use loomd::task_archive::{ARCHIVE_BATCH, archive_now};
 use loomd::task_index::{failed_files, reindex_result, task_of_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
@@ -181,6 +181,7 @@ pub fn start(
         },
         random: OsRandom::open(),
         archive_after,
+        commands: commands.clone(),
     };
     info!(
         stores = ?stores.values().map(|root| root.display().to_string()).collect::<Vec<_>>(),
@@ -516,6 +517,9 @@ struct Worker {
     ready: Option<watch::Sender<bool>>,
     /// `[tasks] archive_after`.
     archive_after: Duration,
+    /// Its own queue: a pass that reached [`ARCHIVE_BATCH`] queues the next one behind the
+    /// requests waiting.
+    commands: mpsc::Sender<Command>,
 }
 
 impl Worker {
@@ -755,7 +759,10 @@ impl Worker {
             cfg!(debug_assertions),
             now(),
         );
-        let report = match self.tasks.archive_due(now, self.archive_after) {
+        let report = match self
+            .tasks
+            .archive_due(now, self.archive_after, ARCHIVE_BATCH)
+        {
             Ok(report) => report,
             Err(error) => {
                 warn!(%error, "cannot archive the closed tasks");
@@ -779,6 +786,9 @@ impl Worker {
                 error = %failure.error,
                 "cannot archive a task, it stays in tasks/"
             );
+        }
+        if report.more {
+            let _ = self.commands.send(Command::Archive);
         }
         if !report.moved.is_empty() || !report.failed.is_empty() {
             info!(

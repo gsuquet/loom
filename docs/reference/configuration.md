@@ -328,7 +328,7 @@ When the watcher cannot start, `loomd` logs a warning and picks the hand edits u
 
 ### Archive
 
-`loomd` moves the closed tasks to the archive when it starts (after the reconciliation on start) and then every hour: each `done` or `cancelled` task of `tasks/` whose closing is at least `[tasks] archive_after` old moves to `archive/<yyyy>/<id>/`.
+`loomd` moves the closed tasks to the archive when it starts (after the reconciliation on start) and then every hour: each `done` or `cancelled` task of `tasks/` whose closing is at least `[tasks] archive_after` old moves to `archive/<yyyy>/<id>/`. A task is archived between `archive_after` and `archive_after` plus one hour after its closing. There is no value that turns the archive off; a very long duration (`"36500d"`) keeps every task in `tasks/`.
 
 | Rule | Value |
 | --- | --- |
@@ -338,9 +338,10 @@ When the watcher cannot start, `loomd` logs a warning and picks the hand edits u
 | Move | One `rename` of the task directory, under its lock, then the index; a crash leaves the task in one place, indexed there at the next start. |
 | `archive/<yyyy>/<id>/` already exists | Not moved: logged as a warning, the task stays in `tasks/`. Nothing is deleted. |
 | A move that fails | Logged as a warning; the task stays in `tasks/` and is tried again at the next pass. |
+| More than 50 tasks due | A pass moves 50, then the next pass is queued at once, behind the requests already waiting: a large backlog never blocks the API for long. |
 | Debug build with `LOOM_TEST_TODAY=YYYY-MM-DD` | The pass runs as at `00:00:00Z` that day (tests). |
 
-Reads (`GET /v1/tasks`, `loom ls`, `loom show`) after `loomd` starts wait for the pass at start as well as the reconciliation.
+Reads (`GET /v1/tasks`, `loom ls`, `loom show`) after `loomd` starts wait for the first pass (its first 50 moves) as well as the reconciliation.
 
 ### Store repository
 

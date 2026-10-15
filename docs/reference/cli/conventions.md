@@ -386,6 +386,7 @@ Opens the `task.md` of the task (`<store>/tasks/<id>/task.md`, the store of its 
 - Otherwise `loom` waits up to 5 s for loomd to record the hand edit (an `edited` event of the actor `file`, or a change of the notes) and prints the task line. When loomd records no change in that time (only spacing changed, or loomd has not read the file yet), it prints `<prefix> saved; loomd recorded no change of the task within 5 s (…)`.
 - When other events were appended to the task's log while the editor was open (a `loom done` in another terminal, a sync, an agent), `loom` warns on stderr, naming their actors: the save replaced the file, and loomd recorded it as an edit that may revert them. `loom undo <id>` reverts that edit.
 - The editor exits non-zero: exit `1`, the file left as it is.
+- The task is a closed one and the hourly archive pass moves it while the editor is open: the save targets `tasks/<id>/task.md`, whose directory is gone. Most editors fail to save; one that creates the missing directory leaves a `tasks/<id>/` beside the archived task, which then wins over it ([task files](../task-file.md)).
 
 ## `loom upgrade`
 

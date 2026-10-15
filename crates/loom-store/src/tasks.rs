@@ -454,8 +454,10 @@ impl<P: StorePort> Tasks<P> {
         Ok(task)
     }
 
-    /// Moves every active, closed task whose closing is at least `after` before `now` to the
-    /// archive of the year it was closed (see [`loom_core::archive_year`]), and indexes it there.
+    /// Moves the active, closed tasks whose closing is at least `after` before `now` to the
+    /// archive of the year they were closed (see [`loom_core::archive_year`]), at most `limit`,
+    /// and indexes them there. [`ArchivedAll::more`] says the limit was reached: another pass
+    /// may have tasks to move.
     ///
     /// A task that cannot be read or moved is reported in [`ArchivedAll::failed`] and stays
     /// where it is; the others are moved.
@@ -467,10 +469,15 @@ impl<P: StorePort> Tasks<P> {
         &mut self,
         now: Timestamp,
         after: Duration,
+        limit: usize,
     ) -> Result<ArchivedAll, TaskError> {
-        let _span = debug_span!("tasks.archive_due").entered();
+        let _span = debug_span!("tasks.archive_due", limit).entered();
         let mut report = ArchivedAll::default();
         for row in list(&self.index.conn, None)? {
+            if report.moved.len() >= limit {
+                report.more = true;
+                break;
+            }
             let IndexedState::Valid { task, .. } = &row.state else {
                 continue;
             };
@@ -696,6 +703,8 @@ pub struct ArchivedAll {
     pub moved: Vec<ArchivedTask>,
     /// The tasks that could not be read or moved: they stay where they are.
     pub failed: Vec<TaskFailure>,
+    /// The limit of moves was reached before every task was looked at.
+    pub more: bool,
 }
 
 /// A task moved to the archive.

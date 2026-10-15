@@ -157,11 +157,11 @@ fn a_task_done_8_days_ago_is_archived_6_days_ago_is_not() {
     let done = task(&mut tasks, "Rotate certificates", Status::Done, 0, 1);
     let open = task(&mut tasks, "Renew domain", Status::Ready, 0, 3);
 
-    let report = tasks.archive_due(at(6 * DAY), WEEK).unwrap();
+    let report = tasks.archive_due(at(6 * DAY), WEEK, usize::MAX).unwrap();
     assert_eq!(report.moved, []);
     assert!(fixture.active_dir(&done.id).is_dir());
 
-    let report = tasks.archive_due(at(8 * DAY), WEEK).unwrap();
+    let report = tasks.archive_due(at(8 * DAY), WEEK, usize::MAX).unwrap();
     assert_eq!(
         report.moved,
         [ArchivedTask {
@@ -180,7 +180,13 @@ fn a_task_done_8_days_ago_is_archived_6_days_ago_is_not() {
     // An open task stays.
     assert_eq!(fixture.location(&open.id), TaskLocation::Active);
     // Nothing more to move.
-    assert_eq!(tasks.archive_due(at(9 * DAY), WEEK).unwrap().moved, []);
+    assert_eq!(
+        tasks
+            .archive_due(at(9 * DAY), WEEK, usize::MAX)
+            .unwrap()
+            .moved,
+        []
+    );
 }
 
 #[test]
@@ -188,7 +194,7 @@ fn an_archived_task_stays_readable_and_refuses_every_change() {
     let fixture = Fixture::new();
     let mut tasks = fixture.tasks();
     let done = task(&mut tasks, "Rotate certificates", Status::Cancelled, 0, 1);
-    tasks.archive_due(at(8 * DAY), WEEK).unwrap();
+    tasks.archive_due(at(8 * DAY), WEEK, usize::MAX).unwrap();
     let before = fs::read(fixture.archived_dir(&done.id, 2026).join("task.md")).unwrap();
     let log = tasks.events(&done.id).unwrap();
 
@@ -225,7 +231,7 @@ fn archived_tasks_are_searched_after_closed_ones() {
     let fixture = Fixture::new();
     let mut tasks = fixture.tasks();
     let archived = task(&mut tasks, "Certificates for staging", Status::Done, 0, 1);
-    tasks.archive_due(at(8 * DAY), WEEK).unwrap();
+    tasks.archive_due(at(8 * DAY), WEEK, usize::MAX).unwrap();
     let closed = task(
         &mut tasks,
         "Certificates for production",
@@ -245,7 +251,7 @@ fn a_reindex_gives_the_same_rows_for_archived_tasks() {
     let fixture = Fixture::new();
     let mut tasks = fixture.tasks();
     task(&mut tasks, "Archived", Status::Done, 0, 1);
-    tasks.archive_due(at(8 * DAY), WEEK).unwrap();
+    tasks.archive_due(at(8 * DAY), WEEK, usize::MAX).unwrap();
     task(&mut tasks, "Active", Status::Ready, 0, 3);
     let before = rows(&fixture.db());
     assert_eq!(before.len(), 2);
@@ -311,7 +317,7 @@ fn the_move_never_overwrites_a_task_in_the_archive() {
     fs::create_dir_all(&copy).unwrap();
     fs::write(copy.join("task.md"), "copy").unwrap();
 
-    let report = tasks.archive_due(at(8 * DAY), WEEK).unwrap();
+    let report = tasks.archive_due(at(8 * DAY), WEEK, usize::MAX).unwrap();
     assert_eq!(report.moved, []);
     assert_eq!(report.failed.len(), 1);
     assert!(
@@ -350,4 +356,19 @@ fn the_store_moves_an_active_task_only() {
     assert_eq!(stored.task().unwrap().status, Status::Done);
     assert_eq!(store.list().unwrap(), std::slice::from_ref(&done.id));
     assert_eq!(store.read_events(&done.id).unwrap().events.len(), 2);
+}
+
+#[test]
+fn a_pass_moves_at_most_its_limit_and_says_more_are_left() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    for seed in [1, 3, 5] {
+        task(&mut tasks, "Rotate certificates", Status::Done, 0, seed);
+    }
+    let first = tasks.archive_due(at(8 * DAY), WEEK, 2).unwrap();
+    assert_eq!(first.moved.len(), 2);
+    assert!(first.more);
+    let second = tasks.archive_due(at(8 * DAY), WEEK, 2).unwrap();
+    assert_eq!(second.moved.len(), 1);
+    assert!(!second.more);
 }
