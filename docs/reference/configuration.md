@@ -89,7 +89,7 @@ Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m
 
 `~` is the user's home directory (`HOME`). When `HOME` is unknown, `loomd` exits with code 1.
 
-`update`, `fetch_interval` and `fetch_concurrency` control the automatic updates of `loomd` ([updates](api.md#updates), [how updates work](../explanation/repo-updates.md)). An update is a fetch of the primary remote of the repository, then fast-forwards only when they cannot change local work. The update policy of a repository is its `[repos."<path>"] update`, otherwise the `update` of its context, otherwise `ff`. A repository without a context (`unassigned`) and without `[repos."<path>"] update` gets `fetch`: fetched, never fast-forwarded. An explicit `[repos."<path>"] update` always applies, `ff` included.
+`update`, `fetch_interval` and `fetch_concurrency` control the automatic updates of `loomd` ([updates](api.md#updates), [how updates work](../explanation/repo-updates.md)). An update fetches the primary remote of the repository. Then it fast-forwards the repository, but only if the fast-forward cannot change local work. The update policy of a repository is its `[repos."<path>"] update`, otherwise the `update` of its context, otherwise `ff`. A repository without a context (`unassigned`) and without `[repos."<path>"] update` gets `fetch`: fetched, never fast-forwarded. An explicit `[repos."<path>"] update` always applies, `ff` included.
 
 ```toml
 default_context = "personal"
@@ -449,7 +449,7 @@ Previous versions of `loom` and `loomd`, kept by `loom upgrade` and `loom rollba
 
 - Before the binaries are replaced, the current version is copied into `versions/<version>/`. This replaces a previous save of that version.
 - After the binaries are replaced, two previous versions are kept: the one just saved, plus the highest others by semver precedence, two in all.
-- The directory of the newly installed version can exist after `loom rollback`, or after an upgrade back to a version saved earlier. It duplicates the current binaries and is deleted. Exception: if a build of the same version (`--from`) replaced the binaries, this directory was just saved and is kept.
+- The directory of the newly installed version can exist after `loom rollback`, or after an upgrade back to a version saved earlier. It duplicates the current binaries and is deleted. Exception: if a build of the same version (`--from`) replaced the binaries, this directory is the one just saved, and it is kept.
 - Other directories are deleted.
 - `loom rollback` restores the highest version other than the current one, among the directories that hold both binaries.
 
