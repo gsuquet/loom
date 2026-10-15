@@ -100,6 +100,27 @@ loom cancel h8w2
 
 To revert a mistake, `loom undo k3q8` reverts the last change of the task, a closing included.
 
+A closed task leaves `loom ls --status done` 7 days after its closing (`[tasks] archive_after`): `loomd` moves it to the archive of its context store, where it is read-only.
+
+## Find an archived task
+
+```bash
+loom ls --archived
+loom ls --archived --status cancelled --all-contexts
+loom search certificates
+```
+
+`loom show <id>` works on an archived task as on any other; it prints `read-only:  archived in archive/<yyyy>`. `loom search` lists archived tasks after every other result.
+
+An archived task cannot be changed: `loom done`, `set`, `undo`, `edit` and the others refuse it. To work on it again, move its directory back to `tasks/` in its store (`<loom home>/contexts/<context>` unless `store.path` says otherwise), then reopen it with `loom edit k3q8`, setting `status = "ready"`:
+
+```bash
+mv ~/.loom/contexts/work/archive/2026/k3q8m2xa ~/.loom/contexts/work/tasks/
+loom edit k3q8
+```
+
+Reopen it right away: a task still closed goes back to the archive at the next hourly pass.
+
 ## Reference
 
 - [CLI conventions: task commands](../reference/cli/conventions.md#task-commands)

@@ -56,6 +56,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
 | `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[tasks] archive_after` | string: duration | `"7d"` | Time after its closing (`done` or `cancelled`) after which a task moves from `tasks/<id>/` to `archive/<yyyy>/<id>/`, `<yyyy>` the UTC year of the closing. Duration syntax of `[update] check_interval`. At least `"1d"`. See [archive](#archive). |
 | `[tasks] sync_interval` | string: duration | `"15m"` | Time between two syncs of each context store with its `store.backup.remote`. Duration syntax of `[update] check_interval`. At least `"1m"`. See [store backup](#store-backup). |
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
@@ -325,6 +326,22 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 
 When the watcher cannot start, `loomd` logs a warning and picks the hand edits up at its next start. When it reports lost events, every task is reconciled.
 
+### Archive
+
+`loomd` moves the closed tasks to the archive when it starts (after the reconciliation on start) and then every hour: each `done` or `cancelled` task of `tasks/` whose closing is at least `[tasks] archive_after` old moves to `archive/<yyyy>/<id>/`.
+
+| Rule | Value |
+| --- | --- |
+| Closing | The time of the last event of `events.jsonl` that set the task's current status (`status_changed`, `edited` by hand, `undone`, or `created` closed). A note or an edit after it does not delay the archive. |
+| No such event (a lost log) | Never archived automatically. |
+| `<yyyy>` | The year of the closing, in UTC. |
+| Move | One `rename` of the task directory, under its lock, then the index; a crash leaves the task in one place, indexed there at the next start. |
+| `archive/<yyyy>/<id>/` already exists | Not moved: logged as a warning, the task stays in `tasks/`. Nothing is deleted. |
+| A move that fails | Logged as a warning; the task stays in `tasks/` and is tried again at the next pass. |
+| Debug build with `LOOM_TEST_TODAY=YYYY-MM-DD` | The pass runs as at `00:00:00Z` that day (tests). |
+
+Reads (`GET /v1/tasks`, `loom ls`, `loom show`) after `loomd` starts wait for the pass at start as well as the reconciliation.
+
 ### Store repository
 
 Each store is a git repository, created by `loomd` at its first commit: when the store first changes, or at start when `tasks/` or `archive/` holds an entry. `loomd` runs `git init --initial-branch=main` in the store root and writes, when missing:
@@ -341,6 +358,7 @@ Each change is committed right after it is written, through the `git` CLI:
 | A task created, edited, changed by an action (status, pin, note) or undone through the [API](api.md#tasks) | `tasks/<id>/` | `<event type>(<id>): <summary>` of its first event, such as `created(k3q7zm2a): Ship it`, `status_changed(k3q7zm2a): ready -> active`, `note_logged(k3q7zm2a): Asked Alice`, `undone(k3q7zm2a): event e0000003`; `(+<n> events)` when it recorded more. A request that records no event commits nothing. |
 | A hand edit recorded as an `edited` event | `tasks/<id>/`, or `archive/<yyyy>/<id>/` and the removal of `tasks/<id>/` for an archived task | `edited(<id>): <fields>`, such as `edited(k3q7zm2a): title, due` |
 | A hand edit that records no event (notes, a new or invalid file, a move to the archive) | as above | `edited(<id>): changed by hand` |
+| A closed task moved to the archive by `loomd` | `archive/<yyyy>/<id>/` and the removal of `tasks/<id>/` | `archived(<id>): moved to archive/<yyyy>` |
 | A task directory removed | the whole store | `removed(<id>): task directory removed` |
 | The end of a reconciliation of every task (start, lost watcher events, `loom reindex`) | the whole store | `sync(<context>): uncommitted changes` |
 

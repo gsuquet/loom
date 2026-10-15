@@ -451,6 +451,7 @@ loom ls [OPTIONS]
 | `--all-contexts` |  |  | List every context. `LOOM_CONTEXT` is ignored; `-c` is an error |
 | `--status <STATUS>` | `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled` |  | The tasks with this status, sorted by ID, instead of the priority list |
 | `--why` |  |  | Add a `WHY` column: the rule that placed each task after the previous one |
+| `--archived` |  |  | The archived tasks (in `archive/<yyyy>/`), sorted by ID, instead of the priority list. With `--status`, only those with that status |
 | `--json` |  |  | Print the list as JSON (`TaskList` schema) |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |
 

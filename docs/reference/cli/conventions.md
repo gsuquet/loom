@@ -333,7 +333,7 @@ The title is the arguments joined with spaces. The task is `inbox`, or `ready` w
 
 ### `loom ls`
 
-Without `--status`, the priority list of the context (ready and active tasks, waiting ones whose date has come), with its position in a `#` column. With `--status`, the tasks with that status, sorted by ID. Columns: `ID` (shortest unique prefix), `CONTEXT`, `STATUS`, `P`, `KIND`, `DUE`, `TITLE` (`* ` before a pinned task; the error for an invalid `task.md`). `--why` (not with `--status`) adds `WHY`, the rule that placed the task after the previous one:
+Without `--status`, the priority list of the context (ready and active tasks, waiting ones whose date has come), with its position in a `#` column. With `--status`, the tasks with that status, sorted by ID. With `--archived`, the archived tasks (`archive/<yyyy>/`), sorted by ID, with `--status` only those with that status; archived tasks are in no other view. Columns: `ID` (shortest unique prefix), `CONTEXT`, `STATUS`, `P`, `KIND`, `DUE`, `TITLE` (`* ` before a pinned task; the error for an invalid `task.md`). `--why` (not with `--status` or `--archived`) adds `WHY`, the rule that placed the task after the previous one:
 
 | `WHY` | Rule |
 | --- | --- |
@@ -349,7 +349,7 @@ Without `--status`, the priority list of the context (ready and active tasks, wa
 
 ### `loom show`
 
-The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importance`, then `due`, `pinned`, `parent` when set, `created`, `updated`, `read-only` for a task this version cannot change), a blank line and the notes. `--json`: the `TaskDetail`. An unknown ID exits `1`; a prefix several tasks start with exits `1` and lists them.
+The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importance`, then `due`, `pinned`, `parent` when set, `created`, `updated`, `read-only` for a task this version cannot change, `archived in archive/<yyyy>` for an archived one), a blank line and the notes. `--json`: the `TaskDetail`. An unknown ID exits `1`; a prefix several tasks start with exits `1` and lists them.
 
 ### Gestures on a task
 
@@ -379,7 +379,7 @@ A malformed `key=value` or an unknown key is a usage error (exit `2`); a repeate
 
 ### `loom edit`
 
-Opens the `task.md` of the task (`<store>/tasks/<id>/task.md`, the store of its context in `config.toml`) in `VISUAL`, otherwise `EDITOR`, otherwise `vi`, run through `sh -c` with the path as its argument. Then:
+Opens the `task.md` of the task (`<store>/tasks/<id>/task.md`, the store of its context in `config.toml`) in `VISUAL`, otherwise `EDITOR`, otherwise `vi`, run through `sh -c` with the path as its argument. An archived task is not opened: exit `1`, `task <prefix> is archived (archive/<yyyy>): an archived task is read-only. To reopen it, move its directory back to tasks/.` Then:
 
 - File unchanged: prints `<prefix> unchanged`.
 - File invalid (`task.md` format): exit `1` with the path and the error. The file is kept as saved; loomd shows the task read-only until it is fixed.
