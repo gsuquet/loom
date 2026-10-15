@@ -319,6 +319,10 @@ pub struct AddArgs {
 
 /// Options of `loom ls`.
 #[derive(Debug, clap::Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "command-line flags; clap enforces their combinations"
+)]
 pub struct LsArgs {
     /// List every context. `LOOM_CONTEXT` is ignored; `-c` is an error.
     #[arg(long)]
@@ -327,8 +331,12 @@ pub struct LsArgs {
     #[arg(long, value_enum)]
     pub status: Option<StatusArg>,
     /// Add a `WHY` column: the rule that placed each task after the previous one.
-    #[arg(long, conflicts_with = "status")]
+    #[arg(long, conflicts_with_all = ["status", "archived"])]
     pub why: bool,
+    /// The archived tasks (in `archive/<yyyy>/`), sorted by ID, instead of the priority list.
+    /// With `--status`, only those with that status.
+    #[arg(long)]
+    pub archived: bool,
     /// Print the list as JSON (`TaskList` schema).
     #[arg(long)]
     pub json: bool,

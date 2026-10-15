@@ -62,7 +62,8 @@ use crate::repos::Failure;
 type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 
 /// How long a read of the tasks index (a search that covers tasks, a list, a task, an ID prefix)
-/// waits for the reconciliation on start before it answers from the tasks indexed so far.
+/// waits for the reconciliation and the archive pass on start before it answers from the tasks
+/// indexed so far.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A request to the task thread, with the span of the API request that sent it.
@@ -130,7 +131,7 @@ pub struct TaskStore {
 }
 
 /// What the API handlers use: the command channel, the index for reads, and whether the
-/// reconciliation on start is over.
+/// reconciliation and the archive pass on start are over.
 #[derive(Clone)]
 pub struct TaskHandle {
     commands: mpsc::Sender<Command>,
@@ -376,9 +377,9 @@ impl TaskHandle {
         answer.await.map_err(|_| stopped())
     }
 
-    /// Waits, at most `timeout`, for the reconciliation on start, so that a read does not
-    /// answer from a tasks index still being filled. `false` when it is not over yet; the
-    /// caller goes on with the index as it is.
+    /// Waits, at most `timeout`, for the reconciliation and the archive pass on start, so that a
+    /// read does not answer from a tasks index still being filled. `false` when it is not over
+    /// yet; the caller goes on with the index as it is.
     pub async fn wait_ready(&self, timeout: Duration) -> bool {
         let mut ready = self.ready.clone();
         // A thread gone without setting it (stopped, panicked) ends the wait as well.
@@ -511,7 +512,7 @@ struct Worker {
     /// Who the changes of the API are recorded as: the actor `user`, on this machine.
     user: Origin,
     random: OsRandom,
-    /// Set once the reconciliation on start is over, then dropped.
+    /// Set once the reconciliation and the archive pass on start are over, then dropped.
     ready: Option<watch::Sender<bool>>,
     /// `[tasks] archive_after`.
     archive_after: Duration,
@@ -544,12 +545,15 @@ impl Worker {
                 }
                 Command::ReconcileAll => {
                     self.reconcile_all();
-                    // The first one is the reconciliation on start, queued before any other.
+                }
+                Command::Archive => {
+                    self.archive();
+                    // The first one is the pass on start, queued right after the reconciliation
+                    // on start: reads then see the tasks indexed and archived.
                     if let Some(ready) = self.ready.take() {
                         ready.send_replace(true);
                     }
                 }
-                Command::Archive => self.archive(),
                 Command::Changed { context, id } => self.reconcile(&context, &id),
                 Command::PrepareSync { context, reply } => {
                     let _ = reply.send(

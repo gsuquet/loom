@@ -16,6 +16,7 @@ use loom::task::{
 };
 use loom_api::{
     ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents, TaskList,
+    TaskReadOnly,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -100,6 +101,7 @@ pub fn ls(args: &LsArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
         let path = list_api_path(
             context.as_ref(),
             args.status.map(loom::cli::StatusArg::as_str),
+            args.archived,
         );
         let list: TaskList = client.get(&path).await.map_err(|error| api_error(&error))?;
         output(&list, args.json, || render_list(&list.tasks, args.why))
@@ -198,6 +200,14 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     let client = runtime.block_on(client(layout))?;
     let before = runtime.block_on(get(&client, &args.id))?;
     let summary = &before.summary;
+    // A hand edit of an archived file would be recorded by loomd: the command keeps the archive
+    // read-only, as the API does.
+    if let Some(TaskReadOnly::Archived(year)) = summary.read_only {
+        return Err(miette!(
+            "task {} is archived (archive/{year}): an archived task is read-only. To reopen it, move its directory back to tasks/.",
+            summary.prefix
+        ));
+    }
     // The full ID from here: a task created while the editor is open may share the prefix.
     let id = summary.id.to_string();
     let logged = runtime.block_on(events(&client, &id))?.len();

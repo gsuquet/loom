@@ -661,3 +661,90 @@ fn edit_warns_when_the_task_changed_while_the_editor_was_open() {
     let line = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(line.ends_with(" work ready Saved over\n"), "{line}");
 }
+
+#[test]
+fn archived_tasks_are_listed_apart_shown_and_read_only() {
+    let sandbox = Sandbox::new();
+    let open = sandbox.add(&["-c", "work", "--ready", "Renew the domain"]);
+    // A done task already in the archive of 2026.
+    let archived = sandbox
+        .loom_home()
+        .join("contexts/work/archive/2026/k3q7zm2a");
+    fs::create_dir_all(&archived).unwrap();
+    fs::write(
+        archived.join("task.md"),
+        "+++\nid = \"k3q7zm2a\"\ntitle = \"Rotate the certificates\"\nkind = \"chore\"\ncontext = \"work\"\nstatus = \"done\"\nimportance = \"p3\"\ncreated = 2026-10-12T09:14:00Z\n+++\n\n## Notes\n",
+    )
+    .unwrap();
+    let ids = |args: &[&str]| -> Vec<String> {
+        let list: TaskList = serde_json::from_str(&sandbox.ok(args)).unwrap();
+        list.tasks
+            .into_iter()
+            .map(|summary| summary.id.to_string())
+            .collect()
+    };
+    // Picked up by the watcher: wait for it.
+    let deadline = Instant::now() + TIMEOUT;
+    while ids(&["ls", "-c", "work", "--archived", "--json"]).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the archived task is not indexed"
+        );
+        thread::sleep(POLL);
+    }
+    assert_eq!(
+        ids(&["ls", "-c", "work", "--json"]),
+        [open.summary.id.to_string()]
+    );
+    assert_eq!(
+        ids(&[
+            "ls",
+            "-c",
+            "work",
+            "--archived",
+            "--status",
+            "done",
+            "--json"
+        ]),
+        ["k3q7zm2a"]
+    );
+    let table = sandbox.ok(&["ls", "-c", "work", "--archived"]);
+    assert!(table.contains("Rotate the certificates"), "{table}");
+    assert!(!table.contains("Renew the domain"), "{table}");
+
+    let shown = sandbox.ok(&["show", "k3q7"]);
+    assert!(
+        shown.contains("read-only:  archived in archive/2026"),
+        "{shown}"
+    );
+
+    // Reopening, or any change, is refused with the reason.
+    for args in [
+        &["set", "k3q7", "title=Renamed"][..],
+        &["undo", "k3q7"],
+        &["cancel", "k3q7"],
+    ] {
+        let output = sandbox.run(&sandbox.home(), None, args);
+        assert_ne!(output.status.code(), Some(0), "{args:?}");
+        let error = stderr(&output);
+        assert!(
+            error.contains("is archived (archive/2026)"),
+            "{args:?}: {error}"
+        );
+    }
+    let edit = sandbox.run_env(
+        &sandbox.home(),
+        None,
+        &[("EDITOR", "true")],
+        &["edit", "k3q7"],
+    );
+    assert_ne!(edit.status.code(), Some(0));
+    let error = stderr(&edit);
+    assert!(
+        error.contains("is archived (archive/2026)") && error.contains("move its directory back"),
+        "{error}"
+    );
+
+    let usage = sandbox.run(&sandbox.home(), None, &["ls", "--archived", "--why"]);
+    assert_eq!(usage.status.code(), Some(2), "{}", stderr(&usage));
+}

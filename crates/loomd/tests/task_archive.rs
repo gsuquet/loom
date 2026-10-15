@@ -86,7 +86,15 @@ impl Sandbox {
     }
 
     fn start(&self) -> Daemon {
+        self.start_on(None)
+    }
+
+    /// Starts loomd, archiving as on `today` (`LOOM_TEST_TODAY`) when given.
+    fn start_on(&self, today: Option<&str>) -> Daemon {
         let mut command = Command::new(env!("CARGO_BIN_EXE_loomd"));
+        if let Some(today) = today {
+            command.env("LOOM_TEST_TODAY", today);
+        }
         command
             .env("LOOM_HOME", self.loom_home())
             .env("HOME", self.user_home())
@@ -298,5 +306,71 @@ fn an_archived_task_reopened_by_hand_stays_archived_and_out_of_the_lists() {
     let detail: TaskDetail = ok(&sandbox.call("GET", &format!("/v1/tasks/{ID}")));
     assert_eq!(detail.summary.read_only, None);
     let _: TaskDetail = ok(&sandbox.call("POST", &format!("/v1/tasks/{ID}/actions/done")));
+    daemon.stop();
+}
+
+#[test]
+fn a_task_done_8_days_ago_is_archived_and_committed_6_days_ago_it_is_not() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let created: TaskDetail = ok(&request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/tasks",
+        Some(&serde_json::json!({
+            "title": "Rotate the certificates",
+            "kind": "chore",
+            "context": "work",
+            "status": "ready",
+        })),
+    ));
+    let id = created.summary.id.to_string();
+    let _: TaskDetail = ok(&sandbox.call("POST", &format!("/v1/tasks/{id}/actions/done")));
+    let events: loom_api::TaskEvents = ok(&sandbox.call("GET", &format!("/v1/tasks/{id}/events")));
+    let closed = events.events.last().unwrap().at;
+    daemon.stop();
+    // The day of the closing, then 6 and 8 days later, at 00:00 UTC.
+    let day: jiff::civil::Date = closed.to_string()[..10].parse().unwrap();
+    let after = |days: i64| {
+        day.checked_add(jiff::Span::new().days(days))
+            .unwrap()
+            .to_string()
+    };
+    let year = &closed.to_string()[..4];
+    let active = sandbox.store().join("tasks").join(&id);
+    let archived = sandbox.store().join("archive").join(year).join(&id);
+
+    let daemon = sandbox.start_on(Some(&after(6)));
+    let detail: TaskDetail = ok(&sandbox.call("GET", &format!("/v1/tasks/{id}")));
+    assert_eq!(detail.summary.read_only, None);
+    assert!(active.is_dir());
+    daemon.stop();
+
+    let daemon = sandbox.start_on(Some(&after(8)));
+    let detail: TaskDetail = ok(&sandbox.call("GET", &format!("/v1/tasks/{id}")));
+    assert_eq!(
+        detail.summary.read_only,
+        Some(TaskReadOnly::Archived(year.parse().unwrap()))
+    );
+    assert!(!active.exists());
+    assert!(archived.join("task.md").is_file());
+    assert_eq!(listed(&sandbox, "/v1/tasks"), [] as [&str; 0]);
+    assert_eq!(listed(&sandbox, "/v1/tasks?archived=true"), [id.as_str()]);
+    // One commit for the move: the old path removed, the new one added, nothing left.
+    eventually("the move to be committed", || {
+        sandbox
+            .git(&["log", "--format=%s", "-1"])
+            .starts_with(&format!("archived({id}): moved to archive/{year}"))
+    });
+    let changed = sandbox.git(&["show", "--name-status", "--format=", "HEAD"]);
+    assert!(
+        changed.contains(&format!("tasks/{id}/task.md")),
+        "{changed}"
+    );
+    assert!(
+        changed.contains(&format!("archive/{year}/{id}/task.md")),
+        "{changed}"
+    );
+    assert_eq!(sandbox.git(&["status", "--porcelain"]), "");
     daemon.stop();
 }
