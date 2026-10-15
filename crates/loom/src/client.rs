@@ -102,6 +102,18 @@ impl Client {
         self.call(Method::POST, path, body).await
     }
 
+    /// `PATCH path` with `body` as JSON.
+    pub async fn patch<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &(impl Serialize + Sync),
+    ) -> Result<T, ClientError> {
+        let body = serde_json::to_vec(body).map_err(|error| {
+            ClientError::Protocol(format!("cannot encode the request: {error}"))
+        })?;
+        self.call(Method::PATCH, path, Some(body)).await
+    }
+
     /// `DELETE path`.
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         self.call(Method::DELETE, path, None).await

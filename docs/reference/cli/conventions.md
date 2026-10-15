@@ -311,7 +311,7 @@ A failing manager command:
 
 ## Task commands
 
-`loom add`, `loom ls` and `loom show` start `loomd` when it is not running. Their requests time out after 15 s: right after it starts, `loomd` waits up to 10 s for the tasks it indexes before answering.
+The task commands start `loomd` when it is not running. Their requests time out after 15 s: right after it starts, `loomd` waits up to 10 s for the tasks it indexes before answering.
 
 ### Context
 
@@ -350,6 +350,42 @@ Without `--status`, the priority list of the context (ready and active tasks, wa
 ### `loom show`
 
 The fields, one per line (`id`, `context`, `title`, `kind`, `status`, `importance`, then `due`, `pinned`, `parent` when set, `created`, `updated`, `read-only` for a task this version cannot change), a blank line and the notes. `--json`: the `TaskDetail`. An unknown ID exits `1`; a prefix several tasks start with exits `1` and lists them.
+
+### Gestures on a task
+
+`loom set`, `done`, `cancel`, `snooze` and `undo` take a task ID or prefix and print one line, `<prefix> <context> <status> <title>`, or the `TaskDetail` with `--json`. loomd refuses what the transitions forbid (`done` and `cancelled` move to `ready` only) and changes of a read-only task: exit `1` with its error code.
+
+| Command | Request |
+| --- | --- |
+| `loom done <id>` | `POST /v1/tasks/{id}/actions/done` |
+| `loom cancel <id>` | `POST /v1/tasks/{id}/actions/cancelled` |
+| `loom snooze <id> <until> [--on <who>]` | `POST /v1/tasks/{id}/actions/waiting` with `until` (a date as for `--due`) and `on` |
+| `loom undo <id>` | `POST /v1/tasks/{id}/undo` |
+| `loom set <id> <key>=<value>…` | `PATCH /v1/tasks/{id}`, then `pin` or `unpin` for `pinned` |
+
+`loom set` keys, each at most once (a value may hold `=`):
+
+| Key | Value |
+| --- | --- |
+| `title` | The new title. |
+| `kind` | A kind of `loom add --kind`. |
+| `format` | `talk`, `article`, `training` or `workshop`; only together with `kind=content`, even for a task that is already `content`. |
+| `importance` | `p0` to `p3`. |
+| `due` | A date as for `--due`, or `none` to remove it. |
+| `parent` | An ID or prefix, or `none`. The other relations are kept. loomd refuses a task of another context, the task itself or one of its descendants. |
+| `pinned` | `yes`/`true` or `no`/`false`. |
+
+A malformed `key=value` or an unknown key is a usage error (exit `2`); a repeated key or an invalid value exits `1` before loomd is asked.
+
+### `loom edit`
+
+Opens the `task.md` of the task (`<store>/tasks/<id>/task.md`, the store of its context in `config.toml`) in `VISUAL`, otherwise `EDITOR`, otherwise `vi`, run through `sh -c` with the path as its argument. Then:
+
+- File unchanged: prints `<prefix> unchanged`.
+- File invalid (`task.md` format): exit `1` with the path and the error. The file is kept as saved; loomd shows the task read-only until it is fixed.
+- Otherwise `loom` waits up to 5 s for loomd to record the hand edit (an `edited` event of the actor `file`, or a change of the notes) and prints the task line. When loomd records no change in that time (only spacing changed, or loomd has not read the file yet), it prints `<prefix> saved; loomd recorded no change of the task within 5 s (…)`.
+- When other events were appended to the task's log while the editor was open (a `loom done` in another terminal, a sync, an agent), `loom` warns on stderr, naming their actors: the save replaced the file, and loomd recorded it as an edit that may revert them. `loom undo <id>` reverts that edit.
+- The editor exits non-zero: exit `1`, the file left as it is.
 
 ## `loom upgrade`
 
