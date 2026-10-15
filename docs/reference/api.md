@@ -924,7 +924,7 @@ Error returned instead of a response body.
 | `invalid_request` | The request is malformed: unparsable body, unknown or absent field, invalid value. | No: the same request fails the same way. |
 | `not_found` | The addressed resource or endpoint does not exist. | No. |
 | `version_mismatch` | The client asked for an API version the daemon does not serve. | No: upgrade the client or the daemon. |
-| `unavailable` | The daemon cannot serve the request right now, because it stops. | Yes, later. |
+| `unavailable` | The daemon stops and cannot serve the request. The same request can succeed after loomd starts again. | Yes, later. |
 | `internal` | The daemon failed while it handled a valid request: a bug or an unexpected I/O failure. | Not expected to help. |
 | `ambiguous_prefix` | A task ID prefix matches several tasks; `details` lists them. | With a longer prefix. |
 | `read_only` | The task cannot be changed: unknown kind, format or status, or an invalid `task.md`. | No: fix the file, or upgrade loom. |
