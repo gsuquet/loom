@@ -313,12 +313,10 @@ fn added_tasks_are_listed_ranked_and_shown() {
             .contains("Water the plants")
     );
 
-    let shown = sandbox.ok(&["show", &bug.summary.prefix]);
+    // The full ID: a prefix unique when the task was created may be shared by a later one.
+    let shown = sandbox.ok(&["show", bug.summary.id.as_str()]);
     assert!(
-        shown.starts_with(&format!(
-            "id:         {} ({})\n",
-            bug.summary.id, bug.summary.prefix
-        )),
+        shown.starts_with(&format!("id:         {} (", bug.summary.id)),
         "{shown}"
     );
     assert!(shown.contains("\ndue:        2026-10-15\n"), "{shown}");
@@ -392,7 +390,8 @@ fn a_repository_not_indexed_yet_gets_its_context_from_its_remote() {
 fn a_task_shares_the_context_of_its_parent() {
     let sandbox = Sandbox::new();
     let parent = sandbox.add(&["-c", "work", "Hardening"]);
-    let prefix = parent.summary.prefix;
+    // The full ID: a prefix unique when the parent was created may be shared by a later task.
+    let prefix = parent.summary.id.to_string();
     // Inferred context (`default_context` here): the parent's wins.
     let child = sandbox.add(&["--parent", &prefix, "Rate limits"]);
     assert_eq!(context_of(&child), "work");
