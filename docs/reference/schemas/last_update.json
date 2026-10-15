@@ -30,7 +30,7 @@
       "description": "A git operation left in progress in the working tree.",
       "oneOf": [
         {
-          "description": "`git rebase`, including an interactive one.",
+          "description": "`git rebase`, also an interactive one.",
           "type": "string",
           "const": "rebase"
         },
@@ -55,7 +55,7 @@
           "const": "bisect"
         },
         {
-          "description": "`git am`: patches being applied from a mailbox.",
+          "description": "`git am`: it applies patches from a mailbox.",
           "type": "string",
           "const": "am"
         }
@@ -316,7 +316,7 @@
           ]
         },
         {
-          "description": "Another git process (an editor's automatic fetch, a command of the user) held a lock of\nthe repository (`index.lock`, a ref lock) during this step. Retried at the next\ninterval, without backoff; the lock is never removed.",
+          "description": "Another git process (an editor's automatic fetch, a command of the user) held a lock of\nthe repository (`index.lock`, a ref lock) during this step. Retried at the next\ninterval, without backoff. The lock is never removed.",
           "type": "object",
           "properties": {
             "code": {
@@ -395,7 +395,7 @@
       "description": "One result of an update.",
       "oneOf": [
         {
-          "description": "The primary remote was fetched; no branch had to move.",
+          "description": "The primary remote was fetched. No branch had to move.",
           "type": "object",
           "properties": {
             "kind": {

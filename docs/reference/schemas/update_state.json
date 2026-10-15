@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "UpdateState",
-  "description": "Content of `<loom home>/state/update.json`.\n\nEvery field may be missing (an empty state). Unknown fields are accepted and kept when the\nfile is rewritten, so binaries of different versions share the file.",
+  "description": "Content of `<loom home>/state/update.json`.\n\nEvery field can be absent (an empty state). Unknown fields are accepted and kept when the\nfile is rewritten, so binaries of different versions share the file.",
   "type": "object",
   "properties": {
     "available": {
@@ -94,7 +94,7 @@
       "type": "object",
       "properties": {
         "from": {
-          "description": "Version running when the upgrade started.",
+          "description": "Version that ran when the upgrade started.",
           "type": "string"
         },
         "started_at": {
@@ -102,7 +102,7 @@
           "$ref": "#/$defs/Timestamp"
         },
         "to": {
-          "description": "Version being installed.",
+          "description": "Version that the upgrade installs.",
           "type": "string"
         }
       },
@@ -155,7 +155,7 @@
           ]
         },
         {
-          "description": "A newer version exists; the policy is `notify`.",
+          "description": "A newer version exists, and the policy is `notify`.",
           "type": "object",
           "properties": {
             "at": {
@@ -229,7 +229,7 @@
           ]
         },
         {
-          "description": "The staged loomd failed the pre-flight check; nothing was installed.",
+          "description": "The staged loomd failed the pre-flight check. Nothing was installed.",
           "type": "object",
           "properties": {
             "at": {
@@ -298,7 +298,7 @@
               "$ref": "#/$defs/Timestamp"
             },
             "from": {
-              "description": "Version running when it started.",
+              "description": "Version that ran when it started.",
               "type": "string"
             },
             "kind": {
@@ -306,7 +306,7 @@
               "const": "interrupted"
             },
             "to": {
-              "description": "Version it was installing.",
+              "description": "Version that it was to install.",
               "type": "string"
             }
           },

@@ -17,7 +17,7 @@
       "minimum": 0
     },
     "previous_pid": {
-      "description": "PID of the loomd that was running, `null` when none was.",
+      "description": "PID of the loomd that ran before the restart, `null` if there was none.",
       "type": [
         "integer",
         "null"
@@ -60,12 +60,12 @@
           "const": "systemd"
         },
         {
-          "description": "No service: `SIGTERM` to the loomd holding the lock, then a new loomd started detached.",
+          "description": "No service: `SIGTERM` to the loomd that holds the lock, then a new loomd started detached.",
           "type": "string",
           "const": "signal"
         },
         {
-          "description": "No service and no loomd running: a new loomd started detached.",
+          "description": "No service and no loomd that runs: a new loomd started detached.",
           "type": "string",
           "const": "start"
         }

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ContextAssignment, LastUpdate, RepoState, Timestamp};
 
-/// Forge hosting a remote (`[forges."<host>"] kind`).
+/// Forge that hosts a remote (`[forges."<host>"] kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ForgeKind {
@@ -75,7 +75,7 @@ pub struct RemoteUrl {
     /// Port, when not the default of the transport.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// Path without leading or trailing `/` and without `.git`, such as `gsuquet/loom`.
+    /// Path without `/` at the start or at the end and without `.git`, such as `gsuquet/loom`.
     pub path: String,
 }
 
@@ -97,7 +97,7 @@ pub struct Remote {
     pub name: String,
     /// URL as configured, without any password.
     pub url: String,
-    /// Normalized location; absent for a local path or a URL loom cannot read.
+    /// Normalized location. Absent for a local path or a URL loom cannot read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<RemoteUrl>,
 }
@@ -157,9 +157,9 @@ pub struct RepoList {
 pub struct RegisterRequest {
     /// Absolute path of the repository or of a directory inside it.
     pub path: PathBuf,
-    /// Registration on use (a `loom` command run inside the repository): a repository already
-    /// in the index is left as it is, only its `last_used` is set; one not in the index is
-    /// registered. `last_used` is set to now in both cases.
+    /// Registration on use (a `loom` command run inside the repository). A repository already
+    /// in the index is left as it is: only its `last_used` is set. A repository not in the
+    /// index is registered. `last_used` is set to now in both cases.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub on_use: bool,
 }
@@ -173,7 +173,7 @@ pub struct ScanResult {
     pub updated: u64,
     /// Repositories removed from the index: no longer on disk.
     pub removed: u64,
-    /// Paths that could not be read; the repositories below them are kept as they were.
+    /// Paths that could not be read. The repositories below them are kept as they were.
     pub errors: Vec<ScanIssue>,
     /// Duration of the scan, in whole milliseconds.
     pub duration_ms: u64,

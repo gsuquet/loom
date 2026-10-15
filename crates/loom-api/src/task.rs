@@ -23,14 +23,14 @@ pub struct TaskSummary {
     pub id: TaskId,
     /// Shortest prefix of the ID that no other task ID starts with, across every context.
     pub prefix: String,
-    /// Context of the store holding the task.
+    /// Context of the store that holds the task.
     pub context: ContextName,
-    /// The task; `null` when its `task.md` is invalid.
+    /// The task. `null` when its `task.md` is invalid.
     pub task: Option<Task>,
-    /// Why the task cannot be changed; absent when it can.
+    /// Why the task cannot be changed. Absent when it can.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only: Option<TaskReadOnly>,
-    /// Its place in the priority list; present with `ranked=true` only.
+    /// Its place in the priority list. Present with `ranked=true` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<TaskRank>,
 }
@@ -51,9 +51,9 @@ pub struct TaskDetail {
     /// The task, as listed (without `rank`).
     #[serde(flatten)]
     pub summary: TaskSummary,
-    /// The notes after the frontmatter; the whole file when it is invalid.
+    /// The notes after the frontmatter. The whole file when it is invalid.
     pub body: String,
-    /// The gestures the task accepts; empty for a read-only task.
+    /// The gestures the task accepts. Empty for a read-only task.
     pub actions: Vec<Action>,
 }
 
@@ -139,7 +139,7 @@ impl TaskActionName {
     }
 }
 
-/// Body of `POST /v1/tasks/{id}/actions/{action}`, optional; each field belongs to one action.
+/// Body of `POST /v1/tasks/{id}/actions/{action}`, optional. Each field belongs to one action.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskActionRequest {
@@ -170,7 +170,7 @@ pub struct TaskCandidate {
     pub id: TaskId,
     /// Context of its store.
     pub context: ContextName,
-    /// Title; empty when its `task.md` is invalid.
+    /// Title. Empty when its `task.md` is invalid.
     pub title: String,
 }
 

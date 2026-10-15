@@ -5,11 +5,11 @@
   "type": "object",
   "properties": {
     "code": {
-      "description": "Machine-readable category; clients branch on it, never on `message`.",
+      "description": "Machine-readable category. Clients branch on it, never on `message`.",
       "$ref": "#/$defs/ErrorCode"
     },
     "details": {
-      "description": "Structured context for the error, such as the name of an invalid field. Its shape depends\non `code` and the endpoint; absent when there is none."
+      "description": "Structured context for the error, such as the name of an invalid field. Its shape depends\non `code` and the endpoint. Absent when there is none."
     },
     "message": {
       "description": "Human-readable explanation, in English.",
@@ -25,7 +25,7 @@
       "description": "Category of an `ApiError`. Closed set: a new code is an API change.",
       "oneOf": [
         {
-          "description": "The request is malformed: unparsable body, unknown or missing field, invalid value.\nRetrying the same request fails the same way.",
+          "description": "The request is malformed: unparsable body, unknown or absent field, invalid value.\nThe same request fails the same way again.",
           "type": "string",
           "const": "invalid_request"
         },
@@ -40,17 +40,17 @@
           "const": "version_mismatch"
         },
         {
-          "description": "The daemon cannot serve the request right now (starting, shutting down, a dependency is\ndown). The same request may succeed later.",
+          "description": "The daemon cannot serve the request right now, because it stops.\nThe same request can succeed later.",
           "type": "string",
           "const": "unavailable"
         },
         {
-          "description": "The daemon failed while handling a valid request: a bug or an unexpected I/O failure.",
+          "description": "The daemon failed while it handled a valid request: a bug or an unexpected I/O failure.",
           "type": "string",
           "const": "internal"
         },
         {
-          "description": "A task ID prefix matches several tasks; `details` lists them.",
+          "description": "A task ID prefix matches several tasks. `details` lists them.",
           "type": "string",
           "const": "ambiguous_prefix"
         },

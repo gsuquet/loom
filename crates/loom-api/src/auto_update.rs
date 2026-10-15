@@ -14,7 +14,7 @@ use crate::Timestamp;
 pub enum UpdatePolicyMode {
     /// Install it, with a pre-flight check and a watchdog that rolls back a failed release.
     Auto,
-    /// Record it as available, shown by `loom status`; install nothing.
+    /// Record it as available, shown by `loom status`. Install nothing.
     Notify,
     /// Never check: no network access.
     Off,
@@ -74,7 +74,7 @@ pub enum ChannelSource {
     /// Chosen explicitly with `loom upgrade --channel` (or `install.sh --channel`), kept in
     /// `state/update.json`.
     Chosen,
-    /// The channel of the running build.
+    /// The channel of the build that runs.
     Build,
 }
 
@@ -107,7 +107,7 @@ pub struct ChosenChannel {
 
 /// Content of `<loom home>/state/update.json`.
 ///
-/// Every field may be missing (an empty state). Unknown fields are accepted and kept when the
+/// Every field can be absent (an empty state). Unknown fields are accepted and kept when the
 /// file is rewritten, so binaries of different versions share the file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateState {
@@ -140,9 +140,9 @@ pub struct UpdateState {
 /// An upgrade in progress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PendingUpgrade {
-    /// Version running when the upgrade started.
+    /// Version that ran when the upgrade started.
     pub from: String,
-    /// Version being installed.
+    /// Version that the upgrade installs.
     pub to: String,
     /// Instant the upgrade started (before the download).
     pub started_at: Timestamp,
@@ -157,7 +157,7 @@ pub enum UpdateResult {
         /// Instant of the check.
         at: Timestamp,
     },
-    /// A newer version exists; the policy is `notify`.
+    /// A newer version exists, and the policy is `notify`.
     Available {
         /// Instant of the check.
         at: Timestamp,
@@ -180,7 +180,7 @@ pub enum UpdateResult {
         /// Version installed.
         to: String,
     },
-    /// The staged loomd failed the pre-flight check; nothing was installed.
+    /// The staged loomd failed the pre-flight check. Nothing was installed.
     PreflightFailed {
         /// Instant of the verdict.
         at: Timestamp,
@@ -204,9 +204,9 @@ pub enum UpdateResult {
     Interrupted {
         /// Instant it was found stale.
         at: Timestamp,
-        /// Version running when it started.
+        /// Version that ran when it started.
         from: String,
-        /// Version it was installing.
+        /// Version that it was to install.
         to: String,
     },
     /// The check or the upgrade failed before any swap: network, verification, install
@@ -219,7 +219,7 @@ pub enum UpdateResult {
     },
 }
 
-/// Update state of a running loomd: its effective configuration and `state/update.json`.
+/// Update state of a loomd that runs: its effective configuration and `state/update.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateStatus {
     /// Effective policy: `[update] policy`, or the default of the build channel.
@@ -228,7 +228,7 @@ pub struct UpdateStatus {
     /// `loom upgrade --channel`, otherwise the build channel. Absent for a local build without
     /// either: nothing is checked.
     pub channel: Option<UpdateChannel>,
-    /// Where `channel` comes from; absent when `channel` is. Optional when reading, so that a
+    /// Where `channel` comes from. Absent when `channel` is. Optional for a read, so that a
     /// client reads a daemon older than this field.
     #[serde(default)]
     pub channel_source: Option<ChannelSource>,
@@ -236,7 +236,7 @@ pub struct UpdateStatus {
     pub check_interval_secs: u64,
     /// Instant of the last check.
     pub last_check: Option<Timestamp>,
-    /// Newer version available (`notify`); absent when it is not newer than the daemon.
+    /// Newer version available (`notify`). Absent when it is not newer than the daemon.
     pub available: Option<String>,
     /// Upgrade in progress.
     pub pending: Option<PendingUpgrade>,

@@ -46,7 +46,7 @@
               "$ref": "#/$defs/ContextName"
             },
             "pattern": {
-              "description": "The matching entry, `host` or `host/path-prefix`, as normalized.",
+              "description": "The entry that matches, `host` or `host/path-prefix`, as normalized.",
               "type": "string"
             },
             "rule": {
@@ -69,7 +69,7 @@
               "$ref": "#/$defs/ContextName"
             },
             "prefix": {
-              "description": "The matching entry, as written in the configuration (before `~` expansion).",
+              "description": "The entry that matches, as written in the configuration (before `~` expansion).",
               "type": "string"
             },
             "rule": {
@@ -84,7 +84,7 @@
           ]
         },
         {
-          "description": "No rule matches; `default_context` is set.",
+          "description": "No rule matches, and `default_context` is set.",
           "type": "object",
           "properties": {
             "context": {
@@ -117,14 +117,14 @@
       ]
     },
     "ContextName": {
-      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`, starting with a letter, not ending with `-`.",
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
     },
     "ForgeKind": {
-      "description": "Forge hosting a remote (`[forges.\"<host>\"] kind`).",
+      "description": "Forge that hosts a remote (`[forges.\"<host>\"] kind`).",
       "oneOf": [
         {
           "description": "GitHub or GitHub Enterprise.",
@@ -356,7 +356,7 @@
       "type": "object",
       "properties": {
         "location": {
-          "description": "Normalized location; absent for a local path or a URL loom cannot read.",
+          "description": "Normalized location. Absent for a local path or a URL loom cannot read.",
           "anyOf": [
             {
               "$ref": "#/$defs/RemoteUrl"
@@ -389,7 +389,7 @@
           "type": "string"
         },
         "path": {
-          "description": "Path without leading or trailing `/` and without `.git`, such as `gsuquet/loom`.",
+          "description": "Path without `/` at the start or at the end and without `.git`, such as `gsuquet/loom`.",
           "type": "string"
         },
         "port": {
@@ -471,7 +471,7 @@
       "description": "A git operation left in progress in the working tree.",
       "oneOf": [
         {
-          "description": "`git rebase`, including an interactive one.",
+          "description": "`git rebase`, also an interactive one.",
           "type": "string",
           "const": "rebase"
         },
@@ -496,18 +496,18 @@
           "const": "bisect"
         },
         {
-          "description": "`git am`: patches being applied from a mailbox.",
+          "description": "`git am`: it applies patches from a mailbox.",
           "type": "string",
           "const": "am"
         }
       ]
     },
     "RepoState": {
-      "description": "The state of a repository, read without starting git, at [`RepoState::refreshed_at`].",
+      "description": "The state of a repository, read without a git process, at [`RepoState::refreshed_at`].",
       "type": "object",
       "properties": {
         "default_branch": {
-          "description": "Default branch: the target of `refs/remotes/<primary remote>/HEAD`, otherwise `main`,\notherwise `master` when the branch exists; `null` when none of them.",
+          "description": "Default branch: the target of `refs/remotes/<primary remote>/HEAD`, otherwise `main`,\notherwise `master` when the branch exists. `null` when none of them.",
           "$ref": "#/$defs/MaybeKnown_Nullable_string"
         },
         "dirty": {
@@ -515,7 +515,7 @@
           "$ref": "#/$defs/MaybeKnown_uint64"
         },
         "error": {
-          "description": "Why some fields are unknown, in English; `null` when every field is known.",
+          "description": "Why some fields are unknown, in English. `null` when every field is known.",
           "type": [
             "string",
             "null"
@@ -546,7 +546,7 @@
           "$ref": "#/$defs/MaybeKnown_Untracked"
         },
         "upstream": {
-          "description": "Upstream of the `HEAD` branch, `null` when detached, unconfigured, or when its ref is\nmissing (never fetched, or deleted on the remote and pruned).",
+          "description": "Upstream of the `HEAD` branch, `null` when detached, unconfigured, or when its ref does\nnot exist (never fetched, or deleted on the remote and pruned).",
           "$ref": "#/$defs/MaybeKnown_Nullable_Upstream"
         }
       },
@@ -911,7 +911,7 @@
           ]
         },
         {
-          "description": "Another git process (an editor's automatic fetch, a command of the user) held a lock of\nthe repository (`index.lock`, a ref lock) during this step. Retried at the next\ninterval, without backoff; the lock is never removed.",
+          "description": "Another git process (an editor's automatic fetch, a command of the user) held a lock of\nthe repository (`index.lock`, a ref lock) during this step. Retried at the next\ninterval, without backoff. The lock is never removed.",
           "type": "object",
           "properties": {
             "code": {
@@ -1010,7 +1010,7 @@
       "description": "One result of an update.",
       "oneOf": [
         {
-          "description": "The primary remote was fetched; no branch had to move.",
+          "description": "The primary remote was fetched. No branch had to move.",
           "type": "object",
           "properties": {
             "kind": {

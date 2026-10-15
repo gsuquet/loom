@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "current_version": {
-      "description": "Version of the running `loom`, replaced by the rollback.",
+      "description": "Version of the `loom` that runs, replaced by the rollback.",
       "type": "string"
     },
     "dry_run": {
@@ -24,7 +24,7 @@
   ],
   "$defs": {
     "DaemonRestart": {
-      "description": "What `loom upgrade` and `loom rollback` did to a running loomd after replacing the binaries.",
+      "description": "What `loom upgrade` and `loom rollback` did to a loomd that runs, after they replaced the\nbinaries.",
       "oneOf": [
         {
           "description": "Nothing was replaced (`--dry-run`), so loomd was left alone.",
@@ -53,7 +53,7 @@
           ]
         },
         {
-          "description": "`SIGTERM` was sent; a service manager restarts loomd on the new binary, otherwise the\nnext `loom` command starts it.",
+          "description": "`SIGTERM` was sent. A service manager restarts loomd on the new binary, otherwise the\nnext `loom` command starts it.",
           "type": "object",
           "properties": {
             "kind": {
@@ -73,7 +73,7 @@
           ]
         },
         {
-          "description": "loomd runs, but `SIGTERM` could not be sent: it keeps running the replaced binary.",
+          "description": "loomd runs, but `SIGTERM` could not be sent: it continues to run the replaced binary.",
           "type": "object",
           "properties": {
             "kind": {
@@ -106,15 +106,15 @@
       "type": "object",
       "properties": {
         "daemon": {
-          "description": "What happened to a running loomd.",
+          "description": "What happened to a loomd that runs.",
           "$ref": "#/$defs/DaemonRestart"
         },
         "install_dir": {
-          "description": "Directory holding `loom` and `loomd`: the directory of the running `loom`.",
+          "description": "Directory that holds `loom` and `loomd`: the directory of the `loom` that runs.",
           "type": "string"
         },
         "installed": {
-          "description": "`true` when the binaries were replaced; `false` with `--dry-run`.",
+          "description": "`true` when the binaries were replaced. `false` with `--dry-run`.",
           "type": "boolean"
         },
         "pruned": {
