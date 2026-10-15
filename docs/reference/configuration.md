@@ -492,7 +492,7 @@ The fetch and the push use the environment of the [repository updates](#contexts
 - `GIT_TERMINAL_PROMPT=0`.
 - SSH `BatchMode`, unless `core.sshCommand` or `GIT_SSH_COMMAND` is set.
 
-`loomd` stops the fetch and the push after 120 s, with their process group.
+`loomd` stops the fetch and the push after 120 s, with their process group. It also stops them when it shuts down: the process group receives `SIGTERM`, and `SIGKILL` 5 s later. The sync thread ends before `loomd` exits, and no git process of a sync stays after `loomd`. See [exit codes](cli/conventions.md#exit-codes).
 
 The fetch and the push run on their own thread. The commit and the fast-forward run between the writes of the task store. A fast-forward changes task files: they are reconciled and indexed like hand edits that record no event.
 

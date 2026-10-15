@@ -412,3 +412,224 @@ fn sigterm_shuts_down_gracefully_with_code_0() {
 fn sigint_shuts_down_gracefully_with_code_130() {
     assert_graceful_shutdown("INT", 130);
 }
+
+/// A loom home whose context `work` has a backup remote, and a `git` first in `PATH` that makes
+/// every `git fetch` last a minute: `loomd` is then inside a fetch from its first sync on.
+/// The pids of the shim and of its `sleep` are in `shim/`; whatever survives is killed on drop.
+struct SlowFetch {
+    home: TempDir,
+}
+
+impl SlowFetch {
+    /// `ignore_sigterm`: the shim and its `sleep` ignore `SIGTERM`, like a hung `ssh`.
+    fn new(ignore_sigterm: bool) -> Self {
+        let home = short_home();
+        let shim = home.path().join("shim");
+        fs::create_dir_all(&shim).unwrap();
+        fs::write(
+            home.path().join("config.toml"),
+            format!(
+                "[repos]\nroots = []\n\n[contexts.work]\nstore.backup.remote = \"{}\"\n",
+                home.path().join("remote.git").display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            home.path().join(".gitconfig"),
+            "[user]\n\tname = Loom Test\n\temail = loom@example.invalid\n",
+        )
+        .unwrap();
+        let trap = if ignore_sigterm { "trap '' TERM\n" } else { "" };
+        let script = format!(
+            "#!/bin/sh\n\
+             case \" $* \" in\n\
+             *\" fetch \"*)\n\
+             {trap}echo $$ > '{dir}/fetch.pid'\n\
+             sleep 60 &\n\
+             echo $! > '{dir}/sleep.pid'\n\
+             wait\n\
+             ;;\n\
+             *) exec '{git}' \"$@\" ;;\n\
+             esac\n",
+            dir = shim.display(),
+            git = real_git().display(),
+        );
+        let path = shim.join("git");
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        Self { home }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = loomd(self.home.path());
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let paths =
+            std::iter::once(self.home.path().join("shim")).chain(std::env::split_paths(&path));
+        command
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        command
+    }
+
+    /// The pid in `shim/<name>.pid`, once the shim wrote it.
+    fn pid(&self, name: &str) -> Option<u32> {
+        fs::read_to_string(self.home.path().join(format!("shim/{name}.pid")))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Waits until `loomd` is inside the fetch: the shim and its `sleep` run.
+    fn wait_for_fetch(&self) {
+        let deadline = Instant::now() + TIMEOUT;
+        while self.pid("fetch").is_none() || self.pid("sleep").is_none() {
+            assert!(Instant::now() < deadline, "the fetch never started");
+            thread::sleep(POLL);
+        }
+    }
+
+    /// Whether the shim or its `sleep` still runs, after at most 2 s.
+    fn orphans(&self) -> Vec<u32> {
+        let pids: Vec<u32> = ["fetch", "sleep"]
+            .iter()
+            .filter_map(|name| self.pid(name))
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let alive: Vec<u32> = pids
+                .iter()
+                .copied()
+                .filter(|pid| process_alive(*pid))
+                .collect();
+            if alive.is_empty() || Instant::now() >= deadline {
+                return alive;
+            }
+            thread::sleep(POLL);
+        }
+    }
+}
+
+impl Drop for SlowFetch {
+    fn drop(&mut self) {
+        for name in ["fetch", "sleep"] {
+            if let Some(pid) = self.pid(name) {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
+}
+
+/// The `git` of the test environment, as an absolute path.
+fn real_git() -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .unwrap()
+}
+
+fn process_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// Opens a `POST /v1/tasks/sync`, which `loomd` answers only when the sync that runs is over,
+/// and leaves it unanswered: an API request in flight.
+fn request_in_flight(socket: &Path) -> UnixStream {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    write!(
+        stream,
+        "POST /v1/tasks/sync HTTP/1.1\r\nHost: loomd\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    )
+    .unwrap();
+    // Time for loomd to read it: a signal before would find no request in flight.
+    thread::sleep(Duration::from_millis(500));
+    stream
+}
+
+#[test]
+fn a_sigterm_during_a_fetch_leaves_no_orphan_and_exits_in_bounded_time() {
+    let slow = SlowFetch::new(false);
+    let mut daemon = Daemon::start(&mut slow.command(), &socket(slow.home.path()));
+    slow.wait_for_fetch();
+
+    let started = Instant::now();
+    daemon.signal("TERM");
+    let status = daemon.wait();
+    let took = started.elapsed();
+    let stderr = daemon.stderr();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert!(took < Duration::from_secs(5), "{took:?}\n{stderr}");
+    assert!(stderr.contains("loomd stopped"), "{stderr}");
+    assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
+}
+
+#[test]
+fn a_git_command_that_ignores_sigterm_is_killed_after_the_grace() {
+    let slow = SlowFetch::new(true);
+    let mut daemon = Daemon::start(&mut slow.command(), &socket(slow.home.path()));
+    slow.wait_for_fetch();
+
+    let started = Instant::now();
+    daemon.signal("TERM");
+    let status = daemon.wait();
+    let took = started.elapsed();
+    let stderr = daemon.stderr();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    // `SIGTERM` was ignored: the command lasted the kill grace (5 s), not its minute.
+    assert!(took < Duration::from_secs(12), "{took:?}\n{stderr}");
+    assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
+}
+
+#[test]
+fn a_second_signal_ends_the_wait_for_requests_in_flight() {
+    let slow = SlowFetch::new(false);
+    let mut daemon = Daemon::start(&mut slow.command(), &socket(slow.home.path()));
+    slow.wait_for_fetch();
+    let _in_flight = request_in_flight(&socket(slow.home.path()));
+
+    daemon.signal("INT");
+    thread::sleep(Duration::from_millis(500));
+    assert!(
+        daemon.child.try_wait().unwrap().is_none(),
+        "the request in flight is waited for after the first signal"
+    );
+    let started = Instant::now();
+    daemon.signal("INT");
+    let status = daemon.wait();
+    let took = started.elapsed();
+    let stderr = daemon.stderr();
+    // The code of the first signal.
+    assert_eq!(status.code(), Some(130), "{stderr}");
+    assert!(took < Duration::from_secs(5), "{took:?}\n{stderr}");
+    assert!(stderr.contains("loomd stopped"), "{stderr}");
+    assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
+}
+
+#[test]
+fn requests_in_flight_are_waited_for_only_during_the_grace() {
+    let slow = SlowFetch::new(false);
+    let mut command = slow.command();
+    command.env(loomd::hooks::SHUTDOWN_GRACE_ENV, "1s");
+    let mut daemon = Daemon::start(&mut command, &socket(slow.home.path()));
+    slow.wait_for_fetch();
+    let _in_flight = request_in_flight(&socket(slow.home.path()));
+
+    let started = Instant::now();
+    daemon.signal("TERM");
+    let status = daemon.wait();
+    let took = started.elapsed();
+    let stderr = daemon.stderr();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert!(took >= Duration::from_millis(900), "{took:?}\n{stderr}");
+    assert!(took < Duration::from_secs(8), "{took:?}\n{stderr}");
+    assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
+}

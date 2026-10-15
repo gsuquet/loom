@@ -49,6 +49,7 @@ use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
 use loomd::exit::Shutdown;
 use loomd::hooks;
+use loomd::shutdown::SHUTDOWN_GRACE;
 use loomd::task_api::{
     TEST_TODAY_ENV, TaskListQuery, action_command, action_name_of, action_request, new_task,
     task_edit, task_filter, today,
@@ -416,23 +417,46 @@ async fn serve(
             }
         };
         let events = Arc::clone(&app.events);
-        let shutdown = async move {
+        let grace = shutdown_grace();
+        let (graceful, graceful_requested) = oneshot::channel::<()>();
+        // Owns the signal streams until it ends: a second signal is read, not swallowed.
+        let supervise = async move {
             let shutdown = tokio::select! {
                 _ = terminate.recv() => Shutdown::Terminated,
                 _ = interrupt.recv() => Shutdown::Interrupted,
                 () = upgrade => Shutdown::Upgraded,
             };
-            info!(signal = ?shutdown, "stopping: finishing in-flight requests");
+            info!(
+                signal = ?shutdown,
+                grace_secs = grace.as_secs_f32(),
+                "stopping: finishing in-flight requests (a second signal stops them)"
+            );
             // An event stream never ends on its own: the graceful shutdown would wait forever.
             events.close();
             // Only this future sets it, once.
             let _ = signal_received.set(shutdown);
+            let _ = graceful.send(());
+            tokio::select! {
+                _ = terminate.recv() => ForcedBy::SecondSignal,
+                _ = interrupt.recv() => ForcedBy::SecondSignal,
+                () = tokio::time::sleep(grace) => ForcedBy::Deadline,
+            }
         };
-        axum::serve(listener, router(app))
-            .with_graceful_shutdown(shutdown)
-            .await
-            .into_diagnostic()
-            .wrap_err("the API server failed")?;
+        let server = axum::serve(listener, router(app)).with_graceful_shutdown(async move {
+            // A dropped sender means `supervise` is gone: nothing more to wait for.
+            let _ = graceful_requested.await;
+        });
+        tokio::select! {
+            result = std::future::IntoFuture::into_future(server) => {
+                result
+                    .into_diagnostic()
+                    .wrap_err("the API server failed")?;
+            }
+            forced = supervise => {
+                // The serve future is dropped here: requests in flight are cut.
+                warn!(by = ?forced, "stopping now: requests in flight are cut");
+            }
+        }
         received
             .get()
             .copied()
@@ -447,6 +471,29 @@ async fn serve(
         info!("loomd stopped");
     }
     served
+}
+
+/// What ended the wait for the requests in flight.
+#[derive(Debug, Clone, Copy)]
+enum ForcedBy {
+    /// A second `SIGTERM` or `SIGINT`.
+    SecondSignal,
+    /// The grace period elapsed.
+    Deadline,
+}
+
+/// How long requests in flight are waited for after the first signal: [`SHUTDOWN_GRACE`], or the
+/// debug-only test hook.
+fn shutdown_grace() -> Duration {
+    hooks::duration_hook(
+        hooks::SHUTDOWN_GRACE_ENV,
+        env::var(hooks::SHUTDOWN_GRACE_ENV).ok().as_deref(),
+    )
+    .unwrap_or_else(|message| {
+        warn!("{message}");
+        None
+    })
+    .unwrap_or(SHUTDOWN_GRACE)
 }
 
 /// Routes of the API. Every error body is an [`ApiError`].

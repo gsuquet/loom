@@ -91,7 +91,7 @@ Each command has a timeout: 120 s for a fetch, 10 min for a fast-forward. On tim
 
 A fast-forward is local work of limited size. If its checkout stops before the end, the working tree is only half updated. Thus, its long timeout never interrupts it before its checkout completes, unless the whole command takes more than 10 min. In practice, only a `post-merge` hook that hangs takes this long. If this occurs, `git status` shows the state, and `git merge --ff-only @{upstream}` completes the job.
 
-When `loomd` stops, it does not interrupt an update that runs. The git command of the update finishes on its own, and `loomd` does not record its result.
+When `loomd` stops, it does not interrupt an update that runs. The git command of the update finishes on its own, and `loomd` does not record its result. The sync of the context stores is not an update: `loomd` stops its git commands at shutdown (see [store backup](../reference/configuration.md#store-backup)).
 
 ## SSH from a service
 

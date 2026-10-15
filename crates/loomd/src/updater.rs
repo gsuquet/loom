@@ -26,6 +26,7 @@ use loom_update::github::{self, Client};
 use loom_update::{Discovery, Lookup, Paths, state};
 use loomd::api::timestamp;
 use loomd::cli::VERSION_INFO;
+use loomd::shutdown::{JOIN_DEADLINE, join_within};
 use semver::Version;
 use tokio::sync::oneshot;
 use tracing::field::Empty;
@@ -67,15 +68,17 @@ pub struct Updater {
     stop: mpsc::Sender<()>,
     /// Held while the binaries are swapped and the watchdog started.
     swapping: Arc<Mutex<()>>,
-    _thread: JoinHandle<()>,
+    thread: JoinHandle<()>,
 }
 
 impl Updater {
     /// Stops checking, and waits for a swap in progress to finish, so that the binaries are
-    /// never left half replaced. A download in progress is abandoned with the process.
+    /// never left half replaced. Then waits for the thread up to [`JOIN_DEADLINE`]: a download
+    /// in progress is abandoned with the process.
     pub fn stop(self) {
         let _ = self.stop.send(());
         drop(self.swapping.lock().unwrap_or_else(PoisonError::into_inner));
+        join_within(self.thread, JOIN_DEADLINE, "updater");
     }
 }
 
@@ -107,7 +110,7 @@ pub fn spawn(
     Ok(Updater {
         stop,
         swapping,
-        _thread: thread,
+        thread,
     })
 }
 
