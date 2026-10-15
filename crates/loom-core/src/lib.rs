@@ -11,6 +11,7 @@ mod event;
 mod event_log;
 mod id;
 mod priority;
+mod recurrence;
 mod relations;
 mod task;
 mod task_file;
@@ -34,6 +35,10 @@ pub use id::{
 /// A calendar date, written `YYYY-MM-DD` (due dates, waits).
 pub use jiff::civil::Date;
 pub use priority::{RankReason, Ranked, rank};
+pub use recurrence::{
+    Frequency, MissingStart, Policy, PolicyDecision, Recurrence, Rule, RuleError,
+    SCHEDULE_PROVIDER, apply_policy, due_occurrence, occurrence_key, parse_occurrence_key,
+};
 pub use relations::{ParentLink, ParentProblem, check_parent};
 pub use task::{
     ContentFormat, ExternalRef, Importance, Kind, Link, ReadOnlyReason, Relations, Status,
