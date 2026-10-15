@@ -506,6 +506,12 @@ fn a_task_the_archive_pass_moves_reaches_a_client() {
         }
     };
     assert_eq!(archived, (id.clone(), "work".to_owned()));
+    // Nor after: the watcher sees the rename, and its reconciliation finds the task unchanged.
+    while let Some(sse) = stream.event(Duration::from_millis(500)) {
+        if let ChangeEvent::TaskChanged { id: changed, .. } = change(&sse) {
+            assert_ne!(changed.to_string(), id, "task.changed after the move");
+        }
+    }
     // The task is archived.
     let detail: TaskDetail = ok(&request(
         &sandbox.socket(),
