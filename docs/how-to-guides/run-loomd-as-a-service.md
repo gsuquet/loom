@@ -9,7 +9,7 @@ Before you start, make sure that:
 
 ## Install the service
 
-1. Check what the command changes:
+1. Check the changes before you make them:
 
    ```bash
    loom service install --dry-run

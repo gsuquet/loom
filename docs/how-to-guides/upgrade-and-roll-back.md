@@ -84,7 +84,7 @@ loom rollback
 
 The command restores the highest version in `~/.loom/versions/` that is not the current version. It keeps the version that it replaces. Thus a second `loom rollback` returns to that version. To see which version the command restores, add `--dry-run`.
 
-If no other version is kept, `loom rollback` fails with `nothing to roll back to`. The first upgrade on a machine has no version to return to.
+If no other version is kept, `loom rollback` fails with `nothing to roll back to`. This is the case before the first `loom upgrade` on a machine: `install.sh` keeps no version.
 
 ## Let loomd upgrade itself
 

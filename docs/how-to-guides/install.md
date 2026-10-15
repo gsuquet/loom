@@ -37,7 +37,7 @@ curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh |
 curl -fsSL https://github.com/gsuquet/loom/releases/latest/download/install.sh | sh -s -- --prefix /opt/loom/bin
 ```
 
-If you install a different version, the script replaces the two binaries. Do not use `--channel` and `--version` together. The script records the channel that you give with `--channel`. `loomd` and `loom upgrade` then continue to use this channel, also after an upgrade to a stable release.
+If you install a different version, the script replaces the two binaries. Do not use `--channel` and `--version` together. The script refuses this combination. The script records the channel that you give with `--channel`. `loomd` and `loom upgrade` then continue to use this channel, also after an upgrade to a stable release.
 
 If GitHub returns HTTP 403 or 429 (API rate limit), set a token:
 
