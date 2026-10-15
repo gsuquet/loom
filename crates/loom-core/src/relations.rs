@@ -44,26 +44,30 @@ pub struct ParentLink {
 /// task, `None` for a task being created.
 ///
 /// The parent must be a known task of the same context, and must not be `child` nor have
-/// `child` among its ancestors. `lookup` reads a task; a loop already among the ancestors (a
-/// hand edit) ends the walk without an error, since it does not involve `child`.
+/// `child` among its ancestors. `lookup` reads a task (`Ok(None)`: no such task); a loop already
+/// among the ancestors (a hand edit) ends the walk without an error, since it does not involve
+/// `child`.
 ///
 /// # Errors
 ///
-/// [`DomainError::InvalidParent`] with the [`ParentProblem`].
-pub fn check_parent(
+/// [`DomainError::InvalidParent`] with the [`ParentProblem`], converted to `E`; the first error
+/// of `lookup`.
+pub fn check_parent<E: From<DomainError>>(
     child: Option<&TaskId>,
     context: &ContextName,
     parent: &TaskId,
-    lookup: impl Fn(&TaskId) -> Option<ParentLink>,
-) -> Result<(), DomainError> {
-    let refuse = |problem| DomainError::InvalidParent {
-        parent: parent.clone(),
-        problem,
+    lookup: impl Fn(&TaskId) -> Result<Option<ParentLink>, E>,
+) -> Result<(), E> {
+    let refuse = |problem| {
+        E::from(DomainError::InvalidParent {
+            parent: parent.clone(),
+            problem,
+        })
     };
     if child == Some(parent) {
         return Err(refuse(ParentProblem::Cycle));
     }
-    let link = lookup(parent).ok_or_else(|| refuse(ParentProblem::Unknown))?;
+    let link = lookup(parent)?.ok_or_else(|| refuse(ParentProblem::Unknown))?;
     if &link.context != context {
         return Err(refuse(ParentProblem::OtherContext(link.context)));
     }
@@ -79,7 +83,7 @@ pub fn check_parent(
         if !seen.insert(ancestor.clone()) {
             break;
         }
-        next = lookup(&ancestor).and_then(|link| link.parent);
+        next = lookup(&ancestor)?.and_then(|link| link.parent);
     }
     Ok(())
 }
@@ -99,7 +103,9 @@ mod tests {
     }
 
     /// Tasks `(id, context, parent)`.
-    fn tasks(rows: &[(&str, &str, Option<&str>)]) -> impl Fn(&TaskId) -> Option<ParentLink> {
+    fn tasks(
+        rows: &[(&str, &str, Option<&str>)],
+    ) -> impl Fn(&TaskId) -> Result<Option<ParentLink>, DomainError> {
         let map: BTreeMap<TaskId, ParentLink> = rows
             .iter()
             .map(|(task, ctx, parent)| {
@@ -112,7 +118,26 @@ mod tests {
                 )
             })
             .collect();
-        move |task| map.get(task).cloned()
+        move |task| Ok(map.get(task).cloned())
+    }
+
+    #[test]
+    fn a_lookup_error_is_returned_as_is() {
+        #[derive(Debug, PartialEq)]
+        enum Failure {
+            Index,
+            Domain(DomainError),
+        }
+        impl From<DomainError> for Failure {
+            fn from(error: DomainError) -> Self {
+                Self::Domain(error)
+            }
+        }
+        let broken = |_: &TaskId| -> Result<Option<ParentLink>, Failure> { Err(Failure::Index) };
+        assert_eq!(
+            check_parent(None, &context("work"), &id("aaaaaaaa"), broken),
+            Err(Failure::Index)
+        );
     }
 
     fn problem(result: Result<(), DomainError>) -> ParentProblem {
