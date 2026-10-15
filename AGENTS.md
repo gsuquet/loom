@@ -84,6 +84,7 @@ Two kinds of documentation, never mixed:
 
 Rules:
 
+- The Diátaxis folders and `README.md` follow the ASD-STE100 writing rules of the [style guide](docs/reference/style-guide.md#22-simplified-technical-english-asd-ste100).
 - Any user-visible change updates the matching reference in the same PR.
 - A new user procedure gets a how-to.
 - The "Documentation" section of your issue lists what to write.
