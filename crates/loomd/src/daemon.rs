@@ -49,7 +49,7 @@ use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
 use loomd::exit::Shutdown;
 use loomd::hooks;
-use loomd::shutdown::SHUTDOWN_GRACE;
+use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, SHUTDOWN_GRACE};
 use loomd::task_api::{
     TEST_TODAY_ENV, TaskListQuery, action_command, action_name_of, action_request, new_task,
     task_edit, task_filter, today,
@@ -139,8 +139,10 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
             "contexts not held on this machine are not loaded"
         );
     }
+    // The git commands that the daemon stops at shutdown: the store sync and the remote checks.
+    let children = Arc::new(ChildGroups::default());
     // Opened under the lock: this daemon is the only writer of the index.
-    let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home)
+    let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home, &children)
         .wrap_err("cannot start the repository index")?;
     let store_paths = stores
         .held
@@ -165,20 +167,10 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         },
         config.tasks.sync_interval.get(),
         task_handle.clone(),
+        children,
     )?;
 
-    let base = StatusResponse {
-        api_version: ApiVersion::CURRENT,
-        daemon: VERSION_INFO.clone(),
-        pid: process::id(),
-        started_at,
-        uptime_secs: 0,
-        loom_home: layout.home.clone(),
-        socket_path: layout.socket.clone(),
-        config_path: layout.config.clone(),
-        update: None,
-        disk: None,
-    };
+    let base = initial_status(started_at, &layout);
     let settings = update_settings(&config);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -209,14 +201,53 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         heartbeat: events_heartbeat(),
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
+    stop_threads(
+        sync_thread,
+        updater,
+        schedule_thread,
+        task_store,
+        index,
+        runtime,
+    );
+    served
+}
+
+/// The status of the daemon without its uptime and update state, which each request adds.
+fn initial_status(started_at: Timestamp, layout: &Layout) -> StatusResponse {
+    StatusResponse {
+        api_version: ApiVersion::CURRENT,
+        daemon: VERSION_INFO.clone(),
+        pid: process::id(),
+        started_at,
+        uptime_secs: 0,
+        loom_home: layout.home.clone(),
+        socket_path: layout.socket.clone(),
+        config_path: layout.config.clone(),
+        update: None,
+        disk: None,
+    }
+}
+
+/// Stops what runs beside the API server, which ended.
+fn stop_threads(
+    sync: store_sync::SyncThread,
+    updater: updater::Updater,
+    schedules: Option<schedules::ScheduleThread>,
+    task_store: tasks::TaskStore,
+    index: repos::RepoIndex,
+    runtime: tokio::runtime::Runtime,
+) {
+    // First: its git commands hold locks of the stores, and the other threads wait for none.
+    sync.stop();
     updater.stop();
-    sync_thread.stop();
-    if let Some(schedule_thread) = schedule_thread {
-        schedule_thread.stop();
+    if let Some(schedules) = schedules {
+        schedules.stop();
     }
     task_store.stop();
     index.stop();
-    served
+    // Requests cut by a forced stop may still run on blocking threads: wait for them a short
+    // while, instead of the whole time that dropping the runtime would.
+    runtime.shutdown_timeout(JOIN_DEADLINE);
 }
 
 /// The bus of the change events of this process.

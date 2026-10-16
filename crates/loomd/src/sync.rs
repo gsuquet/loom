@@ -70,6 +70,7 @@ pub fn start(
     stores: Stores,
     interval: Duration,
     tasks: TaskHandle,
+    children: Arc<ChildGroups>,
 ) -> Result<(SyncThread, SyncHandle)> {
     let (commands, received) = mpsc::channel();
     let handle = SyncHandle {
@@ -77,7 +78,7 @@ pub fn start(
         stores: Arc::new(stores),
         synced: Arc::new(Mutex::new(BTreeMap::new())),
         tasks,
-        children: Arc::new(ChildGroups::default()),
+        children,
     };
     let worker = handle.clone();
     let thread = thread::Builder::new()
@@ -186,6 +187,11 @@ impl SyncHandle {
         let mut runner = GitRunner::from_env();
         runner.children = Some(Arc::clone(&self.children));
         for context in contexts {
+            // The shutdown began: no command would start, and the local steps would write the
+            // stores for a sync that cannot go on.
+            if self.children.is_stopping() {
+                break;
+            }
             let Some(StoreSettings {
                 path,
                 remote: Some(url),

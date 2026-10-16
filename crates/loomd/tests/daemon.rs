@@ -5,6 +5,7 @@
     reason = "`allow-unwrap-in-tests` covers `#[test]` functions only; a failing helper must fail the test"
 )]
 
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
@@ -460,6 +461,61 @@ impl SlowFetch {
         Self { home }
     }
 
+    /// A repository `perso/app` with an SSH remote and a `ssh` that hangs, which `loomd` runs
+    /// for a remote check. Updates of the repository are off: a repository update leaves its
+    /// git command to finish by design, and this test is about the check.
+    fn hanging_ssh() -> Self {
+        let home = short_home();
+        let shim = home.path().join("shim");
+        fs::create_dir_all(&shim).unwrap();
+        let repo = home.path().join("perso/app");
+        fs::create_dir_all(&repo).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["remote", "add", "origin", "git@hang.invalid:x/y.git"],
+        ] {
+            let status = Command::new(real_git())
+                .current_dir(&repo)
+                .env("HOME", home.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        fs::write(
+            home.path().join("config.toml"),
+            format!(
+                "[repos]\nroots = [\"{root}\"]\n\n[repos.\"{repo}\"]\nupdate = \"off\"\n",
+                root = home.path().join("perso").display(),
+                repo = repo.display()
+            ),
+        )
+        .unwrap();
+        let script = format!(
+            "#!/bin/sh\necho $$ > '{dir}/fetch.pid'\nsleep 60 &\necho $! > '{dir}/sleep.pid'\nwait\n",
+            dir = shim.display()
+        );
+        let path = shim.join("ssh");
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        Self { home }
+    }
+
+    /// A second context with its own backup remote, so that a sync has two stores to go through.
+    fn with_second_context(self) -> Self {
+        let config = self.home.path().join("config.toml");
+        let mut text = fs::read_to_string(&config).unwrap();
+        writeln!(
+            text,
+            "\n[contexts.home]\nstore.backup.remote = \"{}\"",
+            self.home.path().join("remote-2.git").display()
+        )
+        .unwrap();
+        fs::write(&config, text).unwrap();
+        self
+    }
+
     fn command(&self) -> Command {
         let mut command = loomd(self.home.path());
         let path = std::env::var_os("PATH").unwrap_or_default();
@@ -541,13 +597,14 @@ fn process_alive(pid: u32) -> bool {
         .success()
 }
 
-/// Opens a `POST /v1/tasks/sync`, which `loomd` answers only when the sync that runs is over,
-/// and leaves it unanswered: an API request in flight.
-fn request_in_flight(socket: &Path) -> UnixStream {
+/// Opens `POST path` with `body`, which `loomd` answers only when what it asks for is over (a
+/// sync, a remote check), and leaves it unanswered: an API request in flight.
+fn request_in_flight(socket: &Path, path: &str, body: &str) -> UnixStream {
     let mut stream = UnixStream::connect(socket).unwrap();
     write!(
         stream,
-        "POST /v1/tasks/sync HTTP/1.1\r\nHost: loomd\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        "POST {path} HTTP/1.1\r\nHost: loomd\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )
     .unwrap();
     // Time for loomd to read it: a signal before would find no request in flight.
@@ -594,7 +651,7 @@ fn a_second_signal_ends_the_wait_for_requests_in_flight() {
     let slow = SlowFetch::new(false);
     let mut daemon = Daemon::start(&mut slow.command(), &socket(slow.home.path()));
     slow.wait_for_fetch();
-    let _in_flight = request_in_flight(&socket(slow.home.path()));
+    let _in_flight = request_in_flight(&socket(slow.home.path()), "/v1/tasks/sync", "{}");
 
     daemon.signal("INT");
     thread::sleep(Duration::from_millis(500));
@@ -621,7 +678,7 @@ fn requests_in_flight_are_waited_for_only_during_the_grace() {
     command.env(loomd::hooks::SHUTDOWN_GRACE_ENV, "1s");
     let mut daemon = Daemon::start(&mut command, &socket(slow.home.path()));
     slow.wait_for_fetch();
-    let _in_flight = request_in_flight(&socket(slow.home.path()));
+    let _in_flight = request_in_flight(&socket(slow.home.path()), "/v1/tasks/sync", "{}");
 
     let started = Instant::now();
     daemon.signal("TERM");
@@ -632,4 +689,57 @@ fn requests_in_flight_are_waited_for_only_during_the_grace() {
     assert!(took >= Duration::from_millis(900), "{took:?}\n{stderr}");
     assert!(took < Duration::from_secs(8), "{took:?}\n{stderr}");
     assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
+}
+
+#[test]
+fn a_remote_check_in_flight_does_not_delay_a_forced_shutdown() {
+    let slow = SlowFetch::hanging_ssh();
+    let mut daemon = Daemon::start(&mut slow.command(), &socket(slow.home.path()));
+    let deadline = Instant::now() + TIMEOUT;
+    while !request(&socket(slow.home.path()), "GET", "/v1/repos")
+        .body
+        .contains("perso/app")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the repository was never indexed"
+        );
+        thread::sleep(POLL);
+    }
+    let _in_flight = request_in_flight(
+        &socket(slow.home.path()),
+        "/v1/diagnostics/remote-check",
+        "",
+    );
+    slow.wait_for_fetch();
+
+    daemon.signal("INT");
+    thread::sleep(Duration::from_millis(300));
+    let started = Instant::now();
+    daemon.signal("INT");
+    let status = daemon.wait();
+    let took = started.elapsed();
+    let stderr = daemon.stderr();
+    assert_eq!(status.code(), Some(130), "{stderr}");
+    // Not the 20 s of the check, and no `ssh` left behind.
+    assert!(took < Duration::from_secs(5), "{took:?}\n{stderr}");
+    assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
+}
+
+#[test]
+fn the_stores_after_the_one_syncing_are_not_touched_once_the_shutdown_began() {
+    let slow = SlowFetch::new(false).with_second_context();
+    let mut daemon = Daemon::start(&mut slow.command(), &socket(slow.home.path()));
+    slow.wait_for_fetch();
+
+    daemon.signal("TERM");
+    let status = daemon.wait();
+    let stderr = daemon.stderr();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    // The store whose fetch was stopped reports it; the other one is not even tried.
+    assert_eq!(
+        stderr.matches("context store not synced").count(),
+        1,
+        "{stderr}"
+    );
 }

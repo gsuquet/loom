@@ -39,7 +39,8 @@ use loom_store::{Reader, RepoFilter, Store, StoreError};
 use loomd::api::{
     ScanQuery, SearchRequest, internal, invalid_request, repo_not_found, timestamp, unavailable,
 };
-use loomd::repo_update::{REMOTE_CHECK_TIMEOUT, check_remote};
+use loomd::repo_update::{GitRunner, REMOTE_CHECK_TIMEOUT, check_remote};
+use loomd::shutdown::ChildGroups;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::field::Empty;
@@ -114,6 +115,8 @@ pub struct RepoHandle {
     db: PathBuf,
     state_options: StateOptions,
     updates: UpdaterHandle,
+    /// Runs the `git ls-remote` of the remote checks.
+    remote_runner: Arc<GitRunner>,
 }
 
 /// How scans walk and identify repositories, from the configuration read at start.
@@ -128,7 +131,15 @@ struct Discovery {
 
 /// Opens `db` (created and migrated when needed), then starts the store thread, which scans
 /// at once. The configuration is read once: a change needs a restart.
-pub fn start(db: &Path, config: &Config, home: &Path) -> Result<(RepoIndex, RepoHandle)> {
+///
+/// `children` registers the git commands of the remote checks (read-only), so that the daemon
+/// can stop them at shutdown. Repository updates are not registered: they finish on their own.
+pub fn start(
+    db: &Path,
+    config: &Config,
+    home: &Path,
+    children: &Arc<ChildGroups>,
+) -> Result<(RepoIndex, RepoHandle)> {
     let store = Store::open(db).into_diagnostic()?;
     let discovery = Discovery {
         roots: scan_roots(config, home),
@@ -191,11 +202,14 @@ pub fn start(db: &Path, config: &Config, home: &Path) -> Result<(RepoIndex, Repo
     )
     .into_diagnostic()
     .wrap_err("cannot start the repository update threads")?;
+    let mut remote_runner = GitRunner::from_env();
+    remote_runner.children = Some(Arc::clone(children));
     let handle = RepoHandle {
         commands: commands.clone(),
         db: db.to_path_buf(),
         state_options,
         updates: update_handle,
+        remote_runner: Arc::new(remote_runner),
     };
     Ok((
         RepoIndex {
@@ -416,7 +430,7 @@ impl RepoHandle {
         let checks: Vec<_> = remote_check_targets(&repos)
             .into_iter()
             .map(|target| {
-                let runner = Arc::clone(&self.updates.runner);
+                let runner = Arc::clone(&self.remote_runner);
                 let parent = Span::current();
                 tokio::task::spawn_blocking(move || {
                     let _entered = parent.entered();

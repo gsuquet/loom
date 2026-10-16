@@ -56,10 +56,10 @@ If `SIGTERM` stops `loomd` (from a service manager or from `kill`), `loomd` exit
 The graceful shutdown has these steps:
 
 1. `loomd` stops to accept requests and waits for the requests in flight, for 10 s at most. A second `SIGTERM` or `SIGINT` ends this wait at once, and `loomd` cuts the requests that still run. The exit code is the one of the first signal.
-2. `loomd` stops the git commands of the store sync (`git fetch`, `git push`): their whole process group receives `SIGTERM`, and `SIGKILL` 5 s later. No sync command starts after this step.
-3. `loomd` waits for the store sync thread and the updater thread, 2 s at most for each, then stops the task store and the repository index. A repository update that runs is not stopped (see [repository updates](../../explanation/repo-updates.md)).
+2. `loomd` stops the git commands of the store sync (`git fetch`, `git push`) and of the remote checks (`git ls-remote`): their whole process group receives `SIGTERM`, and `SIGKILL` 5 s later. No such command starts after this step, and the store sync goes on with no other store.
+3. `loomd` waits for the store sync thread, then for the updater thread, 2 s at most for each. Then it stops the task store and the repository index, and waits 2 s at most for the work that a cut request left on a blocking thread. A repository update that runs is not stopped (see [repository updates](../../explanation/repo-updates.md)).
 
-Thus, a `loomd` that stops while a sync runs leaves no git process. The next `loomd` does not meet a lock of the store that an earlier command held.
+Thus, a `loomd` that stops while a sync or a remote check runs leaves no git process. After `SIGTERM`, git removes its lock files. After `SIGKILL`, it cannot: a lock file can stay in the store repository, and the next commit of the store reports it.
 
 ## Environment variables
 

@@ -66,6 +66,13 @@ impl ChildGroups {
         self.len() == 0
     }
 
+    /// Whether [`Self::terminate`] ran: a caller that goes through a list of commands stops
+    /// there instead of starting each one just to see it refused.
+    #[must_use]
+    pub fn is_stopping(&self) -> bool {
+        self.lock().stopping
+    }
+
     /// Starts `command` as the leader of a new process group and registers the group. The
     /// registry is locked from the start to the registration, so that [`Self::terminate`] never
     /// misses a command.
@@ -113,8 +120,9 @@ impl ChildGroups {
         while Instant::now() < deadline && !self.is_empty() {
             thread::sleep(Duration::from_millis(10));
         }
-        // The leader may be gone while others of its group run: signal every group that is
-        // still registered, and the ones whose leader ended too.
+        // A group stays registered until its command was waited for, pipes drained: a process
+        // of the group that outlives the leader and holds the pipes is covered. A group that is
+        // not registered any more is never signalled, its PID could be reused.
         let left: Vec<u32> = self.lock().groups.iter().copied().collect();
         for pgid in left {
             warn!(pgid, "a git command ignored SIGTERM: killed");
