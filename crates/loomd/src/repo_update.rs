@@ -12,10 +12,11 @@ use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::shutdown::{ChildGroups, signal_group};
 use loom_api::{
     LastUpdate, RemoteCheckOutcome, RemoteProblem, RepoState, RepoUpdatePolicy, SkipReason,
     Timestamp, UpdateOutcome, UpdateStep,
@@ -72,6 +73,10 @@ pub struct GitRunner {
     pub merge_timeout: Duration,
     /// Time a stopped process group has between `SIGTERM` and `SIGKILL`.
     pub kill_grace: Duration,
+    /// Where the process groups of the commands are registered, so that the daemon can stop
+    /// them at shutdown. `None`: the commands are left to finish, which is what a repository
+    /// update does (a fast-forward must not be interrupted).
+    pub children: Option<Arc<ChildGroups>>,
 }
 
 impl GitRunner {
@@ -88,6 +93,7 @@ impl GitRunner {
             fetch_timeout: FETCH_TIMEOUT,
             merge_timeout: MERGE_TIMEOUT,
             kill_grace: KILL_GRACE,
+            children: None,
         }
     }
 }
@@ -578,7 +584,14 @@ impl<'a> Git<'a> {
             command.env("GIT_SSH_COMMAND", ssh);
         }
         let started = Instant::now();
-        let child = command.spawn().map_err(Failure::Run)?;
+        // The registration ends when the command did: the daemon only stops what runs.
+        let (child, _registration) = match &self.runner.children {
+            Some(children) => {
+                let (child, registration) = children.spawn(&mut command).map_err(Failure::Run)?;
+                (child, Some(registration))
+            }
+            None => (command.spawn().map_err(Failure::Run)?, None),
+        };
         let result = wait(child, timeout, self.runner.kill_grace);
         debug!(
             args = ?args,
@@ -673,19 +686,8 @@ fn reader(mut pipe: impl io::Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
 /// Sends `SIGTERM` to the process group of `child` (its id: it leads its own group), waits
 /// `grace`, then `SIGKILL`, through the `kill` command (no `unsafe`).
 fn stop_group(child: &mut Child, grace: Duration) {
-    let group = format!("-{}", child.id());
-    let signal = |name: &str| {
-        let sent = Command::new("kill")
-            .args([name, "--", group.as_str()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if let Err(error) = sent {
-            warn!(%error, "cannot run kill");
-        }
-    };
-    signal("-TERM");
+    let group = child.id();
+    signal_group(group, "-TERM");
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
         if matches!(child.try_wait(), Ok(Some(_))) {
@@ -694,7 +696,7 @@ fn stop_group(child: &mut Child, grace: Duration) {
         thread::sleep(Duration::from_millis(10));
     }
     // The leader may be gone and others of the group still running.
-    signal("-KILL");
+    signal_group(group, "-KILL");
     let _ = child.kill();
     let _ = child.wait();
 }

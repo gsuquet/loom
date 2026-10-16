@@ -53,6 +53,14 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 
 If `SIGTERM` stops `loomd` (from a service manager or from `kill`), `loomd` exits with `0` after a graceful shutdown. If `SIGINT` stops `loomd`, it exits with `130` after the same shutdown. After the auto-upgrade replaced the binaries, `loomd` stops by itself with the same graceful shutdown and exits with `0`.
 
+The graceful shutdown has these steps:
+
+1. `loomd` stops to accept requests and waits for the requests in flight, for 10 s at most. A second `SIGTERM` or `SIGINT` ends this wait at once, and `loomd` cuts the requests that still run. The exit code is the one of the first signal.
+2. `loomd` stops the git commands of the store sync (`git fetch`, `git push`) and of the remote checks (`git ls-remote`): their whole process group receives `SIGTERM`, and `SIGKILL` 5 s later. No such command starts after this step, and the store sync goes on with no other store.
+3. `loomd` waits for the store sync thread, then for the updater thread, 2 s at most for each. Then it stops the task store and the repository index, and waits 2 s at most for the work that a cut request left on a blocking thread. A repository update that runs is not stopped (see [repository updates](../../explanation/repo-updates.md)).
+
+Thus, a `loomd` that stops while a sync or a remote check runs leaves no git process. After `SIGTERM`, git removes its lock files. After `SIGKILL`, it cannot: a lock file can stay in the store repository, and the next commit of the store reports it.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -73,6 +81,7 @@ If `SIGTERM` stops `loomd` (from a service manager or from `kill`), `loomd` exit
 | `TZ` | Time zone of the local date of the priority list and of the [schedules](../configuration.md#schedules) in `loomd`; `/etc/localtime` when unset, UTC when neither can be read. |
 | `LOOM_TEST_EVENTS_HEARTBEAT` | Test hook, debug builds only: duration that replaces the 15 s interval between two heartbeats of `GET /v1/events`. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
 | `LOOM_TEST_SCHEDULE_INTERVAL` | Test hook, debug builds only: duration that replaces the 1 min interval between two checks of the [schedules](../configuration.md#schedules) in `loomd`. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
+| `LOOM_TEST_SHUTDOWN_GRACE` | Test hook, debug builds only: duration that replaces the 10 s that the requests in flight have to finish after the first signal. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
 | `LOOM_TEST_FAIL_UNLESS_HOME_PREFIX` | Test hook, debug builds only: `loomd` exits with code `1` at start when its loom home path does not start with this text. Ignored by release builds. |
 | `OTEL_SDK_DISABLED` | `true` (any case): no traces are exported, even with `[telemetry] enabled = true`. See [`[telemetry]`](../configuration.md#telemetry). |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Traces endpoint, used as given, when `[telemetry] otlp_endpoint` is not set. |

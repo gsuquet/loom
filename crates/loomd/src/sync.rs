@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::StatusCode;
@@ -17,7 +17,8 @@ use loom_api::{BackupReport, BackupSync, ContextName, Timestamp};
 use loom_config::config::StoreSettings;
 use loomd::api::{invalid_request, timestamp, unavailable};
 use loomd::backup::{report, sync_targets};
-use loomd::repo_update::GitRunner;
+use loomd::repo_update::{GitRunner, KILL_GRACE};
+use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, join_within};
 use loomd::store_git;
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
@@ -48,6 +49,8 @@ enum Command {
 /// The running sync thread.
 pub struct SyncThread {
     commands: mpsc::Sender<Command>,
+    thread: JoinHandle<()>,
+    children: Arc<ChildGroups>,
 }
 
 /// What the API handlers use.
@@ -57,6 +60,8 @@ pub struct SyncHandle {
     stores: Arc<Stores>,
     synced: Arc<Mutex<BTreeMap<ContextName, BackupSync>>>,
     tasks: TaskHandle,
+    /// The git commands of a sync: stopped at shutdown.
+    children: Arc<ChildGroups>,
 }
 
 /// Starts the sync thread: a first sync of every store with a remote at once, then one every
@@ -65,6 +70,7 @@ pub fn start(
     stores: Stores,
     interval: Duration,
     tasks: TaskHandle,
+    children: Arc<ChildGroups>,
 ) -> Result<(SyncThread, SyncHandle)> {
     let (commands, received) = mpsc::channel();
     let handle = SyncHandle {
@@ -72,20 +78,34 @@ pub fn start(
         stores: Arc::new(stores),
         synced: Arc::new(Mutex::new(BTreeMap::new())),
         tasks,
+        children,
     };
     let worker = handle.clone();
-    thread::Builder::new()
+    let thread = thread::Builder::new()
         .name("store-sync".to_owned())
         .spawn(move || worker.run(&received, interval))
         .into_diagnostic()
         .wrap_err("cannot start the store sync thread")?;
-    Ok((SyncThread { commands }, handle))
+    let children = Arc::clone(&handle.children);
+    Ok((
+        SyncThread {
+            commands,
+            thread,
+            children,
+        },
+        handle,
+    ))
 }
 
 impl SyncThread {
-    /// Asks the thread to stop after the sync it is running; does not wait for it.
+    /// Stops the thread: tells it to stop, stops the git commands of the sync it runs (`SIGTERM`,
+    /// then `SIGKILL` after [`KILL_GRACE`]), and waits for it up to [`JOIN_DEADLINE`]. Without
+    /// this, a `git fetch` or `git push` would outlive loomd and could hold a lock of the store
+    /// when the next loomd starts.
     pub fn stop(self) {
         let _ = self.commands.send(Command::Stop);
+        self.children.terminate(KILL_GRACE);
+        join_within(self.thread, JOIN_DEADLINE, "store-sync");
     }
 }
 
@@ -164,8 +184,14 @@ impl SyncHandle {
     }
 
     fn sync_all(&self, contexts: &[ContextName]) {
-        let runner = GitRunner::from_env();
+        let mut runner = GitRunner::from_env();
+        runner.children = Some(Arc::clone(&self.children));
         for context in contexts {
+            // The shutdown began: no command would start, and the local steps would write the
+            // stores for a sync that cannot go on.
+            if self.children.is_stopping() {
+                break;
+            }
             let Some(StoreSettings {
                 path,
                 remote: Some(url),

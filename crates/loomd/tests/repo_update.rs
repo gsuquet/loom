@@ -157,6 +157,7 @@ impl Fixture {
             fetch_timeout: Duration::from_secs(60),
             merge_timeout: Duration::from_secs(30),
             kill_grace: Duration::from_secs(2),
+            children: None,
         }
     }
 
