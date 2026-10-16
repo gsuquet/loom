@@ -189,12 +189,13 @@ pub fn start(
         })
         .into_diagnostic()
         .wrap_err("cannot start the repository index thread")?;
+    let runner = GitRunner::from_env();
     let (updater, update_handle) = updates::start(
         updates::Settings {
             interval: state_interval,
             concurrency: usize::try_from(config.repos.fetch_concurrency).unwrap_or(usize::MAX),
             policies: UpdatePolicies::new(config, home),
-            runner: loomd::repo_update::GitRunner::from_env(),
+            runner: runner.clone(),
             state_options,
         },
         &commands,
@@ -202,8 +203,11 @@ pub fn start(
     )
     .into_diagnostic()
     .wrap_err("cannot start the repository update threads")?;
-    let mut remote_runner = GitRunner::from_env();
-    remote_runner.children = Some(Arc::clone(children));
+    // The same runner as the updates, plus the registry: a remote check runs git as an update does.
+    let remote_runner = GitRunner {
+        children: Some(Arc::clone(children)),
+        ..runner
+    };
     let handle = RepoHandle {
         commands: commands.clone(),
         db: db.to_path_buf(),
