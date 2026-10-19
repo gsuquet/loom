@@ -194,10 +194,31 @@ impl FileStore {
         let dir = self.dir_at(id, location);
         if let Some(document) = &write.document {
             let path = dir.join(TASK_FILE);
-            atomic::write_file(&path, render_task_md(document).as_bytes(), TASK_FILE_MODE)
-                .map_err(|source| io_error(&path, source))?;
+            let staged =
+                atomic::Staged::write(&path, render_task_md(document).as_bytes(), TASK_FILE_MODE)
+                    .map_err(|source| io_error(&path, source))?;
+            crash_if("after_task_stage");
+            staged.commit().map_err(|source| io_error(&path, source))?;
+            crash_if("after_task_rename");
         }
         append_events(&dir.join(EVENTS_FILE), write)
+    }
+}
+
+/// Stage of a task write at which a debug build kills itself (`SIGKILL`) for the crash safety
+/// tests.
+pub const TEST_CRASH_STAGE_ENV: &str = "LOOM_TEST_CRASH_STAGE";
+
+/// Sends `SIGKILL` to this process when `cfg!(debug_assertions)` and [`TEST_CRASH_STAGE_ENV`] is
+/// `stage`.
+fn crash_if(stage: &str) {
+    if cfg!(debug_assertions)
+        && std::env::var(TEST_CRASH_STAGE_ENV).is_ok_and(|configured| configured == stage)
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &std::process::id().to_string()])
+            .status();
+        std::process::abort();
     }
 }
 
@@ -382,6 +403,7 @@ fn append_events(path: &Path, write: &TaskWrite) -> Result<(), PortError> {
     if !existed {
         sync_parent(path).map_err(error)?;
     }
+    crash_if("after_events_append");
     Ok(())
 }
 

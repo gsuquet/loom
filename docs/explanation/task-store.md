@@ -102,3 +102,15 @@ The index has one row for each ID, and a task ID is unique in every context. A t
 `loomd` looks at the directories of the other stores to find a duplicate, and reads no file for it. A store that it cannot look at (a permission, a disk error) is skipped, so it never blocks the tasks of the other contexts. Until that store can be read, `loomd` does not see its copy as a duplicate. A reindex finds a duplicate from the listing of the stores, also when a copy cannot be read.
 
 To fix this, remove one task directory (or move it out of the stores). `loomd` then indexes the copy that is left as a valid task, and records the difference between the file and its log as a hand edit.
+
+## What loom guarantees
+
+- If `loomd` crashes or stops at any point while it writes, no task is lost and no file is half-written. At the next start, `loomd` reconciles the files, the index and the git history of each store.
+- If you edit `task.md` by hand while `loomd` runs or while it is stopped, `loomd` keeps your file and records the edit. If a command and a hand edit occur at the same time, the lock of the task keeps both safe.
+- If a `task.md` is invalid, `loomd` marks the task read-only, refuses every command on it, and never overwrites your file. When you fix the file, the task becomes writable again.
+- If you delete `index.db`, `loomd` rebuilds the same task rows from the files at start or on `loom reindex`.
+- If a newer version of loom writes unknown keys, comments or events, this version keeps them byte for byte when it writes the task. If the `kind`, `format` or `status` comes from a newer version, this version marks the task read-only and never writes it.
+- If your git configuration enables `commit.gpgsign` or hooks, `loomd` still commits each store change without them. If a backup remote refuses a push or diverges, `loomd` reports the failure and keeps every local file and commit.
+
+An automated suite in CI, on Linux and macOS, checks these rules end to end on a real `loomd` process. After each test, the suite checks the files on disk, the rows in `index.db`, and the git history of the store.
+
