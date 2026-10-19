@@ -5,22 +5,129 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use globset::Glob;
 use loom_api::{ContextName, ForgeKind, RepoUpdatePolicy, UNASSIGNED};
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
 use crate::machine::MachineName;
 use crate::schedules::Schedule;
 
+/// One of the 16 ANSI colors of `[contexts.<name>] color`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextColor {
+    /// ANSI color 0: `black`.
+    Black,
+    /// ANSI color 1: `red`.
+    Red,
+    /// ANSI color 2: `green`.
+    Green,
+    /// ANSI color 3: `yellow`.
+    Yellow,
+    /// ANSI color 4: `blue`.
+    Blue,
+    /// ANSI color 5: `magenta`.
+    Magenta,
+    /// ANSI color 6: `cyan`.
+    Cyan,
+    /// ANSI color 7: `white`.
+    White,
+    /// ANSI color 8: `bright_black`.
+    BrightBlack,
+    /// ANSI color 9: `bright_red`.
+    BrightRed,
+    /// ANSI color 10: `bright_green`.
+    BrightGreen,
+    /// ANSI color 11: `bright_yellow`.
+    BrightYellow,
+    /// ANSI color 12: `bright_blue`.
+    BrightBlue,
+    /// ANSI color 13: `bright_magenta`.
+    BrightMagenta,
+    /// ANSI color 14: `bright_cyan`.
+    BrightCyan,
+    /// ANSI color 15: `bright_white`.
+    BrightWhite,
+}
+
+impl ContextColor {
+    /// Every color, in ANSI index order (`0..=15`).
+    pub const ALL: [Self; 16] = [
+        Self::Black,
+        Self::Red,
+        Self::Green,
+        Self::Yellow,
+        Self::Blue,
+        Self::Magenta,
+        Self::Cyan,
+        Self::White,
+        Self::BrightBlack,
+        Self::BrightRed,
+        Self::BrightGreen,
+        Self::BrightYellow,
+        Self::BrightBlue,
+        Self::BrightMagenta,
+        Self::BrightCyan,
+        Self::BrightWhite,
+    ];
+
+    /// Name of the color, as written in `config.toml`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Black => "black",
+            Self::Red => "red",
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Blue => "blue",
+            Self::Magenta => "magenta",
+            Self::Cyan => "cyan",
+            Self::White => "white",
+            Self::BrightBlack => "bright_black",
+            Self::BrightRed => "bright_red",
+            Self::BrightGreen => "bright_green",
+            Self::BrightYellow => "bright_yellow",
+            Self::BrightBlue => "bright_blue",
+            Self::BrightMagenta => "bright_magenta",
+            Self::BrightCyan => "bright_cyan",
+            Self::BrightWhite => "bright_white",
+        }
+    }
+}
+
+impl fmt::Display for ContextColor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ContextColor {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|color| color.as_str() == text)
+            .ok_or_else(|| {
+                let valid = Self::ALL.map(Self::as_str).join(", ");
+                format!("invalid context color `{text}`: expected one of {valid}")
+            })
+    }
+}
+
 /// `[contexts.<name>]`: how repositories are matched to a context, and where its tasks live.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextConfig {
+    /// `color`: ANSI color of the context in the TUI; `None` picks from the default palette.
+    #[serde(default)]
+    pub color: Option<ContextColor>,
     /// `match.paths` and `match.hosts`.
     #[serde(rename = "match", default)]
     pub matching: ContextMatch,
@@ -774,6 +881,20 @@ mod tests {
         ] {
             let error = ForgeHost::try_from(host.to_owned()).unwrap_err();
             assert!(error.contains("[forges]"), "{host}: {error}");
+        }
+    }
+
+    #[test]
+    fn context_colors_are_the_sixteen_ansi_colors() {
+        use super::ContextColor;
+        for color in ContextColor::ALL {
+            let name = color.as_str();
+            assert_eq!(name.parse::<ContextColor>().unwrap(), color);
+            assert_eq!(color.to_string(), name);
+        }
+        for bad in ["", "#ff0000", "rgb(1,2,3)", "orange", "Red", "bright-red"] {
+            let error = bad.parse::<ContextColor>().unwrap_err();
+            assert!(error.contains("invalid context color"), "{bad}: {error}");
         }
     }
 }

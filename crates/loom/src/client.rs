@@ -1,15 +1,17 @@
 //! Client of the loomd API: HTTP/1.1 over the unix socket, one connection per request.
 
+use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use http_body_util::{BodyExt as _, Full};
-use hyper::body::Bytes;
+use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1;
 use hyper::{Method, Request, header};
 use hyper_util::rt::TokioIo;
-use loom_api::{ApiError, StatusResponse};
+use loom::tui::sse::{SseFrame, SseParser};
+use loom_api::{ApiError, ContextName, EventCursor, StatusResponse};
 use loom_telemetry::propagation::inject_context;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -22,6 +24,10 @@ use tracing::{Instrument as _, Span, info_span};
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Path of the status endpoint.
 const STATUS_PATH: &str = "/v1/status";
+/// Path of the SSE change events endpoint.
+const EVENTS_PATH: &str = "/v1/events";
+/// Header sent on SSE reconnect to resume from the last seen event.
+const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 /// `host` header of every request: required by HTTP/1.1, ignored by loomd.
 const HOST: &str = "loomd";
 
@@ -225,6 +231,119 @@ impl Client {
             .to_bytes();
         Ok((status, body))
     }
+
+    /// Subscribes to `GET /v1/events`, optionally filtered by `context` and resuming after
+    /// `last_event_id` via the `Last-Event-ID` header.
+    pub async fn subscribe_events(
+        &self,
+        context: Option<&ContextName>,
+        last_event_id: Option<EventCursor>,
+    ) -> Result<EventStream, ClientError> {
+        let path = context.map_or_else(
+            || EVENTS_PATH.to_owned(),
+            |ctx| format!("{EVENTS_PATH}?context={ctx}"),
+        );
+        tokio::time::timeout(self.timeout, self.open_events(&path, last_event_id))
+            .await
+            .map_err(|_| {
+                ClientError::Protocol(format!(
+                    "no answer to GET {path} within {} ms",
+                    self.timeout.as_millis()
+                ))
+            })?
+    }
+
+    async fn open_events(
+        &self,
+        path: &str,
+        last_event_id: Option<EventCursor>,
+    ) -> Result<EventStream, ClientError> {
+        let stream =
+            UnixStream::connect(&self.socket)
+                .await
+                .map_err(|source| ClientError::Unreachable {
+                    socket: self.socket.clone(),
+                    source,
+                })?;
+        let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|error| protocol("cannot start HTTP", &error))?;
+        drop(tokio::spawn(connection));
+
+        let mut builder = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::ACCEPT, "text/event-stream");
+        if let Some(cursor) = last_event_id {
+            builder = builder.header(LAST_EVENT_ID_HEADER, cursor.to_string());
+        }
+        let mut request = builder
+            .body(Full::new(Bytes::new()))
+            .map_err(|error| protocol("invalid request", &error))?;
+        inject_context(&Span::current(), request.headers_mut());
+
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|error| protocol("request failed", &error))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|error| protocol("cannot read the body", &error))?
+                .to_bytes();
+            let error = serde_json::from_slice::<ApiError>(&body).map_or_else(
+                |_| {
+                    ClientError::Protocol(format!(
+                        "HTTP {status} for GET {path} without an error body"
+                    ))
+                },
+                |error| ClientError::Api {
+                    status: status.as_u16(),
+                    error,
+                },
+            );
+            return Err(error);
+        }
+
+        Ok(EventStream {
+            body: response.into_body(),
+            parser: SseParser::new(),
+            pending: VecDeque::new(),
+        })
+    }
+}
+
+/// Open Server-Sent Events stream from `GET /v1/events`.
+pub struct EventStream {
+    body: Incoming,
+    parser: SseParser,
+    pending: VecDeque<SseFrame>,
+}
+
+impl EventStream {
+    /// Reads the next [`SseFrame`] from the stream, or `Ok(None)` when the server closes the
+    /// stream.
+    pub async fn next(&mut self) -> Result<Option<SseFrame>, ClientError> {
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Ok(Some(frame));
+            }
+            let Some(frame_result) = self.body.frame().await else {
+                return Ok(None);
+            };
+            let frame = frame_result.map_err(|error| protocol("SSE stream error", &error))?;
+            if let Ok(data) = frame.into_data() {
+                let text = String::from_utf8_lossy(&data);
+                for event in self.parser.feed(&text) {
+                    self.pending.push_back(event);
+                }
+            }
+        }
+    }
 }
 
 fn protocol(context: &str, error: &dyn std::error::Error) -> ClientError {
@@ -387,5 +506,60 @@ mod tests {
             "{:?}",
             failed.status
         );
+    }
+
+    #[test]
+    fn subscribe_events_streams_sse_frames_and_passes_last_event_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("loomd.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = UnixListener::bind(&socket).unwrap();
+            let router = Router::new().route(
+                super::EVENTS_PATH,
+                get(|headers: axum::http::HeaderMap| async move {
+                    let body = if headers
+                        .get("Last-Event-ID")
+                        .is_some_and(|v| v == "1791792000000-1")
+                    {
+                        "id: 1791792000000-2\nevent: task.changed\ndata: {\"type\":\"task.changed\",\"id\":\"k3q7zm2a\",\"context\":\"personal\"}\n\n"
+                    } else {
+                        "id: 1791792000000-1\nevent: repo.changed\ndata: {\"type\":\"repo.changed\",\"slug\":\"personal/loom\"}\n\n: keep-alive\n\n"
+                    };
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        body,
+                    )
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, router).await });
+
+            let client = Client::new(socket.clone());
+            let mut stream = client.subscribe_events(None, None).await.unwrap();
+            let first = stream.next().await.unwrap().unwrap();
+            assert_eq!(first.id, Some("1791792000000-1".parse().unwrap()));
+            assert_eq!(
+                first.event,
+                loom_api::ChangeEvent::RepoChanged {
+                    slug: "personal/loom".to_owned(),
+                }
+            );
+            assert!(stream.next().await.unwrap().is_none());
+
+            let mut resumed = client.subscribe_events(None, first.id).await.unwrap();
+            let second = resumed.next().await.unwrap().unwrap();
+            assert_eq!(second.id, Some("1791792000000-2".parse().unwrap()));
+            assert_eq!(
+                second.event,
+                loom_api::ChangeEvent::TaskChanged {
+                    id: "k3q7zm2a".parse().unwrap(),
+                    context: "personal".parse().unwrap(),
+                }
+            );
+            server.abort();
+        });
     }
 }

@@ -889,6 +889,31 @@ kind = "gitlab"
     }
 
     #[test]
+    fn context_color_parses_and_rejects_non_ansi_names() {
+        use crate::repos::ContextColor;
+        let config = parse_config(
+            "[contexts.personal]\ncolor = \"cyan\"\n[contexts.work]\ncolor = \"bright_yellow\"\n",
+            Path::new(PATH),
+        )
+        .unwrap();
+        let name = |name: &str| name.parse::<ContextName>().unwrap();
+        assert_eq!(
+            config.contexts[&name("personal")].color,
+            Some(ContextColor::Cyan)
+        );
+        assert_eq!(
+            config.contexts[&name("work")].color,
+            Some(ContextColor::BrightYellow)
+        );
+        assert_rejected(
+            "[contexts.a]\ncolor = \"#ff0000\"\n",
+            2,
+            9,
+            "unknown variant",
+        );
+    }
+
+    #[test]
     fn invalid_context_values_are_rejected_with_a_location() {
         // (text, line, column, message excerpt)
         let cases: &[(&str, usize, usize, &str)] = &[

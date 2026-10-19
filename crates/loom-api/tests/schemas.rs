@@ -1000,10 +1000,10 @@ fn sample_task(id: &TaskId) -> Result<Task, Box<dyn Error>> {
         context: "work".parse()?,
         status: Status::Waiting {
             on: Some("Alice".to_owned()),
-            until: Some("2026-10-20".parse()?),
+            until: Some("2026-10-20".parse().map_err(|e| format!("{e}"))?),
         },
         importance: loom_api::Importance::P1,
-        due: Some("2026-10-21".parse()?),
+        due: Some("2026-10-21".parse().map_err(|e| format!("{e}"))?),
         pinned: true,
         links: Vec::new(),
         relations: Relations::default(),

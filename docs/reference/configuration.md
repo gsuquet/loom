@@ -55,7 +55,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
-| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[contexts.<name>] match.paths`, `match.hosts`, `color`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[tasks] archive_after` | string: duration | `"7d"` | The time after its close time (when it became `done` or `cancelled`) at which a task moves from `tasks/<id>/` to `archive/<yyyy>/<id>/`. `<yyyy>` is the UTC year of the close time. Duration syntax of `[update] check_interval`. At least `"1d"`. See [archive](#archive). |
 | `[[contexts.<name>.schedules]]` | | | See [schedules](#schedules). |
 | `[tasks] sync_interval` | string: duration | `"15m"` | Time between two syncs of each context store with its `store.backup.remote`. Duration syntax of `[update] check_interval`. At least `"1m"`. See [store backup](#store-backup). |
@@ -99,10 +99,12 @@ default_context = "personal"
 [contexts.personal]
 match.paths = ["~/perso"]
 match.hosts = ["github.com/gsuquet"]
+color = "cyan"
 
 [contexts.company-a]
 match.paths = ["~/work/company-a"]
 match.hosts = ["gitlab.com/company-a", "gitlab.company-a.example"]
+color = "yellow"
 update = "fetch"
 
 [repos]
@@ -126,6 +128,7 @@ kind = "gitlab"
 | `[contexts.<name>]` | table | none | `<name>`: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter, the last character is not `-` (the rule of `-c`). `unassigned` is reserved. A table without keys is valid. |
 | `[contexts.<name>] match.paths` | array of strings: paths | none | At least one entry when given. Each entry is absolute, `~` or starts with `~/`; `..` is not allowed. |
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A `/` at the end is ignored. |
+| `[contexts.<name>] color` | string: one of the 16 ANSI colors | none (automatic palette) | Color of the context badge in the [TUI](tui.md#context-colors): `"black"`, `"red"`, `"green"`, `"yellow"`, `"blue"`, `"magenta"`, `"cyan"`, `"white"`, `"bright-black"`, `"bright-red"`, `"bright-green"`, `"bright-yellow"`, `"bright-blue"`, `"bright-magenta"`, `"bright-cyan"` or `"bright-white"`. |
 | `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no git command. |
 | `[contexts.<name>] store.path` | string: path | `<loom home>/contexts/<name>` | Root of the context's task store. Same path rules as `match.paths`; `~` is the user's home, not the loom home. Two contexts cannot have the same `store.path`. |
 | `[contexts.<name>] store.backup.remote` | string: git URL or path | none | Repository the context store is pushed to and pulled from (see [store backup](#store-backup)). Not empty, no whitespace or control characters, first character not `-`. Two contexts cannot have the same remote: their stores would diverge at once. |
