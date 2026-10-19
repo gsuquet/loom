@@ -187,6 +187,8 @@ impl TaskIndex {
     ///
     /// [`StoreError`] when the write fails.
     pub fn remove(&mut self, id: &TaskId) -> Result<bool, StoreError> {
+        self.conn
+            .execute("DELETE FROM focus WHERE task_id = ?1", [id.as_str()])?;
         Ok(self
             .conn
             .execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])?
@@ -215,6 +217,18 @@ impl TaskIndex {
         for task in tasks {
             insert(&tx, task)?;
         }
+        tx.execute(
+            "DELETE FROM focus \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM tasks t \
+                 WHERE t.id = focus.task_id \
+                   AND t.context = focus.context \
+                   AND t.error IS NULL \
+                   AND t.archived IS NULL \
+                   AND t.status = 'active' \
+             )",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -235,6 +249,27 @@ impl TaskIndex {
     /// [`StoreError`] when the query fails or a row is invalid.
     pub fn tasks(&self) -> Result<Vec<IndexedTask>, StoreError> {
         list(&self.conn, None)
+    }
+
+    /// The focused tasks of `context`, or of every context when `None`, sorted by context.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or a row is invalid.
+    pub fn focus(
+        &self,
+        context: Option<&ContextName>,
+    ) -> Result<Vec<(FocusRow, IndexedTask)>, StoreError> {
+        focus(&self.conn, context)
+    }
+
+    /// The repository with `slug`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or the row is invalid.
+    pub fn repo(&self, slug: &str) -> Result<Option<loom_api::RepoSummary>, StoreError> {
+        crate::repos::get(&self.conn, slug)
     }
 
     /// Every indexed task ID, sorted.
@@ -387,7 +422,7 @@ impl<P: StorePort> Tasks<P> {
                 })?;
             }
         }
-        self.change(id, |_, _| Ok(command), now, origin, random)
+        self.change(id, |_, _| Ok(Some(command)), now, origin, random)
     }
 
     /// The context and parent of task `id` as indexed; `None` when it is not indexed. An
@@ -406,6 +441,83 @@ impl<P: StorePort> Tasks<P> {
         }))
     }
 
+    /// Makes task `id` the active focus of its context at `now`: sets its status to `active`,
+    /// sets the previous focused task of that context (when it is another active task) back to
+    /// `ready`, and records the focus in the machine-local index.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::NotFound`], [`TaskError::Archived`], [`TaskError::Invalid`], the refusal of
+    /// [`loom_core::apply`] (for instance on a closed task, before the previous focus is
+    /// touched), or the write or index error.
+    pub fn go(
+        &mut self,
+        id: &TaskId,
+        now: Timestamp,
+        origin: &Origin,
+        random: &mut impl RandomSource,
+    ) -> Result<GoOutcome, TaskError> {
+        let task = self.change(
+            id,
+            |current, _| {
+                Ok(
+                    (current.status != Status::Active).then_some(Command::SetStatus {
+                        status: Status::Active,
+                    }),
+                )
+            },
+            now,
+            origin,
+            random,
+        )?;
+        let context = task.context.clone();
+        let previous = focus_row(&self.index.conn, &context)?;
+        if let Some(prev) = &previous
+            && prev.task_id == *id
+        {
+            return Ok(GoOutcome {
+                task,
+                switched_from: None,
+                since: prev.since,
+            });
+        }
+        let switched_from = if let Some(prev) = previous {
+            let can_demote = self.index.get(&prev.task_id)?.is_some_and(|indexed| {
+                indexed.context == context
+                    && !indexed.read_only()
+                    && matches!(
+                        &indexed.state,
+                        IndexedState::Valid { task, .. } if task.status == Status::Active
+                    )
+            });
+            if can_demote {
+                Some(self.change(
+                    &prev.task_id,
+                    |current, _| {
+                        Ok(
+                            (current.status == Status::Active).then_some(Command::SetStatus {
+                                status: Status::Ready,
+                            }),
+                        )
+                    },
+                    now,
+                    origin,
+                    random,
+                )?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let since = set_focus(&self.index.conn, &context, id, now)?;
+        Ok(GoOutcome {
+            task,
+            switched_from,
+            since,
+        })
+    }
+
     /// Reverts the last change of task `id` at `now`: the compensating command is computed
     /// from its event log (see [`loom_core::undo`]) under the task's lock, then applied,
     /// written and indexed.
@@ -422,7 +534,13 @@ impl<P: StorePort> Tasks<P> {
         origin: &Origin,
         random: &mut impl RandomSource,
     ) -> Result<Task, TaskError> {
-        self.change(id, undo, now, origin, random)
+        self.change(
+            id,
+            |task, events| undo(task, events).map(Some),
+            now,
+            origin,
+            random,
+        )
     }
 
     /// The event log of task `id`, read from its store.
@@ -448,7 +566,7 @@ impl<P: StorePort> Tasks<P> {
     fn change(
         &mut self,
         id: &TaskId,
-        command: impl FnOnce(&Task, &[EventRecord]) -> Result<Command, DomainError>,
+        command: impl FnOnce(&Task, &[EventRecord]) -> Result<Option<Command>, DomainError>,
         now: Timestamp,
         origin: &Origin,
         random: &mut impl RandomSource,
@@ -474,7 +592,12 @@ impl<P: StorePort> Tasks<P> {
                 .task()
                 .map_err(|error| TaskError::Invalid(error.clone()))?;
             let mut document = stored.file.document.map_err(TaskError::Invalid)?;
-            let command = command(&current, &stored.events.events)?;
+            if let Some(reason) = current.read_only_reason() {
+                return Err(TaskError::Domain(DomainError::ReadOnly(reason)));
+            }
+            let Some(command) = command(&current, &stored.events.events)? else {
+                return Ok((TaskWrite::default(), current));
+            };
             let (task, events) =
                 apply(current, command, &stored.events.events, now, origin, random)?;
             if events.is_empty() {
@@ -826,6 +949,28 @@ fn store_of<'a, P>(
         .ok_or(TaskError::UnknownContext(indexed.context))
 }
 
+/// The focused task of a context, recorded in the machine-local index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusRow {
+    /// Context of the focus.
+    pub context: ContextName,
+    /// Focused task ID.
+    pub task_id: TaskId,
+    /// When this task became the focus of `context`.
+    pub since: Timestamp,
+}
+
+/// What [`Tasks::go`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoOutcome {
+    /// The task that is now the active focus of its context.
+    pub task: Task,
+    /// The previous focus of that context, moved back to `ready`, when it was another active task.
+    pub switched_from: Option<Task>,
+    /// When `task` became the focus of its context.
+    pub since: Timestamp,
+}
+
 /// What [`Tasks::archive_due`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ArchivedAll {
@@ -972,6 +1117,19 @@ fn insert(conn: &Connection, task: &IndexedTask) -> Result<(), StoreError> {
             task.location.archive_year(),
         ],
     )?;
+    let keep_focus = task.location == TaskLocation::Active
+        && matches!(
+            &task.state,
+            IndexedState::Valid { task, .. } if task.status == Status::Active
+        );
+    if keep_focus {
+        conn.execute(
+            "DELETE FROM focus WHERE task_id = ?1 AND context <> ?2",
+            params![task.id.as_str(), task.context.as_str()],
+        )?;
+    } else {
+        conn.execute("DELETE FROM focus WHERE task_id = ?1", [task.id.as_str()])?;
+    }
     Ok(())
 }
 
@@ -1010,6 +1168,18 @@ fn parse_id(text: &str) -> Result<TaskId, StoreError> {
         .map_err(|error: loom_core::IdError| StoreError::Corrupt(error.to_string()))
 }
 
+fn parse_context(text: &str) -> Result<ContextName, StoreError> {
+    text.parse()
+        .map_err(|error: loom_core::ContextNameError| StoreError::Corrupt(error.to_string()))
+}
+
+fn parse_timestamp(secs: i64) -> Result<Timestamp, StoreError> {
+    u64::try_from(secs)
+        .ok()
+        .and_then(Timestamp::from_unix_secs)
+        .ok_or_else(|| StoreError::Corrupt(format!("timestamp {secs} out of range")))
+}
+
 /// A row of `tasks` ([`COLUMNS`]).
 fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<IndexedTask, StoreError>> {
     let id: String = row.get(0)?;
@@ -1037,14 +1207,85 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<IndexedTask, StoreError>> 
         };
         Ok(IndexedTask {
             id: parse_id(&id)?,
-            context: context
-                .parse()
-                .map_err(|error: loom_core::ContextNameError| corrupt(error.to_string()))?,
+            context: parse_context(&context)?,
             hash: ContentHash::from_hex(hash),
             location: archived.map_or(TaskLocation::Active, TaskLocation::Archived),
             state,
         })
     })())
+}
+
+/// The focus row of `context`, when one is recorded.
+fn focus_row(conn: &Connection, context: &ContextName) -> Result<Option<FocusRow>, StoreError> {
+    conn.query_row(
+        "SELECT context, task_id, since FROM focus WHERE context = ?1",
+        [context.as_str()],
+        |row| {
+            let context: String = row.get(0)?;
+            let task_id: String = row.get(1)?;
+            let since: i64 = row.get(2)?;
+            Ok((|| {
+                Ok(FocusRow {
+                    context: parse_context(&context)?,
+                    task_id: parse_id(&task_id)?,
+                    since: parse_timestamp(since)?,
+                })
+            })())
+        },
+    )
+    .optional()?
+    .transpose()
+}
+
+/// Records `task_id` as the focus of `context` at `now`, keeping `since` when `task_id` was
+/// already the focus of `context`.
+fn set_focus(
+    conn: &Connection,
+    context: &ContextName,
+    task_id: &TaskId,
+    now: Timestamp,
+) -> Result<Timestamp, StoreError> {
+    conn.execute(
+        "INSERT INTO focus (context, task_id, since) VALUES (?1, ?2, ?3) \
+         ON CONFLICT (context) DO UPDATE SET \
+             task_id = excluded.task_id, \
+             since = CASE WHEN focus.task_id = excluded.task_id THEN focus.since ELSE excluded.since END",
+        params![context.as_str(), task_id.as_str(), unix(now)?],
+    )?;
+    focus_row(conn, context)?
+        .map(|row| row.since)
+        .ok_or_else(|| StoreError::Corrupt(format!("missing focus row for {context}")))
+}
+
+/// The focused tasks of `context`, or of every context when `None`, sorted by context.
+pub(crate) fn focus(
+    conn: &Connection,
+    context: Option<&ContextName>,
+) -> Result<Vec<(FocusRow, IndexedTask)>, StoreError> {
+    let mut statement = conn.prepare(
+        "SELECT t.id, t.context, t.hash, t.task, t.error, t.body, t.archived, f.since \
+         FROM focus f \
+         JOIN tasks t ON t.id = f.task_id AND t.context = f.context \
+         WHERE (?1 IS NULL OR f.context = ?1) \
+           AND t.error IS NULL \
+           AND t.archived IS NULL \
+           AND t.status = 'active' \
+         ORDER BY f.context",
+    )?;
+    let rows = statement.query_map([context.map(ContextName::as_str)], |row| {
+        let task = read_row(row)?;
+        let since: i64 = row.get(7)?;
+        Ok((|| {
+            let task = task?;
+            let focus = FocusRow {
+                context: task.context.clone(),
+                task_id: task.id.clone(),
+                since: parse_timestamp(since)?,
+            };
+            Ok((focus, task))
+        })())
+    })?;
+    rows.map(|row| row?).collect()
 }
 
 /// The indexed task with `id`.

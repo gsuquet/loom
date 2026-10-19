@@ -2,17 +2,19 @@
 //! the list and its ranking, the response of a task, and the problem of each refusal.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use axum::http::StatusCode;
 use loom_api::{
-    AmbiguousPrefix, ApiError, ContextName, Date, ErrorCode, IllegalTransition, NewTask, Status,
-    StatusName, Task, TaskActionName, TaskActionRequest, TaskCandidate, TaskDetail, TaskEdit,
-    TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary, UndoConflict,
+    AmbiguousPrefix, ApiError, ContextName, Date, ErrorCode, FocusEntry, FocusList, GoResult,
+    IllegalTransition, Link, NewTask, Status, StatusName, Task, TaskActionName, TaskActionRequest,
+    TaskCandidate, TaskDetail, TaskEdit, TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary,
+    Timestamp, UndoConflict,
 };
 use loom_core::shortest_unique_prefixes;
 use loom_core::{Command, DomainError, PrefixError, available_actions, rank, resolve_prefix};
 use loom_store::port::TaskLocation;
-use loom_store::tasks::{IndexedState, IndexedTask, TaskError};
+use loom_store::tasks::{FocusRow, IndexedState, IndexedTask, TaskError};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -61,6 +63,31 @@ pub struct TaskListQuery {
     pub archived: Option<bool>,
 }
 
+/// Query parameters of `GET /v1/focus`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FocusQuery {
+    /// Only the focus of this context; ignored when empty.
+    pub context: Option<String>,
+}
+
+/// The context filter of `GET /v1/focus`.
+///
+/// # Errors
+///
+/// `invalid_request` when `context` is not a context name.
+pub fn focus_context(query: FocusQuery) -> Result<Option<ContextName>, ApiError> {
+    query
+        .context
+        .filter(|context| !context.is_empty())
+        .map_or(Ok(None), |context| {
+            context
+                .parse::<ContextName>()
+                .map(Some)
+                .map_err(|error| invalid_request(format!("invalid context: {error}")))
+        })
+}
+
 /// The filter of a task list, checked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskFilter {
@@ -80,14 +107,9 @@ pub struct TaskFilter {
 ///
 /// `invalid_request` when `context` is not a context name or `status` not a status name.
 pub fn task_filter(query: TaskListQuery) -> Result<TaskFilter, ApiError> {
-    let context = match query.context.filter(|context| !context.is_empty()) {
-        None => None,
-        Some(context) => Some(
-            context
-                .parse::<ContextName>()
-                .map_err(|error| invalid_request(format!("invalid context: {error}")))?,
-        ),
-    };
+    let context = focus_context(FocusQuery {
+        context: query.context,
+    })?;
     let status = match query.status.filter(|status| !status.is_empty()) {
         None => None,
         Some(status) => Some(
@@ -211,11 +233,7 @@ pub fn resolve<'a>(prefix: &str, rows: &'a [IndexedTask]) -> Result<&'a IndexedT
 /// The response of `row`, its prefix unique among `ids` (every indexed task ID).
 #[must_use]
 pub fn task_detail(row: &IndexedTask, ids: &[TaskId]) -> TaskDetail {
-    let prefix = ids
-        .iter()
-        .position(|id| *id == row.id)
-        .and_then(|index| shortest_unique_prefixes(ids).get(index).copied())
-        .unwrap_or(row.id.as_str());
+    let prefix = unique_prefix(&row.id, ids);
     let (body, mut actions) = match &row.state {
         IndexedState::Valid { task, body } => (body.clone(), available_actions(task)),
         IndexedState::Invalid { text, .. } => (text.clone(), Vec::new()),
@@ -227,6 +245,72 @@ pub fn task_detail(row: &IndexedTask, ids: &[TaskId]) -> TaskDetail {
         summary: summary(row, prefix, None),
         body,
         actions,
+    }
+}
+
+/// The summary of `row`, its prefix unique among `ids` (every indexed task ID).
+#[must_use]
+pub fn task_summary(row: &IndexedTask, ids: &[TaskId]) -> TaskSummary {
+    summary(row, unique_prefix(&row.id, ids), None)
+}
+
+fn unique_prefix<'a>(target: &'a TaskId, ids: &'a [TaskId]) -> &'a str {
+    ids.iter()
+        .position(|id| id == target)
+        .and_then(|index| shortest_unique_prefixes(ids).get(index).copied())
+        .unwrap_or_else(|| target.as_str())
+}
+
+/// The repository slug of the first `Link::Repo` of `task`, if any.
+#[must_use]
+pub fn linked_repo_slug(task: &Task) -> Option<&str> {
+    task.links.iter().find_map(|link| match link {
+        Link::Repo { repo } => Some(repo.as_str()),
+        Link::Origin(_) | Link::Related(_) => None,
+    })
+}
+
+/// The response of `GET /v1/focus` from `focused` rows and `ids` (every indexed task ID).
+pub fn focus_list(
+    focused: &[(FocusRow, IndexedTask)],
+    ids: &[TaskId],
+    mut repo_path: impl FnMut(&str) -> Option<PathBuf>,
+) -> FocusList {
+    let prefixes: HashMap<&TaskId, &str> = ids.iter().zip(shortest_unique_prefixes(ids)).collect();
+    let entries = focused
+        .iter()
+        .map(|(focus, row)| {
+            let prefix = prefixes
+                .get(&row.id)
+                .map_or_else(|| row.id.as_str(), |p| *p);
+            let repo_path = task_of(row)
+                .and_then(linked_repo_slug)
+                .and_then(&mut repo_path);
+            FocusEntry {
+                context: focus.context.clone(),
+                task: summary(row, prefix, None),
+                since: focus.since,
+                repo_path,
+            }
+        })
+        .collect();
+    FocusList { entries }
+}
+
+/// The response of `POST /v1/tasks/{id}/go`.
+#[must_use]
+pub fn go_result(
+    row: &IndexedTask,
+    switched_from: Option<&IndexedTask>,
+    since: Timestamp,
+    ids: &[TaskId],
+    repo_path: Option<PathBuf>,
+) -> GoResult {
+    GoResult {
+        task: task_detail(row, ids),
+        switched_from: switched_from.map(|prev| task_summary(prev, ids)),
+        since,
+        repo_path,
     }
 }
 

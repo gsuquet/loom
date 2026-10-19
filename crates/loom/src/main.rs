@@ -183,6 +183,9 @@ const fn registers_on_use(command: &Command) -> bool {
         Command::ShellInit(_) | Command::UpgradeWatchdog(_) => false,
         Command::Search(_)
         | Command::Add(_)
+        | Command::Go(_)
+        | Command::Focus(_)
+        | Command::Log(_)
         | Command::Ls(_)
         | Command::Show(_)
         | Command::Set(_)
@@ -225,6 +228,9 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Repo { command } => repo_cmd::run(command, &cli.global, layout()?),
         Command::Search(args) => search_cmd::run(args, &cli.global, &layout()?),
         Command::Add(args) => task_cmd::add(args, &cli.global, &layout()?),
+        Command::Go(args) => task_cmd::go(args, &layout()?),
+        Command::Focus(args) => task_cmd::focus(args, &cli.global, &layout()?),
+        Command::Log(args) => task_cmd::log(args, &cli.global, &layout()?),
         Command::Ls(args) => task_cmd::ls(args, &cli.global, &layout()?),
         Command::Show(args) => task_cmd::show(args, &layout()?),
         Command::Set(args) => task_cmd::set(args, &layout()?),

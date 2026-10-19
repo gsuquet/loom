@@ -4,6 +4,26 @@
 # loomd registers the repository it is in. Nothing happens when loom is not installed.
 # Bash 3.2 compatible (macOS /bin/bash): no associative array.
 if command -v loom >/dev/null 2>&1; then
+  loom() {
+    if [ "$1" = "go" ]; then
+      local cd_file
+      cd_file=$(mktemp "${TMPDIR:-/tmp}/loom-cd.XXXXXX") || { command loom "$@"; return $?; }
+      LOOM_CD_FILE="$cd_file" command loom "$@"
+      local status=$?
+      if [ -s "$cd_file" ]; then
+        local target
+        target=$(cat "$cd_file")
+        rm -f "$cd_file"
+        if [ -d "$target" ]; then
+          cd "$target" || return $?
+        fi
+      else
+        rm -f "$cd_file"
+      fi
+      return "$status"
+    fi
+    command loom "$@"
+  }
   __loom_seen=$'\n'
   __loom_pwd=
   __loom_prompt() {

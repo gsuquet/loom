@@ -35,8 +35,8 @@ use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ChangeEvent, ContextName, Date, NewTask, ReindexResult, TaskDetail, TaskEvents, TaskId,
-    TaskList, Timestamp,
+    ChangeEvent, ContextName, Date, FocusList, GoResult, NewTask, ReindexResult, TaskDetail,
+    TaskEvents, TaskId, TaskList, Timestamp,
 };
 use loom_config::schedules::Schedule;
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
@@ -52,7 +52,10 @@ use loomd::events::Bus;
 use loomd::recurring::{Outcome, plan};
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{Committed, GitError, LocalStep, StoreCommits};
-use loomd::task_api::{TEST_TODAY_ENV, TaskFilter, resolve, task_detail, task_list, task_problem};
+use loomd::task_api::{
+    TEST_TODAY_ENV, TaskFilter, focus_list, go_result, linked_repo_slug, resolve, task_detail,
+    task_list, task_problem,
+};
 use loomd::task_archive::{ARCHIVE_BATCH, archive_now};
 use loomd::task_index::{WatchedPath, failed_files, reindex_result, watched_path};
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -89,6 +92,11 @@ enum Command {
         id: TaskId,
         command: loom_core::Command,
         reply: Reply<TaskDetail>,
+        parent: Span,
+    },
+    Go {
+        id: TaskId,
+        reply: Reply<GoResult>,
         parent: Span,
     },
     Undo {
@@ -466,6 +474,12 @@ impl TaskHandle {
         .await
     }
 
+    /// Makes the task with `id` the active focus of its context.
+    pub async fn go(&self, id: TaskId) -> Result<GoResult, Failure> {
+        self.send(|reply, parent| Command::Go { id, reply, parent })
+            .await
+    }
+
     /// Reverts the last change of the task with `id`.
     pub async fn undo(&self, id: TaskId) -> Result<TaskDetail, Failure> {
         self.send(|reply, parent| Command::Undo { id, reply, parent })
@@ -476,6 +490,36 @@ impl TaskHandle {
     pub async fn events(&self, id: TaskId) -> Result<TaskEvents, Failure> {
         self.send(|reply, parent| Command::Events { id, reply, parent })
             .await
+    }
+
+    /// The focused tasks of `context`, or of every context when `None`.
+    pub async fn focus(&self, context: Option<ContextName>) -> Result<FocusList, Failure> {
+        if !self.wait_ready(READY_TIMEOUT).await {
+            warn!("tasks still being indexed: the answer may miss some");
+        }
+        let db = self.db.clone();
+        let read = tokio::task::spawn_blocking(move || {
+            let reader = Reader::open(&db)?;
+            let rows = reader.tasks(None)?;
+            let ids: Vec<TaskId> = rows.iter().map(|row| row.id.clone()).collect();
+            let focused = reader.focus(context.as_ref())?;
+            Ok(focus_list(&focused, &ids, |slug| {
+                reader
+                    .get(slug)
+                    .ok()
+                    .flatten()
+                    .map(|summary| summary.identity.path)
+            }))
+        })
+        .await;
+        match read {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(error)) => Err(index_failure(&error)),
+            Err(error) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                internal(format!("index read failed: {error}")),
+            )),
+        }
     }
 
     /// The tasks `filter` keeps, ranked on `today` when it asks so.
@@ -610,6 +654,9 @@ impl Worker {
                 } => {
                     let _ = reply.send(self.apply(&id, command, &parent));
                 }
+                Command::Go { id, reply, parent } => {
+                    let _ = reply.send(self.go(&id, &parent));
+                }
                 Command::Undo { id, reply, parent } => {
                     let _ = reply.send(self.undo(&id, &parent));
                 }
@@ -726,6 +773,59 @@ impl Worker {
             self.changed(&task.context, id);
         }
         self.detail(id)
+    }
+
+    fn go(&mut self, id: &TaskId, parent: &Span) -> Result<GoResult, Failure> {
+        let _span = info_span!(parent: parent, "tasks.go", %id).entered();
+        let before = self.event_count(id);
+        let prev_counts: BTreeMap<TaskId, usize> = self
+            .tasks
+            .index()
+            .focus(None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(focus, _)| {
+                let count = self.event_count(&focus.task_id);
+                (focus.task_id, count)
+            })
+            .collect();
+        let outcome = self
+            .tasks
+            .go(id, now(), &self.user, &mut self.random)
+            .map_err(|error| refused(&error))?;
+        info!(%id, context = %outcome.task.context, "task focused");
+        self.commit_change(&outcome.task.context, id, before);
+        if self.event_count(id) > before {
+            self.changed(&outcome.task.context, id);
+        }
+        if let Some(demoted) = &outcome.switched_from {
+            let prev_before = prev_counts.get(&demoted.id).copied().unwrap_or(0);
+            self.commit_change(&demoted.context, &demoted.id, prev_before);
+            self.changed(&demoted.context, &demoted.id);
+        }
+        let index = self.tasks.index();
+        let row = index
+            .get(id)
+            .map_err(|error| index_failure(&error))?
+            .ok_or_else(|| refused(&TaskError::NotFound(id.clone())))?;
+        let switched_row = outcome
+            .switched_from
+            .as_ref()
+            .map(|demoted| index.get(&demoted.id))
+            .transpose()
+            .map_err(|error| index_failure(&error))?
+            .flatten();
+        let ids = index.ids().map_err(|error| index_failure(&error))?;
+        let repo_path = linked_repo_slug(&outcome.task)
+            .and_then(|slug| index.repo(slug).ok().flatten())
+            .map(|summary| summary.identity.path);
+        Ok(go_result(
+            &row,
+            switched_row.as_ref(),
+            outcome.since,
+            &ids,
+            repo_path,
+        ))
     }
 
     fn undo(&mut self, id: &TaskId, parent: &Span) -> Result<TaskDetail, Failure> {
