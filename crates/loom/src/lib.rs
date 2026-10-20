@@ -12,5 +12,6 @@ pub mod repo;
 pub mod search;
 pub mod service;
 pub mod shell;
+pub mod sse;
 pub mod status;
 pub mod task;
