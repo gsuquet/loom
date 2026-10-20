@@ -26,13 +26,13 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Path of the status endpoint.
 const STATUS_PATH: &str = "/v1/status";
 /// Path of the SSE change events endpoint.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 const EVENTS_PATH: &str = "/v1/events";
 /// Header sent on SSE reconnect to resume from the last seen event.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 /// Default maximum duration between incoming frames (heartbeats or events) before timing out.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 pub const DEFAULT_SSE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 /// `host` header of every request: required by HTTP/1.1, ignored by loomd.
 const HOST: &str = "loomd";
@@ -233,7 +233,7 @@ impl Client {
 
     /// Subscribes to `GET /v1/events`, optionally filtered by `context` and resuming after
     /// `last_event_id` via the `Last-Event-ID` header.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
     pub async fn subscribe_events(
         &self,
         context: Option<&ContextName>,
@@ -253,7 +253,7 @@ impl Client {
             })?
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
     async fn open_events(
         &self,
         path: &str,
@@ -310,7 +310,7 @@ impl Client {
 }
 
 /// Open Server-Sent Events stream from `GET /v1/events`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 pub struct EventStream {
     body: Incoming,
     parser: SseParser,
@@ -319,7 +319,7 @@ pub struct EventStream {
     heartbeat_timeout: Duration,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 impl EventStream {
     /// Overrides the idle heartbeat timeout for this stream (defaults to 45 seconds).
     #[must_use]

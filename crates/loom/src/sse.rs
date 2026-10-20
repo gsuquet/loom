@@ -25,7 +25,7 @@ pub struct SseParser {
 }
 
 impl SseParser {
-    /// Maximum allowed buffer capacity in bytes (1 MiB) before dropping oversized lines.
+    /// Maximum allowed buffer capacity in bytes (1 MiB) for an unfinished line before dropping it and emitting Resync.
     pub const MAX_BUFFER_CAPACITY: usize = 1024 * 1024;
 
     /// Creates an empty [`SseParser`].
@@ -37,13 +37,6 @@ impl SseParser {
     /// Feeds a chunk of bytes from the HTTP response body and returns any completed [`SseFrame`]s.
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<SseFrame> {
         self.buffer.extend_from_slice(chunk);
-        if self.buffer.len() > Self::MAX_BUFFER_CAPACITY {
-            self.buffer.clear();
-            self.current_id = None;
-            self.current_data.clear();
-            return Vec::new();
-        }
-
         let mut frames = Vec::new();
 
         while let Some(pos) = self.buffer.iter().position(|&byte| byte == b'\n') {
@@ -61,6 +54,16 @@ impl SseParser {
             if let Some(frame) = self.process_line(&line) {
                 frames.push(frame);
             }
+        }
+
+        if self.buffer.len() > Self::MAX_BUFFER_CAPACITY {
+            self.buffer.clear();
+            self.current_id = None;
+            self.current_data.clear();
+            frames.push(SseFrame {
+                id: None,
+                event: ChangeEvent::Resync,
+            });
         }
 
         frames
@@ -207,14 +210,58 @@ mod tests {
     }
 
     #[test]
-    fn buffers_over_one_megabyte_are_cleared() {
+    fn unfinished_lines_over_one_megabyte_trigger_resync() {
         let mut parser = SseParser::new();
-        let chunk = vec![b'a'; SseParser::MAX_BUFFER_CAPACITY + 1];
+        let mut chunk =
+            b"id: 1-1\ndata: {\"type\":\"task.changed\",\"id\":\"k3q7zm2a\",\"context\":\"work\"}\n\n"
+                .to_vec();
+        chunk.extend(vec![b'x'; SseParser::MAX_BUFFER_CAPACITY + 1]);
+
         let frames = parser.feed(&chunk);
-        assert_eq!(frames.len(), 0);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(
+            frames[0],
+            SseFrame {
+                id: Some(EventCursor { run: 1, seq: 1 }),
+                event: ChangeEvent::TaskChanged {
+                    id: "k3q7zm2a".parse().unwrap(),
+                    context: "work".parse().unwrap(),
+                },
+            }
+        );
+        assert_eq!(
+            frames[1],
+            SseFrame {
+                id: None,
+                event: ChangeEvent::Resync,
+            }
+        );
+
         // Ensure parser is still usable afterwards
-        let normal = b"id: 1-1\ndata: {\"type\":\"resync\"}\n\n";
+        let normal = b"id: 1-2\ndata: {\"type\":\"resync\"}\n\n";
         let frames2 = parser.feed(normal);
         assert_eq!(frames2.len(), 1);
+        assert_eq!(
+            frames2[0],
+            SseFrame {
+                id: Some(EventCursor { run: 1, seq: 2 }),
+                event: ChangeEvent::Resync,
+            }
+        );
+    }
+
+    #[test]
+    fn chunk_larger_than_one_megabyte_with_valid_events_is_not_dropped() {
+        let mut parser = SseParser::new();
+        let single_event = b"data: {\"type\":\"resync\"}\n\n";
+        let repeat_count = (SseParser::MAX_BUFFER_CAPACITY / single_event.len()) + 10;
+        let large_chunk: Vec<u8> = single_event.repeat(repeat_count);
+        assert!(large_chunk.len() > SseParser::MAX_BUFFER_CAPACITY);
+
+        let frames = parser.feed(&large_chunk);
+        assert_eq!(frames.len(), repeat_count);
+        for frame in frames {
+            assert_eq!(frame.event, ChangeEvent::Resync);
+        }
     }
 }
