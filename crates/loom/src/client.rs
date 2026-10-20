@@ -26,13 +26,13 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Path of the status endpoint.
 const STATUS_PATH: &str = "/v1/status";
 /// Path of the SSE change events endpoint.
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
 const EVENTS_PATH: &str = "/v1/events";
 /// Header sent on SSE reconnect to resume from the last seen event.
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
 const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 /// Default maximum duration between incoming frames (heartbeats or events) before timing out.
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
 pub const DEFAULT_SSE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 /// `host` header of every request: required by HTTP/1.1, ignored by loomd.
 const HOST: &str = "loomd";
@@ -177,18 +177,11 @@ impl Client {
                 ClientError::Protocol(format!("invalid body for {method} {path}: {error}"))
             });
         }
-        let error = serde_json::from_slice::<ApiError>(&body).map_or_else(
-            |_| {
-                ClientError::Protocol(format!(
-                    "HTTP {status} for {method} {path} without an error body"
-                ))
-            },
-            |error| ClientError::Api {
-                status: status.as_u16(),
-                error,
-            },
-        );
-        Err(error)
+        Err(parse_error_response(
+            status,
+            &format!("{method} {path}"),
+            &body,
+        ))
     }
 
     /// Connects, sends the request and reads the whole response.
@@ -240,7 +233,7 @@ impl Client {
 
     /// Subscribes to `GET /v1/events`, optionally filtered by `context` and resuming after
     /// `last_event_id` via the `Last-Event-ID` header.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
     pub async fn subscribe_events(
         &self,
         context: Option<&ContextName>,
@@ -260,7 +253,7 @@ impl Client {
             })?
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
     async fn open_events(
         &self,
         path: &str,
@@ -303,18 +296,7 @@ impl Client {
                 .await
                 .map_err(|error| protocol("cannot read the body", &error))?
                 .to_bytes();
-            let error = serde_json::from_slice::<ApiError>(&body).map_or_else(
-                |_| {
-                    ClientError::Protocol(format!(
-                        "HTTP {status} for GET {path} without an error body"
-                    ))
-                },
-                |error| ClientError::Api {
-                    status: status.as_u16(),
-                    error,
-                },
-            );
-            return Err(error);
+            return Err(parse_error_response(status, &format!("GET {path}"), &body));
         }
 
         Ok(EventStream {
@@ -328,7 +310,7 @@ impl Client {
 }
 
 /// Open Server-Sent Events stream from `GET /v1/events`.
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
 pub struct EventStream {
     body: Incoming,
     parser: SseParser,
@@ -337,7 +319,7 @@ pub struct EventStream {
     heartbeat_timeout: Duration,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #139"))]
 impl EventStream {
     /// Overrides the idle heartbeat timeout for this stream (defaults to 45 seconds).
     #[must_use]
@@ -385,6 +367,16 @@ impl EventStream {
             }
         }
     }
+}
+
+fn parse_error_response(status: hyper::StatusCode, context: &str, body: &[u8]) -> ClientError {
+    serde_json::from_slice::<ApiError>(body).map_or_else(
+        |_| ClientError::Protocol(format!("HTTP {status} for {context} without an error body")),
+        |error| ClientError::Api {
+            status: status.as_u16(),
+            error,
+        },
+    )
 }
 
 fn protocol(context: &str, error: &dyn std::error::Error) -> ClientError {
