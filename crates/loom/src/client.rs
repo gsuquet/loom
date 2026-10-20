@@ -19,20 +19,17 @@ use tokio::net::UnixStream;
 use tracing::field;
 use tracing::{Instrument as _, Span, info_span};
 
-use loom::sse::{SseFrame, SseParser};
+use crate::sse::{SseFrame, SseParser};
 
 /// Longest a request may take, connection included.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Path of the status endpoint.
 const STATUS_PATH: &str = "/v1/status";
 /// Path of the SSE change events endpoint.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 const EVENTS_PATH: &str = "/v1/events";
 /// Header sent on SSE reconnect to resume from the last seen event.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 const LAST_EVENT_ID_HEADER: &str = "last-event-id";
 /// Default maximum duration between incoming frames (heartbeats or events) before timing out.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 pub const DEFAULT_SSE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 /// `host` header of every request: required by HTTP/1.1, ignored by loomd.
 const HOST: &str = "loomd";
@@ -71,6 +68,7 @@ pub struct Client {
 
 impl Client {
     /// Client of the daemon listening on `socket`, with [`REQUEST_TIMEOUT`].
+    #[must_use]
     pub const fn new(socket: PathBuf) -> Self {
         Self {
             socket,
@@ -79,6 +77,7 @@ impl Client {
     }
 
     /// The same client, each request taking at most `timeout`, connection included.
+    #[must_use]
     pub fn with_timeout(&self, timeout: Duration) -> Self {
         Self {
             socket: self.socket.clone(),
@@ -87,22 +86,35 @@ impl Client {
     }
 
     /// Path of the socket.
+    #[must_use]
     pub fn socket(&self) -> &Path {
         &self.socket
     }
 
     /// `GET /v1/status`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or loomd returns an error.
     pub async fn status(&self) -> Result<StatusResponse, ClientError> {
         self.get(STATUS_PATH).await
     }
 
     /// `GET path`, with the JSON body of a successful response decoded as `T`. Traced as a
     /// client span whose context is sent to loomd.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or loomd returns an error.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         self.call(Method::GET, path, None).await
     }
 
     /// `POST path` with `body` as JSON (an empty body when `None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or loomd returns an error.
     pub async fn post<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -115,6 +127,10 @@ impl Client {
     }
 
     /// `PATCH path` with `body` as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or loomd returns an error.
     pub async fn patch<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -127,6 +143,10 @@ impl Client {
     }
 
     /// `DELETE path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or loomd returns an error.
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         self.call(Method::DELETE, path, None).await
     }
@@ -233,7 +253,10 @@ impl Client {
 
     /// Subscribes to `GET /v1/events`, optionally filtered by `context` and resuming after
     /// `last_event_id` via the `Last-Event-ID` header.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if connecting to the event stream fails or loomd returns an error.
     pub async fn subscribe_events(
         &self,
         context: Option<&ContextName>,
@@ -253,7 +276,6 @@ impl Client {
             })?
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
     async fn open_events(
         &self,
         path: &str,
@@ -310,7 +332,6 @@ impl Client {
 }
 
 /// Open Server-Sent Events stream from `GET /v1/events`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 pub struct EventStream {
     body: Incoming,
     parser: SseParser,
@@ -319,7 +340,6 @@ pub struct EventStream {
     heartbeat_timeout: Duration,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the TUI, #140 to #142"))]
 impl EventStream {
     /// Overrides the idle heartbeat timeout for this stream (defaults to 45 seconds).
     #[must_use]
@@ -338,6 +358,10 @@ impl EventStream {
     /// stream.
     ///
     /// Times out if no data or heartbeat comment arrives within `heartbeat_timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if reading from the stream fails or times out.
     pub async fn next(&mut self) -> Result<Option<SseFrame>, ClientError> {
         loop {
             if let Some(frame) = self.pending.pop_front() {

@@ -2247,6 +2247,7 @@ dependencies = [
  "clap",
  "crossterm",
  "flate2",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
