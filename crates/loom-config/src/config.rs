@@ -517,7 +517,7 @@ mod tests {
         TelemetryConfig, Update, location, parse_config,
     };
     use crate::repos::{
-        ConfigPath, ContextConfig, DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_INTERVAL,
+        ConfigPath, ContextColor, ContextConfig, DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_INTERVAL,
         DEFAULT_MAX_DEPTH, DEFAULT_ROOTS, ForgeHost, ReposConfig,
     };
     use crate::schedules::DueRule;
@@ -884,6 +884,15 @@ kind = "gitlab"
                 .values()
                 .all(|context| *context == ContextConfig::default())
         );
+        let config = parse_config(
+            "[contexts.work]\ncolor = \"bright_yellow\"\n",
+            Path::new(PATH),
+        )
+        .unwrap();
+        assert_eq!(
+            config.contexts[&"work".parse::<ContextName>().unwrap()].color,
+            Some(ContextColor::BrightYellow)
+        );
         let config = parse_config("[repos]\nroots = []\n", Path::new(PATH)).unwrap();
         assert_eq!(config.repos.roots.len(), 0);
     }
@@ -914,6 +923,19 @@ kind = "gitlab"
                 3,
                 11,
                 "context `work` is not a defined context",
+            ),
+            // Context color.
+            (
+                "[contexts.a]\ncolor = \"#ff0000\"\n",
+                2,
+                9,
+                "unknown variant",
+            ),
+            (
+                "[contexts.a]\ncolor = \"bright-yellow\"\n",
+                2,
+                9,
+                "unknown variant",
             ),
             // `match` lists.
             (
