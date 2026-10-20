@@ -15,3 +15,4 @@ pub mod shell;
 pub mod sse;
 pub mod status;
 pub mod task;
+pub mod tui;

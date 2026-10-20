@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+crossterm.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true

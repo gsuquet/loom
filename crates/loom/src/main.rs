@@ -51,10 +51,17 @@ fn main() -> ExitCode {
     let cli = Cli::from_arg_matches(&matches)
         .map_err(|error| error.format(&mut Cli::command()))
         .unwrap_or_else(|error| error.exit());
+    let interactive_tui =
+        cli.command.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
     let (config, config_problem) = telemetry_config();
     // The watchdog writes to `log/loomd.log`, which needs timestamps like loomd's own lines.
-    let timestamps = matches!(cli.command, Command::UpgradeWatchdog(_));
-    let telemetry = init_telemetry(&cli.global, &config, timestamps, silent(&cli.command));
+    let timestamps = matches!(cli.command, Some(Command::UpgradeWatchdog(_)));
+    let telemetry = init_telemetry(
+        &cli.global,
+        &config,
+        timestamps,
+        silent(cli.command.as_ref(), interactive_tui),
+    );
     if let Some(problem) = config_problem {
         warn!("traces are not exported: {problem}");
     }
@@ -71,7 +78,7 @@ fn main() -> ExitCode {
         span.record("loom.context", context.as_str());
     }
     let result = span.in_scope(|| {
-        let registration = registers_on_use(&cli.command)
+        let registration = registers_on_use(cli.command.as_ref(), interactive_tui)
             .then(|| on_use::spawn(layout().ok(), None))
             .flatten();
         let result = run(&cli);
@@ -168,7 +175,10 @@ fn init_telemetry(
 
 /// Whether the command registers the repository of the current directory on use. Not the
 /// commands that register or remove repositories themselves, nor the internal watchdog.
-const fn registers_on_use(command: &Command) -> bool {
+const fn registers_on_use(command: Option<&Command>, interactive_tui: bool) -> bool {
+    let Some(command) = command else {
+        return interactive_tui;
+    };
     match command {
         Command::Repo { command } => match command {
             // `sync` updates indexed repositories only: it never adds one.
@@ -202,13 +212,27 @@ const fn registers_on_use(command: &Command) -> bool {
 }
 
 /// Whether the command prints nothing on stderr, whatever happens:
-/// `loom repo register --on-use --background`.
-const fn silent(command: &Command) -> bool {
-    matches!(command, Command::Repo { command: RepoCommand::Register(args) } if args.background)
+/// `loom repo register --on-use --background`, or the interactive TUI (which owns the screen).
+const fn silent(command: Option<&Command>, interactive_tui: bool) -> bool {
+    match command {
+        None => interactive_tui,
+        Some(Command::Repo {
+            command: RepoCommand::Register(args),
+        }) => args.background,
+        Some(_) => false,
+    }
 }
 
 fn run(cli: &Cli) -> Result<()> {
-    match &cli.command {
+    let Some(command) = &cli.command else {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            let help = format!("{}\n", Cli::command().render_help());
+            return print(&help);
+        }
+        let _guard = loom::tui::terminal::TerminalGuard::enter().into_diagnostic()?;
+        return Ok(());
+    };
+    match command {
         // Before `layout()?`: never fails.
         Command::Repo {
             command: RepoCommand::Register(args),
