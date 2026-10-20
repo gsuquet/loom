@@ -9,5 +9,3 @@ pub mod layout;
 pub mod machine;
 pub mod repos;
 pub mod schedules;
-
-pub use repos::{ContextColor, ContextColorError, ContextConfig};

@@ -10,7 +10,7 @@ use std::time::Duration;
 use globset::Glob;
 use loom_api::{ContextName, ForgeKind, RepoUpdatePolicy, UNASSIGNED};
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
 use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
@@ -41,8 +41,18 @@ pub struct ContextConfig {
     pub color: Option<ContextColor>,
 }
 
+impl ContextConfig {
+    /// Whether the machine `machine` holds the context: `machines` is absent or names it.
+    #[must_use]
+    pub fn held_by(&self, machine: &MachineName) -> bool {
+        self.machines
+            .as_ref()
+            .is_none_or(|machines| machines.contains(machine))
+    }
+}
+
 /// One of the 16 standard ANSI terminal colors assigned to a context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextColor {
     /// Standard ANSI color 0.
@@ -101,55 +111,6 @@ impl ContextColor {
             Self::BrightCyan => "bright_cyan",
             Self::BrightWhite => "bright_white",
         }
-    }
-}
-
-impl fmt::Display for ContextColor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Why a string could not be parsed as a [`ContextColor`].
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "unknown context color {0:?}: expected one of black, red, green, yellow, blue, magenta, cyan, white, bright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white"
-)]
-pub struct ContextColorError(pub String);
-
-impl std::str::FromStr for ContextColor {
-    type Err = ContextColorError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "black" => Ok(Self::Black),
-            "red" => Ok(Self::Red),
-            "green" => Ok(Self::Green),
-            "yellow" => Ok(Self::Yellow),
-            "blue" => Ok(Self::Blue),
-            "magenta" => Ok(Self::Magenta),
-            "cyan" => Ok(Self::Cyan),
-            "white" => Ok(Self::White),
-            "bright_black" => Ok(Self::BrightBlack),
-            "bright_red" => Ok(Self::BrightRed),
-            "bright_green" => Ok(Self::BrightGreen),
-            "bright_yellow" => Ok(Self::BrightYellow),
-            "bright_blue" => Ok(Self::BrightBlue),
-            "bright_magenta" => Ok(Self::BrightMagenta),
-            "bright_cyan" => Ok(Self::BrightCyan),
-            "bright_white" => Ok(Self::BrightWhite),
-            other => Err(ContextColorError(other.to_owned())),
-        }
-    }
-}
-
-impl ContextConfig {
-    /// Whether the machine `machine` holds the context: `machines` is absent or names it.
-    #[must_use]
-    pub fn held_by(&self, machine: &MachineName) -> bool {
-        self.machines
-            .as_ref()
-            .is_none_or(|machines| machines.contains(machine))
     }
 }
 
@@ -883,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn context_color_round_trips_through_display_and_from_str() {
+    fn context_color_names_match_their_ansi_variants() {
         let colors = [
             (ContextColor::Black, "black"),
             (ContextColor::Red, "red"),
@@ -904,15 +865,6 @@ mod tests {
         ];
         for (color, name) in colors {
             assert_eq!(color.as_str(), name);
-            assert_eq!(color.to_string(), name);
-            assert_eq!(name.parse::<ContextColor>().unwrap(), color);
-            let json = serde_json::to_string(&color).unwrap();
-            assert_eq!(json, format!("\"{name}\""));
-            assert_eq!(serde_json::from_str::<ContextColor>(&json).unwrap(), color);
-        }
-        for bad in ["", "bright-red", "#ff0000", "DARK_BLUE", "orange"] {
-            let error = bad.parse::<ContextColor>().unwrap_err();
-            assert!(error.to_string().contains("unknown context color"));
         }
     }
 }
