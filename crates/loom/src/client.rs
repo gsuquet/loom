@@ -19,7 +19,7 @@ use tokio::net::UnixStream;
 use tracing::field;
 use tracing::{Instrument as _, Span, info_span};
 
-use loom::sse::{SseFrame, SseParser};
+use crate::sse::{SseFrame, SseParser};
 
 /// Longest a request may take, connection included.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -71,6 +71,7 @@ pub struct Client {
 
 impl Client {
     /// Client of the daemon listening on `socket`, with [`REQUEST_TIMEOUT`].
+    #[must_use]
     pub const fn new(socket: PathBuf) -> Self {
         Self {
             socket,
@@ -79,6 +80,7 @@ impl Client {
     }
 
     /// The same client, each request taking at most `timeout`, connection included.
+    #[must_use]
     pub fn with_timeout(&self, timeout: Duration) -> Self {
         Self {
             socket: self.socket.clone(),
@@ -87,22 +89,35 @@ impl Client {
     }
 
     /// Path of the socket.
+    #[must_use]
     pub fn socket(&self) -> &Path {
         &self.socket
     }
 
     /// `GET /v1/status`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if loomd cannot be reached or returns an error.
     pub async fn status(&self) -> Result<StatusResponse, ClientError> {
         self.get(STATUS_PATH).await
     }
 
     /// `GET path`, with the JSON body of a successful response decoded as `T`. Traced as a
     /// client span whose context is sent to loomd.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or decoding fails.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         self.call(Method::GET, path, None).await
     }
 
     /// `POST path` with `body` as JSON (an empty body when `None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if encoding, the request or decoding fails.
     pub async fn post<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -115,6 +130,10 @@ impl Client {
     }
 
     /// `PATCH path` with `body` as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if encoding, the request or decoding fails.
     pub async fn patch<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -127,6 +146,10 @@ impl Client {
     }
 
     /// `DELETE path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the request fails or decoding fails.
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         self.call(Method::DELETE, path, None).await
     }
@@ -240,6 +263,10 @@ impl Client {
 
     /// Subscribes to `GET /v1/events`, optionally filtered by `context` and resuming after
     /// `last_event_id` via the `Last-Event-ID` header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the connection fails or protocol negotiation fails.
     #[allow(dead_code)]
     pub async fn subscribe_events(
         &self,
@@ -356,6 +383,10 @@ impl EventStream {
     /// stream.
     ///
     /// Times out if no data or heartbeat comment arrives within `heartbeat_timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if reading fails, idle timeout expires, or event parsing fails.
     pub async fn next(&mut self) -> Result<Option<SseFrame>, ClientError> {
         loop {
             if let Some(frame) = self.pending.pop_front() {
