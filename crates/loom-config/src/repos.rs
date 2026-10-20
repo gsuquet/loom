@@ -10,7 +10,7 @@ use std::time::Duration;
 use globset::Glob;
 use loom_api::{ContextName, ForgeKind, RepoUpdatePolicy, UNASSIGNED};
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
@@ -36,6 +36,111 @@ pub struct ContextConfig {
     /// `[[contexts.<name>.schedules]]`: recurring tasks of the context.
     #[serde(default)]
     pub schedules: Vec<Schedule>,
+    /// `color`: ANSI color of the context in the TUI; `None` defaults to the palette.
+    #[serde(default)]
+    pub color: Option<ContextColor>,
+}
+
+/// One of the 16 standard ANSI terminal colors assigned to a context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextColor {
+    /// Standard ANSI color 0.
+    Black,
+    /// Standard ANSI color 1.
+    Red,
+    /// Standard ANSI color 2.
+    Green,
+    /// Standard ANSI color 3.
+    Yellow,
+    /// Standard ANSI color 4.
+    Blue,
+    /// Standard ANSI color 5.
+    Magenta,
+    /// Standard ANSI color 6.
+    Cyan,
+    /// Standard ANSI color 7.
+    White,
+    /// Standard ANSI color 8.
+    BrightBlack,
+    /// Standard ANSI color 9.
+    BrightRed,
+    /// Standard ANSI color 10.
+    BrightGreen,
+    /// Standard ANSI color 11.
+    BrightYellow,
+    /// Standard ANSI color 12.
+    BrightBlue,
+    /// Standard ANSI color 13.
+    BrightMagenta,
+    /// Standard ANSI color 14.
+    BrightCyan,
+    /// Standard ANSI color 15.
+    BrightWhite,
+}
+
+impl ContextColor {
+    /// Canonical lowercase `snake_case` name of the ANSI color.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Black => "black",
+            Self::Red => "red",
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Blue => "blue",
+            Self::Magenta => "magenta",
+            Self::Cyan => "cyan",
+            Self::White => "white",
+            Self::BrightBlack => "bright_black",
+            Self::BrightRed => "bright_red",
+            Self::BrightGreen => "bright_green",
+            Self::BrightYellow => "bright_yellow",
+            Self::BrightBlue => "bright_blue",
+            Self::BrightMagenta => "bright_magenta",
+            Self::BrightCyan => "bright_cyan",
+            Self::BrightWhite => "bright_white",
+        }
+    }
+}
+
+impl fmt::Display for ContextColor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Why a string could not be parsed as a [`ContextColor`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "unknown context color {0:?}: expected one of black, red, green, yellow, blue, magenta, cyan, white, bright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white"
+)]
+pub struct ContextColorError(pub String);
+
+impl std::str::FromStr for ContextColor {
+    type Err = ContextColorError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "black" => Ok(Self::Black),
+            "red" => Ok(Self::Red),
+            "green" => Ok(Self::Green),
+            "yellow" => Ok(Self::Yellow),
+            "blue" => Ok(Self::Blue),
+            "magenta" => Ok(Self::Magenta),
+            "cyan" => Ok(Self::Cyan),
+            "white" => Ok(Self::White),
+            "bright_black" => Ok(Self::BrightBlack),
+            "bright_red" => Ok(Self::BrightRed),
+            "bright_green" => Ok(Self::BrightGreen),
+            "bright_yellow" => Ok(Self::BrightYellow),
+            "bright_blue" => Ok(Self::BrightBlue),
+            "bright_magenta" => Ok(Self::BrightMagenta),
+            "bright_cyan" => Ok(Self::BrightCyan),
+            "bright_white" => Ok(Self::BrightWhite),
+            other => Err(ContextColorError(other.to_owned())),
+        }
+    }
 }
 
 impl ContextConfig {
@@ -675,7 +780,7 @@ impl<'de, T: Deserialize<'de>> DeserializeSeed<'de> for SpannedSeed<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigPath, ForgeHost, HostPattern};
+    use super::{ConfigPath, ContextColor, ForgeHost, HostPattern};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -774,6 +879,40 @@ mod tests {
         ] {
             let error = ForgeHost::try_from(host.to_owned()).unwrap_err();
             assert!(error.contains("[forges]"), "{host}: {error}");
+        }
+    }
+
+    #[test]
+    fn context_color_round_trips_through_display_and_from_str() {
+        let colors = [
+            (ContextColor::Black, "black"),
+            (ContextColor::Red, "red"),
+            (ContextColor::Green, "green"),
+            (ContextColor::Yellow, "yellow"),
+            (ContextColor::Blue, "blue"),
+            (ContextColor::Magenta, "magenta"),
+            (ContextColor::Cyan, "cyan"),
+            (ContextColor::White, "white"),
+            (ContextColor::BrightBlack, "bright_black"),
+            (ContextColor::BrightRed, "bright_red"),
+            (ContextColor::BrightGreen, "bright_green"),
+            (ContextColor::BrightYellow, "bright_yellow"),
+            (ContextColor::BrightBlue, "bright_blue"),
+            (ContextColor::BrightMagenta, "bright_magenta"),
+            (ContextColor::BrightCyan, "bright_cyan"),
+            (ContextColor::BrightWhite, "bright_white"),
+        ];
+        for (color, name) in colors {
+            assert_eq!(color.as_str(), name);
+            assert_eq!(color.to_string(), name);
+            assert_eq!(name.parse::<ContextColor>().unwrap(), color);
+            let json = serde_json::to_string(&color).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<ContextColor>(&json).unwrap(), color);
+        }
+        for bad in ["", "bright-red", "#ff0000", "DARK_BLUE", "orange"] {
+            let error = bad.parse::<ContextColor>().unwrap_err();
+            assert!(error.to_string().contains("unknown context color"));
         }
     }
 }

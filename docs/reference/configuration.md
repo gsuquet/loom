@@ -97,10 +97,12 @@ Error: invalid configuration /home/me/.loom/config.toml:8:18: check_interval `5m
 default_context = "personal"
 
 [contexts.personal]
+color = "cyan"
 match.paths = ["~/perso"]
 match.hosts = ["github.com/gsuquet"]
 
 [contexts.company-a]
+color = "bright_yellow"
 match.paths = ["~/work/company-a"]
 match.hosts = ["gitlab.com/company-a", "gitlab.company-a.example"]
 update = "fetch"
@@ -124,6 +126,7 @@ kind = "gitlab"
 | --- | --- | --- | --- |
 | `default_context` | string | none | Names a context defined by a `[contexts.<name>]` table. |
 | `[contexts.<name>]` | table | none | `<name>`: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter, the last character is not `-` (the rule of `-c`). `unassigned` is reserved. A table without keys is valid. |
+| `[contexts.<name>] color` | string: ANSI color | none | ANSI color of the context in the TUI: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `bright_black`, `bright_red`, `bright_green`, `bright_yellow`, `bright_blue`, `bright_magenta`, `bright_cyan`, `bright_white`. |
 | `[contexts.<name>] match.paths` | array of strings: paths | none | At least one entry when given. Each entry is absolute, `~` or starts with `~/`; `..` is not allowed. |
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A `/` at the end is ignored. |
 | `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no git command. |

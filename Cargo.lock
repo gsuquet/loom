@@ -2089,6 +2089,7 @@ dependencies = [
  "loom-api",
  "loom-core",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
 ]
