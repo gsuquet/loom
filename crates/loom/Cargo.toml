@@ -24,6 +24,7 @@ loom-repo.workspace = true
 loom-telemetry.workspace = true
 loom-update.workspace = true
 miette.workspace = true
+ratatui.workspace = true
 # `loom upgrade --version` and the running version.
 semver.workspace = true
 serde.workspace = true
