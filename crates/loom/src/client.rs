@@ -1,15 +1,16 @@
 //! Client of the loomd API: HTTP/1.1 over the unix socket, one connection per request.
 
+use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use http_body_util::{BodyExt as _, Full};
-use hyper::body::Bytes;
+use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1;
 use hyper::{Method, Request, header};
 use hyper_util::rt::TokioIo;
-use loom_api::{ApiError, StatusResponse};
+use loom_api::{ApiError, ContextName, EventCursor, StatusResponse};
 use loom_telemetry::propagation::inject_context;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -18,10 +19,21 @@ use tokio::net::UnixStream;
 use tracing::field;
 use tracing::{Instrument as _, Span, info_span};
 
+use loom::sse::{SseFrame, SseParser};
+
 /// Longest a request may take, connection included.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Path of the status endpoint.
 const STATUS_PATH: &str = "/v1/status";
+/// Path of the SSE change events endpoint.
+#[allow(dead_code)]
+const EVENTS_PATH: &str = "/v1/events";
+/// Header sent on SSE reconnect to resume from the last seen event.
+#[allow(dead_code)]
+const LAST_EVENT_ID_HEADER: &str = "last-event-id";
+/// Default maximum duration between incoming frames (heartbeats or events) before timing out.
+#[allow(dead_code)]
+pub const DEFAULT_SSE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 /// `host` header of every request: required by HTTP/1.1, ignored by loomd.
 const HOST: &str = "loomd";
 
@@ -225,6 +237,154 @@ impl Client {
             .to_bytes();
         Ok((status, body))
     }
+
+    /// Subscribes to `GET /v1/events`, optionally filtered by `context` and resuming after
+    /// `last_event_id` via the `Last-Event-ID` header.
+    #[allow(dead_code)]
+    pub async fn subscribe_events(
+        &self,
+        context: Option<&ContextName>,
+        last_event_id: Option<EventCursor>,
+    ) -> Result<EventStream, ClientError> {
+        let path = context.map_or_else(
+            || EVENTS_PATH.to_owned(),
+            |ctx| format!("{EVENTS_PATH}?context={ctx}"),
+        );
+        tokio::time::timeout(self.timeout, self.open_events(&path, last_event_id))
+            .await
+            .map_err(|_| {
+                ClientError::Protocol(format!(
+                    "no answer to GET {path} within {} ms",
+                    self.timeout.as_millis()
+                ))
+            })?
+    }
+
+    #[allow(dead_code)]
+    async fn open_events(
+        &self,
+        path: &str,
+        last_event_id: Option<EventCursor>,
+    ) -> Result<EventStream, ClientError> {
+        let stream =
+            UnixStream::connect(&self.socket)
+                .await
+                .map_err(|source| ClientError::Unreachable {
+                    socket: self.socket.clone(),
+                    source,
+                })?;
+        let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|error| protocol("cannot start HTTP", &error))?;
+        drop(tokio::spawn(connection));
+
+        let mut builder = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::ACCEPT, "text/event-stream");
+        if let Some(cursor) = last_event_id {
+            builder = builder.header(LAST_EVENT_ID_HEADER, cursor.to_string());
+        }
+        let mut request = builder
+            .body(Full::new(Bytes::new()))
+            .map_err(|error| protocol("invalid request", &error))?;
+        inject_context(&Span::current(), request.headers_mut());
+
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|error| protocol("request failed", &error))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|error| protocol("cannot read the body", &error))?
+                .to_bytes();
+            let error = serde_json::from_slice::<ApiError>(&body).map_or_else(
+                |_| {
+                    ClientError::Protocol(format!(
+                        "HTTP {status} for GET {path} without an error body"
+                    ))
+                },
+                |error| ClientError::Api {
+                    status: status.as_u16(),
+                    error,
+                },
+            );
+            return Err(error);
+        }
+
+        Ok(EventStream {
+            body: response.into_body(),
+            parser: SseParser::new(),
+            pending: VecDeque::new(),
+            last_event_id,
+            heartbeat_timeout: DEFAULT_SSE_HEARTBEAT_TIMEOUT,
+        })
+    }
+}
+
+/// Open Server-Sent Events stream from `GET /v1/events`.
+#[allow(dead_code)]
+pub struct EventStream {
+    body: Incoming,
+    parser: SseParser,
+    pending: VecDeque<SseFrame>,
+    last_event_id: Option<EventCursor>,
+    heartbeat_timeout: Duration,
+}
+
+#[allow(dead_code)]
+impl EventStream {
+    /// Overrides the idle heartbeat timeout for this stream (defaults to 45 seconds).
+    #[must_use]
+    pub const fn with_heartbeat_timeout(mut self, timeout: Duration) -> Self {
+        self.heartbeat_timeout = timeout;
+        self
+    }
+
+    /// Last received event cursor, if any.
+    #[must_use]
+    pub const fn last_event_id(&self) -> Option<EventCursor> {
+        self.last_event_id
+    }
+
+    /// Reads the next [`SseFrame`] from the stream, or `Ok(None)` when the server closes the
+    /// stream.
+    ///
+    /// Times out if no data or heartbeat comment arrives within `heartbeat_timeout`.
+    pub async fn next(&mut self) -> Result<Option<SseFrame>, ClientError> {
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                if let Some(id) = frame.id {
+                    self.last_event_id = Some(id);
+                }
+                return Ok(Some(frame));
+            }
+
+            let frame_result =
+                match tokio::time::timeout(self.heartbeat_timeout, self.body.frame()).await {
+                    Ok(Some(result)) => result,
+                    Ok(None) => return Ok(None),
+                    Err(_) => {
+                        return Err(ClientError::Protocol(format!(
+                            "SSE heartbeat timeout: no data or heartbeat received in {} ms",
+                            self.heartbeat_timeout.as_millis()
+                        )));
+                    }
+                };
+
+            let frame = frame_result.map_err(|error| protocol("SSE stream error", &error))?;
+            if let Ok(data) = frame.into_data() {
+                for event in self.parser.feed(&data) {
+                    self.pending.push_back(event);
+                }
+            }
+        }
+    }
 }
 
 fn protocol(context: &str, error: &dyn std::error::Error) -> ClientError {
@@ -387,5 +547,152 @@ mod tests {
             "{:?}",
             failed.status
         );
+    }
+
+    #[test]
+    fn subscribe_events_streams_sse_frames_and_passes_last_event_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("loomd.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = UnixListener::bind(&socket).unwrap();
+            let router = Router::new().route(
+                super::EVENTS_PATH,
+                get(|headers: axum::http::HeaderMap| async move {
+                    let body = if headers
+                        .get("Last-Event-ID")
+                        .is_some_and(|v| v == "1791792000000-1")
+                    {
+                        "id: 1791792000000-2\nevent: task.changed\ndata: {\"type\":\"task.changed\",\"id\":\"k3q7zm2a\",\"context\":\"personal\"}\n\n"
+                    } else {
+                        "id: 1791792000000-1\nevent: repo.changed\ndata: {\"type\":\"repo.changed\",\"slug\":\"personal/loom\"}\n\n: keep-alive\n\n"
+                    };
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        body,
+                    )
+                }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, router).await });
+
+            let client = Client::new(socket.clone());
+            let mut stream = client.subscribe_events(None, None).await.unwrap();
+            let first = stream.next().await.unwrap().unwrap();
+            assert_eq!(first.id, Some("1791792000000-1".parse().unwrap()));
+            assert_eq!(
+                first.event,
+                loom_api::ChangeEvent::RepoChanged {
+                    slug: "personal/loom".to_owned(),
+                }
+            );
+            assert_eq!(stream.last_event_id(), first.id);
+            assert!(stream.next().await.unwrap().is_none());
+
+            let mut resumed = client.subscribe_events(None, first.id).await.unwrap();
+            let second = resumed.next().await.unwrap().unwrap();
+            assert_eq!(second.id, Some("1791792000000-2".parse().unwrap()));
+            assert_eq!(
+                second.event,
+                loom_api::ChangeEvent::TaskChanged {
+                    id: "k3q7zm2a".parse().unwrap(),
+                    context: "personal".parse().unwrap(),
+                }
+            );
+            assert_eq!(resumed.last_event_id(), second.id);
+            server.abort();
+        });
+    }
+
+    async fn write_all_stream(stream: &tokio::net::UnixStream, data: &[u8]) {
+        let mut written = 0;
+        while written < data.len() {
+            stream.writable().await.unwrap();
+            match stream.try_write(&data[written..]) {
+                Ok(n) => written += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("write error: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn subscribe_events_heartbeat_timeout_triggers_error() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("loomd.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                stream.readable().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = stream.try_read(&mut buf);
+                write_all_stream(
+                    &stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                )
+                .await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            });
+
+            let client = Client::new(socket.clone());
+            let stream = client.subscribe_events(None, None).await.unwrap();
+            let mut stream = stream.with_heartbeat_timeout(Duration::from_millis(50));
+
+            let err = stream.next().await.unwrap_err();
+            assert!(
+                err.to_string().contains("heartbeat timeout"),
+                "expected heartbeat timeout, got: {err}"
+            );
+            server.abort();
+        });
+    }
+
+    #[test]
+    fn subscribe_events_heartbeats_keep_connection_alive() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("loomd.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                stream.readable().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = stream.try_read(&mut buf);
+                write_all_stream(
+                    &stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                )
+                .await;
+                for _ in 0..3 {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    write_all_stream(&stream, b":heartbeat\n\n").await;
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                write_all_stream(&stream, b"data: {\"type\":\"resync\"}\n\n").await;
+            });
+
+            let client = Client::new(socket.clone());
+            let stream = client.subscribe_events(None, None).await.unwrap();
+            let mut stream = stream.with_heartbeat_timeout(Duration::from_millis(80));
+
+            let event = stream.next().await.unwrap().expect("event received");
+            assert_eq!(event.event, loom_api::ChangeEvent::Resync);
+            server.abort();
+        });
     }
 }
