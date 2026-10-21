@@ -1,6 +1,5 @@
 //! `loom`: the CLI, later the TUI.
 
-mod client;
 mod on_use;
 mod reindex_cmd;
 mod repo_cmd;
@@ -10,6 +9,7 @@ mod service_cmd;
 mod start;
 mod sync_cmd;
 mod task_cmd;
+mod tui_cmd;
 mod upgrade;
 mod watchdog;
 
@@ -43,7 +43,8 @@ use tracing::field::Empty;
 use tracing::level_filters::LevelFilter;
 use tracing::{info_span, warn};
 
-use crate::client::{Client, ClientError};
+pub(crate) use loom::client;
+use loom::client::{Client, ClientError};
 
 fn main() -> ExitCode {
     // Usage errors exit with code 2, `--help` and `--version` with 0 (clap).
@@ -88,7 +89,7 @@ fn main() -> ExitCode {
         result
     });
     let exit = match result {
-        Ok(()) => Exit::Success,
+        Ok(exit) => exit,
         Err(report) => {
             span.record("otel.status_code", "ERROR");
             span.record("otel.status_description", report.to_string());
@@ -223,10 +224,9 @@ const fn silent(command: Option<&Command>, interactive_tui: bool) -> bool {
     }
 }
 
-fn run(cli: &Cli) -> Result<()> {
+fn run(cli: &Cli) -> Result<Exit> {
     let Some(command) = &cli.command else {
-        let help = format!("{}\n", Cli::command().render_help());
-        return print(&help);
+        return tui_cmd::run(&cli.global);
     };
     match command {
         // Before `layout()?`: never fails.
@@ -260,7 +260,8 @@ fn run(cli: &Cli) -> Result<()> {
             let supervisor = watchdog_supervisor(&layout);
             watchdog::run(args, &layout, supervisor)
         }
-    }
+    }?;
+    Ok(Exit::Success)
 }
 
 fn print(text: &str) -> Result<()> {
