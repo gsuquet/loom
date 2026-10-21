@@ -388,3 +388,48 @@ fn a_hand_broken_file_reads_as_invalid() {
     assert!(matches!(stored.task(), Err(InvalidTask::Format(_))));
     assert_eq!(stored.events.events.len(), 1);
 }
+
+#[test]
+fn temporary_files_cleanup_removes_loomd_temporary_files_only() {
+    let dir = TempDir::new().unwrap();
+    let store = store(&dir);
+    let (task, write) = new_task("Clean", "work", 1);
+    store.create(&write).unwrap();
+
+    let tasks_root = dir.path().join("work/tasks");
+    let task_dir = tasks_root.join(task.id.as_str());
+
+    // Loomd temporary files:
+    let task_tmp = task_dir.join(".task.md.tmp");
+    fs::write(&task_tmp, "staged write").unwrap();
+
+    let staged_new_task_dir = tasks_root.join(".sykc8yyx.tmp");
+    fs::create_dir(&staged_new_task_dir).unwrap();
+    fs::write(staged_new_task_dir.join("task.md"), "staged new task").unwrap();
+
+    // User files and non-matching entries that must not be deleted:
+    let user_artifact = task_dir.join("artifact.tmp");
+    fs::write(&user_artifact, "user artifact").unwrap();
+
+    let user_dot_tmp = task_dir.join(".user.tmp");
+    fs::write(&user_dot_tmp, "user dot tmp").unwrap();
+
+    let non_id_dir = tasks_root.join(".not_an_id.tmp");
+    fs::create_dir(&non_id_dir).unwrap();
+
+    let non_id_file = tasks_root.join("other.tmp");
+    fs::write(&non_id_file, "other").unwrap();
+
+    // Store initialization triggers clean_temporary_files:
+    store.init().unwrap();
+
+    // Loomd temporary files are cleaned:
+    assert!(!task_tmp.exists());
+    assert!(!staged_new_task_dir.exists());
+
+    // User artifacts and non-matching entries are preserved:
+    assert!(user_artifact.exists());
+    assert!(user_dot_tmp.exists());
+    assert!(non_id_dir.exists());
+    assert!(non_id_file.exists());
+}

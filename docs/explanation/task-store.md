@@ -28,15 +28,15 @@ The repositories and the tasks each have their own writer in `loomd`, on two thr
 
 `loomd` is the only process that writes the stores. It writes one task at a time: each task has a lock, which `loomd` holds for the full read, change and write.
 
-- `loomd` never writes `task.md` in place. It writes the new content to `.task.md.tmp` beside it, syncs it to disk, then renames it over `task.md`. Then it syncs the directory, so that the rename itself survives a power cut. A crash before the rename leaves the previous file whole. The next write replaces the temporary file.
+- `loomd` never writes `task.md` in place. It writes the new content to `.task.md.tmp` beside it, syncs it to disk, then renames it over `task.md`. Then it syncs the directory, so that the rename itself survives a power cut. A crash before the rename leaves the previous file whole. At start, `loomd` removes any leftover `.task.md.tmp` from a task directory.
 - `loomd` appends the events and syncs them. If a crash cuts the last line, the next append starts on a new line. The cut line stays in the log, and a read of the log skips it. The new events stay whole.
-- `loomd` writes a new task whole in a hidden directory, `.<id>.tmp`, then renames it to `<id>`. After a crash, the task exists fully or not at all.
+- `loomd` writes a new task whole in a hidden directory, `.<id>.tmp`, then renames it to `<id>`. After a crash, the task exists fully or not at all. At start, `loomd` removes any leftover `.<id>.tmp` directory in `tasks/`.
 
 A change writes `task.md` before its events. A crash between the two leaves a file that its log does not explain yet, never an event that the file contradicts.
 
 ## Hand edits
 
-`task.md` is made for edits by hand: to fix a title, an editor is faster than any command. The history must still tell what changed, so `loomd` separates its own writes from your writes.
+`task.md` is made for edits by hand: to fix a title, an editor is faster than any command. The history must still tell what changed, so `loomd` separates its own writes from your writes. A command first records any hand edit not recorded yet.
 
 - Each index row keeps the SHA-256 of the `task.md` that `loomd` read or wrote last. A file with that hash is the one that `loomd` knows: nothing to do. This is how `loomd` ignores the watcher events of its own writes.
 - `loomd` compares a file with another hash with its log. It replays `events.jsonl` (the created task, then every change in order). Then it compares the result with the frontmatter, field by field. Each field that is different goes into one `edited` event of the actor `file`, which `loomd` appends to the log. `loomd` does not write `task.md` itself, so your layout and comments stay.
@@ -105,7 +105,7 @@ To fix this, remove one task directory (or move it out of the stores). `loomd` t
 
 ## What loom guarantees
 
-- If `loomd` crashes or stops at any point while it writes, no task is lost. `task.md` is replaced atomically. A crash during an append to `events.jsonl` can leave an incomplete line at the end; `loomd` tolerates that line and repairs it on the next append. Temporary files left by a crash (`.*.tmp`, ignored by git) are harmless: they are overwritten by the next write of the same target. At the next start, `loomd` reconciles the files, the index and the git history of each store.
+- If `loomd` crashes or stops at any point while it writes, no task is lost. `task.md` is replaced atomically. A crash during an append to `events.jsonl` can leave an incomplete line at the end; `loomd` tolerates that line and repairs it on the next append. When `loomd` starts, it cleans temporary files left by a crash: `.task.md.tmp` inside a task directory and `.<id>.tmp` in `tasks/` (where `<id>` is a valid task ID). Other files and user artifacts remain untouched. At the next start, `loomd` reconciles the files, the index and the git history of each store.
 - If you edit `task.md` by hand while `loomd` runs or while it is stopped, `loomd` keeps your file and records the edit. If an API command and a hand edit occur at the same moment, a hand edit saved in the window between `loomd` reading the file and renaming its own update can be overwritten.
 - If a `task.md` is invalid, `loomd` marks the task read-only, refuses every command on it, and never overwrites your file. When you fix the file, the task becomes writable again.
 - If you delete `index.db`, `loomd` rebuilds the same task rows from the files at start or on `loom reindex`.

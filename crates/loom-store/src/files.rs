@@ -149,7 +149,9 @@ impl FileStore {
         Ok(())
     }
 
-    /// Removes leftover temporary files or directories (`.*.tmp` or `*.tmp`) left by a crash.
+    /// Removes leftover temporary files or directories written by loomd (`.<id>.tmp` in
+    /// `tasks/` where `<id>` is a valid task ID, and `.task.md.tmp` inside task directories)
+    /// left by an earlier crash. User files and non-temporary artifacts are preserved.
     fn clean_temporary_files(&self) {
         let tasks_dir = self.tasks_dir();
         let Ok(entries) = fs::read_dir(&tasks_dir) else {
@@ -157,23 +159,21 @@ impl FileStore {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.ends_with(".tmp") {
-                let _ = if path.is_dir() {
-                    fs::remove_dir_all(&path)
-                } else {
-                    fs::remove_file(&path)
-                };
-            } else if path.is_dir()
-                && let Ok(sub_entries) = fs::read_dir(&path)
-            {
-                for sub in sub_entries.flatten() {
-                    let sub_path = sub.path();
-                    if sub.file_name().to_string_lossy().ends_with(".tmp") {
-                        let _ = fs::remove_file(&sub_path);
-                    }
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if let Some(id_str) = name.strip_prefix('.').and_then(|s| s.strip_suffix(".tmp")) {
+                if id_str.parse::<TaskId>().is_ok() {
+                    let _ = if path.is_dir() {
+                        fs::remove_dir_all(&path)
+                    } else {
+                        fs::remove_file(&path)
+                    };
                 }
+            } else if path.is_dir() && name.parse::<TaskId>().is_ok() {
+                let candidate = path.join(format!(".{TASK_FILE}.tmp"));
+                let _ = fs::remove_file(candidate);
             }
         }
     }
@@ -257,6 +257,16 @@ pub enum CrashStage {
 }
 
 impl CrashStage {
+    /// Every crash stage, in order.
+    pub const ALL: [Self; 6] = [
+        Self::AfterTaskStage,
+        Self::AfterTaskRename,
+        Self::AfterEventsAppend,
+        Self::AfterCreateStage,
+        Self::BeforeArchiveRename,
+        Self::AfterArchiveRename,
+    ];
+
     /// Canonical name of the crash stage in [`TEST_CRASH_STAGE_ENV`].
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -273,15 +283,7 @@ impl CrashStage {
     /// Parses the crash stage from an environment variable value.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "after_task_stage" => Some(Self::AfterTaskStage),
-            "after_task_rename" => Some(Self::AfterTaskRename),
-            "after_events_append" => Some(Self::AfterEventsAppend),
-            "after_create_stage" => Some(Self::AfterCreateStage),
-            "before_archive_rename" => Some(Self::BeforeArchiveRename),
-            "after_archive_rename" => Some(Self::AfterArchiveRename),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|stage| stage.as_str() == s)
     }
 }
 
