@@ -132,6 +132,6 @@ While the TUI runs, `loom` subscribes to [`GET /v1/events`](api.md#change-events
 Each context badge uses one of the 16 standard ANSI colors so that the badge matches the terminal palette.
 
 1. If `[contexts.<name>] color` is set in [`config.toml`](configuration.md#contexts-and-repositories), `loom` uses that color.
-2. Otherwise, `loom` assigns a distinct color from the default cycle (`cyan`, `green`, `yellow`, `blue`, `magenta`, `bright_cyan`, `bright_green`, `bright_yellow`, `bright_blue`, `bright_magenta`, `red`, `bright_red`) according to the order of contexts in `config.toml`.
+2. Otherwise, `loom` assigns a distinct color from the default cycle (`cyan`, `green`, `yellow`, `blue`, `magenta`, `bright_cyan`, `bright_green`, `bright_yellow`, `bright_blue`, `bright_magenta`, `red`, `bright_red`) not already taken by an explicit context color, in alphabetical order of context names.
 3. The `all` badge uses `white`, and `unassigned` uses `bright_black`.
 4. When `--color never` is given, or when `NO_COLOR` is set and non-empty (unless `--color always` overrides it), `loom` emits no ANSI color attributes and distinguishes contexts by their `[<name>]` text label alone.

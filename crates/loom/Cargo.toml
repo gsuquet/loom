@@ -48,6 +48,8 @@ opentelemetry.workspace = true
 opentelemetry-proto.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 prost.workspace = true
+# Pseudoterminal creation to test TUI signal handling under a real terminal.
+rustix = { workspace = true, features = ["pty"] }
 schemars.workspace = true
 serde_json.workspace = true
 tar.workspace = true

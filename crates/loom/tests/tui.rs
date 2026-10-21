@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::str::FromStr as _;
@@ -28,6 +29,8 @@ use loom_api::{ContextName, SearchResults, TaskDetail, TaskList};
 use loom_config::repos::{ContextColor, ContextConfig};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use rustix::fs::{Mode, OFlags};
+use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use tempfile::TempDir;
 
 mod isolation;
@@ -162,6 +165,80 @@ fn non_tty_invocation_prints_help_and_exits_zero() {
     assert!(
         stdout.contains("Personal work engine: CLI and TUI"),
         "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn sigterm_in_pty_restores_terminal_and_exits_zero() {
+    let sandbox = Sandbox::new();
+    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+    grantpt(&master).unwrap();
+    unlockpt(&master).unwrap();
+    let slave_name = ptsname(&master, Vec::new()).unwrap();
+    let slave =
+        rustix::fs::open(&slave_name, OFlags::RDWR | OFlags::NOCTTY, Mode::empty()).unwrap();
+    let slave_file = std::fs::File::from(slave);
+    let slave_stdout = slave_file.try_clone().unwrap();
+
+    let mut command = Command::new(loom_bin());
+    command
+        .env("LOOM_HOME", sandbox.loom_home())
+        .envs(isolation::isolated_env(&sandbox.home()))
+        .env("PWD", sandbox.home())
+        .env("LOOM_TEST_TODAY", TODAY)
+        .env_remove("LOOM_CONTEXT")
+        .env_remove("VISUAL")
+        .env_remove("EDITOR")
+        .env_remove("NO_COLOR")
+        .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .current_dir(sandbox.home())
+        .arg("--color=never")
+        .stdin(Stdio::from(slave_file))
+        .stdout(Stdio::from(slave_stdout))
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().unwrap();
+
+    // Read initial output from the master end to ensure the TUI has started and entered alternate screen.
+    let mut master_file = std::fs::File::from(master);
+    let mut buf = [0u8; 14];
+    master_file.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"\x1b[?1049h\x1b[?25l");
+
+    // Spawn a background thread to drain the master PTY buffer so writes from the child never block.
+    thread::spawn(move || {
+        let mut sink = [0u8; 4096];
+        while master_file.read(&mut sink).is_ok_and(|n| n > 0) {}
+    });
+
+    // Give the TUI a brief moment to enter the select! event loop.
+    thread::sleep(Duration::from_millis(100));
+
+    // Send SIGTERM to loom
+    let status = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success(), "kill -TERM failed");
+
+    // Loom must handle SIGTERM, restore the terminal on drop, and exit 0.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    if child.try_wait().unwrap().is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("loom did not exit within 5 seconds of receiving SIGTERM");
+    }
+    let exit_status = child.wait().unwrap();
+    assert_eq!(
+        exit_status.code(),
+        Some(0),
+        "loom did not exit cleanly on SIGTERM"
     );
 }
 

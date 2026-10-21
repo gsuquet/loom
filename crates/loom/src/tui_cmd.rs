@@ -22,26 +22,23 @@ use loom_api::{
 use miette::{IntoDiagnostic as _, Result};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, watch};
 
 use crate::{load_config, print, repo_cmd};
 
 /// Timeout for task/search requests made by the TUI.
 const TUI_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-/// Delay before reconnecting a dropped SSE stream.
-const SSE_RECONNECT_DELAY: Duration = Duration::from_millis(500);
+/// Initial delay before reconnecting a dropped SSE stream.
+const SSE_INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(500);
+/// Maximum backoff delay before reconnecting a dropped SSE stream.
+const SSE_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 /// Inactivity pause before sending a debounced live search query.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
-enum FetchRequest {
-    Refresh {
-        context: Option<ContextName>,
-        open_id: Option<TaskId>,
-    },
-    Search {
-        query: String,
-        context: Option<ContextName>,
-    },
+struct RefreshRequest {
+    context: Option<ContextName>,
+    open_id: Option<TaskId>,
 }
 
 struct RefreshedData {
@@ -52,7 +49,6 @@ struct RefreshedData {
 }
 
 enum FetchResponse {
-    Refreshed(Box<RefreshedData>),
     TaskDetail {
         id: TaskId,
         result: Box<Result<TaskDetail, String>>,
@@ -110,18 +106,20 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).into_diagnostic()?;
 
-    // 1. Spawn the asynchronous background worker to decouple HTTP fetches from the UI loop.
-    let (worker_tx, worker_rx) = mpsc::channel::<FetchRequest>(16);
-    let (response_tx, mut response_rx) = mpsc::channel::<FetchResponse>(16);
-    let worker_client = client.clone();
+    let mut sigterm = signal(SignalKind::terminate()).into_diagnostic()?;
+    let mut sigint = signal(SignalKind::interrupt()).into_diagnostic()?;
+
+    // 1. Spawn asynchronous refresh worker.
+    let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshRequest>(16);
+    let (refresh_done_tx, mut refresh_done_rx) = mpsc::channel::<Box<RefreshedData>>(16);
+    let refresh_client = client.clone();
     tokio::spawn(async move {
-        run_fetch_worker(worker_client, worker_rx, response_tx).await;
+        run_refresh_worker(refresh_client, refresh_rx, refresh_done_tx).await;
     });
 
     // 2. Watch channel for single-task detail/preview fetching (j/k navigation).
     let (task_tx, mut task_rx) = watch::channel::<Option<TaskId>>(None);
     let task_client = client.clone();
-    let task_resp_tx = worker_tx.clone();
     let (task_done_tx, mut task_done_rx) = mpsc::channel::<FetchResponse>(16);
     tokio::spawn(async move {
         while task_rx.changed().await.is_ok() {
@@ -142,25 +140,53 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
         }
     });
 
-    // 3. Spawn background SSE worker so SSE connection/reconnection never blocks the UI loop.
+    // 3. Watch channel for live search queries (decoupled from queue refreshes).
+    let (search_tx, mut search_rx) = watch::channel::<Option<(String, Option<ContextName>)>>(None);
+    let search_client = client.clone();
+    let (search_done_tx, mut search_done_rx) = mpsc::channel::<FetchResponse>(16);
+    tokio::spawn(async move {
+        while search_rx.changed().await.is_ok() {
+            let maybe_req = search_rx.borrow().clone();
+            if let Some((query, context)) = maybe_req {
+                if query.trim().is_empty() {
+                    let _ = search_done_tx
+                        .send(FetchResponse::SearchResults {
+                            query,
+                            results: Ok(SearchResults {
+                                results: Vec::new(),
+                            }),
+                        })
+                        .await;
+                    continue;
+                }
+                let words: Vec<String> = query.split_whitespace().map(ToOwned::to_owned).collect();
+                let path = search_api_path(&words, context.as_ref(), None, DEFAULT_SEARCH_LIMIT);
+                let results = search_client
+                    .get::<SearchResults>(&path)
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = search_done_tx
+                    .send(FetchResponse::SearchResults { query, results })
+                    .await;
+            }
+        }
+    });
+
+    // 4. Spawn background SSE worker so SSE connection/reconnection never blocks the UI loop.
     let (sse_tx, mut sse_rx) = mpsc::channel::<SseMessage>(32);
     let sse_client = client.clone();
     tokio::spawn(async move {
         run_sse_worker(sse_client, sse_tx).await;
     });
 
-    // 4. Initial draw and queue initial refresh.
+    // 5. Initial draw and trigger initial refresh.
     terminal.draw(|f| render(f, state)).into_diagnostic()?;
 
     let mut refresh_queued = false;
-
-    // Trigger initial refresh
-    let _ = worker_tx
-        .send(FetchRequest::Refresh {
-            context: state.active_context.clone(),
-            open_id: None,
-        })
-        .await;
+    let _ = refresh_tx.try_send(RefreshRequest {
+        context: state.active_context.clone(),
+        open_id: None,
+    });
     let mut fetch_in_flight = true;
 
     let mut event_stream = crossterm::event::EventStream::new();
@@ -171,6 +197,13 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
         let mut needs_redraw = false;
 
         tokio::select! {
+            _ = sigterm.recv() => {
+                break;
+            }
+            _ = sigint.recv() => {
+                break;
+            }
+
             // Handle crossterm terminal events
             Some(event_res) = event_stream.next() => {
                 if let Ok(event) = event_res {
@@ -180,7 +213,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
                             handle_effect(
                                 effect,
                                 state,
-                                &worker_tx,
+                                &refresh_tx,
                                 &task_tx,
                                 &mut fetch_in_flight,
                                 &mut refresh_queued,
@@ -213,7 +246,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
                         handle_effect(
                             effect,
                             state,
-                            &worker_tx,
+                            &refresh_tx,
                             &task_tx,
                             &mut fetch_in_flight,
                             &mut refresh_queued,
@@ -228,10 +261,20 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
             // Handle debounced search query trigger
             () = &mut search_timer, if pending_search.is_some() => {
                 if let Some(query) = pending_search.take() {
-                    let _ = worker_tx.send(FetchRequest::Search {
-                        query,
-                        context: state.active_context.clone(),
-                    }).await;
+                    let _ = search_tx.send(Some((query, state.active_context.clone())));
+                }
+            }
+
+            // Handle search responses
+            Some(search_resp) = search_done_rx.recv() => {
+                if let FetchResponse::SearchResults { query, results } = search_resp
+                    && state.search_query == query
+                {
+                    match results {
+                        Ok(res) => state.search_results = res.results,
+                        Err(err) => state.set_error(err),
+                    }
+                    needs_redraw = true;
                 }
             }
 
@@ -258,70 +301,65 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
                 }
             }
 
-            // Handle worker responses from refreshes and searches
-            Some(resp) = response_rx.recv() => {
-                match resp {
-                    FetchResponse::Refreshed(data) => {
-                        fetch_in_flight = false;
-                        match data.today {
-                            Ok(list) => state.today = list.tasks,
-                            Err(err) => state.set_error(err),
-                        }
-                        match data.inbox {
-                            Ok(list) => state.inbox = list.tasks,
-                            Err(err) => state.set_error(err),
-                        }
-                        match data.waiting {
-                            Ok(list) => state.waiting = list.tasks,
-                            Err(err) => state.set_error(err),
-                        }
-                        if let Some((open_id, open_res)) = data.open
-                            && let Some(page) = state.page_stack.last_mut()
-                        {
-                            let ObjectTarget::Task(target_id) = &page.target;
-                            if target_id == &open_id {
-                                match open_res {
-                                    Ok(detail) => {
-                                        page.content = ObjectPageContent::Task(Box::new(detail));
-                                    }
-                                    Err(err) => state.set_error(err),
-                                }
-                            }
-                        }
+            // Handle refresh worker responses
+            Some(data) = refresh_done_rx.recv() => {
+                fetch_in_flight = false;
+                let all_ok = data.today.is_ok()
+                    && data.inbox.is_ok()
+                    && data.waiting.is_ok()
+                    && data.open.as_ref().is_none_or(|(_, r)| r.is_ok());
 
-                        // Also request preview task for currently selected row
-                        if let Some(task) = state.selected_task() {
-                            let _ = task_tx.send(Some(task.id.clone()));
-                        } else {
-                            state.preview_detail = None;
-                        }
-
-                        // Trigger next refresh if one was queued while this one was running
-                        if refresh_queued {
-                            refresh_queued = false;
-                            let open_id = state.page_stack.last().map(|p| {
-                                let ObjectTarget::Task(id) = &p.target;
-                                id.clone()
-                            });
-                            let _ = worker_tx.send(FetchRequest::Refresh {
-                                context: state.active_context.clone(),
-                                open_id,
-                            }).await;
-                            fetch_in_flight = true;
-                        }
-                        needs_redraw = true;
-                    }
-                    FetchResponse::SearchResults { query, results } => {
-                        if state.search_query == query {
-                            match results {
-                                Ok(res) => state.search_results = res.results,
-                                Err(err) => state.set_error(err),
-                            }
-                            needs_redraw = true;
-                        }
-                    }
-                    FetchResponse::TaskDetail { .. } => {}
+                match data.today {
+                    Ok(list) => state.today = list.tasks,
+                    Err(err) => state.set_error(err),
                 }
+                match data.inbox {
+                    Ok(list) => state.inbox = list.tasks,
+                    Err(err) => state.set_error(err),
+                }
+                match data.waiting {
+                    Ok(list) => state.waiting = list.tasks,
+                    Err(err) => state.set_error(err),
+                }
+                if let Some((open_id, open_res)) = data.open
+                    && let Some(page) = state.page_stack.last_mut()
+                {
+                    let ObjectTarget::Task(target_id) = &page.target;
+                    if target_id == &open_id {
+                        match open_res {
+                            Ok(detail) => {
+                                page.content = ObjectPageContent::Task(Box::new(detail));
+                            }
+                            Err(err) => state.set_error(err),
+                        }
+                    }
+                }
+
+                if all_ok {
+                    state.clear_error();
+                }
+
+                // Also request preview task for currently selected row
+                if let Some(task) = state.selected_task() {
+                    let _ = task_tx.send(Some(task.id.clone()));
+                } else {
+                    state.preview_detail = None;
+                }
+
+                // Trigger next refresh if one was queued while this one was running
+                if refresh_queued {
+                    refresh_queued = false;
+                    let open_id = state.page_stack.last().map(|p| {
+                        let ObjectTarget::Task(id) = &p.target;
+                        id.clone()
+                    });
+                    let _ = refresh_tx.try_send(RefreshRequest {
+                        context: state.active_context.clone(),
+                        open_id,
+                    });
+                    fetch_in_flight = true;
+                }
+                needs_redraw = true;
             }
         }
 
@@ -330,7 +368,6 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
         }
     }
 
-    drop(task_resp_tx);
     drop(guard);
     Ok(())
 }
@@ -339,7 +376,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
 fn handle_effect(
     effect: AppEffect,
     state: &AppState,
-    worker_tx: &mpsc::Sender<FetchRequest>,
+    refresh_tx: &mpsc::Sender<RefreshRequest>,
     task_tx: &watch::Sender<Option<TaskId>>,
     fetch_in_flight: &mut bool,
     refresh_queued: &mut bool,
@@ -356,7 +393,7 @@ fn handle_effect(
                     let ObjectTarget::Task(id) = &p.target;
                     id.clone()
                 });
-                let _ = worker_tx.try_send(FetchRequest::Refresh {
+                let _ = refresh_tx.try_send(RefreshRequest {
                     context: state.active_context.clone(),
                     open_id,
                 });
@@ -373,83 +410,59 @@ fn handle_effect(
     }
 }
 
-async fn run_fetch_worker(
+async fn run_refresh_worker(
     client: Client,
-    mut requests: mpsc::Receiver<FetchRequest>,
-    responses: mpsc::Sender<FetchResponse>,
+    mut requests: mpsc::Receiver<RefreshRequest>,
+    responses: mpsc::Sender<Box<RefreshedData>>,
 ) {
     while let Some(req) = requests.recv().await {
-        match req {
-            FetchRequest::Refresh { context, open_id } => {
-                let ctx_ref = context.as_ref();
-                let today_path = list_api_path(ctx_ref, None, false);
-                let inbox_path = list_api_path(ctx_ref, Some("inbox"), false);
-                let waiting_path = list_api_path(ctx_ref, Some("waiting"), false);
+        let ctx_ref = req.context.as_ref();
+        let today_path = list_api_path(ctx_ref, None, false);
+        let inbox_path = list_api_path(ctx_ref, Some("inbox"), false);
+        let waiting_path = list_api_path(ctx_ref, Some("waiting"), false);
 
-                let today = client
-                    .get::<TaskList>(&today_path)
-                    .await
-                    .map_err(|e| e.to_string());
-                let inbox = client
-                    .get::<TaskList>(&inbox_path)
-                    .await
-                    .map_err(|e| e.to_string());
-                let waiting = client
-                    .get::<TaskList>(&waiting_path)
-                    .await
-                    .map_err(|e| e.to_string());
+        let today = client
+            .get::<TaskList>(&today_path)
+            .await
+            .map_err(|e| e.to_string());
+        let inbox = client
+            .get::<TaskList>(&inbox_path)
+            .await
+            .map_err(|e| e.to_string());
+        let waiting = client
+            .get::<TaskList>(&waiting_path)
+            .await
+            .map_err(|e| e.to_string());
 
-                let open = if let Some(id) = open_id {
-                    let path = format!("/v1/tasks/{id}");
-                    let res = client
-                        .get::<TaskDetail>(&path)
-                        .await
-                        .map_err(|e| e.to_string());
-                    Some((id, res))
-                } else {
-                    None
-                };
+        let open = if let Some(id) = req.open_id {
+            let path = format!("/v1/tasks/{id}");
+            let res = client
+                .get::<TaskDetail>(&path)
+                .await
+                .map_err(|e| e.to_string());
+            Some((id, res))
+        } else {
+            None
+        };
 
-                let _ = responses
-                    .send(FetchResponse::Refreshed(Box::new(RefreshedData {
-                        today,
-                        inbox,
-                        waiting,
-                        open,
-                    })))
-                    .await;
-            }
-            FetchRequest::Search { query, context } => {
-                if query.trim().is_empty() {
-                    let _ = responses
-                        .send(FetchResponse::SearchResults {
-                            query,
-                            results: Ok(SearchResults {
-                                results: Vec::new(),
-                            }),
-                        })
-                        .await;
-                    continue;
-                }
-                let words: Vec<String> = query.split_whitespace().map(ToOwned::to_owned).collect();
-                let path = search_api_path(&words, context.as_ref(), None, DEFAULT_SEARCH_LIMIT);
-                let results = client
-                    .get::<SearchResults>(&path)
-                    .await
-                    .map_err(|e| e.to_string());
-                let _ = responses
-                    .send(FetchResponse::SearchResults { query, results })
-                    .await;
-            }
-        }
+        let _ = responses
+            .send(Box::new(RefreshedData {
+                today,
+                inbox,
+                waiting,
+                open,
+            }))
+            .await;
     }
 }
 
 async fn run_sse_worker(client: Client, sse_tx: mpsc::Sender<SseMessage>) {
     let mut cursor: Option<EventCursor> = None;
+    let mut reconnect_delay = SSE_INITIAL_RECONNECT_DELAY;
     loop {
         match client.subscribe_events(None, cursor).await {
             Ok(mut stream) => {
+                reconnect_delay = SSE_INITIAL_RECONNECT_DELAY;
                 let _ = sse_tx.send(SseMessage::Connected).await;
                 while let Ok(Some(frame)) = stream.next().await {
                     if let Some(id) = frame.id {
@@ -469,6 +482,7 @@ async fn run_sse_worker(client: Client, sse_tx: mpsc::Sender<SseMessage>) {
                 let _ = sse_tx.send(SseMessage::Disconnected).await;
             }
         }
-        tokio::time::sleep(SSE_RECONNECT_DELAY).await;
+        tokio::time::sleep(reconnect_delay).await;
+        reconnect_delay = (reconnect_delay * 2).min(SSE_MAX_RECONNECT_DELAY);
     }
 }
