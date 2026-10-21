@@ -9,7 +9,7 @@ use crossterm::event::{Event, KeyEventKind};
 use futures_util::StreamExt as _;
 use loom::cli::{Cli, GlobalArgs};
 use loom::client::Client;
-use loom::conventions::use_color;
+use loom::conventions::{Exit, use_color};
 use loom::search::search_api_path;
 use loom::task::list_api_path;
 use loom::tui::color::Theme;
@@ -66,10 +66,11 @@ enum SseMessage {
 }
 
 /// Runs `loom` when no subcommand is given: prints help on a non-TTY, or opens the TUI.
-pub fn run(global: &GlobalArgs) -> Result<()> {
+pub fn run(global: &GlobalArgs) -> Result<Exit> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let help = format!("{}\n", Cli::command().render_help());
-        return print(&help);
+        print(&help)?;
+        return Ok(Exit::Success);
     }
 
     let layout = crate::layout()?;
@@ -101,7 +102,7 @@ pub fn run(global: &GlobalArgs) -> Result<()> {
     clippy::too_many_lines,
     reason = "event loop handles input, background workers, SSE and timers in one select!"
 )]
-async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
+async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
     let guard = TerminalGuard::enter().into_diagnostic()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).into_diagnostic()?;
@@ -192,6 +193,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
     let mut event_stream = crossterm::event::EventStream::new();
     let mut pending_search: Option<String> = None;
     let mut search_timer = Box::pin(tokio::time::sleep(SEARCH_DEBOUNCE));
+    let mut exit = Exit::Success;
 
     while !state.should_quit {
         let mut needs_redraw = false;
@@ -201,6 +203,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
                 break;
             }
             _ = sigint.recv() => {
+                exit = Exit::Interrupted;
                 break;
             }
 
@@ -369,7 +372,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<()> {
     }
 
     drop(guard);
-    Ok(())
+    Ok(exit)
 }
 
 #[allow(clippy::too_many_arguments)]

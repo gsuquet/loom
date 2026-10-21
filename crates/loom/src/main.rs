@@ -89,7 +89,7 @@ fn main() -> ExitCode {
         result
     });
     let exit = match result {
-        Ok(()) => Exit::Success,
+        Ok(exit) => exit,
         Err(report) => {
             span.record("otel.status_code", "ERROR");
             span.record("otel.status_description", report.to_string());
@@ -224,7 +224,7 @@ const fn silent(command: Option<&Command>, interactive_tui: bool) -> bool {
     }
 }
 
-fn run(cli: &Cli) -> Result<()> {
+fn run(cli: &Cli) -> Result<Exit> {
     let Some(command) = &cli.command else {
         return tui_cmd::run(&cli.global);
     };
@@ -260,7 +260,8 @@ fn run(cli: &Cli) -> Result<()> {
             let supervisor = watchdog_supervisor(&layout);
             watchdog::run(args, &layout, supervisor)
         }
-    }
+    }?;
+    Ok(Exit::Success)
 }
 
 fn print(text: &str) -> Result<()> {

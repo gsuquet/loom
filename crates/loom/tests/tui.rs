@@ -14,6 +14,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::str::FromStr as _;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -168,8 +169,7 @@ fn non_tty_invocation_prints_help_and_exits_zero() {
     );
 }
 
-#[test]
-fn sigterm_in_pty_restores_terminal_and_exits_zero() {
+fn assert_signal_in_pty(signal_flag: &str, expected_exit: i32) {
     let sandbox = Sandbox::new();
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
     grantpt(&master).unwrap();
@@ -205,23 +205,31 @@ fn sigterm_in_pty_restores_terminal_and_exits_zero() {
     master_file.read_exact(&mut buf).unwrap();
     assert_eq!(&buf, b"\x1b[?1049h\x1b[?25l");
 
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let drain_output = Arc::clone(&output);
+
     // Spawn a background thread to drain the master PTY buffer so writes from the child never block.
     thread::spawn(move || {
         let mut sink = [0u8; 4096];
-        while master_file.read(&mut sink).is_ok_and(|n| n > 0) {}
+        while let Ok(n) = master_file.read(&mut sink) {
+            if n == 0 {
+                break;
+            }
+            drain_output.lock().unwrap().extend_from_slice(&sink[..n]);
+        }
     });
 
     // Give the TUI a brief moment to enter the select! event loop.
     thread::sleep(Duration::from_millis(100));
 
-    // Send SIGTERM to loom
+    // Send signal to loom
     let status = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
+        .args([signal_flag, &child.id().to_string()])
         .status()
         .unwrap();
-    assert!(status.success(), "kill -TERM failed");
+    assert!(status.success(), "kill {signal_flag} failed");
 
-    // Loom must handle SIGTERM, restore the terminal on drop, and exit 0.
+    // Loom must handle signal, restore the terminal on drop, and exit with expected code.
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if child.try_wait().unwrap().is_some() {
@@ -232,14 +240,43 @@ fn sigterm_in_pty_restores_terminal_and_exits_zero() {
     if child.try_wait().unwrap().is_none() {
         let _ = child.kill();
         let _ = child.wait();
-        panic!("loom did not exit within 5 seconds of receiving SIGTERM");
+        panic!("loom did not exit within 5 seconds of receiving {signal_flag}");
     }
     let exit_status = child.wait().unwrap();
     assert_eq!(
         exit_status.code(),
-        Some(0),
-        "loom did not exit cleanly on SIGTERM"
+        Some(expected_exit),
+        "loom did not exit cleanly on {signal_flag}"
     );
+
+    let drain_deadline = Instant::now() + Duration::from_secs(2);
+    let mut text = String::new();
+    while Instant::now() < drain_deadline {
+        let bytes = output.lock().unwrap().clone();
+        text = String::from_utf8_lossy(&bytes).into_owned();
+        if text.contains("\x1b[?1049l") && text.contains("\x1b[?25h") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        text.contains("\x1b[?1049l"),
+        "PTY output missing leave-alternate-screen sequence: {text:?}"
+    );
+    assert!(
+        text.contains("\x1b[?25h"),
+        "PTY output missing show-cursor sequence: {text:?}"
+    );
+}
+
+#[test]
+fn sigterm_in_pty_restores_terminal_and_exits_zero() {
+    assert_signal_in_pty("-TERM", 0);
+}
+
+#[test]
+fn sigint_in_pty_restores_terminal_and_exits_130() {
+    assert_signal_in_pty("-INT", 130);
 }
 
 #[tokio::test]
