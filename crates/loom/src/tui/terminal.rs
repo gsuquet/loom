@@ -1,8 +1,8 @@
 //! Terminal raw-mode and alternate-screen guard with panic restoration.
 //!
 //! Ensures the terminal leaves the alternate screen, shows the cursor and disables raw mode on
-//! normal exit (`Drop`), on `SIGINT`/`SIGTERM` (handled in the event loop), and on panic (via a
-//! panic hook installed while the TUI is active). Reinstalls any previous panic hook on drop.
+//! normal exit (`Drop`) and on panic (via a panic hook installed while the TUI is active).
+//! Reinstalls any previous panic hook on drop.
 
 use std::io::{self, Write};
 use std::panic;

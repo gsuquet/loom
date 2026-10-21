@@ -225,12 +225,8 @@ const fn silent(command: Option<&Command>, interactive_tui: bool) -> bool {
 
 fn run(cli: &Cli) -> Result<()> {
     let Some(command) = &cli.command else {
-        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-            let help = format!("{}\n", Cli::command().render_help());
-            return print(&help);
-        }
-        let _guard = loom::tui::terminal::TerminalGuard::enter().into_diagnostic()?;
-        return Ok(());
+        let help = format!("{}\n", Cli::command().render_help());
+        return print(&help);
     };
     match command {
         // Before `layout()?`: never fails.
