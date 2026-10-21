@@ -4,6 +4,7 @@
 pub mod backup;
 pub mod cli;
 pub mod cli_doc;
+pub mod client;
 pub mod conventions;
 pub mod doctor;
 pub mod loomd_path;
@@ -12,5 +13,7 @@ pub mod repo;
 pub mod search;
 pub mod service;
 pub mod shell;
+pub mod sse;
 pub mod status;
 pub mod task;
+pub mod tui;

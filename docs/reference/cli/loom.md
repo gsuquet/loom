@@ -3,12 +3,14 @@
 > Generated from the `clap` definitions by `mise run docs`. Do not edit by hand.
 > Conventions shared by every command: [conventions.md](conventions.md).
 
-Personal work engine: CLI and TUI
+Personal work engine: CLI and TUI.
+
+With no command, opens the TUI when standard input and standard output are terminals, and prints the help otherwise.
 
 ## Usage
 
 ```text
-loom [OPTIONS] <COMMAND>
+loom [OPTIONS] [COMMAND]
 ```
 
 ### Global options
@@ -20,7 +22,7 @@ loom [OPTIONS] <COMMAND>
 | `-v`, `--verbose` | repeatable |  | Print more diagnostics on stderr. Repeat the flag for more (`-vv`) |
 | `--color <WHEN>` | `auto`, `always`, `never` | `auto` | When to use colors: `auto` colors a terminal unless `NO_COLOR` is set |
 | `-y`, `--yes` |  |  | Answer yes to every confirmation (the only way to skip one) |
-| `-h`, `--help` |  |  | Print help |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
 | `-V`, `--version` |  |  | Print version |
 
 ## Commands
