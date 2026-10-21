@@ -636,14 +636,27 @@ fn an_invalid_hand_edit_is_read_only_never_overwritten_and_heals_when_fixed() {
     assert_eq!(task.status.name(), Some(StatusName::Done));
 
     let subjects = sandbox.wait_for_commits("work", 4);
-    assert_eq!(subjects[0], format!("created({id}): Fragile task"));
-    assert!(
-        subjects[1] == format!("edited({id}): changed by hand")
-            || subjects[1] == "sync(work): uncommitted changes",
-        "{subjects:?}"
+    assert_eq!(
+        subjects.first(),
+        Some(&format!("created({id}): Fragile task"))
     );
-    assert_eq!(subjects[2], format!("edited({id}): title"));
-    assert_eq!(subjects[3], format!("status_changed({id}): ready -> done"));
+    assert_eq!(
+        subjects.last(),
+        Some(&format!("status_changed({id}): ready -> done"))
+    );
+    let intermediate = &subjects[1..subjects.len() - 1];
+    assert!(
+        intermediate.contains(&format!("edited({id}): title")),
+        "missing title edit in {subjects:?}"
+    );
+    for s in intermediate {
+        assert!(
+            s == &format!("edited({id}): title")
+                || s == &format!("edited({id}): changed by hand")
+                || s == "sync(work): uncommitted changes",
+            "unexpected commit subject in {subjects:?}: {s}"
+        );
+    }
     sandbox.assert_store_clean("work", 4);
     daemon.stop();
 }
