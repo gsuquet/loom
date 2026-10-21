@@ -481,6 +481,7 @@ impl<P: StorePort> Tasks<P> {
                 since: prev.since,
             });
         }
+        let since = set_focus(&self.index.conn, &context, id, now)?;
         let switched_from = if let Some(prev) = previous {
             let can_demote = self.index.get(&prev.task_id)?.is_some_and(|indexed| {
                 indexed.context == context
@@ -510,7 +511,6 @@ impl<P: StorePort> Tasks<P> {
         } else {
             None
         };
-        let since = set_focus(&self.index.conn, &context, id, now)?;
         Ok(GoOutcome {
             task,
             switched_from,

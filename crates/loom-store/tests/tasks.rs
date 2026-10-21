@@ -14,7 +14,8 @@ use std::time::Duration;
 use loom_api::{ContextAssignment, RepoIdentity};
 use loom_core::{
     Actor, Change, Command, ContextName, DomainError, Event, ExternalRef, Kind, Link, MachineId,
-    NewTask, Origin, Relations, Status, StatusName, Task, TaskEdit, TaskId, Timestamp,
+    NewTask, Origin, ReadOnlyReason, Relations, Status, StatusName, Task, TaskEdit, TaskId,
+    Timestamp,
 };
 use loom_store::files::FileStore;
 use loom_store::tasks::{FocusRow, GoOutcome, IndexedState, TaskError, TaskIndex, Tasks};
@@ -877,5 +878,37 @@ fn go_refuses_a_closed_or_missing_task_and_keeps_the_previous_focus() {
     assert!(
         matches!(&not_found, Err(TaskError::NotFound(id)) if *id == missing),
         "{not_found:?}"
+    );
+}
+
+#[test]
+fn change_refuses_a_read_only_task_up_front() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = tasks
+        .create(
+            new_task("Writable initially", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+    let path = fixture
+        .store_root("work")
+        .join("tasks")
+        .join(task.id.as_str())
+        .join("task.md");
+    let edited = fs::read_to_string(&path)
+        .unwrap()
+        .replace("kind = \"bug\"", "kind = \"future_kind\"");
+    fs::write(&path, &edited).unwrap();
+
+    let refused = tasks.apply(&task.id, Command::Pin, at(200), &origin(), &mut random(2));
+    assert!(
+        matches!(
+            refused,
+            Err(TaskError::Domain(DomainError::ReadOnly(ReadOnlyReason::UnknownKind(ref name)))) if name == "future_kind"
+        ),
+        "{refused:?}"
     );
 }
