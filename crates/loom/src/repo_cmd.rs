@@ -221,9 +221,9 @@ fn directory_rule(layout: &Layout, dir: &Path, home: Option<&Path>) -> Option<Co
     Some(rules.assign(dir, None))
 }
 
-/// Registers the repository at `root` on use and returns its context; `None`, logged, when
-/// loomd refuses it.
-async fn register_for_context(client: &Client, root: PathBuf) -> Option<ContextAssignment> {
+/// Registers the repository at `root` on use and returns it; `None`, logged, when loomd
+/// refuses it.
+async fn register_on_use(client: &Client, root: PathBuf) -> Option<RepoSummary> {
     let request = RegisterRequest {
         path: root,
         on_use: true,
@@ -231,9 +231,28 @@ async fn register_for_context(client: &Client, root: PathBuf) -> Option<ContextA
     client
         .post::<RepoSummary>(REGISTER_PATH, Some(&request))
         .await
-        .map(|repo| repo.identity.context)
         .map_err(|error| debug!(%error, "cannot register the repository of the current directory"))
         .ok()
+}
+
+/// The indexed repository holding the current directory, registered on use when it is not in
+/// the index yet; `None` outside a git repository.
+///
+/// # Errors
+///
+/// When the current directory cannot be read or loomd cannot list the repositories.
+pub async fn cwd_repo(client: &Client) -> Result<Option<RepoSummary>> {
+    let cwd = logical_cwd().into_diagnostic()?;
+    let Some(root) = find_root(&cwd).ok().flatten() else {
+        return Ok(None);
+    };
+    let repos = list(client, None).await?;
+    Ok(match find_by_path(&repos, &root, canonical) {
+        Some(repo) => Some(repo.clone()),
+        // Not indexed yet (a fresh clone, the registration on use still running):
+        // registered now, so its remote decides as it will for the index.
+        None => register_on_use(client, root).await,
+    })
 }
 
 /// The context assignments of the current directory: the one of the indexed repository
@@ -249,19 +268,74 @@ pub async fn cwd_assignments(
 ) -> Result<(Option<ContextAssignment>, Option<ContextAssignment>)> {
     let cwd = logical_cwd().into_diagnostic()?;
     let home = env::home_dir().filter(|home| !home.as_os_str().is_empty());
-    let repo = match find_root(&cwd).ok().flatten() {
-        Some(root) => {
-            let repos = list(client, None).await?;
-            match find_by_path(&repos, &root, canonical) {
-                Some(repo) => Some(repo.identity.context.clone()),
-                // Not indexed yet (a fresh clone, the registration on use still running):
-                // registered now, so its remote decides as it will for the index.
-                None => register_for_context(client, root).await,
-            }
-        }
-        None => None,
-    };
+    let repo = cwd_repo(client).await?.map(|repo| repo.identity.context);
     Ok((repo, directory_rule(layout, &cwd, home.as_deref())))
+}
+
+/// Resolves a `--repo` or `repo=` argument of a task in `task_context` to a repository slug.
+///
+/// # Errors
+///
+/// When the argument is ambiguous or names neither a repository nor a `<context>/<name>` slug.
+pub async fn resolve_task_repo(
+    client: &Client,
+    task_context: &ContextName,
+    arg: &str,
+) -> Result<String> {
+    let cwd = logical_cwd().into_diagnostic()?;
+    let home = env::home_dir().filter(|home| !home.as_os_str().is_empty());
+    let repos = list(client, None).await?;
+    let parsed = parse_arg(Some(arg), &cwd, home.as_deref()).into_diagnostic()?;
+    let contexts = vec![task_context.to_string()];
+    match select(&parsed, &repos, &contexts).into_diagnostic()? {
+        Selection::Repo(repo) => Ok(repo.identity.slug.clone()),
+        Selection::Here => Err(miette!("expected a repository or none")),
+        Selection::Path { path, unmatched } => {
+            if fs::metadata(&path).is_ok() {
+                let root = find_root(&path)
+                    .into_diagnostic()?
+                    .ok_or_else(|| miette!("{} is not inside a git repository", path.display()))?;
+                if let Some(repo) = find_by_path(&repos, &root, canonical) {
+                    return Ok(repo.identity.slug.clone());
+                }
+                let request = RegisterRequest {
+                    path: root,
+                    on_use: true,
+                };
+                let repo: RepoSummary = client
+                    .post(REGISTER_PATH, Some(&request))
+                    .await
+                    .map_err(|error| api_error(&error))?;
+                return Ok(repo.identity.slug);
+            }
+            if let RepoArg::SlugOrPath { slug, .. } = &parsed
+                && is_slug(slug)
+            {
+                return Ok(slug.clone());
+            }
+            Err(unmatched.map_or_else(
+                || miette!("{} does not exist", path.display()),
+                |arg| {
+                    miette!(
+                        "no repository `{arg}` in the index, and no directory {}",
+                        path.display()
+                    )
+                },
+            ))
+        }
+    }
+}
+
+fn is_slug(slug: &str) -> bool {
+    let Some((context, name)) = slug.split_once('/') else {
+        return false;
+    };
+    context.parse::<ContextName>().is_ok()
+        && !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.chars().any(char::is_whitespace)
 }
 
 async fn resolve(env: &Env<'_>, client: &Client, arg: Option<&str>) -> Result<Resolved> {

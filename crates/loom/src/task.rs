@@ -6,9 +6,9 @@ use std::fmt::Write as _;
 
 use jiff::Span;
 use loom_api::{
-    Actor, ContentFormat, ContextAssignment, ContextName, Date, EventRecord, Importance, Kind,
-    NewTask, RankReason, Relations, SkippedLine, Status, Task, TaskDetail, TaskEdit, TaskId,
-    TaskReadOnly, TaskSummary,
+    Actor, ContentFormat, ContextAssignment, ContextName, Date, EventRecord, FocusList, GoResult,
+    Importance, Kind, Link, NewTask, RankReason, Relations, RepoSummary, SkippedLine, Status, Task,
+    TaskDetail, TaskEdit, TaskId, TaskReadOnly, TaskSummary,
 };
 use loom_core::SkipReason;
 use thiserror::Error;
@@ -333,7 +333,8 @@ impl From<ImportanceArg> for Importance {
     }
 }
 
-/// What `loom add` asks for, once the context, the parent and the dates are resolved.
+/// What `loom add` asks for, once the context, the parent, the repository and the dates are
+/// resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddRequest {
     /// Title.
@@ -348,8 +349,18 @@ pub struct AddRequest {
     pub due: Option<Date>,
     /// Parent task.
     pub parent: Option<TaskId>,
+    /// Repository slug.
+    pub repo: Option<String>,
     /// `--ready`: skip the inbox.
     pub ready: bool,
+}
+
+/// Default repository of `loom add`: the repository of the current directory when its context
+/// is the task's.
+#[must_use]
+pub fn default_repo(cwd_repo: Option<&RepoSummary>, context: &ContextName) -> Option<String> {
+    let repo = cwd_repo?;
+    (repo.identity.context.context_name() == context.as_str()).then(|| repo.identity.slug.clone())
 }
 
 /// The body of `POST /v1/tasks`: `inbox` unless `--ready`, always set explicitly.
@@ -367,12 +378,40 @@ pub fn new_task(request: AddRequest) -> NewTask {
         importance: request.importance,
         due: request.due,
         pinned: false,
-        links: Vec::new(),
+        links: request
+            .repo
+            .map(|repo| Link::Repo { repo })
+            .into_iter()
+            .collect(),
         relations: Relations {
             parent: request.parent,
             ..Relations::default()
         },
     }
+}
+
+/// Slug of the first [`Link::Repo`] of `task`.
+#[must_use]
+pub fn linked_repo(task: &Task) -> Option<&str> {
+    task.links.iter().find_map(|link| match link {
+        Link::Repo { repo } => Some(repo.as_str()),
+        Link::Origin(_) | Link::Related(_) => None,
+    })
+}
+
+/// `links` with `repo` as its [`Link::Repo`] (`None` removes it), the other links kept in
+/// order.
+#[must_use]
+pub fn with_repo(links: &[Link], repo: Option<String>) -> Vec<Link> {
+    let mut out: Vec<Link> = links
+        .iter()
+        .filter(|link| !matches!(link, Link::Repo { .. }))
+        .cloned()
+        .collect();
+    if let Some(repo) = repo {
+        out.push(Link::Repo { repo });
+    }
+    out
 }
 
 /// `GET /v1/tasks` query of `loom ls`: the priority list, every task with `status`, or the
@@ -396,6 +435,15 @@ pub fn list_api_path(
         query.push("ranked=true".to_owned());
     }
     format!("/v1/tasks?{}", query.join("&"))
+}
+
+/// `GET /v1/focus` path, filtered by `context` when given.
+#[must_use]
+pub fn focus_api_path(context: Option<&ContextName>) -> String {
+    context.map_or_else(
+        || "/v1/focus".to_owned(),
+        |context| format!("/v1/focus?context={context}"),
+    )
 }
 
 /// `--why` text of a rank reason.
@@ -541,6 +589,9 @@ pub fn render_detail(detail: &TaskDetail) -> String {
         if task.pinned {
             let _ = writeln!(out, "pinned:     yes");
         }
+        if let Some(repo) = linked_repo(task) {
+            let _ = writeln!(out, "repo:       {repo}");
+        }
         if let Some(parent) = &task.relations.parent {
             let _ = writeln!(out, "parent:     {parent}");
         }
@@ -582,18 +633,21 @@ pub enum SetKey {
     Due,
     /// `parent`: an ID or prefix, or `none`.
     Parent,
+    /// `repo`: a repository, or `none`.
+    Repo,
     /// `pinned`: `yes` or `no`.
     Pinned,
 }
 
 impl SetKey {
-    const ALL: [(&'static str, Self); 7] = [
+    const ALL: [(&'static str, Self); 8] = [
         ("title", Self::Title),
         ("kind", Self::Kind),
         ("format", Self::Format),
         ("importance", Self::Importance),
         ("due", Self::Due),
         ("parent", Self::Parent),
+        ("repo", Self::Repo),
         ("pinned", Self::Pinned),
     ];
 
@@ -636,13 +690,15 @@ pub fn assignment(text: &str) -> Result<Assignment, String> {
 }
 
 /// What `loom set` changes: the `PATCH` fields, the parent (resolved by the caller against the
-/// task's relations), and the pin.
+/// task's relations), the repository link, and the pin.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SetPlan {
-    /// Fields of `PATCH /v1/tasks/{id}`, the relations left out.
+    /// Fields of `PATCH /v1/tasks/{id}`, the relations and links left out.
     pub edit: TaskEdit,
     /// `Some(None)`: remove the parent; `Some(Some(prefix))`: set it.
     pub parent: Option<Option<String>>,
+    /// `Some(None)`: remove the repository link; `Some(Some(arg))`: set it.
+    pub repo: Option<Option<String>>,
     /// `pin` or `unpin`.
     pub pinned: Option<bool>,
 }
@@ -719,6 +775,15 @@ pub fn set_plan(assignments: &[Assignment], today: Date) -> Result<SetPlan, SetE
                     Some(task_prefix(value).map_err(invalid)?)
                 });
             }
+            SetKey::Repo => {
+                plan.repo = Some(if value.is_empty() || value == "none" {
+                    None
+                } else if value.trim().is_empty() || value.chars().any(char::is_control) {
+                    return Err(invalid("expected a repository or none".to_owned()));
+                } else {
+                    Some(value.clone())
+                });
+            }
             SetKey::Pinned => {
                 plan.pinned = Some(match value.as_str() {
                     "yes" | "true" => true,
@@ -760,7 +825,10 @@ pub fn with_parent(relations: &Relations, parent: Option<TaskId>) -> Relations {
 /// The line a task gesture prints: prefix, context, status and title.
 #[must_use]
 pub fn render_change(detail: &TaskDetail) -> String {
-    let summary = &detail.summary;
+    render_summary(&detail.summary)
+}
+
+fn render_summary(summary: &TaskSummary) -> String {
     summary.task.as_ref().map_or_else(
         || format!("{} {}\n", summary.prefix, summary.context),
         |task| {
@@ -773,6 +841,63 @@ pub fn render_change(detail: &TaskDetail) -> String {
             )
         },
     )
+}
+
+/// Output of `loom go`: the activated task, the previous focus if one was demoted, and the
+/// repository path (or a notice when the task has no local repository).
+#[must_use]
+pub fn render_go(result: &GoResult) -> String {
+    let mut out = render_change(&result.task);
+    if let Some(previous) = &result.switched_from {
+        let title = previous
+            .task
+            .as_ref()
+            .map_or("", |task| task.title.as_str());
+        let _ = writeln!(out, "switched from {} ready {title}", previous.prefix);
+    }
+    if let Some(path) = &result.repo_path {
+        let _ = writeln!(out, "{}", path.display());
+    } else if let Some(slug) = result.task.summary.task.as_ref().and_then(linked_repo) {
+        let _ = writeln!(
+            out,
+            "no local path for repository {slug}: staying in the current directory"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "no repository linked to {}: staying in the current directory",
+            result.task.summary.prefix
+        );
+    }
+    out
+}
+
+/// Output of `loom focus`: one line per context that has a focus task.
+#[must_use]
+pub fn render_focus(list: &FocusList) -> String {
+    let mut out = String::new();
+    for entry in &list.entries {
+        let title = entry
+            .task
+            .task
+            .as_ref()
+            .map_or("", |task| task.title.as_str());
+        match &entry.repo_path {
+            Some(path) => {
+                let _ = writeln!(
+                    out,
+                    "{}  {}  {title}  {}",
+                    entry.context,
+                    entry.task.prefix,
+                    path.display()
+                );
+            }
+            None => {
+                let _ = writeln!(out, "{}  {}  {title}", entry.context, entry.task.prefix);
+            }
+        }
+    }
+    out
 }
 
 /// Who changed the task after the `loom edit` save, once loomd recorded it.
@@ -1089,6 +1214,7 @@ mod tests {
             importance: None,
             due: Some(date("2026-11-02")),
             parent: Some("k3q7zm2a".parse().unwrap()),
+            repo: Some("personal/dotfiles".to_owned()),
             ready: false,
         };
         let new = new_task(request.clone());
@@ -1096,8 +1222,15 @@ mod tests {
         assert_eq!(new.kind, Kind::Admin);
         assert_eq!(new.relations.parent, request.parent);
         assert_eq!(
+            new.links,
+            [Link::Repo {
+                repo: "personal/dotfiles".to_owned()
+            }]
+        );
+        assert_eq!(
             new_task(AddRequest {
                 ready: true,
+                repo: None,
                 ..request
             })
             .status,
@@ -1264,6 +1397,7 @@ mod tests {
             "importance=p0",
             "due=+3d",
             "parent=k3q7",
+            "repo=work/checkout",
             "pinned=yes",
             "kind=content",
             "format=talk",
@@ -1279,13 +1413,16 @@ mod tests {
             })
         );
         assert_eq!(set.parent, Some(Some("k3q7".to_owned())));
+        assert_eq!(set.repo, Some(Some("work/checkout".to_owned())));
         assert_eq!(set.pinned, Some(true));
         assert_eq!(set.edit.relations, None);
 
-        let cleared = plan(&["due=none", "parent=none", "pinned=no"]).unwrap();
+        let cleared = plan(&["due=none", "parent=none", "repo=none", "pinned=no"]).unwrap();
         assert_eq!(cleared.edit.due, Some(None));
         assert_eq!(cleared.parent, Some(None));
+        assert_eq!(cleared.repo, Some(None));
         assert_eq!(cleared.pinned, Some(false));
+        assert_eq!(plan(&["repo="]).unwrap().repo, Some(None));
     }
 
     #[test]
@@ -1298,6 +1435,7 @@ mod tests {
             "importance=p9",
             "due=soon",
             "parent=a/b",
+            "repo=   ",
             "pinned=maybe",
             "kind=epic",
         ] {
@@ -1325,6 +1463,84 @@ mod tests {
         let moved = with_parent(&relations, Some(parent.clone()));
         assert_eq!(moved.parent, Some(parent));
         assert_eq!(moved.blocks, [blocked]);
+    }
+
+    #[test]
+    fn a_new_repo_keeps_the_other_links() {
+        let origin = Link::Origin(loom_api::ExternalRef {
+            provider: "jira".to_owned(),
+            key: "CORE-1042".to_owned(),
+            url: None,
+        });
+        let links = vec![
+            origin.clone(),
+            Link::Repo {
+                repo: "work/old".to_owned(),
+            },
+        ];
+        assert_eq!(
+            with_repo(&links, Some("work/new".to_owned())),
+            [
+                origin.clone(),
+                Link::Repo {
+                    repo: "work/new".to_owned()
+                }
+            ]
+        );
+        assert_eq!(with_repo(&links, None), [origin]);
+    }
+
+    #[test]
+    fn go_and_focus_render_human_output() {
+        let since = Timestamp::from_unix_secs(1_791_792_000).unwrap();
+        let detail = TaskDetail {
+            summary: summary("k3q7zm2a", "Login timeout", None),
+            body: String::new(),
+            actions: Vec::new(),
+        };
+        let prev = {
+            let mut prev = summary("h8w2aaaa", "Checkout 5xx", None);
+            prev.task.as_mut().unwrap().status = Status::Ready;
+            prev
+        };
+        let with_repo = GoResult {
+            task: detail.clone(),
+            switched_from: Some(prev),
+            since,
+            repo_path: Some("/home/me/work/checkout".into()),
+        };
+        assert_eq!(
+            render_go(&with_repo),
+            "k3q7 work active Login timeout\nswitched from h8w2 ready Checkout 5xx\n/home/me/work/checkout\n"
+        );
+        let without_repo = GoResult {
+            task: detail,
+            switched_from: None,
+            since,
+            repo_path: None,
+        };
+        assert_eq!(
+            render_go(&without_repo),
+            "k3q7 work active Login timeout\nno repository linked to k3q7: staying in the current directory\n"
+        );
+        let focus = FocusList {
+            entries: vec![loom_api::FocusEntry {
+                context: name("work"),
+                task: summary("k3q7zm2a", "Login timeout", None),
+                since,
+                repo_path: Some("/home/me/work/checkout".into()),
+            }],
+        };
+        assert_eq!(
+            render_focus(&focus),
+            "work  k3q7  Login timeout  /home/me/work/checkout\n"
+        );
+        assert_eq!(render_focus(&FocusList { entries: vec![] }), "");
+        assert_eq!(focus_api_path(None), "/v1/focus");
+        assert_eq!(
+            focus_api_path(Some(&name("work"))),
+            "/v1/focus?context=work"
+        );
     }
 
     #[test]

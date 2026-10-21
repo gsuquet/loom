@@ -133,8 +133,26 @@ pub enum Command {
     Show(ShowArgs),
     /// Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format`
     /// (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or
-    /// `none`) and `pinned` (`yes` or `no`).
+    /// `none`), `repo` (a repository, or `none`) and `pinned` (`yes` or `no`).
     Set(SetArgs),
+    /// Make a task the focus of its context, set its status to `active`, and change to its
+    /// repository.
+    ///
+    /// If another task was the focus of that context, its status returns to `ready`. Prints the
+    /// task and the repository path. If the shell integration (`loom shell-init`) is loaded,
+    /// the shell changes to that directory. If the task has no repository, the directory does
+    /// not change. Starts loomd if it is stopped.
+    Go(GoArgs),
+    /// Show the focus task of each context, or of the context that `-c` names.
+    ///
+    /// The focus is stored in `index.db` on this machine, never in the context store. Starts
+    /// loomd if it is stopped.
+    Focus(FocusArgs),
+    /// Record a note event on the focus task of the context, or on `--task`.
+    ///
+    /// Without `--task`, the context is resolved as for `loom add`. If that context has no focus
+    /// task, the command fails. Starts loomd if it is stopped.
+    Log(LogArgs),
     /// Mark a task done.
     Done(TaskArgs),
     /// Cancel a task.
@@ -177,7 +195,8 @@ pub enum Command {
     /// The shell runs `loom repo register --on-use --background` detached in the directory
     /// where it starts, and then in each directory that it enters. It does this one time for
     /// each directory in a shell session. Thus loomd registers the repository of the
-    /// directory. The integration does nothing if `loom` is not on `PATH`.
+    /// directory. A `loom` shell function also changes the current directory to the repository
+    /// of the task on `loom go`. The integration does nothing if `loom` is not on `PATH`.
     ShellInit(ShellInitArgs),
     /// Internal: started by loomd from the saved previous version after an auto-upgrade;
     /// waits for the new loomd and rolls back when it does not answer (ADR-0011).
@@ -319,6 +338,10 @@ pub struct AddArgs {
     /// `-c` or `LOOM_CONTEXT` names another context, the command fails.
     #[arg(long, value_name = "ID", value_parser = task_prefix)]
     pub parent: Option<String>,
+    /// Repository of the task: `<context>/<name>`, a name, a path, or `none`. If absent, and
+    /// the current directory is inside a repository of the task's context, that repository.
+    #[arg(long, value_name = "REPO")]
+    pub repo: Option<String>,
     /// Skip the inbox: the task is ready.
     #[arg(long)]
     pub ready: bool,
@@ -383,6 +406,39 @@ pub struct SetArgs {
     /// Changes, as `key=value`.
     #[arg(value_name = "KEY=VALUE", required = true, num_args = 1.., value_parser = assignment)]
     pub assignments: Vec<Assignment>,
+    /// Print the task as JSON (`TaskDetail` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom go`.
+#[derive(Debug, clap::Args)]
+pub struct GoArgs {
+    /// Task ID, or a unique prefix of one.
+    #[arg(value_name = "ID", value_parser = task_prefix)]
+    pub id: String,
+    /// Print the result as JSON (`GoResult` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom focus`.
+#[derive(Debug, clap::Args)]
+pub struct FocusArgs {
+    /// Print the list as JSON (`FocusList` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom log`.
+#[derive(Debug, clap::Args)]
+pub struct LogArgs {
+    /// Note text, words joined with spaces (quotes around the text are optional).
+    #[arg(value_name = "TEXT", required = true, num_args = 1..)]
+    pub text: Vec<String>,
+    /// Task to record the note on, instead of the focus task of the context.
+    #[arg(long, value_name = "ID", value_parser = task_prefix)]
+    pub task: Option<String>,
     /// Print the task as JSON (`TaskDetail` schema).
     #[arg(long)]
     pub json: bool,
@@ -809,6 +865,9 @@ mod tests {
                 | Command::Ls(_)
                 | Command::Show(_)
                 | Command::Set(_)
+                | Command::Go(_)
+                | Command::Focus(_)
+                | Command::Log(_)
                 | Command::Done(_)
                 | Command::Cancel(_)
                 | Command::Snooze(_)

@@ -430,6 +430,7 @@ loom add [OPTIONS] <TITLE>...
 | `--importance <IMPORTANCE>` | `p0`, `p1`, `p2`, `p3` |  | Importance. If absent, the default of the kind (p1 for bug, investigation, support and review; p3 for chore, research and learning; p2 otherwise) |
 | `--due <DATE>` |  |  | Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w` |
 | `--parent <ID>` |  |  | Parent task: an ID or a unique prefix of one. The task goes to the parent's context. If `-c` or `LOOM_CONTEXT` names another context, the command fails |
+| `--repo <REPO>` |  |  | Repository of the task: `<context>/<name>`, a name, a path, or `none`. If absent, and the current directory is inside a repository of the task's context, that repository |
 | `--ready` |  |  | Skip the inbox: the task is ready |
 | `--json` |  |  | Print the created task as JSON (`TaskDetail` schema) |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |
@@ -484,7 +485,7 @@ Global options apply.
 
 ### `loom set`
 
-Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format` (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`) and `pinned` (`yes` or `no`)
+Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format` (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`), `repo` (a repository, or `none`) and `pinned` (`yes` or `no`)
 
 ```text
 loom set [OPTIONS] <ID> <KEY=VALUE>...
@@ -503,6 +504,76 @@ loom set [OPTIONS] <ID> <KEY=VALUE>...
 | --- | --- | --- | --- |
 | `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
 | `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom go`
+
+Make a task the focus of its context, set its status to `active`, and change to its repository.
+
+If another task was the focus of that context, its status returns to `ready`. Prints the task and the repository path. If the shell integration (`loom shell-init`) is loaded, the shell changes to that directory. If the task has no repository, the directory does not change. Starts loomd if it is stopped.
+
+```text
+loom go [OPTIONS] <ID>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the result as JSON (`GoResult` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom focus`
+
+Show the focus task of each context, or of the context that `-c` names.
+
+The focus is stored in `index.db` on this machine, never in the context store. Starts loomd if it is stopped.
+
+```text
+loom focus [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the list as JSON (`FocusList` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom log`
+
+Record a note event on the focus task of the context, or on `--task`.
+
+Without `--task`, the context is resolved as for `loom add`. If that context has no focus task, the command fails. Starts loomd if it is stopped.
+
+```text
+loom log [OPTIONS] <TEXT>...
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<TEXT>` |  |  | Note text, words joined with spaces (quotes around the text are optional) |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--task <ID>` |  |  | Task to record the note on, instead of the focus task of the context |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
 
 Global options apply.
 
@@ -668,7 +739,7 @@ Global options apply.
 
 Print the shell integration to evaluate in the shell's startup file: `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`.
 
-The shell runs `loom repo register --on-use --background` detached in the directory where it starts, and then in each directory that it enters. It does this one time for each directory in a shell session. Thus loomd registers the repository of the directory. The integration does nothing if `loom` is not on `PATH`.
+The shell runs `loom repo register --on-use --background` detached in the directory where it starts, and then in each directory that it enters. It does this one time for each directory in a shell session. Thus loomd registers the repository of the directory. A `loom` shell function also changes the current directory to the repository of the task on `loom go`. The integration does nothing if `loom` is not on `PATH`.
 
 ```text
 loom shell-init [OPTIONS] <SHELL>

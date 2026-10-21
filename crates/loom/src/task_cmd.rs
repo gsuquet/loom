@@ -7,16 +7,20 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use loom::cli::{AddArgs, EditArgs, GlobalArgs, LsArgs, SetArgs, ShowArgs, SnoozeArgs, TaskArgs};
+use loom::cli::{
+    AddArgs, EditArgs, FocusArgs, GlobalArgs, GoArgs, LogArgs, LsArgs, SetArgs, ShowArgs,
+    SnoozeArgs, TaskArgs,
+};
 use loom::task::{
     AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
-    changed_after_save, changed_meanwhile, context_with_parent, editor, holds_saved, kind_of,
-    list_api_path, new_task, parse_date, render_change, render_detail, render_list,
-    resolve_context, set_plan, skipped_notice, today, with_parent,
+    changed_after_save, changed_meanwhile, context_with_parent, default_repo, editor,
+    focus_api_path, holds_saved, kind_of, list_api_path, new_task, parse_date, render_change,
+    render_detail, render_focus, render_go, render_list, resolve_context, set_plan, skipped_notice,
+    today, with_parent, with_repo,
 };
 use loom_api::{
-    Actor, ContextName, Date, EventRecord, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents,
-    TaskList, TaskReadOnly,
+    Actor, ContextName, Date, EventRecord, FocusList, GoResult, TaskActionRequest, TaskDetail,
+    TaskEdit, TaskEvents, TaskList, TaskReadOnly,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -24,11 +28,13 @@ use serde::Serialize;
 use tracing::{debug, warn};
 
 use crate::client::Client;
-use crate::repo_cmd::{api_error, connect, cwd_assignments};
+use crate::repo_cmd::{api_error, connect, cwd_assignments, cwd_repo, resolve_task_repo};
 use crate::{load_config, print};
 
 /// Path of the task list and of the creation endpoint.
 const TASKS_PATH: &str = "/v1/tasks";
+/// File where `loom go` writes the repository path for the shell wrapper (`loom shell-init`).
+const CD_FILE_ENV: &str = "LOOM_CD_FILE";
 /// Longest wait for loomd to record a `loom edit`: its watcher reads the file at once.
 const EDIT_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 /// Interval between two reads of the edited task.
@@ -41,6 +47,11 @@ const TASK_TIMEOUT: Duration = Duration::from_secs(15);
 pub fn add(args: &AddArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
     if args.format.is_some() && args.kind != KindArg::Content {
         return Err(miette!("--format applies to --kind content only"));
+    }
+    if let Some(repo) = &args.repo
+        && (repo.trim().is_empty() || repo.chars().any(char::is_control))
+    {
+        return Err(miette!("invalid --repo: expected a repository or none"));
     }
     let due = args
         .due
@@ -60,6 +71,11 @@ pub fn add(args: &AddArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
             }
             None => (resolved.into_diagnostic()?.context, None),
         };
+        let repo = match args.repo.as_deref() {
+            Some("none") => None,
+            Some(arg) => Some(resolve_task_repo(&client, &context, arg).await?),
+            None => default_repo(cwd_repo(&client).await?.as_ref(), &context),
+        };
         let request = new_task(AddRequest {
             title: args.title.join(" "),
             context,
@@ -67,6 +83,7 @@ pub fn add(args: &AddArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
             importance: args.importance.map(Into::into),
             due,
             parent,
+            repo,
             ready: args.ready,
         });
         let created: TaskDetail = client
@@ -148,6 +165,19 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
                 .unwrap_or_default();
             edit.relations = Some(with_parent(&relations, parent));
         }
+        if let Some(repo) = plan.repo {
+            let repo = match repo {
+                Some(arg) => Some(resolve_task_repo(&client, &detail.summary.context, &arg).await?),
+                None => None,
+            };
+            let links = detail
+                .summary
+                .task
+                .as_ref()
+                .map(|task| task.links.clone())
+                .unwrap_or_default();
+            edit.links = Some(with_repo(&links, repo));
+        }
         if edit != TaskEdit::default() {
             detail = client
                 .patch(&format!("{TASKS_PATH}/{id}"), &edit)
@@ -158,6 +188,66 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
             let name = if pinned { "pin" } else { "unpin" };
             detail = action(&client, &id, name, None).await?;
         }
+        output(&detail, args.json, || render_change(&detail))
+    })
+}
+
+/// `loom go`.
+pub fn go(args: &GoArgs, layout: &Layout) -> Result<()> {
+    block_on(async {
+        let client = client(layout).await?;
+        let result: GoResult = client
+            .post(&format!("{TASKS_PATH}/{}/go", args.id), None::<&()>)
+            .await
+            .map_err(|error| api_error(&error))?;
+        if let Some(path) = &result.repo_path
+            && let Some(cd_file) = env::var_os(CD_FILE_ENV).filter(|value| !value.is_empty())
+            && let Err(error) = fs::write(&cd_file, format!("{}\n", path.display()))
+        {
+            debug!(%error, "cannot write the repository path to {CD_FILE_ENV}");
+        }
+        output(&result, args.json, || render_go(&result))
+    })
+}
+
+/// `loom focus`.
+pub fn focus(args: &FocusArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
+    block_on(async {
+        let client = client(layout).await?;
+        let path = focus_api_path(global.context.as_ref());
+        let list: FocusList = client.get(&path).await.map_err(|error| api_error(&error))?;
+        output(&list, args.json, || render_focus(&list))
+    })
+}
+
+/// `loom log`.
+pub fn log(args: &LogArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
+    let request = TaskActionRequest {
+        on: None,
+        until: None,
+        text: Some(args.text.join(" ")),
+    };
+    block_on(async {
+        let client = client(layout).await?;
+        let id = if let Some(prefix) = &args.task {
+            prefix.clone()
+        } else {
+            let context = context(global, layout, &client)
+                .await?
+                .into_diagnostic()?
+                .context;
+            let list: FocusList = client
+                .get(&focus_api_path(Some(&context)))
+                .await
+                .map_err(|error| api_error(&error))?;
+            let Some(entry) = list.entries.first() else {
+                return Err(miette!(
+                    "no focus task in context {context}: run `loom go <id>` to focus a task, or pass `--task <id>`"
+                ));
+            };
+            entry.task.id.to_string()
+        };
+        let detail = action(&client, &id, "log_note", Some(&request)).await?;
         output(&detail, args.json, || render_change(&detail))
     })
 }

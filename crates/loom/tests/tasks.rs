@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{RankReason, Status, TaskDetail, TaskList};
+use loom_api::{FocusList, RankReason, Status, TaskDetail, TaskList};
 use tempfile::TempDir;
 
 mod isolation;
@@ -801,4 +801,83 @@ fn edit_of_the_notes_only_or_of_the_spacing_only_is_shown_at_once() {
         "{:?}",
         started.elapsed()
     );
+}
+
+#[test]
+fn loom_go_on_a_task_without_a_repo_says_so() {
+    let sandbox = Sandbox::new();
+    let detail = sandbox.add(&["-c", "work", "No repo task"]);
+    let id = detail.summary.id.to_string();
+    let prefix = detail.summary.prefix;
+
+    let output = sandbox.run(&sandbox.home(), None, &["go", &id]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(&format!(
+            "no repository linked to {prefix}: staying in the current directory"
+        )),
+        "expected notice in stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("active No repo task"),
+        "expected activated status in stdout: {stdout}"
+    );
+}
+
+#[test]
+fn loom_log_with_no_focus_fails_with_a_hint() {
+    let sandbox = Sandbox::new();
+    let output = sandbox.run(&sandbox.home(), None, &["log", "some note"]);
+    assert_ne!(output.status.code(), Some(0));
+    let err = stderr(&output);
+    assert!(
+        err.contains("no focus task in context personal: run `loom go <id>` to focus a task, or pass `--task <id>`"),
+        "expected hint in stderr: {err}"
+    );
+}
+
+#[test]
+fn two_contexts_keep_two_separate_focuses_checked_through_the_cli() {
+    let sandbox = Sandbox::new();
+    let work_task = sandbox.add(&["-c", "work", "Work focus task"]);
+    let home_task = sandbox.add(&["-c", "home", "Home focus task"]);
+    let work_id = work_task.summary.id.to_string();
+    let home_id = home_task.summary.id.to_string();
+
+    // 1. Focus task in `work` context
+    let work_go = sandbox.ok(&["-c", "work", "go", &work_id]);
+    assert!(work_go.contains("active Work focus task"));
+
+    // 2. Focus task in `home` context
+    let home_go = sandbox.ok(&["-c", "home", "go", &home_id]);
+    assert!(home_go.contains("active Home focus task"));
+
+    // 3. `loom focus --json` returns both focuses
+    let focus_json = sandbox.ok(&["focus", "--json"]);
+    let list: FocusList = serde_json::from_str(&focus_json).unwrap();
+    assert_eq!(list.entries.len(), 2);
+    let work_entry = list
+        .entries
+        .iter()
+        .find(|e| e.context.as_str() == "work")
+        .unwrap();
+    assert_eq!(work_entry.task.id.as_str(), work_id);
+    let home_entry = list
+        .entries
+        .iter()
+        .find(|e| e.context.as_str() == "home")
+        .unwrap();
+    assert_eq!(home_entry.task.id.as_str(), home_id);
+
+    // 4. `loom -c work focus` only outputs work focus, `loom -c home focus` only outputs home focus
+    let work_focus = sandbox.ok(&["-c", "work", "focus"]);
+    assert!(work_focus.contains("work"));
+    assert!(work_focus.contains("Work focus task"));
+    assert!(!work_focus.contains("Home focus task"));
+
+    let home_focus = sandbox.ok(&["-c", "home", "focus"]);
+    assert!(home_focus.contains("home"));
+    assert!(home_focus.contains("Home focus task"));
+    assert!(!home_focus.contains("Work focus task"));
 }

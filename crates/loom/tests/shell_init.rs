@@ -383,3 +383,64 @@ fn shell_init_prints_the_snippet_and_rejects_other_shells() {
     let fish = run(&["shell-init", "fish"]);
     assert_eq!(fish.status.code(), Some(2));
 }
+
+#[test]
+fn loom_go_changes_directory_in_shell() {
+    each_shell(|fixture| {
+        let shell = fixture.shell;
+        let target_dir = fixture.dirs(&["repo_dir"])[0].clone();
+        let target_str = target_dir.display().to_string();
+
+        // Stub loom: handles `go` by writing the target directory to LOOM_CD_FILE.
+        let stub = format!(
+            r#"#!/bin/sh
+for arg in "$@"; do
+    if [ "$arg" = "go" ]; then
+        for check in "$@"; do
+            if [ "$check" = "fail" ]; then
+                exit 42
+            fi
+        done
+        if [ -n "$LOOM_CD_FILE" ]; then
+            printf '%s\n' "{target_str}" > "$LOOM_CD_FILE"
+        fi
+        exit 0
+    fi
+done
+exit 0
+"#
+        );
+        fs::write(fixture.bin().join("loom"), stub).unwrap();
+        fs::set_permissions(
+            fixture.bin().join("loom"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        // 1. Nominal `loom go <id>` changes directory
+        let script = format!("{EVAL_SNIPPET}loom go 123\npwd\n");
+        let output = fixture.run(&script, true);
+        assert_eq!(output.status.code(), Some(0), "{shell:?}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.trim(), target_str, "{shell:?}: {stdout}");
+
+        // 2. `loom -c work go <id>` also changes directory (global options before go)
+        let script = format!("{EVAL_SNIPPET}cd \"$HOME\"\nloom -c work go 123\npwd\n");
+        let output = fixture.run(&script, true);
+        assert_eq!(output.status.code(), Some(0), "{shell:?}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.trim(), target_str, "{shell:?}: {stdout}");
+
+        // 3. Failing `loom go` preserves exit status and does not change directory
+        let script =
+            format!("{EVAL_SNIPPET}cd \"$HOME\"\nloom go fail\nrc=$?\npwd\necho \"rc=$rc\"\n");
+        let output = fixture.run(&script, true);
+        assert_eq!(output.status.code(), Some(0), "{shell:?}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("rc=42"), "{shell:?}: {stdout}");
+        assert!(
+            stdout.contains(&fixture.home().display().to_string()),
+            "{shell:?}: {stdout}"
+        );
+    });
+}

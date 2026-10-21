@@ -9,10 +9,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use loom_api::{
-    Action, Actor, AmbiguousPrefix, Change, EventId, EventRecord, FieldChange, IllegalTransition,
-    Kind, MachineId, NewTask, RankReason, Relations, Status, StatusName, Task, TaskActionName,
-    TaskActionRequest, TaskCandidate, TaskDetail, TaskEdit, TaskEvents, TaskId, TaskList, TaskRank,
-    TaskReadOnly, TaskSummary, UndoConflict,
+    Action, Actor, AmbiguousPrefix, Change, EventId, EventRecord, FieldChange, FocusEntry,
+    FocusList, GoResult, IllegalTransition, Kind, MachineId, NewTask, RankReason, Relations,
+    Status, StatusName, Task, TaskActionName, TaskActionRequest, TaskCandidate, TaskDetail,
+    TaskEdit, TaskEvents, TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary, UndoConflict,
 };
 use loom_api::{
     ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
@@ -47,6 +47,8 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("daemon_restart_report", schema_for!(DaemonRestartReport)),
         ("doctor_report", schema_for!(DoctorReport)),
         ("error_code", schema_for!(ErrorCode)),
+        ("focus_list", schema_for!(FocusList)),
+        ("go_result", schema_for!(GoResult)),
         ("illegal_transition", schema_for!(IllegalTransition)),
         ("last_update", schema_for!(LastUpdate)),
         ("new_task", schema_for!(NewTask)),
@@ -1000,10 +1002,10 @@ fn sample_task(id: &TaskId) -> Result<Task, Box<dyn Error>> {
         context: "work".parse()?,
         status: Status::Waiting {
             on: Some("Alice".to_owned()),
-            until: Some("2026-10-20".parse()?),
+            until: Some("2026-10-20".parse().map_err(|e| format!("{e}"))?),
         },
         importance: loom_api::Importance::P1,
-        due: Some("2026-10-21".parse()?),
+        due: Some("2026-10-21".parse().map_err(|e| format!("{e}"))?),
         pinned: true,
         links: Vec::new(),
         relations: Relations::default(),
@@ -1013,6 +1015,7 @@ fn sample_task(id: &TaskId) -> Result<Task, Box<dyn Error>> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn task_samples_validate_against_their_schema() {
     let id: TaskId = "k3q7zm2a".parse().unwrap();
     let task = sample_task(&id).unwrap();
@@ -1053,6 +1056,46 @@ fn task_samples_validate_against_their_schema() {
         );
     }
     let at = Timestamp::from_unix_secs(1_791_795_600).unwrap();
+    let plain_summary = TaskSummary {
+        id: id.clone(),
+        prefix: "k3".to_owned(),
+        context: task.context.clone(),
+        task: Some(task.clone()),
+        read_only: None,
+        rank: None,
+    };
+    errors.extend(
+        violations(&FocusList {
+            entries: vec![
+                FocusEntry {
+                    context: task.context.clone(),
+                    task: plain_summary.clone(),
+                    since: at,
+                    repo_path: Some("/work/checkout".into()),
+                },
+                FocusEntry {
+                    context: "home".parse().unwrap(),
+                    task: plain_summary.clone(),
+                    since: at,
+                    repo_path: None,
+                },
+            ],
+        })
+        .unwrap(),
+    );
+    errors.extend(
+        violations(&GoResult {
+            task: TaskDetail {
+                summary: plain_summary.clone(),
+                body: "## Notes\n".to_owned(),
+                actions: vec![Action::SetStatus(StatusName::Ready), Action::LogNote],
+            },
+            switched_from: Some(plain_summary),
+            since: at,
+            repo_path: Some("/work/checkout".into()),
+        })
+        .unwrap(),
+    );
     let event = |id: &str, event| EventRecord {
         v: 1,
         id: id.parse::<EventId>().unwrap(),

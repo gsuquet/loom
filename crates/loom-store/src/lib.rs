@@ -39,7 +39,7 @@ use tracing::debug_span;
 
 pub use migrate::SCHEMA_VERSION;
 pub use repos::RepoFilter;
-pub use tasks::IndexedTask;
+pub use tasks::{FocusRow, GoOutcome, IndexedTask};
 
 /// Mode of `index.db` and of the WAL files SQLite creates beside it: owner read and write.
 pub const INDEX_FILE_MODE: u32 = 0o600;
@@ -365,6 +365,20 @@ impl Reader {
     pub fn tasks(&self, context: Option<&ContextName>) -> Result<Vec<IndexedTask>, StoreError> {
         let _span = debug_span!("store.tasks").entered();
         tasks::list(&self.conn, context)
+    }
+
+    /// The focused tasks of `context`, or of every context when `None`, sorted by context, read
+    /// in one snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or a row is invalid.
+    pub fn focus(
+        &self,
+        context: Option<&ContextName>,
+    ) -> Result<Vec<(FocusRow, IndexedTask)>, StoreError> {
+        let _span = debug_span!("store.focus").entered();
+        tasks::focus(&self.conn, context)
     }
 
     /// IDs of the tasks whose title, notes or link keys match `query`, only those of `context`
