@@ -21,6 +21,9 @@ pub static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(|| {
 static LONG_VERSION: LazyLock<String> = LazyLock::new(|| VERSION_INFO.to_string());
 
 /// Personal work engine: CLI and TUI.
+///
+/// With no command, opens the TUI when standard input and standard output are terminals, and
+/// prints the help otherwise.
 #[derive(Debug, Parser)]
 #[command(
     name = "loom",
@@ -32,9 +35,9 @@ pub struct Cli {
     /// Options accepted by every command.
     #[command(flatten)]
     pub global: GlobalArgs,
-    /// Command to run.
+    /// Command to run. When absent, opens the TUI on a terminal or prints the help.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// Options accepted by every command, before or after the command name.
@@ -715,14 +718,26 @@ mod tests {
             assert!(cli.global.yes);
             assert!(!cli.global.quiet);
             assert_eq!(cli.global.color, ColorChoice::Auto);
-            assert!(matches!(cli.command, Command::Version { json: false }));
+            assert!(matches!(
+                cli.command,
+                Some(Command::Version { json: false })
+            ));
         }
+    }
+
+    #[test]
+    fn no_command_parses_for_the_tui() {
+        let cli = Cli::try_parse_from(["loom"]).unwrap();
+        assert!(cli.command.is_none());
+        let cli = Cli::try_parse_from(["loom", "-c", "personal"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.global.context.unwrap().as_str(), "personal");
     }
 
     #[test]
     fn search_joins_its_words_and_checks_the_limit() {
         let parse = |args: &[&str]| match Cli::try_parse_from(args).map(|cli| cli.command) {
-            Ok(Command::Search(args)) => Ok(args),
+            Ok(Some(Command::Search(args))) => Ok(args),
             Ok(other) => panic!("not a search: {other:?}"),
             Err(error) => Err(error.kind()),
         };
@@ -763,44 +778,47 @@ mod tests {
         let cli = Cli::try_parse_from(["loom", "status"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Status {
+            Some(Command::Status {
                 json: false,
                 no_start: false
-            }
+            })
         ));
         let cli = Cli::try_parse_from(["loom", "status", "--json", "--no-start"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Status {
+            Some(Command::Status {
                 json: true,
                 no_start: true
-            }
+            })
         ));
     }
 
     #[test]
     fn service_commands_parse() {
         let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
-            Command::Service { command } => command,
-            Command::Version { .. }
-            | Command::Status { .. }
-            | Command::Upgrade(_)
-            | Command::Rollback(_)
-            | Command::Repo { .. }
-            | Command::Search(_)
-            | Command::Add(_)
-            | Command::Ls(_)
-            | Command::Show(_)
-            | Command::Set(_)
-            | Command::Done(_)
-            | Command::Cancel(_)
-            | Command::Snooze(_)
-            | Command::Undo(_)
-            | Command::Edit(_)
-            | Command::Reindex(_)
-            | Command::Sync(_)
-            | Command::ShellInit(_)
-            | Command::UpgradeWatchdog(_) => {
+            Some(Command::Service { command }) => command,
+            None
+            | Some(
+                Command::Version { .. }
+                | Command::Status { .. }
+                | Command::Upgrade(_)
+                | Command::Rollback(_)
+                | Command::Repo { .. }
+                | Command::Search(_)
+                | Command::Add(_)
+                | Command::Ls(_)
+                | Command::Show(_)
+                | Command::Set(_)
+                | Command::Done(_)
+                | Command::Cancel(_)
+                | Command::Snooze(_)
+                | Command::Undo(_)
+                | Command::Edit(_)
+                | Command::Reindex(_)
+                | Command::Sync(_)
+                | Command::ShellInit(_)
+                | Command::UpgradeWatchdog(_),
+            ) => {
                 panic!("not a service command: {args:?}")
             }
         };
@@ -855,7 +873,7 @@ mod tests {
         let mut full = vec!["loom", "repo"];
         full.extend_from_slice(args);
         match Cli::try_parse_from(full).unwrap().command {
-            Command::Repo { command } => command,
+            Some(Command::Repo { command }) => command,
             other => panic!("not a repo command: {other:?}"),
         }
     }
@@ -943,7 +961,9 @@ mod tests {
         use super::Shell;
         for (name, expected) in [("zsh", Shell::Zsh), ("bash", Shell::Bash)] {
             let cli = Cli::try_parse_from(["loom", "shell-init", name]).unwrap();
-            assert!(matches!(cli.command, Command::ShellInit(args) if args.shell == expected));
+            assert!(
+                matches!(cli.command, Some(Command::ShellInit(args)) if args.shell == expected)
+            );
         }
         let error = Cli::try_parse_from(["loom", "shell-init", "fish"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
@@ -989,14 +1009,14 @@ mod tests {
     fn upgrade_parses_channel_version_and_flags() {
         let cli =
             Cli::try_parse_from(["loom", "upgrade", "--channel", "dev", "-n", "--json"]).unwrap();
-        let Command::Upgrade(args) = cli.command else {
+        let Some(Command::Upgrade(args)) = cli.command else {
             panic!("not upgrade");
         };
         assert_eq!(args.channel, Some(ReleaseChannel::Dev));
         assert!(args.dry_run && args.json && !args.check);
 
         let cli = Cli::try_parse_from(["loom", "upgrade", "--version", "1.2.3-dev.4"]).unwrap();
-        let Command::Upgrade(args) = cli.command else {
+        let Some(Command::Upgrade(args)) = cli.command else {
             panic!("not upgrade");
         };
         assert_eq!(args.version.unwrap().to_string(), "1.2.3-dev.4");
@@ -1015,10 +1035,10 @@ mod tests {
         let cli = Cli::try_parse_from(["loom", "rollback", "--dry-run"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Rollback(super::RollbackArgs {
+            Some(Command::Rollback(super::RollbackArgs {
                 dry_run: true,
                 json: false
-            })
+            }))
         ));
     }
 
@@ -1037,7 +1057,7 @@ mod tests {
             "/bin",
         ])
         .unwrap();
-        let Command::UpgradeWatchdog(args) = cli.command else {
+        let Some(Command::UpgradeWatchdog(args)) = cli.command else {
             panic!("{:?}", cli.command);
         };
         assert_eq!(args.expect.to_string(), "0.2.0-dev.3");
