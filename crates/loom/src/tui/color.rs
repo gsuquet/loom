@@ -3,7 +3,7 @@
 //! Only the terminal's 16 ANSI colors are used so the TUI follows the terminal theme (light or
 //! dark). When colors are disabled (`--color=never` or `NO_COLOR`), every style is uncolored.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use loom_api::{ContextName, Importance, StatusName, UNASSIGNED};
 use loom_config::repos::{ContextColor, ContextConfig};
@@ -54,26 +54,46 @@ pub const fn to_ratatui_color(color: ContextColor) -> Color {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     color_enabled: bool,
-    context_colors: HashMap<ContextName, ContextColor>,
+    context_colors: HashMap<String, ContextColor>,
 }
 
 impl Theme {
     /// Builds a [`Theme`] resolving context colors from the `config.toml` contexts table.
     ///
-    /// Contexts without an explicit `color = "..."` receive a deterministic ANSI color from
-    /// [`DEFAULT_PALETTE`] in their configuration order.
+    /// Contexts without an explicit `color = "..."` receive the next available ANSI color from
+    /// [`DEFAULT_PALETTE`] in alphabetical order, skipping colors assigned explicitly.
     #[must_use]
     pub fn from_config(
         contexts: &BTreeMap<ContextName, ContextConfig>,
         color_enabled: bool,
     ) -> Self {
         let mut context_colors = HashMap::new();
-        for (index, (name, config)) in contexts.iter().enumerate() {
-            let color = config
-                .color
-                .unwrap_or(DEFAULT_PALETTE[index % DEFAULT_PALETTE.len()]);
-            context_colors.insert(name.clone(), color);
+        let mut explicit_colors = HashSet::new();
+
+        for (name, config) in contexts {
+            if let Some(color) = config.color {
+                context_colors.insert(name.as_str().to_owned(), color);
+                explicit_colors.insert(color);
+            }
         }
+
+        let mut available: Vec<ContextColor> = DEFAULT_PALETTE
+            .iter()
+            .copied()
+            .filter(|c| !explicit_colors.contains(c))
+            .collect();
+        if available.is_empty() {
+            available.extend_from_slice(&DEFAULT_PALETTE);
+        }
+        let mut palette_cycle = available.into_iter().cycle();
+
+        for (name, config) in contexts {
+            if config.color.is_none() {
+                let color = palette_cycle.next().unwrap_or(ContextColor::Cyan);
+                context_colors.insert(name.as_str().to_owned(), color);
+            }
+        }
+
         Self {
             color_enabled,
             context_colors,
@@ -93,9 +113,9 @@ impl Theme {
             return Color::White;
         }
         self.context_colors
-            .iter()
-            .find(|(k, _)| k.as_str() == context_name)
-            .map_or(Color::Cyan, |(_, &v)| to_ratatui_color(v))
+            .get(context_name)
+            .copied()
+            .map_or(Color::Cyan, to_ratatui_color)
     }
 
     /// Style for a context badge (`[<context>]`).
@@ -176,7 +196,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_palette_assigns_distinct_colors_by_config_order() {
+    fn default_palette_assigns_distinct_colors_in_alphabetical_order() {
         let mut contexts = BTreeMap::new();
         for i in 0..12 {
             let name: ContextName = format!("ctx{i:02}").parse().unwrap();
@@ -193,6 +213,25 @@ mod tests {
             );
             seen.push(color);
         }
+    }
+
+    #[test]
+    fn default_palette_skips_explicitly_configured_colors() {
+        let mut contexts = BTreeMap::new();
+        // Context 'a' explicitly sets Cyan (the first color in DEFAULT_PALETTE)
+        contexts.insert(
+            "a".parse().unwrap(),
+            ContextConfig {
+                color: Some(ContextColor::Cyan),
+                ..Default::default()
+            },
+        );
+        // Context 'b' has no explicit color, so it should get the next available color (Green, not Cyan)
+        contexts.insert("b".parse().unwrap(), ContextConfig::default());
+
+        let theme = Theme::from_config(&contexts, true);
+        assert_eq!(theme.context_color("a"), Color::Cyan);
+        assert_eq!(theme.context_color("b"), Color::Green);
     }
 
     #[test]

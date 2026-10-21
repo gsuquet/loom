@@ -531,17 +531,10 @@ impl AppState {
     /// Handles an incoming SSE change event from loomd.
     pub fn apply_change_event(&mut self, event: &ChangeEvent) -> AppEffect {
         match event {
-            ChangeEvent::TaskChanged { context, id }
-            | ChangeEvent::TaskArchived { context, id } => {
+            ChangeEvent::TaskChanged { context, .. }
+            | ChangeEvent::TaskArchived { context, .. } => {
                 if self.active_context.as_ref().is_some_and(|c| c != context) {
                     return AppEffect::None;
-                }
-                // Refresh the open task if the changed task is currently displayed on an object page.
-                if let Some(page) = self.page_stack.last() {
-                    let ObjectTarget::Task(page_id) = &page.target;
-                    if page_id == id {
-                        return AppEffect::FetchTask(id.clone());
-                    }
                 }
                 AppEffect::Refresh
             }
@@ -626,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_change_event_returns_fetch_task_for_open_task_page() {
+    fn apply_change_event_returns_refresh_for_task_events() {
         let mut state = AppState::new(test_theme(), None, Vec::new());
         let task_id: TaskId = "k3q7zm2a".parse().unwrap();
         state.page_stack.push(ObjectPageState {
@@ -637,12 +630,9 @@ mod tests {
 
         let event = ChangeEvent::TaskChanged {
             context: "work".parse().unwrap(),
-            id: task_id.clone(),
+            id: task_id,
         };
-        assert_eq!(
-            state.apply_change_event(&event),
-            AppEffect::FetchTask(task_id)
-        );
+        assert_eq!(state.apply_change_event(&event), AppEffect::Refresh);
 
         let other_id: TaskId = "p9x8w111".parse().unwrap();
         let other_event = ChangeEvent::TaskChanged {
