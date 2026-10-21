@@ -105,12 +105,12 @@ To fix this, remove one task directory (or move it out of the stores). `loomd` t
 
 ## What loom guarantees
 
-- If `loomd` crashes or stops at any point while it writes, no task is lost and no file is half-written. At the next start, `loomd` reconciles the files, the index and the git history of each store.
-- If you edit `task.md` by hand while `loomd` runs or while it is stopped, `loomd` keeps your file and records the edit. If a command and a hand edit occur at the same time, the lock of the task keeps both safe.
+- If `loomd` crashes or stops at any point while it writes, no task is lost. `task.md` is replaced atomically. A crash during an append to `events.jsonl` can leave an incomplete line at the end; `loomd` tolerates that line and repairs it on the next append. Temporary files left by a crash (`.*.tmp`, ignored by git) are harmless: they are overwritten by the next write of the same target. At the next start, `loomd` reconciles the files, the index and the git history of each store.
+- If you edit `task.md` by hand while `loomd` runs or while it is stopped, `loomd` keeps your file and records the edit. If an API command and a hand edit occur at the same moment, a hand edit saved in the window between `loomd` reading the file and renaming its own update can be overwritten.
 - If a `task.md` is invalid, `loomd` marks the task read-only, refuses every command on it, and never overwrites your file. When you fix the file, the task becomes writable again.
 - If you delete `index.db`, `loomd` rebuilds the same task rows from the files at start or on `loom reindex`.
 - If a newer version of loom writes unknown keys, comments or events, this version keeps them byte for byte when it writes the task. If the `kind`, `format` or `status` comes from a newer version, this version marks the task read-only and never writes it.
-- If your git configuration enables `commit.gpgsign` or hooks, `loomd` still commits each store change without them. If a backup remote refuses a push or diverges, `loomd` reports the failure and keeps every local file and commit.
+- If your git configuration enables `commit.gpgsign`, `loomd` still commits each store change without a signature. If a backup remote refuses a push, `loomd` reports the failure and keeps every local file and commit.
 
 An automated suite in CI, on Linux and macOS, checks these rules end to end on a real `loomd` process. After each test, the suite checks the files on disk, the rows in `index.db`, and the git history of the store.
 

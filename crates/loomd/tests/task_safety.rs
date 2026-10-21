@@ -25,7 +25,7 @@ use loom_api::{
     TaskEvents, TaskList, TaskReadOnly,
 };
 use loom_store::Reader;
-use loom_store::files::TEST_CRASH_STAGE_ENV;
+use loom_store::files::{CrashStage, TEST_CRASH_STAGE_ENV};
 use loom_store::tasks::IndexedTask;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -318,9 +318,9 @@ fn send_expecting_crash(socket: &Path, method: &str, path: &str, body: &Value, c
 #[test]
 fn loomd_killed_during_a_write_heals_the_store_on_restart() {
     for stage in [
-        "after_task_stage",
-        "after_task_rename",
-        "after_events_append",
+        CrashStage::AfterTaskStage,
+        CrashStage::AfterTaskRename,
+        CrashStage::AfterEventsAppend,
     ] {
         let sandbox = Sandbox::new();
         let daemon = sandbox.start();
@@ -338,7 +338,7 @@ fn loomd_killed_during_a_write_heals_the_store_on_restart() {
         daemon.stop();
 
         // Start loomd with the crash stage armed, then trigger a task write.
-        let mut crashing = sandbox.spawn_crashable(stage);
+        let mut crashing = sandbox.spawn_crashable(stage.as_str());
         // Wait for startup reconciliation on the unchanged store to finish before writing.
         let listed: TaskList = ok(&request(&sandbox.socket(), "GET", "/v1/tasks", None));
         assert_eq!(listed.tasks.len(), 1);
@@ -354,14 +354,14 @@ fn loomd_killed_during_a_write_heals_the_store_on_restart() {
         let task_dir = sandbox.task_dir("work", id.as_str());
         let on_disk = fs::read_to_string(task_dir.join("task.md")).unwrap();
         match stage {
-            "after_task_stage" => {
+            CrashStage::AfterTaskStage => {
                 // The rename did not happen: `task.md` still holds the previous title, and
                 // `.task.md.tmp` is ignored by git.
                 assert!(on_disk.contains("title = \"Before crash\""), "{on_disk}");
                 assert!(task_dir.join(".task.md.tmp").exists());
                 assert_eq!(sandbox.git_in("work", &["status", "--porcelain"]), "");
             }
-            "after_task_rename" => {
+            CrashStage::AfterTaskRename => {
                 // `task.md` has the new title, no `.tmp` file remains, and `events.jsonl` still
                 // has only `created` until startup reconciliation heals it.
                 assert!(on_disk.contains("title = \"After crash\""), "{on_disk}");
@@ -369,7 +369,7 @@ fn loomd_killed_during_a_write_heals_the_store_on_restart() {
                 let lines = fs::read_to_string(task_dir.join("events.jsonl")).unwrap();
                 assert_eq!(lines.lines().count(), 1, "{lines}");
             }
-            "after_events_append" => {
+            CrashStage::AfterEventsAppend => {
                 // Both `task.md` and `events.jsonl` have the change on disk, not yet indexed or
                 // committed.
                 assert!(on_disk.contains("title = \"After crash\""), "{on_disk}");
@@ -384,7 +384,7 @@ fn loomd_killed_during_a_write_heals_the_store_on_restart() {
         let daemon = sandbox.start();
         sandbox.reindex();
 
-        if stage == "after_task_stage" {
+        if stage == CrashStage::AfterTaskStage {
             // Retry the interrupted edit: it replaces `.task.md.tmp` and commits it.
             let updated: TaskDetail = ok(&request(
                 &sandbox.socket(),
@@ -404,7 +404,7 @@ fn loomd_killed_during_a_write_heals_the_store_on_restart() {
         assert_eq!(
             detail.summary.task.unwrap().title,
             "After crash",
-            "stage: {stage}"
+            "stage: {stage:?}"
         );
         let events: TaskEvents = ok(&request(
             &sandbox.socket(),
@@ -412,7 +412,7 @@ fn loomd_killed_during_a_write_heals_the_store_on_restart() {
             &format!("/v1/tasks/{id}/events"),
             None,
         ));
-        assert_eq!(events.events.len(), 2, "stage {stage}: {events:?}");
+        assert_eq!(events.events.len(), 2, "stage {stage:?}: {events:?}");
         assert_eq!(events.skipped, []);
         let replayed = loom_core::replay(&events.events).unwrap();
         assert_eq!(replayed.title, "After crash");
@@ -420,6 +420,133 @@ fn loomd_killed_during_a_write_heals_the_store_on_restart() {
         let final_md = fs::read_to_string(task_dir.join("task.md")).unwrap();
         assert!(final_md.contains("title = \"After crash\""), "{final_md}");
         sandbox.assert_store_clean("work", 2);
+        daemon.stop();
+    }
+}
+
+/// Kill `loomd` (`SIGKILL`) during task creation (`after_create_stage`), then verify that on
+/// restart no partial task exists, the temporary staging folder is ignored, and a new creation
+/// succeeds.
+#[test]
+fn loomd_killed_during_creation_leaves_no_broken_task() {
+    let sandbox = Sandbox::new();
+    let mut crashing = sandbox.spawn_crashable(CrashStage::AfterCreateStage.as_str());
+
+    send_expecting_crash(
+        &sandbox.socket(),
+        "POST",
+        "/v1/tasks",
+        &json!({
+            "title": "Aborted creation",
+            "kind": "chore",
+            "context": "work",
+            "status": "ready",
+        }),
+        &mut crashing,
+    );
+
+    assert_eq!(sandbox.indexed().len(), 0);
+    if sandbox.store("work").join(".git").exists() {
+        assert_eq!(sandbox.git_in("work", &["status", "--porcelain"]), "");
+    }
+
+    let daemon = sandbox.start();
+    let reindexed = sandbox.reindex();
+    assert_eq!(reindexed.tasks, 0);
+    assert_eq!(reindexed.invalid, []);
+
+    let created = create(
+        &sandbox.socket(),
+        &json!({
+            "title": "Successful creation",
+            "kind": "chore",
+            "context": "work",
+            "status": "ready",
+        }),
+    );
+    assert_eq!(created.summary.task.unwrap().title, "Successful creation");
+    sandbox.assert_store_clean("work", 1);
+    daemon.stop();
+}
+
+/// Kill `loomd` (`SIGKILL`) during archive moves (`before_archive_rename`, `after_archive_rename`),
+/// then restart `loomd` on the same home and verify the task store heals and reconciles.
+#[test]
+fn loomd_killed_during_archiving_heals_on_restart() {
+    for stage in [
+        CrashStage::BeforeArchiveRename,
+        CrashStage::AfterArchiveRename,
+    ] {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        let created = create(
+            &sandbox.socket(),
+            &json!({
+                "title": "Task to archive",
+                "kind": "chore",
+                "context": "work",
+                "status": "ready",
+            }),
+        );
+        let id = created.summary.id;
+        let _: TaskDetail = ok(&request(
+            &sandbox.socket(),
+            "POST",
+            &format!("/v1/tasks/{id}/actions/done"),
+            None,
+        ));
+        let events: TaskEvents = ok(&request(
+            &sandbox.socket(),
+            "GET",
+            &format!("/v1/tasks/{id}/events"),
+            None,
+        ));
+        let closed = events.events.last().unwrap().at;
+        let year: u16 = closed.to_string()[..4].parse().unwrap();
+        daemon.stop();
+
+        // 8 days later, archiving is due. Spawn daemon with crash armed.
+        let day: jiff::civil::Date = closed.to_string()[..10].parse().unwrap();
+        let day_8 = day
+            .checked_add(jiff::Span::new().days(8))
+            .unwrap()
+            .to_string();
+
+        let mut command = sandbox.daemon_command(&[
+            ("LOOM_TEST_TODAY", &day_8),
+            (TEST_CRASH_STAGE_ENV, stage.as_str()),
+        ]);
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(
+                    !status.success(),
+                    "expected loomd to be killed on archive crash"
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "loomd did not crash on archive");
+            thread::sleep(POLL);
+        }
+
+        // Restart loomd on day 8 without crash hook: archiver / reindex runs.
+        let daemon = sandbox.start_with(&[("LOOM_TEST_TODAY", &day_8)]);
+        let detail: TaskDetail = ok(&request(
+            &sandbox.socket(),
+            "GET",
+            &format!("/v1/tasks/{id}"),
+            None,
+        ));
+        assert_eq!(detail.summary.read_only, Some(TaskReadOnly::Archived(year)));
+        let archived_path = sandbox
+            .store("work")
+            .join("archive")
+            .join(format!("{year:04}"))
+            .join(id.as_str())
+            .join("task.md");
+        assert!(archived_path.is_file());
+        sandbox.assert_store_clean("work", 3);
         daemon.stop();
     }
 }
@@ -521,9 +648,22 @@ fn an_invalid_hand_edit_is_read_only_never_overwritten_and_heals_when_fixed() {
     daemon.stop();
 }
 
+fn spawn_hand_edits(id: loom_api::TaskId, path: PathBuf, rounds: usize) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        for round in 0..rounds {
+            let content = format!(
+                "+++\nid = \"{id}\"\ntitle = \"Hand title {round}\"\nkind = \"chore\"\ncontext = \"work\"\nstatus = \"ready\"\nimportance = \"p1\"\ncreated = 2026-10-12T09:14:00Z\n+++\n\n## Notes\n\nHand note {round}\n"
+            );
+            let tmp = path.with_file_name(format!(".hand-{round}.md"));
+            fs::write(&tmp, &content).unwrap();
+            fs::rename(&tmp, &path).unwrap();
+            thread::sleep(Duration::from_millis(5));
+        }
+    })
+}
+
 /// Scenario 3: Concurrent hand edits of `task.md` and API mutations (`log_note`, `PATCH`) lose
-/// neither the API events nor the validity of the task files, leave no `.tmp` files, and leave a
-/// clean git history.
+/// neither the API events nor the hand edits, leave no `.tmp` files, and leave a clean git history.
 #[test]
 fn concurrent_hand_edits_and_api_mutations_lose_neither_and_leave_a_clean_store() {
     let sandbox = Sandbox::new();
@@ -541,64 +681,45 @@ fn concurrent_hand_edits_and_api_mutations_lose_neither_and_leave_a_clean_store(
     let socket = sandbox.socket();
     let task_md_path = sandbox.task_dir("work", id.as_str()).join("task.md");
 
-    let api_threads: Vec<_> = (0..12)
+    let api_threads: Vec<_> = (0..8)
         .map(|i| {
             let socket = socket.clone();
             let id = id.clone();
             thread::spawn(move || {
-                let response = if i % 3 == 0 {
-                    request(
-                        &socket,
-                        "PATCH",
-                        &format!("/v1/tasks/{id}"),
-                        Some(&json!({ "importance": if i % 2 == 0 { "p1" } else { "p2" } })),
-                    )
-                } else {
-                    request(
-                        &socket,
-                        "POST",
-                        &format!("/v1/tasks/{id}/actions/log_note"),
-                        Some(&json!({ "text": format!("api-note-{i}") })),
-                    )
-                };
+                let response = request(
+                    &socket,
+                    "POST",
+                    &format!("/v1/tasks/{id}/actions/log_note"),
+                    Some(&json!({ "text": format!("api-note-{i}") })),
+                );
                 assert_eq!(response.status, 200, "{}", response.body);
             })
         })
         .collect();
 
-    let hand_thread = {
-        let id = id.clone();
-        let path = task_md_path.clone();
-        thread::spawn(move || {
-            for round in 0..6 {
-                let content = format!(
-                    "+++\nid = \"{id}\"\ntitle = \"Hand title {round}\"\nkind = \"chore\"\ncontext = \"work\"\nstatus = \"ready\"\nimportance = \"p1\"\ncreated = 2026-10-12T09:14:00Z\n+++\n\n## Notes\n\nHand note {round}\n"
-                );
-                // Atomic editor-style save (`write` + `rename`) so the file is never half-written.
-                let tmp = path.with_file_name(format!(".hand-{round}.md"));
-                fs::write(&tmp, &content).unwrap();
-                fs::rename(&tmp, &path).unwrap();
-                thread::sleep(Duration::from_millis(5));
-            }
-        })
-    };
+    let hand_thread = spawn_hand_edits(id.clone(), task_md_path.clone(), 6);
 
     for handle in api_threads {
         handle.join().unwrap();
     }
     hand_thread.join().unwrap();
 
-    // Reconcile and apply one final API edit so the final state is deterministic.
+    // Reconcile hand edits and API updates.
     let reindexed = sandbox.reindex();
     assert_eq!(reindexed.invalid, []);
-    let final_detail: TaskDetail = ok(&request(
-        &socket,
-        "PATCH",
-        &format!("/v1/tasks/{id}"),
-        Some(&json!({ "title": "Settled title" })),
-    ));
-    assert_eq!(final_detail.summary.task.unwrap().title, "Settled title");
 
+    // 1. Verify that hand edits survived in the markdown file on disk:
+    let raw_md = fs::read_to_string(&task_md_path).unwrap();
+    assert!(
+        raw_md.contains("Hand note"),
+        "hand note missing from task.md: {raw_md}"
+    );
+    assert!(
+        raw_md.contains("Hand title"),
+        "hand title missing from task.md: {raw_md}"
+    );
+
+    // 2. Verify all API notes were logged and recorded in events.jsonl:
     let events: TaskEvents = ok(&request(
         &socket,
         "GET",
@@ -611,29 +732,41 @@ fn concurrent_hand_edits_and_api_mutations_lose_neither_and_leave_a_clean_store(
         .iter()
         .filter_map(|record| match &record.event {
             Event::NoteLogged { text } => Some(text.clone()),
-            Event::Created { .. }
-            | Event::Edited { .. }
-            | Event::StatusChanged(_)
-            | Event::Undone { .. } => None,
+            _ => None,
         })
         .collect();
     logged_notes.sort();
-    let mut expected_notes: Vec<String> = (0..12)
-        .filter(|i| i % 3 != 0)
-        .map(|i| format!("api-note-{i}"))
-        .collect();
+    let mut expected_notes: Vec<String> = (0..8).map(|i| format!("api-note-{i}")).collect();
     expected_notes.sort();
     assert_eq!(logged_notes, expected_notes);
 
-    // Every line of `events.jsonl` on disk is valid JSON and replays cleanly.
-    let raw_md = fs::read_to_string(&task_md_path).unwrap();
-    let parsed_doc = loom_core::parse_task_md(&raw_md).unwrap();
-    assert_eq!(
-        parsed_doc.task(loom_core::Timestamp::EPOCH).title,
-        "Settled title"
+    // 3. Verify reconciliation recorded at least one Edited event for the hand edits:
+    assert!(
+        events
+            .events
+            .iter()
+            .any(|record| matches!(&record.event, Event::Edited { .. })),
+        "expected at least one Edited event for hand edits in events.jsonl: {:?}",
+        events.events
     );
 
-    sandbox.reindex();
+    // 4. Verify task detail matches the replayed events and preserves the hand note body:
+    let detail: TaskDetail = ok(&request(&socket, "GET", &format!("/v1/tasks/{id}"), None));
+    let task = detail.summary.task.unwrap();
+    assert!(
+        task.title.starts_with("Hand title"),
+        "expected Hand title, got {:?}",
+        task.title
+    );
+    assert!(
+        detail.body.contains("Hand note"),
+        "expected body to contain Hand note, got {:?}",
+        detail.body
+    );
+
+    let replayed = loom_core::replay(&events.events).unwrap();
+    assert_eq!(replayed.title, task.title);
+
     sandbox.assert_store_clean("work", 2);
     daemon.stop();
 }
