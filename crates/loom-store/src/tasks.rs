@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use loom_core::{
-    Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
+    Actor, Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
     Importance, Link, NewTask, Origin, ParentLink, RandomSource, Status, Task, TaskDocument,
     TaskId, Timestamp, apply, archive_year, check_parent, create, undo,
 };
@@ -581,12 +581,33 @@ impl<P: StorePort> Tasks<P> {
                 contexts: holders,
             }));
         }
-        let task = store.update(id, |stored| {
+        let indexed = self.index.get(id)?;
+        let last = indexed.as_ref().map(|row| (row.hash.clone(), row.location));
+        let last = last.as_ref().map(|(hash, location)| (hash, *location));
+        let task = store.update(id, |mut stored| {
             if let TaskLocation::Archived(year) = stored.location {
                 return Err(TaskError::Archived {
                     id: id.clone(),
                     year,
                 });
+            }
+            let mut prepended_events = Vec::new();
+            if let Reconciliation::Record(changes) = decide(last, &stored) {
+                let taken: Vec<EventId> = stored
+                    .events
+                    .events
+                    .iter()
+                    .map(|event| event.id.clone())
+                    .collect();
+                let event_id = EventId::generate(random, &taken).map_err(DomainError::from)?;
+                let event = Event::Edited { changes };
+                let file_origin = Origin {
+                    actor: Actor::File,
+                    machine_id: origin.machine_id.clone(),
+                };
+                let record = EventRecord::new(event_id, event, now, &file_origin);
+                stored.events.events.push(record.clone());
+                prepended_events.push(record);
             }
             let current = stored
                 .task()
@@ -598,16 +619,17 @@ impl<P: StorePort> Tasks<P> {
             let Some(command) = command(&current, &stored.events.events)? else {
                 return Ok((TaskWrite::default(), current));
             };
-            let (task, events) =
+            let (task, mut events) =
                 apply(current, command, &stored.events.events, now, origin, random)?;
-            if events.is_empty() {
+            prepended_events.append(&mut events);
+            if prepended_events.is_empty() {
                 return Ok((TaskWrite::default(), task));
             }
             document.set_task(&task).map_err(DomainError::ReadOnly)?;
             Ok::<_, TaskError>((
                 TaskWrite {
                     document: Some(document),
-                    events,
+                    events: prepended_events,
                 },
                 task,
             ))

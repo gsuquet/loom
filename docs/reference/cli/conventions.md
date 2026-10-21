@@ -83,6 +83,7 @@ Thus, a `loomd` that stops while a sync or a remote check runs leaves no git pro
 | `LOOM_TEST_SCHEDULE_INTERVAL` | Test hook, debug builds only: duration that replaces the 1 min interval between two checks of the [schedules](../configuration.md#schedules) in `loomd`. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
 | `LOOM_TEST_SHUTDOWN_GRACE` | Test hook, debug builds only: duration that replaces the 10 s that the requests in flight have to finish after the first signal. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
 | `LOOM_TEST_FAIL_UNLESS_HOME_PREFIX` | Test hook, debug builds only: `loomd` exits with code `1` at start when its loom home path does not start with this text. Ignored by release builds. |
+| `LOOM_TEST_CRASH_STAGE` | Test hook, debug builds only: stage where `loomd` sends `SIGKILL` to itself during a store write (`after_task_stage`, `after_task_rename`, `after_events_append`, `after_create_stage`, `before_archive_rename`, `after_archive_rename`). Ignored by release builds. |
 | `OTEL_SDK_DISABLED` | `true` (any case): no traces are exported, even with `[telemetry] enabled = true`. See [`[telemetry]`](../configuration.md#telemetry). |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Traces endpoint, used as given, when `[telemetry] otlp_endpoint` is not set. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL; traces go to `<value>/v1/traces` when neither `otlp_endpoint` nor `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. |

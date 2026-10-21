@@ -145,7 +145,37 @@ impl FileStore {
                 .create(&dir)
                 .map_err(|source| io_error(&dir, source))?;
         }
+        self.clean_temporary_files();
         Ok(())
+    }
+
+    /// Removes leftover temporary files or directories written by loomd (`.<id>.tmp` in
+    /// `tasks/` where `<id>` is a valid task ID, and `.task.md.tmp` inside task directories)
+    /// left by an earlier crash. User files and non-temporary artifacts are preserved.
+    fn clean_temporary_files(&self) {
+        let tasks_dir = self.tasks_dir();
+        let Ok(entries) = fs::read_dir(&tasks_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if let Some(id_str) = name.strip_prefix('.').and_then(|s| s.strip_suffix(".tmp")) {
+                if id_str.parse::<TaskId>().is_ok() {
+                    let _ = if path.is_dir() {
+                        fs::remove_dir_all(&path)
+                    } else {
+                        fs::remove_file(&path)
+                    };
+                }
+            } else if path.is_dir() && name.parse::<TaskId>().is_ok() {
+                let candidate = path.join(format!(".{TASK_FILE}.tmp"));
+                let _ = fs::remove_file(candidate);
+            }
+        }
     }
 
     /// The lock of task `id`, created on first use.
@@ -194,10 +224,83 @@ impl FileStore {
         let dir = self.dir_at(id, location);
         if let Some(document) = &write.document {
             let path = dir.join(TASK_FILE);
-            atomic::write_file(&path, render_task_md(document).as_bytes(), TASK_FILE_MODE)
-                .map_err(|source| io_error(&path, source))?;
+            let staged =
+                atomic::Staged::write(&path, render_task_md(document).as_bytes(), TASK_FILE_MODE)
+                    .map_err(|source| io_error(&path, source))?;
+            crash_if(CrashStage::AfterTaskStage);
+            staged.commit().map_err(|source| io_error(&path, source))?;
+            crash_if(CrashStage::AfterTaskRename);
         }
         append_events(&dir.join(EVENTS_FILE), write)
+    }
+}
+
+/// Stage of a task write at which a debug build kills itself (`SIGKILL`) for the crash safety
+/// tests.
+pub const TEST_CRASH_STAGE_ENV: &str = "LOOM_TEST_CRASH_STAGE";
+
+/// Points during store writes where a debug build can be configured to crash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrashStage {
+    /// After staging `.task.md.tmp` during an update, before renaming over `task.md`.
+    AfterTaskStage,
+    /// After renaming `.task.md.tmp` over `task.md`, before appending to `events.jsonl`.
+    AfterTaskRename,
+    /// After appending the events of an update to `events.jsonl`.
+    AfterEventsAppend,
+    /// After staging the new task directory (`tasks/.<id>.tmp/`), before renaming to `tasks/<id>/`.
+    AfterCreateStage,
+    /// After creating the archive year directory, before renaming `tasks/<id>/` to `archive/<year>/<id>/`.
+    BeforeArchiveRename,
+    /// After renaming `tasks/<id>/` to `archive/<year>/<id>/`, before syncing parent directories.
+    AfterArchiveRename,
+}
+
+impl CrashStage {
+    /// Every crash stage, in order.
+    pub const ALL: [Self; 6] = [
+        Self::AfterTaskStage,
+        Self::AfterTaskRename,
+        Self::AfterEventsAppend,
+        Self::AfterCreateStage,
+        Self::BeforeArchiveRename,
+        Self::AfterArchiveRename,
+    ];
+
+    /// Canonical name of the crash stage in [`TEST_CRASH_STAGE_ENV`].
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterTaskStage => "after_task_stage",
+            Self::AfterTaskRename => "after_task_rename",
+            Self::AfterEventsAppend => "after_events_append",
+            Self::AfterCreateStage => "after_create_stage",
+            Self::BeforeArchiveRename => "before_archive_rename",
+            Self::AfterArchiveRename => "after_archive_rename",
+        }
+    }
+
+    /// Parses the crash stage from an environment variable value.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|stage| stage.as_str() == s)
+    }
+}
+
+/// Sends `SIGKILL` to this process when `cfg!(debug_assertions)` and [`TEST_CRASH_STAGE_ENV`]
+/// is set to `stage`.
+fn crash_if(stage: CrashStage) {
+    if cfg!(debug_assertions)
+        && std::env::var(TEST_CRASH_STAGE_ENV)
+            .ok()
+            .as_deref()
+            .and_then(CrashStage::parse)
+            == Some(stage)
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &std::process::id().to_string()])
+            .status();
+        std::process::abort();
     }
 }
 
@@ -244,6 +347,7 @@ impl StorePort for FileStore {
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             write_new(&staging.join(EVENTS_FILE), events.as_bytes())?;
             sync_dir(&staging)?;
+            crash_if(CrashStage::AfterCreateStage);
             fs::rename(&staging, &target)?;
             sync_parent(&target)
         })();
@@ -324,7 +428,9 @@ impl StorePort for FileStore {
         // The new directories survive a crash before the rename does.
         sync_parent(year_dir).map_err(error)?;
         sync_parent(&self.archive_dir()).map_err(error)?;
+        crash_if(CrashStage::BeforeArchiveRename);
         fs::rename(&source, &target).map_err(error)?;
+        crash_if(CrashStage::AfterArchiveRename);
         sync_dir(year_dir).map_err(error)?;
         sync_parent(&source).map_err(error)
     }
@@ -382,6 +488,7 @@ fn append_events(path: &Path, write: &TaskWrite) -> Result<(), PortError> {
     if !existed {
         sync_parent(path).map_err(error)?;
     }
+    crash_if(CrashStage::AfterEventsAppend);
     Ok(())
 }
 

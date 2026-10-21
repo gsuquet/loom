@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use loom_api::{ContextAssignment, RepoIdentity};
 use loom_core::{
-    Actor, Change, Command, ContextName, DomainError, Event, ExternalRef, Kind, Link, MachineId,
-    NewTask, Origin, ReadOnlyReason, Relations, Status, StatusName, Task, TaskEdit, TaskId,
-    Timestamp,
+    Actor, Change, Command, ContextName, DomainError, Event, ExternalRef, FieldChange, Kind, Link,
+    MachineId, NewTask, Origin, ReadOnlyReason, Relations, Status, StatusName, Task, TaskEdit,
+    TaskId, Timestamp,
 };
 use loom_store::files::FileStore;
 use loom_store::tasks::{FocusRow, GoOutcome, IndexedState, TaskError, TaskIndex, Tasks};
@@ -567,6 +567,57 @@ fn undo_of_an_invalid_task_is_refused() {
     let refused = tasks.undo(&task.id, at(300), &origin(), &mut random(3));
     assert!(matches!(refused, Err(TaskError::Invalid(_))), "{refused:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), "+++\nbroken\n+++\n");
+}
+
+#[test]
+fn a_command_records_an_unreconciled_hand_edit_before_its_own_event() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = tasks
+        .create(
+            new_task("Original title", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+
+    let path = fixture
+        .store_root("work")
+        .join("tasks")
+        .join(task.id.as_str())
+        .join("task.md");
+    let original = fs::read_to_string(&path).unwrap();
+    let edited = original.replace("title = \"Original title\"", "title = \"Hand title\"");
+    fs::write(&path, edited).unwrap();
+
+    // Directly apply a command with no reconciliation in between:
+    let updated = tasks
+        .apply(
+            &task.id,
+            Command::LogNote {
+                text: "Command note".to_owned(),
+            },
+            at(200),
+            &origin(),
+            &mut random(2),
+        )
+        .unwrap();
+    assert_eq!(updated.title, "Hand title");
+
+    let log = tasks.events(&task.id).unwrap();
+    assert_eq!(log.events.len(), 3);
+    assert!(matches!(log.events[0].event, Event::Created { .. }));
+
+    // The log holds edited (actor file) first:
+    assert_eq!(log.events[1].actor, Actor::File);
+    assert!(
+        matches!(&log.events[1].event, Event::Edited { changes } if changes.iter().any(|c| matches!(c, FieldChange::Title(_))))
+    );
+
+    // Then the command's own event (actor user):
+    assert_eq!(log.events[2].actor, Actor::User);
+    assert!(matches!(&log.events[2].event, Event::NoteLogged { text } if text == "Command note"));
 }
 
 #[test]
