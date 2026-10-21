@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0004_search_tokenizer.sql"),
     include_str!("migrations/0005_tasks.sql"),
     include_str!("migrations/0006_task_archive.sql"),
+    include_str!("migrations/0007_focus.sql"),
 ];
 
 /// Schema version this code reads and writes: the number of migrations.

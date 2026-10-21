@@ -38,12 +38,12 @@ use loom_core::MachineId;
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    DIAGNOSTICS_PATH, EVENTS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH,
-    REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery,
-    SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH,
-    TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value,
-    invalid_request, method_not_allowed, not_found, register_path, repo_filter, search_request,
-    slug, status_at, timestamp,
+    DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH,
+    REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH,
+    STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_GO_PATH,
+    TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH,
+    agent_socket, clock_error, home_value, invalid_request, method_not_allowed, not_found,
+    register_path, repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
@@ -51,8 +51,8 @@ use loomd::exit::Shutdown;
 use loomd::hooks;
 use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, SHUTDOWN_GRACE};
 use loomd::task_api::{
-    TEST_TODAY_ENV, TaskListQuery, action_command, action_name_of, action_request, new_task,
-    task_edit, task_filter, today,
+    FocusQuery, TEST_TODAY_ENV, TaskListQuery, action_command, action_name_of, action_request,
+    focus_context, new_task, task_edit, task_filter, today,
 };
 use loomd::trace::request_span;
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
@@ -545,6 +545,8 @@ fn router(app: App) -> Router {
         .route(TASK_ACTION_PATH, post(task_action))
         .route(TASK_EVENTS_PATH, get(task_events))
         .route(TASK_UNDO_PATH, post(undo_task))
+        .route(TASK_GO_PATH, post(go_task))
+        .route(FOCUS_PATH, get(list_focus))
         .route(EVENTS_PATH, get(change_events))
         .route(TASKS_BACKUP_PATH, get(backup_report))
         .route(TASKS_SYNC_PATH, post(sync_stores))
@@ -861,6 +863,34 @@ async fn undo_task(
             StatusCode::BAD_REQUEST,
             invalid_request(rejection.body_text()),
         ),
+    }
+}
+
+/// Makes the task the active focus of its context; the request has no body.
+async fn go_task(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+) -> Response {
+    match path {
+        Ok(UrlPath(prefix)) => respond(resolve_then(&app, prefix, |id| app.tasks.go(id)).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+/// Focused task of each context, or of `context` when given.
+async fn list_focus(
+    State(app): State<Arc<App>>,
+    query: Result<Query<FocusQuery>, QueryRejection>,
+) -> Response {
+    let context = query
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|Query(query)| focus_context(query));
+    match context {
+        Ok(context) => respond(app.tasks.focus(context).await),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }
 }
 

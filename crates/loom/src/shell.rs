@@ -66,7 +66,7 @@ mod tests {
         assert!(script.starts_with("# shellcheck shell=bash\n"));
         assert!(script.contains("PROMPT_COMMAND+=$'\\n__loom_prompt'"));
         assert!(script.contains("*__loom_prompt*) ;;"), "installed once");
-        assert!(script.contains("local status=$?") && script.contains("return \"$status\""));
+        assert!(script.contains("local rc=$?") && script.contains("return \"$rc\""));
         assert!(script.contains(" &) 2>/dev/null"), "detached in a subshell");
         // Bash 3.2 (macOS) has no associative array.
         assert!(!script.contains("declare -A"));

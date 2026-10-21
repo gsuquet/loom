@@ -35,6 +35,8 @@ The shell never starts loomd. If loomd does not run, nothing is registered.
 
 After this step, the shell runs `loom repo register --on-use --background` in the background. It runs this command for the start directory and for each directory that it enters. It runs it one time for each directory in a shell session. If the directory is in a git repository that is not in the index, loomd registers the repository. In a git repository, loomd also records the repository as used. The hook prints nothing and adds about one millisecond to each directory change.
 
+The integration also defines a `loom` shell function. When you run `loom go <id>`, the shell changes directory to the repository linked to the task. If the task has no linked repository, the shell stays in the current directory.
+
 ## Check that it works
 
 1. `cd` into a repository outside the scan roots.

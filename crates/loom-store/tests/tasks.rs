@@ -13,11 +13,12 @@ use std::time::Duration;
 
 use loom_api::{ContextAssignment, RepoIdentity};
 use loom_core::{
-    Actor, Command, ContextName, DomainError, Event, ExternalRef, FieldChange, Kind, Link,
-    MachineId, NewTask, Origin, Relations, Status, Task, TaskEdit, TaskId, Timestamp,
+    Actor, Change, Command, ContextName, DomainError, Event, ExternalRef, FieldChange, Kind, Link,
+    MachineId, NewTask, Origin, ReadOnlyReason, Relations, Status, StatusName, Task, TaskEdit,
+    TaskId, Timestamp,
 };
 use loom_store::files::FileStore;
-use loom_store::tasks::{IndexedState, TaskError, TaskIndex, Tasks};
+use loom_store::tasks::{FocusRow, GoOutcome, IndexedState, TaskError, TaskIndex, Tasks};
 use loom_store::{Reader, Store};
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -617,4 +618,348 @@ fn a_command_records_an_unreconciled_hand_edit_before_its_own_event() {
     // Then the command's own event (actor user):
     assert_eq!(log.events[2].actor, Actor::User);
     assert!(matches!(&log.events[2].event, Event::NoteLogged { text } if text == "Command note"));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn go_activates_the_task_and_keeps_one_focus_per_context() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let first = tasks
+        .create(
+            new_task("First work task", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+    let second = tasks
+        .create(
+            new_task("Second work task", "work", Vec::new()),
+            at(110),
+            &origin(),
+            &mut random(2),
+        )
+        .unwrap();
+    let home_task = tasks
+        .create(
+            new_task("Home task", "home", Vec::new()),
+            at(120),
+            &origin(),
+            &mut random(3),
+        )
+        .unwrap();
+
+    let outcome = tasks
+        .go(&first.id, at(200), &origin(), &mut random(10))
+        .unwrap();
+    assert_eq!(
+        outcome,
+        GoOutcome {
+            task: Task {
+                status: Status::Active,
+                updated: at(200),
+                ..first.clone()
+            },
+            switched_from: None,
+            since: at(200),
+        }
+    );
+    let log = tasks.events(&first.id).unwrap();
+    assert_eq!(
+        log.events.last().map(|record| &record.event),
+        Some(&Event::StatusChanged(Change {
+            from: Status::Ready,
+            to: Status::Active,
+        }))
+    );
+
+    // Going to the already-focused task keeps `since` and writes no new event.
+    let again = tasks
+        .go(&first.id, at(250), &origin(), &mut random(11))
+        .unwrap();
+    assert_eq!(again.since, at(200));
+    assert_eq!(again.switched_from, None);
+    assert_eq!(tasks.events(&first.id).unwrap().events.len(), 2);
+
+    // Focusing a task in another context keeps both contexts focused.
+    let home_outcome = tasks
+        .go(&home_task.id, at(300), &origin(), &mut random(12))
+        .unwrap();
+    assert_eq!(home_outcome.task.status, Status::Active);
+    assert_eq!(home_outcome.switched_from, None);
+    assert_eq!(home_outcome.since, at(300));
+
+    let reader = fixture.reader();
+    let focused: Vec<FocusRow> = reader
+        .focus(None)
+        .unwrap()
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect();
+    assert_eq!(
+        focused,
+        [
+            FocusRow {
+                context: context("home"),
+                task_id: home_task.id.clone(),
+                since: at(300),
+            },
+            FocusRow {
+                context: context("work"),
+                task_id: first.id.clone(),
+                since: at(200),
+            },
+        ]
+    );
+    let work_only: Vec<FocusRow> = reader
+        .focus(Some(&context("work")))
+        .unwrap()
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect();
+    assert_eq!(
+        work_only,
+        [FocusRow {
+            context: context("work"),
+            task_id: first.id.clone(),
+            since: at(200),
+        }]
+    );
+
+    // Switching focus within `work` demotes `first` back to `ready` and leaves `home` untouched.
+    let switched = tasks
+        .go(&second.id, at(400), &origin(), &mut random(13))
+        .unwrap();
+    assert_eq!(switched.task.id, second.id);
+    assert_eq!(switched.task.status, Status::Active);
+    assert_eq!(switched.since, at(400));
+    let demoted = switched.switched_from.unwrap();
+    assert_eq!(demoted.id, first.id);
+    assert_eq!(demoted.status, Status::Ready);
+    assert_eq!(demoted.updated, at(400));
+    assert_eq!(
+        tasks
+            .events(&first.id)
+            .unwrap()
+            .events
+            .last()
+            .map(|record| &record.event),
+        Some(&Event::StatusChanged(Change {
+            from: Status::Active,
+            to: Status::Ready,
+        }))
+    );
+
+    // Reindexing preserves focus for tasks that remain valid and active.
+    tasks.reindex().unwrap();
+    let focused_after_reindex: Vec<FocusRow> = reader
+        .focus(None)
+        .unwrap()
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect();
+    assert_eq!(
+        focused_after_reindex,
+        [
+            FocusRow {
+                context: context("home"),
+                task_id: home_task.id,
+                since: at(300),
+            },
+            FocusRow {
+                context: context("work"),
+                task_id: second.id.clone(),
+                since: at(400),
+            },
+        ]
+    );
+
+    // Focus is machine-local in `index.db` and never written to the context store.
+    let mut work_entries: Vec<String> = fs::read_dir(fixture.store_root("work"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    work_entries.sort();
+    assert_eq!(work_entries, ["archive", "tasks"]);
+    let task_md = fs::read_to_string(
+        fixture
+            .store_root("work")
+            .join("tasks")
+            .join(second.id.as_str())
+            .join("task.md"),
+    )
+    .unwrap();
+    assert!(!task_md.contains("focus"));
+    assert!(!task_md.contains("since"));
+}
+
+#[test]
+fn focus_clears_when_the_focused_task_stops_being_active_or_vanishes() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let first = tasks
+        .create(
+            new_task("First", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+    let second = tasks
+        .create(
+            new_task("Second", "work", Vec::new()),
+            at(110),
+            &origin(),
+            &mut random(2),
+        )
+        .unwrap();
+    let reader = fixture.reader();
+
+    tasks
+        .go(&first.id, at(200), &origin(), &mut random(3))
+        .unwrap();
+    assert_eq!(reader.focus(None).unwrap().len(), 1);
+
+    // Completing the focused task clears the focus of its context.
+    tasks
+        .apply(
+            &first.id,
+            Command::SetStatus {
+                status: Status::Done,
+            },
+            at(300),
+            &origin(),
+            &mut random(4),
+        )
+        .unwrap();
+    assert_eq!(reader.focus(None).unwrap(), []);
+
+    // Removing the focused task on disk and reconciling clears its focus row.
+    tasks
+        .go(&second.id, at(400), &origin(), &mut random(5))
+        .unwrap();
+    assert_eq!(reader.focus(None).unwrap().len(), 1);
+    fs::remove_dir_all(
+        fixture
+            .store_root("work")
+            .join("tasks")
+            .join(second.id.as_str()),
+    )
+    .unwrap();
+    tasks
+        .reconcile(
+            &context("work"),
+            &second.id,
+            at(500),
+            &origin(),
+            &mut random(6),
+        )
+        .unwrap();
+    assert_eq!(reader.focus(None).unwrap(), []);
+}
+
+#[test]
+fn go_refuses_a_closed_or_missing_task_and_keeps_the_previous_focus() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let active = tasks
+        .create(
+            new_task("Current focus", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+    let closed = tasks
+        .create(
+            new_task("Already done", "work", Vec::new()),
+            at(110),
+            &origin(),
+            &mut random(2),
+        )
+        .unwrap();
+    tasks
+        .apply(
+            &closed.id,
+            Command::SetStatus {
+                status: Status::Done,
+            },
+            at(150),
+            &origin(),
+            &mut random(3),
+        )
+        .unwrap();
+    tasks
+        .go(&active.id, at(200), &origin(), &mut random(4))
+        .unwrap();
+
+    // Refusing a closed task must not demote the current focus.
+    let refused = tasks.go(&closed.id, at(300), &origin(), &mut random(5));
+    assert!(
+        matches!(
+            refused,
+            Err(TaskError::Domain(DomainError::IllegalTransition {
+                from: StatusName::Done,
+                to: StatusName::Active,
+            }))
+        ),
+        "{refused:?}"
+    );
+    let reader = fixture.reader();
+    let focused = reader.focus(None).unwrap();
+    assert_eq!(focused.len(), 1);
+    assert_eq!(focused[0].0.task_id, active.id);
+    assert!(matches!(
+        &focused[0].1.state,
+        IndexedState::Valid { task, .. } if task.status == Status::Active
+    ));
+
+    // Archived task is refused.
+    tasks.archive(&closed.id, 2026).unwrap();
+    let archived = tasks.go(&closed.id, at(350), &origin(), &mut random(6));
+    assert!(
+        matches!(archived, Err(TaskError::Archived { year: 2026, .. })),
+        "{archived:?}"
+    );
+
+    // Missing task is refused.
+    let missing: TaskId = "k3q7zm2a".parse().unwrap();
+    let not_found = tasks.go(&missing, at(400), &origin(), &mut random(7));
+    assert!(
+        matches!(&not_found, Err(TaskError::NotFound(id)) if *id == missing),
+        "{not_found:?}"
+    );
+}
+
+#[test]
+fn change_refuses_a_read_only_task_up_front() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = tasks
+        .create(
+            new_task("Writable initially", "work", Vec::new()),
+            at(100),
+            &origin(),
+            &mut random(1),
+        )
+        .unwrap();
+    let path = fixture
+        .store_root("work")
+        .join("tasks")
+        .join(task.id.as_str())
+        .join("task.md");
+    let edited = fs::read_to_string(&path)
+        .unwrap()
+        .replace("kind = \"bug\"", "kind = \"future_kind\"");
+    fs::write(&path, &edited).unwrap();
+
+    let refused = tasks.apply(&task.id, Command::Pin, at(200), &origin(), &mut random(2));
+    assert!(
+        matches!(
+            refused,
+            Err(TaskError::Domain(DomainError::ReadOnly(ReadOnlyReason::UnknownKind(ref name)))) if name == "future_kind"
+        ),
+        "{refused:?}"
+    );
 }

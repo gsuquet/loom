@@ -1,12 +1,14 @@
 //! Tasks over the API: `/v1/tasks…`. The task, its events and the commands are the types of
 //! `loom-core`; this module wraps them in the responses and requests of the endpoints.
 
+use std::path::PathBuf;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use loom_core::{
     Action, ContextName, Date, EventRecord, RankReason, ReadOnlyReason, SkippedLine, StatusName,
-    Task, TaskId,
+    Task, TaskId, Timestamp,
 };
 
 /// Answer of `GET /v1/tasks`.
@@ -67,6 +69,43 @@ pub struct TaskEvents {
     /// Lines of `events.jsonl` this version does not replay, kept as written.
     #[serde(default)]
     pub skipped: Vec<SkippedLine>,
+}
+
+/// Answer of `GET /v1/focus` and `loom focus --json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FocusList {
+    /// Focus of each context that has one, sorted by context.
+    pub entries: Vec<FocusEntry>,
+}
+
+/// Focus of one context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FocusEntry {
+    /// Context of the focus.
+    pub context: ContextName,
+    /// Task that is the focus of `context`.
+    pub task: TaskSummary,
+    /// Time when `task` became the focus of `context`.
+    pub since: Timestamp,
+    /// If `task` has a repository link in the index, its path on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<PathBuf>,
+}
+
+/// Answer of `POST /v1/tasks/{id}/go` and `loom go <id> --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GoResult {
+    /// Task that is now the focus of its context, with status `active`.
+    pub task: TaskDetail,
+    /// If another active task was the focus of that context, that task after it moved back to
+    /// `ready`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switched_from: Option<TaskSummary>,
+    /// Time when `task` became the focus of its context.
+    pub since: Timestamp,
+    /// If `task` has a repository link in the index, its path on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<PathBuf>,
 }
 
 /// Why a task cannot be changed. Also the `details` of a `read_only` error.
