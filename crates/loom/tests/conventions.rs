@@ -40,8 +40,10 @@ fn unknown_flag_is_a_usage_error() {
 }
 
 #[test]
-fn missing_command_is_a_usage_error() {
-    loom().assert().code(2);
+fn missing_command_prints_help_when_not_a_tty() {
+    let assert = loom().assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("Usage: loom"), "{stdout}");
 }
 
 #[test]
