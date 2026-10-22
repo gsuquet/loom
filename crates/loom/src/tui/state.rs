@@ -403,8 +403,15 @@ impl AppState {
 
     /// Sorts tasks in the Today queue by priority rank (default order).
     pub fn sort_today_by_rank(&mut self) {
+        if self.today.is_empty() {
+            return;
+        }
+        let selected_id = self.today.get(self.today_selected).map(|t| t.id.clone());
         self.today
             .sort_by_key(|t| t.rank.map_or(usize::MAX, |r| r.position));
+        if let Some(id) = selected_id {
+            self.today_selected = self.today.iter().position(|t| t.id == id).unwrap_or(0);
+        }
     }
 
     /// Groups tasks in the Today queue by parent project.
@@ -412,66 +419,44 @@ impl AppState {
         if self.today.is_empty() {
             return;
         }
+        let selected_id = self.today.get(self.today_selected).map(|t| t.id.clone());
         self.sort_today_by_rank();
 
+        let ids_in_today: std::collections::HashSet<&TaskId> =
+            self.today.iter().map(|t| &t.id).collect();
         let mut grouped: Vec<TaskSummary> = Vec::with_capacity(self.today.len());
         let mut placed = vec![false; self.today.len()];
 
-        // 1. Root tasks (no parent), immediately followed by any of their children present in Today.
+        // 1. Root tasks: tasks that have no parent, OR whose parent is not in Today.
         for i in 0..self.today.len() {
-            let has_parent = self.today[i]
+            let parent_in_today = self.today[i]
                 .task
                 .as_ref()
                 .and_then(|t| t.relations.parent.as_ref())
-                .is_some();
-            if !has_parent && !placed[i] {
+                .is_some_and(|p| ids_in_today.contains(p));
+
+            if !parent_in_today && !placed[i] {
                 placed[i] = true;
                 let parent_id = self.today[i].id.clone();
                 grouped.push(self.today[i].clone());
-
-                for (j, is_placed) in placed.iter_mut().enumerate() {
-                    if !*is_placed
-                        && self.today[j]
-                            .task
-                            .as_ref()
-                            .and_then(|t| t.relations.parent.as_ref())
-                            == Some(&parent_id)
-                    {
-                        *is_placed = true;
-                        grouped.push(self.today[j].clone());
-                    }
-                }
+                place_subtree(&parent_id, &self.today, &mut placed, &mut grouped);
             }
         }
 
-        // 2. Remaining child tasks whose parent is not in Today: group by parent ID.
+        // 2. Any remaining tasks (e.g. cycles):
         for i in 0..self.today.len() {
             if !placed[i] {
                 placed[i] = true;
-                let parent_opt = self.today[i]
-                    .task
-                    .as_ref()
-                    .and_then(|t| t.relations.parent.clone());
+                let parent_id = self.today[i].id.clone();
                 grouped.push(self.today[i].clone());
-
-                if let Some(parent_id) = parent_opt {
-                    for (j, is_placed) in placed.iter_mut().enumerate().skip(i + 1) {
-                        if !*is_placed
-                            && self.today[j]
-                                .task
-                                .as_ref()
-                                .and_then(|t| t.relations.parent.as_ref())
-                                == Some(&parent_id)
-                        {
-                            *is_placed = true;
-                            grouped.push(self.today[j].clone());
-                        }
-                    }
-                }
+                place_subtree(&parent_id, &self.today, &mut placed, &mut grouped);
             }
         }
 
         self.today = grouped;
+        if let Some(id) = selected_id {
+            self.today_selected = self.today.iter().position(|t| t.id == id).unwrap_or(0);
+        }
     }
 
     /// Active view under any modal.
@@ -1299,10 +1284,31 @@ impl AppState {
     }
 }
 
+fn place_subtree(
+    parent_id: &TaskId,
+    today: &[TaskSummary],
+    placed: &mut [bool],
+    result: &mut Vec<TaskSummary>,
+) {
+    for j in 0..today.len() {
+        if !placed[j]
+            && today[j]
+                .task
+                .as_ref()
+                .and_then(|t| t.relations.parent.as_ref())
+                == Some(parent_id)
+        {
+            placed[j] = true;
+            result.push(today[j].clone());
+            place_subtree(&today[j].id, today, placed, result);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_api::TaskReadOnly;
+    use loom_api::{RankReason, TaskReadOnly};
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
@@ -1784,6 +1790,65 @@ mod tests {
         // Prev option again: cycles back to Story
         state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(state.accept_modal.as_ref().unwrap().kind, Kind::Story);
+    }
+
+    #[test]
+    fn parent_grouping_groups_grandchildren_and_preserves_selection() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Today;
+
+        let root_id: TaskId = "task0001".parse().unwrap();
+        let child_id: TaskId = "task0003".parse().unwrap();
+
+        let mut root = make_task("task0001", Status::Ready, None);
+        root.rank = Some(loom_api::TaskRank {
+            position: 3,
+            reason: RankReason::DueDate,
+        });
+
+        let mut other = make_task("task0002", Status::Ready, None);
+        other.rank = Some(loom_api::TaskRank {
+            position: 1,
+            reason: RankReason::Urgent,
+        });
+
+        let mut child = make_task("task0003", Status::Ready, None);
+        if let Some(t) = &mut child.task {
+            t.relations.parent = Some(root_id);
+        }
+        child.rank = Some(loom_api::TaskRank {
+            position: 2,
+            reason: RankReason::Urgent,
+        });
+
+        let mut grand = make_task("task0004", Status::Ready, None);
+        if let Some(t) = &mut grand.task {
+            t.relations.parent = Some(child_id);
+        }
+        grand.rank = Some(loom_api::TaskRank {
+            position: 4,
+            reason: RankReason::First,
+        });
+
+        // Insert in arbitrary order: other, child, root, grand
+        state.today = vec![other, child, root, grand];
+        // Select child (index 1)
+        state.today_selected = 1;
+
+        // Group by parent
+        state.sort_today_by_parent();
+
+        // Expected order:
+        // 1. Root task 'other' (rank 1, no children)
+        // 2. Root task 'root' (rank 3), followed by child (task0003), followed by grandchild (task0004)
+        assert_eq!(state.today[0].id.as_str(), "task0002");
+        assert_eq!(state.today[1].id.as_str(), "task0001");
+        assert_eq!(state.today[2].id.as_str(), "task0003");
+        assert_eq!(state.today[3].id.as_str(), "task0004");
+
+        // Selection must follow task0003 to its new index (2)
+        assert_eq!(state.today_selected, 2);
+        assert_eq!(state.today[state.today_selected].id.as_str(), "task0003");
     }
 
     #[test]
