@@ -26,7 +26,10 @@ use loom::tui::color::Theme;
 use loom::tui::keymap::QueueTab;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent};
-use loom_api::{ContextName, SearchResults, TaskDetail, TaskList};
+use loom_api::{
+    ContextName, Importance, Kind, RankReason, Relations, SearchResults, Status, Task, TaskDetail,
+    TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary,
+};
 use loom_config::repos::{ContextColor, ContextConfig};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -471,4 +474,274 @@ async fn tui_driven_against_real_loomd_and_renders_snapshot() {
     // 11. Press 'q' to quit
     state.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
     assert!(state.should_quit);
+}
+
+fn make_test_task(
+    id: &str,
+    status: Status,
+    rank: Option<TaskRank>,
+    parent: Option<TaskId>,
+    read_only: Option<TaskReadOnly>,
+) -> TaskSummary {
+    let task_id: TaskId = id.parse().unwrap();
+    let created = loom_core::Timestamp::EPOCH;
+    let relations = Relations {
+        parent,
+        ..Default::default()
+    };
+    TaskSummary {
+        id: task_id.clone(),
+        prefix: id.to_owned(),
+        context: ContextName::from_str("work").unwrap(),
+        task: Some(Task {
+            id: task_id,
+            title: format!("Task {id}"),
+            kind: Kind::Bug,
+            context: ContextName::from_str("work").unwrap(),
+            status,
+            importance: Importance::P1,
+            due: Some(jiff::civil::date(2026, 10, 25)),
+            pinned: false,
+            links: Vec::new(),
+            relations,
+            created,
+            updated: created,
+        }),
+        read_only,
+        rank,
+    }
+}
+
+#[test]
+fn today_view_snapshots_at_80_and_160_columns() {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Today;
+    let parent_id: TaskId = "p8w2nc4d".parse().unwrap();
+    state.today = vec![
+        make_test_task(
+            "k3q7zm2a",
+            Status::Active,
+            Some(TaskRank {
+                position: 1,
+                reason: RankReason::First,
+            }),
+            Some(parent_id),
+            None,
+        ),
+        make_test_task(
+            "m9v4x1nb",
+            Status::Ready,
+            Some(TaskRank {
+                position: 2,
+                reason: RankReason::Urgent,
+            }),
+            None,
+            None,
+        ),
+    ];
+    state.today_selected = 0;
+
+    // 1. Render at 80 columns: preview is hidden (< 100 cols)
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let lines_80 = buffer_text_lines(&terminal_80);
+
+    assert!(lines_80.iter().any(|l| l.contains("Today · [all]")));
+    assert!(lines_80.iter().any(|l| l.contains("Task k3q7zm2a")));
+    assert!(lines_80.iter().any(|l| l.contains("q quit")));
+    assert!(lines_80.iter().any(|l| l.contains("? help")));
+    // Preview is absent
+    assert!(!lines_80.iter().any(|l| l.contains("Preview")));
+
+    // Toggle why reasons with 'w'
+    state.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let why_lines = buffer_text_lines(&terminal_80);
+    assert!(why_lines.iter().any(|l| l.contains("(first)")));
+
+    // Toggle parent grouping with 'p'
+    state.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let parent_lines = buffer_text_lines(&terminal_80);
+    assert!(
+        parent_lines
+            .iter()
+            .any(|l| l.contains("[parent: p8w2nc4d]"))
+    );
+
+    // 2. Render at 160 columns: preview pane is side-by-side
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.today[0].clone(),
+        body: "Detailed investigation notes here.".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let lines_160 = buffer_text_lines(&terminal_160);
+
+    assert!(lines_160.iter().any(|l| l.contains("Preview")));
+    assert!(lines_160.iter().any(|l| l.contains("ID: k3q7zm2a")));
+    assert!(lines_160.iter().any(|l| l.contains("Rank: #1 (first)")));
+    assert!(lines_160.iter().any(|l| l.contains("Parent: p8w2nc4d")));
+    assert!(
+        lines_160
+            .iter()
+            .any(|l| l.contains("Detailed investigation notes here."))
+    );
+}
+
+#[test]
+fn inbox_view_snapshots_at_80_and_160_columns() {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Inbox;
+    state.inbox = vec![make_test_task("nb4x1k3q", Status::Inbox, None, None, None)];
+    state.inbox_selected = 0;
+
+    // 1. Render at 80 columns: preview hidden, triage hints in footer
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let lines_80 = buffer_text_lines(&terminal_80);
+
+    assert!(lines_80.iter().any(|l| l.contains("Inbox · [all]")));
+    assert!(lines_80.iter().any(|l| l.contains("Task nb4x1k3q")));
+    assert!(lines_80.iter().any(|l| l.contains("q quit")));
+    assert!(lines_80.iter().any(|l| l.contains("? help")));
+    assert!(!lines_80.iter().any(|l| l.contains("Preview")));
+
+    // 2. Render at 160 columns: preview side-by-side
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.inbox[0].clone(),
+        body: "Inbox triage notes".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let lines_160 = buffer_text_lines(&terminal_160);
+
+    assert!(lines_160.iter().any(|l| l.contains("Preview")));
+    assert!(lines_160.iter().any(|l| l.contains("ID: nb4x1k3q")));
+    assert!(lines_160.iter().any(|l| l.contains("Status: inbox")));
+}
+
+#[test]
+fn waiting_view_snapshots_at_80_and_160_columns() {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Waiting;
+    // Undated task (per #90, hidden from Today) + dated task
+    state.waiting = vec![
+        make_test_task(
+            "7zm2am9v",
+            Status::Waiting {
+                on: Some("alice".into()),
+                until: None,
+            },
+            None,
+            None,
+            None,
+        ),
+        make_test_task(
+            "4x1nbk3q",
+            Status::Waiting {
+                on: None,
+                until: Some(jiff::civil::date(2026, 10, 30)),
+            },
+            None,
+            None,
+            None,
+        ),
+    ];
+    state.waiting_selected = 0;
+
+    // 1. Render at 80 columns: shows undated and dated tags
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let lines_80 = buffer_text_lines(&terminal_80);
+
+    assert!(lines_80.iter().any(|l| l.contains("Waiting · [all]")));
+    assert!(lines_80.iter().any(|l| l.contains("(undated)")));
+    assert!(lines_80.iter().any(|l| l.contains("[on: alice]")));
+    assert!(lines_80.iter().any(|l| l.contains("(until 2026-10-30)")));
+
+    // 2. Render at 160 columns: preview displays waiting on and until
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.waiting[0].clone(),
+        body: "Blocked waiting on review".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let lines_160 = buffer_text_lines(&terminal_160);
+
+    assert!(lines_160.iter().any(|l| l.contains("Preview")));
+    assert!(lines_160.iter().any(|l| l.contains("Until: undated")));
+    assert!(lines_160.iter().any(|l| l.contains("Waiting on: alice")));
+}
+
+#[test]
+fn read_only_task_snapshot() {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Inbox;
+    state.inbox = vec![make_test_task(
+        "3q7zm2am",
+        Status::Inbox,
+        None,
+        None,
+        Some(TaskReadOnly::UnknownKind("magic".into())),
+    )];
+    state.inbox_selected = 0;
+
+    // 1. At 80 columns: list shows [ro: unknown kind magic]
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let lines_80 = buffer_text_lines(&terminal_80);
+
+    assert!(
+        lines_80
+            .iter()
+            .any(|l| l.contains("[ro: unknown kind magic]"))
+    );
+
+    // 2. At 160 columns: preview shows banner
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.inbox[0].clone(),
+        body: "Read-only file content".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let lines_160 = buffer_text_lines(&terminal_160);
+
+    assert!(
+        lines_160
+            .iter()
+            .any(|l| l.contains("⚠ READ-ONLY: unknown kind magic"))
+    );
 }
