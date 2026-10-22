@@ -156,6 +156,13 @@ fn buffer_text_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
+fn assert_buffer_lines(terminal: &Terminal<TestBackend>, expected: &[&str]) {
+    let actual = buffer_text_lines(terminal);
+    let trimmed_actual: Vec<&str> = actual.iter().map(|s| s.trim_end()).collect();
+    let trimmed_expected: Vec<&str> = expected.iter().map(|s| s.trim_end()).collect();
+    assert_eq!(trimmed_actual, trimmed_expected);
+}
+
 #[test]
 fn non_tty_invocation_prints_help_and_exits_zero() {
     let sandbox = Sandbox::new();
@@ -512,8 +519,7 @@ fn make_test_task(
     }
 }
 
-#[test]
-fn today_view_snapshots_at_80_and_160_columns() {
+fn make_today_test_state() -> AppState {
     let mut state = AppState::new(
         Theme::from_config(&BTreeMap::new(), false),
         None,
@@ -545,37 +551,112 @@ fn today_view_snapshots_at_80_and_160_columns() {
         ),
     ];
     state.today_selected = 0;
+    state
+}
 
-    // 1. Render at 80 columns: preview is hidden (< 100 cols)
+#[test]
+fn today_view_snapshots_at_80_columns() {
+    let mut state = make_today_test_state();
+
+    // 1. Render at 80 columns: preview is hidden (< 120 cols)
     let backend_80 = TestBackend::new(80, 24);
     let mut terminal_80 = Terminal::new(backend_80).unwrap();
     terminal_80.draw(|f| render(f, &state)).unwrap();
-    let lines_80 = buffer_text_lines(&terminal_80);
-
-    assert!(lines_80.iter().any(|l| l.contains("Today · [all]")));
-    assert!(lines_80.iter().any(|l| l.contains("Task k3q7zm2a")));
-    assert!(lines_80.iter().any(|l| l.contains("q quit")));
-    assert!(lines_80.iter().any(|l| l.contains("? help")));
-    // Preview is absent
-    assert!(!lines_80.iter().any(|l| l.contains("Preview")));
+    let expected_80 = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a                                        │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb                                        │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
 
     // Toggle why reasons with 'w'
     state.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
     terminal_80.draw(|f| render(f, &state)).unwrap();
-    let why_lines = buffer_text_lines(&terminal_80);
-    assert!(why_lines.iter().any(|l| l.contains("(first)")));
+    let expected_why = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a (first)                                │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb (overdue or due today)                 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_why);
 
-    // Toggle parent grouping with 'p'
+    // Toggle parent grouping with 'p': groups root m9v4x1nb first, then child k3q7zm2a indented
     state.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
     terminal_80.draw(|f| render(f, &state)).unwrap();
-    let parent_lines = buffer_text_lines(&terminal_80);
-    assert!(
-        parent_lines
-            .iter()
-            .any(|l| l.contains("[parent: p8w2nc4d]"))
-    );
+    let expected_parent = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 ready   [work] bug  Task m9v4x1nb (overdue or due today)                 │",
+        "│  └─ p1 active  [work] bug  Task k3q7zm2a [parent: p8w2nc4d] (first)          │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_parent);
+}
 
-    // 2. Render at 160 columns: preview pane is side-by-side
+#[test]
+fn today_view_snapshots_at_160_columns() {
+    let mut state = make_today_test_state();
+
     let backend_160 = TestBackend::new(160, 24);
     let mut terminal_160 = Terminal::new(backend_160).unwrap();
     state.preview_detail = Some(TaskDetail {
@@ -584,17 +665,33 @@ fn today_view_snapshots_at_80_and_160_columns() {
         actions: Vec::new(),
     });
     terminal_160.draw(|f| render(f, &state)).unwrap();
-    let lines_160 = buffer_text_lines(&terminal_160);
-
-    assert!(lines_160.iter().any(|l| l.contains("Preview")));
-    assert!(lines_160.iter().any(|l| l.contains("ID: k3q7zm2a")));
-    assert!(lines_160.iter().any(|l| l.contains("Rank: #1 (first)")));
-    assert!(lines_160.iter().any(|l| l.contains("Parent: p8w2nc4d")));
-    assert!(
-        lines_160
-            .iter()
-            .any(|l| l.contains("Detailed investigation notes here."))
-    );
+    let expected_160 = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a                                                ││ID: k3q7zm2a   Context: [work]                                        │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb                                                ││Status: active   Importance: p1   Kind: bug                           │",
+        "│                                                                                      ││Rank: #1 (first)                                                      │",
+        "│                                                                                      ││Parent: p8w2nc4d                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task k3q7zm2a                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Detailed investigation notes here.                                    │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
 }
 
 #[test]
@@ -613,13 +710,33 @@ fn inbox_view_snapshots_at_80_and_160_columns() {
     let backend_80 = TestBackend::new(80, 24);
     let mut terminal_80 = Terminal::new(backend_80).unwrap();
     terminal_80.draw(|f| render(f, &state)).unwrap();
-    let lines_80 = buffer_text_lines(&terminal_80);
-
-    assert!(lines_80.iter().any(|l| l.contains("Inbox · [all]")));
-    assert!(lines_80.iter().any(|l| l.contains("Task nb4x1k3q")));
-    assert!(lines_80.iter().any(|l| l.contains("q quit")));
-    assert!(lines_80.iter().any(|l| l.contains("? help")));
-    assert!(!lines_80.iter().any(|l| l.contains("Preview")));
+    let expected_80 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task nb4x1k3q                                        │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
 
     // 2. Render at 160 columns: preview side-by-side
     let backend_160 = TestBackend::new(160, 24);
@@ -630,11 +747,33 @@ fn inbox_view_snapshots_at_80_and_160_columns() {
         actions: Vec::new(),
     });
     terminal_160.draw(|f| render(f, &state)).unwrap();
-    let lines_160 = buffer_text_lines(&terminal_160);
-
-    assert!(lines_160.iter().any(|l| l.contains("Preview")));
-    assert!(lines_160.iter().any(|l| l.contains("ID: nb4x1k3q")));
-    assert!(lines_160.iter().any(|l| l.contains("Status: inbox")));
+    let expected_160 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task nb4x1k3q                                                ││ID: nb4x1k3q   Context: [work]                                        │",
+        "│                                                                                      ││Status: inbox   Importance: p1   Kind: bug                            │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task nb4x1k3q                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Inbox triage notes                                                    │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
 }
 
 #[test]
@@ -675,12 +814,33 @@ fn waiting_view_snapshots_at_80_and_160_columns() {
     let backend_80 = TestBackend::new(80, 24);
     let mut terminal_80 = Terminal::new(backend_80).unwrap();
     terminal_80.draw(|f| render(f, &state)).unwrap();
-    let lines_80 = buffer_text_lines(&terminal_80);
-
-    assert!(lines_80.iter().any(|l| l.contains("Waiting · [all]")));
-    assert!(lines_80.iter().any(|l| l.contains("(undated)")));
-    assert!(lines_80.iter().any(|l| l.contains("[on: alice]")));
-    assert!(lines_80.iter().any(|l| l.contains("(until 2026-10-30)")));
+    let expected_80 = [
+        " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 2   [all]   ○ offline",
+        "┌ Waiting · [all] ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 waiting [work] bug  Task 7zm2am9v (undated) [on: alice]                  │",
+        "│  p1 waiting [work] bug  Task 4x1nbk3q (until 2026-10-30)                     │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
 
     // 2. Render at 160 columns: preview displays waiting on and until
     let backend_160 = TestBackend::new(160, 24);
@@ -691,11 +851,33 @@ fn waiting_view_snapshots_at_80_and_160_columns() {
         actions: Vec::new(),
     });
     terminal_160.draw(|f| render(f, &state)).unwrap();
-    let lines_160 = buffer_text_lines(&terminal_160);
-
-    assert!(lines_160.iter().any(|l| l.contains("Preview")));
-    assert!(lines_160.iter().any(|l| l.contains("Until: undated")));
-    assert!(lines_160.iter().any(|l| l.contains("Waiting on: alice")));
+    let expected_160 = [
+        " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 2   [all]   ○ offline",
+        "┌ Waiting · [all] ─────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 waiting [work] bug  Task 7zm2am9v (undated) [on: alice]                          ││ID: 7zm2am9v   Context: [work]                                        │",
+        "│  p1 waiting [work] bug  Task 4x1nbk3q (until 2026-10-30)                             ││Status: waiting   Importance: p1   Kind: bug                          │",
+        "│                                                                                      ││Until: undated   Waiting on: alice                                    │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task 7zm2am9v                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Blocked waiting on review                                             │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
 }
 
 #[test]
@@ -720,13 +902,33 @@ fn read_only_task_snapshot() {
     let backend_80 = TestBackend::new(80, 24);
     let mut terminal_80 = Terminal::new(backend_80).unwrap();
     terminal_80.draw(|f| render(f, &state)).unwrap();
-    let lines_80 = buffer_text_lines(&terminal_80);
-
-    assert!(
-        lines_80
-            .iter()
-            .any(|l| l.contains("[ro: unknown kind magic]"))
-    );
+    let expected_80 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task 3q7zm2am [ro: unknown kind magic]               │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
 
     // 2. At 160 columns: preview shows banner
     let backend_160 = TestBackend::new(160, 24);
@@ -737,11 +939,31 @@ fn read_only_task_snapshot() {
         actions: Vec::new(),
     });
     terminal_160.draw(|f| render(f, &state)).unwrap();
-    let lines_160 = buffer_text_lines(&terminal_160);
-
-    assert!(
-        lines_160
-            .iter()
-            .any(|l| l.contains("⚠ READ-ONLY: unknown kind magic"))
-    );
+    let expected_160 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task 3q7zm2am [ro: unknown kind magic]                       ││⚠ READ-ONLY: unknown kind magic                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││ID: 3q7zm2am   Context: [work]                                        │",
+        "│                                                                                      ││Status: inbox   Importance: p1   Kind: bug                            │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task 3q7zm2am                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Read-only file content                                                │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  : palette  / search  @ context  r refresh",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
 }

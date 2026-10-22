@@ -401,6 +401,79 @@ impl AppState {
         self.today_options.group_by_parent
     }
 
+    /// Sorts tasks in the Today queue by priority rank (default order).
+    pub fn sort_today_by_rank(&mut self) {
+        self.today
+            .sort_by_key(|t| t.rank.map_or(usize::MAX, |r| r.position));
+    }
+
+    /// Groups tasks in the Today queue by parent project.
+    pub fn sort_today_by_parent(&mut self) {
+        if self.today.is_empty() {
+            return;
+        }
+        self.sort_today_by_rank();
+
+        let mut grouped: Vec<TaskSummary> = Vec::with_capacity(self.today.len());
+        let mut placed = vec![false; self.today.len()];
+
+        // 1. Root tasks (no parent), immediately followed by any of their children present in Today.
+        for i in 0..self.today.len() {
+            let has_parent = self.today[i]
+                .task
+                .as_ref()
+                .and_then(|t| t.relations.parent.as_ref())
+                .is_some();
+            if !has_parent && !placed[i] {
+                placed[i] = true;
+                let parent_id = self.today[i].id.clone();
+                grouped.push(self.today[i].clone());
+
+                for (j, is_placed) in placed.iter_mut().enumerate() {
+                    if !*is_placed
+                        && self.today[j]
+                            .task
+                            .as_ref()
+                            .and_then(|t| t.relations.parent.as_ref())
+                            == Some(&parent_id)
+                    {
+                        *is_placed = true;
+                        grouped.push(self.today[j].clone());
+                    }
+                }
+            }
+        }
+
+        // 2. Remaining child tasks whose parent is not in Today: group by parent ID.
+        for i in 0..self.today.len() {
+            if !placed[i] {
+                placed[i] = true;
+                let parent_opt = self.today[i]
+                    .task
+                    .as_ref()
+                    .and_then(|t| t.relations.parent.clone());
+                grouped.push(self.today[i].clone());
+
+                if let Some(parent_id) = parent_opt {
+                    for (j, is_placed) in placed.iter_mut().enumerate().skip(i + 1) {
+                        if !*is_placed
+                            && self.today[j]
+                                .task
+                                .as_ref()
+                                .and_then(|t| t.relations.parent.as_ref())
+                                == Some(&parent_id)
+                        {
+                            *is_placed = true;
+                            grouped.push(self.today[j].clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        self.today = grouped;
+    }
+
     /// Active view under any modal.
     #[must_use]
     pub const fn active_view(&self) -> ViewKind {
@@ -850,6 +923,11 @@ impl AppState {
             }
             KeyCommand::ToggleGroupByParent => {
                 self.today_options.group_by_parent = !self.today_options.group_by_parent;
+                if self.today_options.group_by_parent {
+                    self.sort_today_by_parent();
+                } else {
+                    self.sort_today_by_rank();
+                }
                 AppEffect::None
             }
             KeyCommand::Quit
