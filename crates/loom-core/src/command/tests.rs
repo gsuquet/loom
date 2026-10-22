@@ -315,6 +315,10 @@ fn a_task_of_unknown_kind_accepts_no_command_and_reports_why() {
 
 #[test]
 fn available_actions_follow_the_status_and_the_pin() {
+    let (inbox_task, _) = task_with(Status::Inbox);
+    let inbox_actions = available_actions(&inbox_task);
+    assert!(inbox_actions.contains(&Action::Accept));
+
     let (task, _) = task_with(Status::Done);
     assert_eq!(
         available_actions(&task),
@@ -329,6 +333,7 @@ fn available_actions_follow_the_status_and_the_pin() {
     task.pinned = true;
     let actions = available_actions(&task);
     assert!(actions.contains(&Action::Unpin));
+    assert!(!actions.contains(&Action::Accept));
     assert!(!actions.contains(&Action::SetStatus(StatusName::Ready)));
     assert_eq!(actions.len(), 5 + 3);
     task.status = Status::Unknown("snoozed".to_owned());
