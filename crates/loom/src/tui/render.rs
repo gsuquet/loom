@@ -358,6 +358,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, state: &AppState, modal: Moda
         ModalKind::Palette => render_palette_modal(frame, popup, state, modal),
         ModalKind::ContextPicker => render_context_picker_modal(frame, popup, state, modal),
         ModalKind::Search => render_search_modal(frame, popup, state, modal),
+        ModalKind::Accept => render_accept_modal(frame, popup, state, modal),
+        ModalKind::Snooze => render_snooze_modal(frame, popup, state, modal),
+        ModalKind::NewTask => render_new_task_modal(frame, popup, state, modal),
     }
 }
 
@@ -548,6 +551,184 @@ fn render_search_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState, mod
     frame.render_widget(list, chunks[1]);
 }
 
+fn render_accept_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState, modal: ModalKind) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", modal.title()));
+
+    let Some(m) = &state.accept_modal else {
+        frame.render_widget(block, popup);
+        return;
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(popup);
+
+    let kind_style = if m.field == super::state::AcceptField::Kind {
+        state.theme.selected_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    let kind_block = Block::default().borders(Borders::ALL).title(" Kind (←/→) ");
+    let kind_p = Paragraph::new(format!("  {}", m.kind.name()))
+        .block(kind_block)
+        .style(kind_style);
+    frame.render_widget(kind_p, chunks[0]);
+
+    let imp_style = if m.field == super::state::AcceptField::Importance {
+        state.theme.selected_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    let imp_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Importance (←/→) ");
+    let imp_p = Paragraph::new(format!("  {}", importance_label(m.importance)))
+        .block(imp_block)
+        .style(imp_style);
+    frame.render_widget(imp_p, chunks[1]);
+
+    let due_style = if m.field == super::state::AcceptField::Due {
+        state.theme.selected_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    let due_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Due date (YYYY-MM-DD, today, tomorrow, +1d, +1w) ");
+    let due_p = Paragraph::new(format!("  {}", m.due_input))
+        .block(due_block)
+        .style(due_style);
+    frame.render_widget(due_p, chunks[2]);
+
+    let hint = if let Some(err) = &m.error {
+        Line::styled(
+            format!("Error: {err}"),
+            ratatui::style::Style::default().fg(ratatui::style::Color::Red),
+        )
+    } else {
+        Line::styled(
+            "Tab/Shift+Tab to switch fields · Enter to confirm · Esc to cancel",
+            state.theme.dim_style(),
+        )
+    };
+    let hint_p = Paragraph::new(hint).block(Block::default().borders(Borders::TOP));
+    frame.render_widget(hint_p, chunks[3]);
+}
+
+fn render_snooze_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState, modal: ModalKind) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", modal.title()));
+
+    let Some(m) = &state.snooze_modal else {
+        frame.render_widget(block, popup);
+        return;
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(popup);
+
+    let until_style = if m.field == super::state::SnoozeField::Until {
+        state.theme.selected_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    let until_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Until (YYYY-MM-DD, today, tomorrow, +1d, +1w) ");
+    let until_p = Paragraph::new(format!("  {}", m.until_input))
+        .block(until_block)
+        .style(until_style);
+    frame.render_widget(until_p, chunks[0]);
+
+    let on_style = if m.field == super::state::SnoozeField::On {
+        state.theme.selected_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    let on_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Waiting on (optional) ");
+    let on_p = Paragraph::new(format!("  {}", m.on_input))
+        .block(on_block)
+        .style(on_style);
+    frame.render_widget(on_p, chunks[1]);
+
+    let hint = if let Some(err) = &m.error {
+        Line::styled(
+            format!("Error: {err}"),
+            ratatui::style::Style::default().fg(ratatui::style::Color::Red),
+        )
+    } else {
+        Line::styled(
+            "Tab to switch field · Enter to confirm · Esc to cancel",
+            state.theme.dim_style(),
+        )
+    };
+    let hint_p = Paragraph::new(hint).block(Block::default().borders(Borders::TOP));
+    frame.render_widget(hint_p, chunks[2]);
+}
+
+fn render_new_task_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState, modal: ModalKind) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", modal.title()));
+
+    let Some(m) = &state.new_task_modal else {
+        frame.render_widget(block, popup);
+        return;
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(popup);
+
+    let ctx_block = Block::default().borders(Borders::ALL).title(" Context ");
+    let ctx_p = Paragraph::new(format!("  [{}]", m.context))
+        .block(ctx_block)
+        .style(state.theme.context_badge(m.context.as_str()));
+    frame.render_widget(ctx_p, chunks[0]);
+
+    let title_block = Block::default().borders(Borders::ALL).title(" Title ");
+    let title_p = Paragraph::new(format!("  {}", m.title_input))
+        .block(title_block)
+        .style(state.theme.selected_style());
+    frame.render_widget(title_p, chunks[1]);
+
+    let hint = if let Some(err) = &m.error {
+        Line::styled(
+            format!("Error: {err}"),
+            ratatui::style::Style::default().fg(ratatui::style::Color::Red),
+        )
+    } else {
+        Line::styled(
+            "Enter to create task · Esc to cancel",
+            state.theme.dim_style(),
+        )
+    };
+    let hint_p = Paragraph::new(hint).block(Block::default().borders(Borders::TOP));
+    frame.render_widget(hint_p, chunks[2]);
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -595,7 +776,12 @@ mod tests {
     fn renders_empty_queue_view_snapshot() {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let state = AppState::new(test_theme(), None, Vec::new());
+        let state = AppState::new(
+            test_theme(),
+            None,
+            Vec::new(),
+            jiff::civil::date(2026, 10, 22),
+        );
 
         terminal.draw(|f| render(f, &state)).unwrap();
 
@@ -618,7 +804,12 @@ mod tests {
     fn renders_error_banner_when_last_error_is_set() {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut state = AppState::new(test_theme(), None, Vec::new());
+        let mut state = AppState::new(
+            test_theme(),
+            None,
+            Vec::new(),
+            jiff::civil::date(2026, 10, 22),
+        );
         state.set_error("cannot connect to loomd");
 
         terminal.draw(|f| render(f, &state)).unwrap();
