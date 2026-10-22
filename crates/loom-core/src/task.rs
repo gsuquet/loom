@@ -224,7 +224,7 @@ impl ContentFormat {
     }
 }
 
-/// Serialized form of [`Kind`]: `kind`, plus `format` for content.
+/// Serialized form of `Kind`: `kind`, plus `format` for content.
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct KindRepr {
     /// story, bug, chore, research, investigation, review, support, content, admin, interview

@@ -261,7 +261,13 @@ pub fn accept(args: &AcceptArgs, layout: &Layout) -> Result<()> {
     let due = args
         .due
         .as_deref()
-        .map(|text| parse_date(text, local_today()).into_diagnostic())
+        .map(|text| {
+            if text.trim().is_empty() || text.eq_ignore_ascii_case("none") {
+                Ok(None)
+            } else {
+                parse_date(text, local_today()).map(Some).into_diagnostic()
+            }
+        })
         .transpose()?;
     let kind = args.kind.map(|kind| kind_of(kind, args.format));
     let importance = args.importance.map(Into::into);
