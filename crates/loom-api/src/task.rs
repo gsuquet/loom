@@ -156,6 +156,8 @@ pub enum TaskActionName {
     Unpin,
     /// Log a note, with `text`.
     LogNote,
+    /// Accept an inbox task: move to ready, and optionally change kind, importance or due date.
+    Accept,
 }
 
 impl TaskActionName {
@@ -193,13 +195,13 @@ pub struct TaskActionRequest {
     /// `log_note` only, required: the note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// `ready` only, optional: new kind.
+    /// `accept` only, optional: new kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<Kind>,
-    /// `ready` only, optional: new importance.
+    /// `accept` only, optional: new importance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub importance: Option<Importance>,
-    /// `ready` only, optional: new due date. `Some(None)` (`null`) removes it.
+    /// `accept` only, optional: new due date. `Some(None)` (`null`) removes it.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

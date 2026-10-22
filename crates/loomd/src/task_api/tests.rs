@@ -433,12 +433,36 @@ fn actions_become_commands() {
         ..TaskActionRequest::default()
     };
     assert_eq!(
-        action_command(TaskActionName::Ready, accept_fields.clone()).unwrap(),
+        action_command(TaskActionName::Ready, accept_fields.clone())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        action_command(TaskActionName::Accept, empty.clone()).unwrap(),
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: None,
+        }
+    );
+    assert_eq!(
+        action_command(TaskActionName::Accept, accept_fields.clone()).unwrap(),
         Command::Accept {
             kind: Some(Kind::Story),
             importance: Some(Importance::P0),
             due: Some(Some(date("2026-10-25"))),
         }
+    );
+    let wait_with_accept = TaskActionRequest {
+        on: Some("Alice".to_owned()),
+        ..accept_fields.clone()
+    };
+    assert_eq!(
+        action_command(TaskActionName::Accept, wait_with_accept)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
     );
     assert_eq!(
         action_command(TaskActionName::Done, empty.clone()).unwrap(),
@@ -621,6 +645,7 @@ fn an_action_body_is_optional() {
 fn action_names_are_read_from_the_path() {
     assert_eq!(action_name_of("log_note"), Some(TaskActionName::LogNote));
     assert_eq!(action_name_of("done"), Some(TaskActionName::Done));
+    assert_eq!(action_name_of("accept"), Some(TaskActionName::Accept));
     assert_eq!(action_name_of("archive"), None);
     assert_eq!(action_name_of("Done"), None);
 }

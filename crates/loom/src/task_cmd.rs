@@ -281,7 +281,7 @@ pub fn accept(args: &AcceptArgs, layout: &Layout) -> Result<()> {
     };
     block_on(async {
         let client = client(layout).await?;
-        let detail = action(&client, &args.id, "ready", Some(&request)).await?;
+        let detail = action(&client, &args.id, "accept", Some(&request)).await?;
         output(&detail, args.json, || render_change(&detail))
     })
 }
