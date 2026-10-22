@@ -140,14 +140,27 @@ fn render_queue_list(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(list, area);
 }
 
+const fn prefix_str(is_sel: bool, is_child: bool) -> &'static str {
+    match (is_sel, is_child) {
+        (true, true) => "▶ └─ ",
+        (true, false) => "▶ ",
+        (false, true) => "  └─ ",
+        (false, false) => "  ",
+    }
+}
+
 fn render_queue_item<'a>(summary: &'a TaskSummary, is_sel: bool, state: &AppState) -> ListItem<'a> {
     let mut spans: Vec<Span<'_>> = Vec::new();
 
-    if is_sel {
-        spans.push(Span::raw("▶ "));
-    } else {
-        spans.push(Span::raw("  "));
-    }
+    let is_child = state.active_tab == QueueTab::Today
+        && state.group_by_parent()
+        && summary
+            .task
+            .as_ref()
+            .and_then(|t| t.relations.parent.as_ref())
+            .is_some();
+
+    spans.push(Span::raw(prefix_str(is_sel, is_child)));
 
     if let Some(task) = &summary.task {
         let imp = task.importance;

@@ -34,7 +34,7 @@ use crate::{load_config, print};
 /// Path of the task list and of the creation endpoint.
 const TASKS_PATH: &str = "/v1/tasks";
 /// File where `loom go` writes the repository path for the shell wrapper (`loom shell-init`).
-const CD_FILE_ENV: &str = "LOOM_CD_FILE";
+pub const CD_FILE_ENV: &str = "LOOM_CD_FILE";
 /// Longest wait for loomd to record a `loom edit`: its watcher reads the file at once.
 const EDIT_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 /// Interval between two reads of the edited task.
@@ -192,6 +192,16 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
     })
 }
 
+/// Writes `repo_path` to the file configured in [`CD_FILE_ENV`], if set and non-empty.
+pub fn write_cd_file(repo_path: Option<&std::path::Path>) {
+    if let Some(path) = repo_path
+        && let Some(cd_file) = env::var_os(CD_FILE_ENV).filter(|value| !value.is_empty())
+        && let Err(error) = fs::write(&cd_file, format!("{}\n", path.display()))
+    {
+        debug!(%error, "cannot write the repository path to {CD_FILE_ENV}");
+    }
+}
+
 /// `loom go`.
 pub fn go(args: &GoArgs, layout: &Layout) -> Result<()> {
     block_on(async {
@@ -200,12 +210,7 @@ pub fn go(args: &GoArgs, layout: &Layout) -> Result<()> {
             .post(&format!("{TASKS_PATH}/{}/go", args.id), None::<&()>)
             .await
             .map_err(|error| api_error(&error))?;
-        if let Some(path) = &result.repo_path
-            && let Some(cd_file) = env::var_os(CD_FILE_ENV).filter(|value| !value.is_empty())
-            && let Err(error) = fs::write(&cd_file, format!("{}\n", path.display()))
-        {
-            debug!(%error, "cannot write the repository path to {CD_FILE_ENV}");
-        }
+        write_cd_file(result.repo_path.as_deref());
         output(&result, args.json, || render_go(&result))
     })
 }
