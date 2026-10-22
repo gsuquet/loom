@@ -559,7 +559,7 @@
       ]
     },
     "Kind": {
-      "description": "Serialized form of [`Kind`]: `kind`, plus `format` for content.",
+      "description": "Serialized form of `Kind`: `kind`, plus `format` for content.",
       "type": "object",
       "properties": {
         "format": {
