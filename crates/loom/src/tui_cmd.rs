@@ -1,7 +1,6 @@
 //! Entrypoint and runtime loop of the interactive TUI (`loom` with no subcommand).
 
 use std::env;
-use std::fs;
 use std::io::{self, IsTerminal as _};
 use std::time::Duration;
 
@@ -85,7 +84,9 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     );
     let theme = Theme::from_config(&config.contexts, color_enabled);
     let contexts: Vec<ContextName> = config.contexts.keys().cloned().collect();
-    let mut state = AppState::new(theme, global.context.clone(), contexts, local_today());
+    let default_context = config.default_context.as_ref().map(|s| s.get_ref().clone());
+    let mut state = AppState::new(theme, global.context.clone(), contexts, local_today())
+        .with_default_context(default_context);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -200,6 +201,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
         open_id: None,
     });
     let mut fetch_in_flight = true;
+    let mut action_in_flight = false;
 
     let mut event_stream = crossterm::event::EventStream::new();
     let mut pending_search: Option<String> = None;
@@ -223,6 +225,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                 if let Ok(event) = event_res {
                     match event {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            state.set_local_date(local_today());
                             let effect = state.handle_key(key);
                             handle_effect(
                                 effect,
@@ -234,6 +237,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                                 &mut pending_search,
                                 &mut search_timer,
                                 &action_tx,
+                                &mut action_in_flight,
                             );
                             needs_redraw = true;
                         }
@@ -268,6 +272,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                             &mut pending_search,
                             &mut search_timer,
                             &action_tx,
+                            &mut action_in_flight,
                         );
                         needs_redraw = true;
                     }
@@ -326,7 +331,12 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                     && data.open.as_ref().is_none_or(|(_, r)| r.is_ok());
 
                 match data.today {
-                    Ok(list) => state.today = list.tasks,
+                    Ok(list) => {
+                        state.today = list.tasks;
+                        if state.group_by_parent() {
+                            state.sort_today_by_parent();
+                        }
+                    }
                     Err(err) => state.set_error(err),
                 }
                 match data.inbox {
@@ -380,6 +390,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
 
             // Handle action worker responses
             Some(action_resp) = action_done_rx.recv() => {
+                action_in_flight = false;
                 match action_resp {
                     Ok(outcome) => {
                         if let Some(msg) = outcome.message {
@@ -399,6 +410,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                                 &mut pending_search,
                                 &mut search_timer,
                                 &action_tx,
+                                &mut action_in_flight,
                             );
                         }
                     }
@@ -430,6 +442,7 @@ fn handle_effect(
     pending_search: &mut Option<String>,
     search_timer: &mut std::pin::Pin<Box<tokio::time::Sleep>>,
     action_tx: &mpsc::Sender<ActionRequest>,
+    action_in_flight: &mut bool,
 ) {
     match effect {
         AppEffect::None => {}
@@ -461,6 +474,10 @@ fn handle_effect(
             importance,
             due,
         } => {
+            if *action_in_flight {
+                return;
+            }
+            *action_in_flight = true;
             let _ = action_tx.try_send(ActionRequest::Accept {
                 id,
                 kind,
@@ -469,32 +486,57 @@ fn handle_effect(
             });
         }
         AppEffect::SnoozeTask { id, until, on } => {
+            if *action_in_flight {
+                return;
+            }
+            *action_in_flight = true;
             let _ = action_tx.try_send(ActionRequest::Snooze { id, until, on });
         }
         AppEffect::CancelTask(id) => {
+            if *action_in_flight {
+                return;
+            }
+            *action_in_flight = true;
             let _ = action_tx.try_send(ActionRequest::Cancel(id));
         }
         AppEffect::DoneTask(id) => {
+            if *action_in_flight {
+                return;
+            }
+            *action_in_flight = true;
             let _ = action_tx.try_send(ActionRequest::Done(id));
         }
         AppEffect::GoTask(id) => {
+            if *action_in_flight {
+                return;
+            }
+            *action_in_flight = true;
             let _ = action_tx.try_send(ActionRequest::Go(id));
         }
         AppEffect::UndoTask(id) => {
+            if *action_in_flight {
+                return;
+            }
+            *action_in_flight = true;
             let _ = action_tx.try_send(ActionRequest::Undo(id));
         }
         AppEffect::CreateTask { title, context } => {
+            if *action_in_flight {
+                return;
+            }
+            *action_in_flight = true;
             let _ = action_tx.try_send(ActionRequest::Create { title, context });
         }
     }
 }
 
+#[allow(clippy::option_option)]
 enum ActionRequest {
     Accept {
         id: TaskId,
         kind: Option<Kind>,
         importance: Option<Importance>,
-        due: Option<Date>,
+        due: Option<Option<Date>>,
     },
     Snooze {
         id: TaskId,
@@ -555,12 +597,7 @@ async fn execute_go_action(client: &Client, id: TaskId) -> ActionResponse {
         .post(&format!("/v1/tasks/{id}/go"), None::<&()>)
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(path) = &result.repo_path
-        && let Some(cd_file) = env::var_os("LOOM_CD_FILE").filter(|v| !v.is_empty())
-        && let Err(err) = fs::write(&cd_file, format!("{}\n", path.display()))
-    {
-        tracing::debug!(%err, "cannot write the repository path to LOOM_CD_FILE");
-    }
+    crate::task_cmd::write_cd_file(result.repo_path.as_deref());
     Ok(ActionOutcome {
         should_refresh: false,
         should_quit: true,

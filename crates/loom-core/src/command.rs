@@ -94,9 +94,13 @@ pub enum Command {
         /// New importance.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         importance: Option<Importance>,
-        /// New due date.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        due: Option<Date>,
+        /// New due date. `Some(None)` (`null`) removes it.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "present"
+        )]
+        due: Option<Option<Date>>,
     },
 }
 
@@ -296,11 +300,22 @@ pub fn apply(
             importance,
             due,
         } => {
+            if task.status != Status::Inbox {
+                return Err(DomainError::IllegalTransition {
+                    from: task.status.name().unwrap_or(StatusName::Inbox),
+                    to: StatusName::Ready,
+                });
+            }
             let status_change = set_status(&task, Status::Ready)?;
             let mut changes = Vec::new();
             if let Some(change) = status_change {
                 changes.push(FieldChange::Status(change));
             }
+            let target_importance = match (importance, &kind) {
+                (Some(imp), _) => Some(imp),
+                (None, Some(k)) => Some(Importance::default_for(k)),
+                (None, None) => None,
+            };
             if let Some(kind) = kind
                 && kind != task.kind
             {
@@ -310,7 +325,7 @@ pub fn apply(
                     to: kind,
                 }));
             }
-            if let Some(importance) = importance
+            if let Some(importance) = target_importance
                 && importance != task.importance
             {
                 changes.push(FieldChange::Importance(Change {
@@ -318,12 +333,12 @@ pub fn apply(
                     to: importance,
                 }));
             }
-            if let Some(due) = due
-                && Some(due) != task.due
+            if let Some(new_due) = due
+                && new_due != task.due
             {
                 changes.push(FieldChange::Due(Change {
                     from: task.due,
-                    to: Some(due),
+                    to: new_due,
                 }));
             }
             match changes.as_slice() {

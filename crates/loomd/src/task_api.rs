@@ -432,11 +432,15 @@ pub fn action_command(
         TaskActionName::Inbox => plain(status(Status::Inbox)),
         TaskActionName::Ready => {
             refuse(wait_field.or(text_field))?;
-            Ok(Command::Accept {
-                kind,
-                importance,
-                due,
-            })
+            if kind.is_none() && importance.is_none() && due.is_none() {
+                Ok(status(Status::Ready))
+            } else {
+                Ok(Command::Accept {
+                    kind,
+                    importance,
+                    due,
+                })
+            }
         }
         TaskActionName::Active => plain(status(Status::Active)),
         TaskActionName::Done => plain(status(Status::Done)),
