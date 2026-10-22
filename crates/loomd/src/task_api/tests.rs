@@ -418,7 +418,7 @@ fn an_edit_rejects_unknown_fields_and_reads_null_as_removal() {
 }
 
 #[test]
-fn actions_become_commands() {
+fn status_and_pin_actions_become_commands() {
     let empty = TaskActionRequest::default();
     assert_eq!(
         action_command(TaskActionName::Ready, empty.clone()).unwrap(),
@@ -426,6 +426,25 @@ fn actions_become_commands() {
             status: Status::Ready,
         }
     );
+    assert_eq!(
+        action_command(TaskActionName::Done, empty.clone()).unwrap(),
+        Command::SetStatus {
+            status: Status::Done,
+        }
+    );
+    assert_eq!(
+        action_command(TaskActionName::Pin, empty.clone()).unwrap(),
+        Command::Pin
+    );
+    assert_eq!(
+        action_command(TaskActionName::Unpin, empty).unwrap(),
+        Command::Unpin
+    );
+}
+
+#[test]
+fn accept_and_wait_actions_become_commands() {
+    let empty = TaskActionRequest::default();
     let accept_fields = TaskActionRequest {
         kind: Some(Kind::Story),
         importance: Some(Importance::P0),
@@ -463,20 +482,6 @@ fn actions_become_commands() {
             .unwrap_err()
             .code,
         ErrorCode::InvalidRequest
-    );
-    assert_eq!(
-        action_command(TaskActionName::Done, empty.clone()).unwrap(),
-        Command::SetStatus {
-            status: Status::Done
-        }
-    );
-    assert_eq!(
-        action_command(TaskActionName::Pin, empty.clone()).unwrap(),
-        Command::Pin
-    );
-    assert_eq!(
-        action_command(TaskActionName::Unpin, empty.clone()).unwrap(),
-        Command::Unpin
     );
     let wait = TaskActionRequest {
         on: Some("Alice".to_owned()),
