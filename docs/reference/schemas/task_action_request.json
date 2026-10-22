@@ -4,6 +4,36 @@
   "description": "Body of `POST /v1/tasks/{id}/actions/{action}`, optional. Each field belongs to one action.",
   "type": "object",
   "properties": {
+    "due": {
+      "description": "`ready` only, optional: new due date.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "importance": {
+      "description": "`ready` only, optional: new importance.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Importance"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "description": "`ready` only, optional: new kind.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Kind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "on": {
       "description": "`waiting` only: what or whom the task waits on.",
       "type": [
@@ -27,5 +57,52 @@
       "format": "date"
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "Importance": {
+      "description": "Importance, p0 (highest) to p3.",
+      "oneOf": [
+        {
+          "description": "Highest.",
+          "type": "string",
+          "const": "p0"
+        },
+        {
+          "description": "High.",
+          "type": "string",
+          "const": "p1"
+        },
+        {
+          "description": "Normal.",
+          "type": "string",
+          "const": "p2"
+        },
+        {
+          "description": "Low.",
+          "type": "string",
+          "const": "p3"
+        }
+      ]
+    },
+    "Kind": {
+      "description": "Serialized form of [`Kind`]: `kind`, plus `format` for content.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "Content only: talk, article, training or workshop.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning. Any other name makes the task read-only.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
+  }
 }

@@ -526,6 +526,50 @@ fn a_task_is_changed_closed_snoozed_and_undone() {
 }
 
 #[test]
+fn an_inbox_task_is_accepted_with_fields_and_undone() {
+    let sandbox = Sandbox::new();
+    let task = sandbox.add(&["-c", "work", "Triage me"]);
+    let id = task.summary.id.to_string();
+    assert_eq!(task.summary.task.unwrap().status, Status::Inbox);
+
+    // Accept with new kind, importance, due
+    let accepted = gesture(
+        &sandbox,
+        &[
+            "accept",
+            &id,
+            "--kind",
+            "story",
+            "--importance",
+            "p1",
+            "--due",
+            "2026-10-30",
+        ],
+    );
+    let accepted_task = accepted.summary.task.unwrap();
+    assert_eq!(accepted_task.status, Status::Ready);
+    assert_eq!(accepted_task.kind.name(), "story");
+    assert_eq!(accepted_task.importance, loom_api::Importance::P1);
+    assert_eq!(accepted_task.due, Some("2026-10-30".parse().unwrap()));
+
+    // Undo reverts back to Inbox and restores original fields
+    let undone = gesture(&sandbox, &["undo", &id]);
+    let undone_task = undone.summary.task.unwrap();
+    assert_eq!(undone_task.status, Status::Inbox);
+    assert_eq!(undone_task.kind.name(), "chore");
+    assert_eq!(undone_task.importance, loom_api::Importance::P3);
+    assert_eq!(undone_task.due, None);
+
+    // Accept with no fields moves status to ready
+    let accepted_plain = gesture(&sandbox, &["accept", &id]);
+    assert_eq!(accepted_plain.summary.task.unwrap().status, Status::Ready);
+
+    // Undo reverts back to Inbox again
+    let undone_plain = gesture(&sandbox, &["undo", &id]);
+    assert_eq!(undone_plain.summary.task.unwrap().status, Status::Inbox);
+}
+
+#[test]
 fn set_arguments_are_checked_before_loomd() {
     let sandbox = Sandbox::new();
     let id = sandbox.add(&["-c", "work", "X"]).summary.id.to_string();

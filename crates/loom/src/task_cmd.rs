@@ -8,8 +8,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use loom::cli::{
-    AddArgs, EditArgs, FocusArgs, GlobalArgs, GoArgs, LogArgs, LsArgs, SetArgs, ShowArgs,
-    SnoozeArgs, TaskArgs,
+    AcceptArgs, AddArgs, EditArgs, FocusArgs, GlobalArgs, GoArgs, LogArgs, LsArgs, SetArgs,
+    ShowArgs, SnoozeArgs, TaskArgs,
 };
 use loom::task::{
     AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
@@ -226,6 +226,7 @@ pub fn log(args: &LogArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
         on: None,
         until: None,
         text: Some(args.text.join(" ")),
+        ..Default::default()
     };
     block_on(async {
         let client = client(layout).await?;
@@ -252,6 +253,33 @@ pub fn log(args: &LogArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
     })
 }
 
+/// `loom accept`.
+pub fn accept(args: &AcceptArgs, layout: &Layout) -> Result<()> {
+    if args.format.is_some() && args.kind != Some(KindArg::Content) {
+        return Err(miette!("--format applies to --kind content only"));
+    }
+    let due = args
+        .due
+        .as_deref()
+        .map(|text| parse_date(text, local_today()).into_diagnostic())
+        .transpose()?;
+    let kind = args.kind.map(|kind| kind_of(kind, args.format));
+    let importance = args.importance.map(Into::into);
+    let request = TaskActionRequest {
+        on: None,
+        until: None,
+        text: None,
+        kind,
+        importance,
+        due,
+    };
+    block_on(async {
+        let client = client(layout).await?;
+        let detail = action(&client, &args.id, "ready", Some(&request)).await?;
+        output(&detail, args.json, || render_change(&detail))
+    })
+}
+
 /// `loom done` (`done`) and `loom cancel` (`cancelled`).
 pub fn status(args: &TaskArgs, name: &str, layout: &Layout) -> Result<()> {
     block_on(async {
@@ -268,6 +296,7 @@ pub fn snooze(args: &SnoozeArgs, layout: &Layout) -> Result<()> {
         on: args.on.clone(),
         until: Some(until),
         text: None,
+        ..Default::default()
     };
     block_on(async {
         let client = client(layout).await?;

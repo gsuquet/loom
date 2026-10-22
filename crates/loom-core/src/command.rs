@@ -86,6 +86,18 @@ pub enum Command {
         /// The changes that revert it.
         changes: Vec<FieldChange>,
     },
+    /// Accept an inbox task: move to ready, and optionally change kind, importance or due date.
+    Accept {
+        /// New kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<Kind>,
+        /// New importance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        importance: Option<Importance>,
+        /// New due date.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        due: Option<Date>,
+    },
 }
 
 /// Fields to change. `None` leaves a field as it is.
@@ -278,6 +290,47 @@ pub fn apply(
                 return Err(DomainError::NothingToUndo);
             }
             Some(Event::Undone { of, changes })
+        }
+        Command::Accept {
+            kind,
+            importance,
+            due,
+        } => {
+            let status_change = set_status(&task, Status::Ready)?;
+            let mut changes = Vec::new();
+            if let Some(change) = status_change {
+                changes.push(FieldChange::Status(change));
+            }
+            if let Some(kind) = kind
+                && kind != task.kind
+            {
+                known(&kind, &Status::Ready)?;
+                changes.push(FieldChange::Kind(Change {
+                    from: task.kind.clone(),
+                    to: kind,
+                }));
+            }
+            if let Some(importance) = importance
+                && importance != task.importance
+            {
+                changes.push(FieldChange::Importance(Change {
+                    from: task.importance,
+                    to: importance,
+                }));
+            }
+            if let Some(due) = due
+                && Some(due) != task.due
+            {
+                changes.push(FieldChange::Due(Change {
+                    from: task.due,
+                    to: Some(due),
+                }));
+            }
+            match changes.as_slice() {
+                [] => None,
+                [FieldChange::Status(change)] => Some(Event::StatusChanged(change.clone())),
+                _ => Some(Event::Edited { changes }),
+            }
         }
     };
     let Some(event) = event else {

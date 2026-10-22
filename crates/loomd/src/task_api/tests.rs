@@ -421,6 +421,28 @@ fn an_edit_rejects_unknown_fields_and_reads_null_as_removal() {
 fn actions_become_commands() {
     let empty = TaskActionRequest::default();
     assert_eq!(
+        action_command(TaskActionName::Ready, empty.clone()).unwrap(),
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: None,
+        }
+    );
+    let accept_fields = TaskActionRequest {
+        kind: Some(Kind::Story),
+        importance: Some(Importance::P0),
+        due: Some(date("2026-10-25")),
+        ..TaskActionRequest::default()
+    };
+    assert_eq!(
+        action_command(TaskActionName::Ready, accept_fields.clone()).unwrap(),
+        Command::Accept {
+            kind: Some(Kind::Story),
+            importance: Some(Importance::P0),
+            due: Some(date("2026-10-25")),
+        }
+    );
+    assert_eq!(
         action_command(TaskActionName::Done, empty.clone()).unwrap(),
         Command::SetStatus {
             status: Status::Done
@@ -437,7 +459,7 @@ fn actions_become_commands() {
     let wait = TaskActionRequest {
         on: Some("Alice".to_owned()),
         until: Some(date("2026-10-20")),
-        text: None,
+        ..TaskActionRequest::default()
     };
     assert_eq!(
         action_command(TaskActionName::Waiting, wait.clone()).unwrap(),
@@ -461,9 +483,14 @@ fn actions_become_commands() {
     for (action, request) in [
         (TaskActionName::LogNote, empty),
         (TaskActionName::Done, wait.clone()),
+        (TaskActionName::Done, accept_fields.clone()),
         (TaskActionName::Pin, note.clone()),
-        (TaskActionName::Waiting, note),
-        (TaskActionName::LogNote, wait),
+        (TaskActionName::Waiting, note.clone()),
+        (TaskActionName::Waiting, accept_fields.clone()),
+        (TaskActionName::LogNote, wait.clone()),
+        (TaskActionName::LogNote, accept_fields),
+        (TaskActionName::Ready, wait),
+        (TaskActionName::Ready, note),
     ] {
         assert_eq!(
             action_command(action, request).unwrap_err().code,

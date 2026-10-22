@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use loom_core::{
-    Action, ContextName, Date, EventRecord, RankReason, ReadOnlyReason, SkippedLine, StatusName,
-    Task, TaskId, Timestamp,
+    Action, ContextName, Date, EventRecord, Importance, Kind, RankReason, ReadOnlyReason,
+    SkippedLine, StatusName, Task, TaskId, Timestamp,
 };
 
 /// Answer of `GET /v1/tasks`.
@@ -193,6 +193,15 @@ pub struct TaskActionRequest {
     /// `log_note` only, required: the note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// `ready` only, optional: new kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<Kind>,
+    /// `ready` only, optional: new importance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub importance: Option<Importance>,
+    /// `ready` only, optional: new due date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<Date>,
 }
 
 /// `details` of an `ambiguous_prefix` error.
@@ -283,6 +292,7 @@ mod tests {
                 on: Some("Alice".to_owned()),
                 until: Some("2026-10-20".parse().unwrap()),
                 text: None,
+                ..Default::default()
             }
         );
         assert!(parse(json!({ "note": "x" })).is_err());

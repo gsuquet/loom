@@ -577,6 +577,35 @@ loom log [OPTIONS] <TEXT>...
 
 Global options apply.
 
+### `loom accept`
+
+Accept a task from the inbox: set its status to ready, and change its fields.
+
+ID is a task ID or a unique prefix of one. Starts loomd if it is stopped.
+
+```text
+loom accept [OPTIONS] <ID>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<ID>` |  |  | Task ID, or a unique prefix of one |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--kind <KIND>` | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview`, `learning` |  | Kind of the task |
+| `--format <FORMAT>` | `talk`, `article`, `training`, `workshop` |  | Format of a `content` task |
+| `--importance <IMPORTANCE>` | `p0`, `p1`, `p2`, `p3` |  | Importance of the task |
+| `--due <DATE>` |  |  | Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w` |
+| `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
 ### `loom done`
 
 Mark a task done

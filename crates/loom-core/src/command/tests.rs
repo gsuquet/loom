@@ -518,3 +518,79 @@ fn a_hand_edit_is_the_changes_of_every_field_that_differs() {
         serde_json::json!({ "type": "file" })
     );
 }
+
+#[test]
+fn accept_an_inbox_task_with_default_fields_moves_it_to_ready_and_can_be_undone() {
+    let (task, mut log) = task_with(Status::Inbox);
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: None,
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(
+        log.last().unwrap().event,
+        Event::StatusChanged(Change {
+            from: Status::Inbox,
+            to: Status::Ready,
+        })
+    );
+
+    let undone = undo_last(accepted, &mut log, 2);
+    assert_eq!(undone.status, Status::Inbox);
+    assert_eq!(undone.updated, at(2));
+}
+
+#[test]
+fn accept_an_inbox_task_with_kind_importance_and_due_updates_fields_and_undo_reverts_them() {
+    let (task, mut log) = task_with(Status::Inbox);
+    let due_date = "2026-10-25".parse().unwrap();
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: Some(Kind::Story),
+            importance: Some(Importance::P0),
+            due: Some(due_date),
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.kind, Kind::Story);
+    assert_eq!(accepted.importance, Importance::P0);
+    assert_eq!(accepted.due, Some(due_date));
+
+    // Undoing accept reverts both status back to Inbox and fields back to original values
+    let undone = undo_last(accepted, &mut log, 2);
+    assert_eq!(undone.status, Status::Inbox);
+    assert_eq!(undone.kind, Kind::Bug);
+    assert_eq!(undone.importance, Importance::P1);
+    assert_eq!(undone.due, None);
+    assert_eq!(undone.updated, at(2));
+}
+
+#[test]
+fn accept_on_an_illegal_transition_is_refused() {
+    let (task, _) = task_with(Status::Ready);
+    let refused = exec(
+        task,
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: None,
+        },
+        1,
+    );
+    assert!(matches!(
+        refused,
+        Err(DomainError::IllegalTransition {
+            from: StatusName::Ready,
+            to: StatusName::Ready,
+        })
+    ));
+}
