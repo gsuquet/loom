@@ -129,6 +129,26 @@ fn cycle_prev<T: PartialEq + Clone>(items: &[T], current: &T) -> T {
     }
 }
 
+fn cycle_kind_next(items: &[Kind], current: &Kind) -> Kind {
+    let pos = items
+        .iter()
+        .position(|i| i.name() == current.name())
+        .unwrap_or(0);
+    items[(pos + 1) % items.len()].clone()
+}
+
+fn cycle_kind_prev(items: &[Kind], current: &Kind) -> Kind {
+    let pos = items
+        .iter()
+        .position(|i| i.name() == current.name())
+        .unwrap_or(0);
+    if pos == 0 {
+        items[items.len() - 1].clone()
+    } else {
+        items[pos - 1].clone()
+    }
+}
+
 /// Connection state of the `GET /v1/events` SSE stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SseState {
@@ -350,6 +370,16 @@ impl AppState {
     /// Updates the current local date for pure date calculations.
     pub const fn set_local_date(&mut self, local_date: Date) {
         self.local_date = local_date;
+    }
+
+    /// Records the successful completion of an action on a task for undo.
+    pub fn record_action_success(&mut self, task_id: TaskId) {
+        self.last_action = Some(task_id);
+    }
+
+    /// Sets or clears the task ID tracked for undo.
+    pub fn set_last_action(&mut self, task_id: Option<TaskId>) {
+        self.last_action = task_id;
     }
 
     /// Sets the fallback default context.
@@ -824,45 +854,22 @@ impl AppState {
         match cmd {
             KeyCommand::TriageAccept => self.open_accept_modal(),
             KeyCommand::TriageSnooze => self.open_snooze_modal(),
-            KeyCommand::TriageCancel => {
-                if let Some(id) = self.editable_action_task(StatusName::Cancelled) {
-                    self.last_action = Some(id.clone());
-                    AppEffect::CancelTask(id)
-                } else {
+            KeyCommand::TriageCancel => self
+                .editable_action_task(StatusName::Cancelled)
+                .map_or(AppEffect::None, AppEffect::CancelTask),
+            KeyCommand::TriageDone => self
+                .editable_action_task(StatusName::Done)
+                .map_or(AppEffect::None, AppEffect::DoneTask),
+            KeyCommand::TriageGo => self
+                .go_action_task()
+                .map_or(AppEffect::None, AppEffect::GoTask),
+            KeyCommand::Undo => self.last_action.take().map_or_else(
+                || {
+                    self.set_status("nothing to undo");
                     AppEffect::None
-                }
-            }
-            KeyCommand::TriageDone => {
-                if let Some(id) = self.editable_action_task(StatusName::Done) {
-                    self.last_action = Some(id.clone());
-                    AppEffect::DoneTask(id)
-                } else {
-                    AppEffect::None
-                }
-            }
-            KeyCommand::TriageGo => {
-                if let Some(id) = self.go_action_task() {
-                    self.last_action = Some(id.clone());
-                    AppEffect::GoTask(id)
-                } else {
-                    AppEffect::None
-                }
-            }
-            KeyCommand::Undo => {
-                if let Some(id) = self.last_action.take() {
-                    AppEffect::UndoTask(id)
-                } else if let Some(task) = self.selected_task() {
-                    if let Some(ro) = &task.read_only {
-                        self.status_message =
-                            Some(format!("task is read-only: {}", read_only_text(ro)));
-                        AppEffect::None
-                    } else {
-                        AppEffect::UndoTask(task.id.clone())
-                    }
-                } else {
-                    AppEffect::None
-                }
-            }
+                },
+                AppEffect::UndoTask,
+            ),
             KeyCommand::NewTask => self.open_new_task_modal(),
             KeyCommand::ToggleWhy => {
                 self.today_options.why = !self.today_options.why;
@@ -913,7 +920,7 @@ impl AppState {
                 {
                     match m.field {
                         AcceptField::Kind => {
-                            m.kind = cycle_prev(TRIAGE_KINDS, &m.kind);
+                            m.kind = cycle_kind_prev(TRIAGE_KINDS, &m.kind);
                             m.importance = Importance::default_for(&m.kind);
                         }
                         AcceptField::Importance => {
@@ -930,7 +937,7 @@ impl AppState {
                 {
                     match m.field {
                         AcceptField::Kind => {
-                            m.kind = cycle_next(TRIAGE_KINDS, &m.kind);
+                            m.kind = cycle_kind_next(TRIAGE_KINDS, &m.kind);
                             m.importance = Importance::default_for(&m.kind);
                         }
                         AcceptField::Importance => {
@@ -991,7 +998,6 @@ impl AppState {
             importance: Some(m.importance),
             due,
         };
-        self.last_action = Some(m.task_id.clone());
         self.modal = None;
         self.accept_modal = None;
         effect
@@ -1015,7 +1021,6 @@ impl AppState {
             until,
             on,
         };
-        self.last_action = Some(m.task_id.clone());
         self.modal = None;
         self.snooze_modal = None;
         effect
@@ -1541,7 +1546,7 @@ mod tests {
             Some(TaskReadOnly::InvalidFile("line 1: bad syntax".to_owned())),
         )];
 
-        let keys_to_test = ['a', 'z', 'x', 'c', 'g', 'u'];
+        let keys_to_test = ['a', 'z', 'x', 'c', 'g'];
         for ch in keys_to_test {
             let key = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
             let effect = state.handle_key(key);
@@ -1662,7 +1667,8 @@ mod tests {
             AppEffect::CancelTask("k3q7zm2a".parse().unwrap())
         );
 
-        // 'u' emits UndoTask
+        // 'u' with recorded action emits UndoTask
+        state.record_action_success("k3q7zm2a".parse().unwrap());
         let u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE);
         assert_eq!(
             state.handle_key(u),
@@ -1701,6 +1707,11 @@ mod tests {
         // Confirm accept modal
         let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(effect, AppEffect::AcceptTask { ref id, .. } if id == &task_id));
+        // Action has not succeeded yet: last_action is not set eagerly
+        assert_eq!(state.last_action, None);
+
+        // Simulated success callback from runtime
+        state.record_action_success(task_id.clone());
 
         // Simulated refresh: the accepted task is removed from inbox, next task is now at index 0
         state.inbox = vec![make_task("m9x2rt4b", Status::Inbox, None)];
@@ -1709,6 +1720,70 @@ mod tests {
         // Press 'u': must undo the accepted task (k3q7zm2a), not the currently selected one (m9x2rt4b)
         let undo_effect = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         assert_eq!(undo_effect, AppEffect::UndoTask(task_id));
+
+        // Pressing 'u' a second time shows "nothing to undo" instead of acting on the selected task
+        let second_undo = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(second_undo, AppEffect::None);
+        assert_eq!(state.status_message.as_deref(), Some("nothing to undo"));
+    }
+
+    #[test]
+    fn failed_action_does_not_set_last_action_and_shows_nothing_to_undo() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Inbox;
+        state.inbox = vec![make_task("k3q7zm2a", Status::Inbox, None)];
+        state.inbox_selected = 0;
+
+        // Open and confirm accept modal
+        state.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(effect, AppEffect::AcceptTask { .. }));
+
+        // Action failed: record_action_success is NOT called
+        assert_eq!(state.last_action, None);
+
+        // Pressing 'u' refuses cleanly with "nothing to undo"
+        let undo_effect = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(undo_effect, AppEffect::None);
+        assert_eq!(state.status_message.as_deref(), Some("nothing to undo"));
+    }
+
+    #[test]
+    fn cycling_kind_from_content_with_format() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Inbox;
+        let mut task = make_task("k3q7zm2a", Status::Inbox, None);
+        if let Some(t) = &mut task.task {
+            t.kind = Kind::Content {
+                format: Some(loom_api::ContentFormat::Talk),
+            };
+        }
+        state.inbox = vec![task];
+        state.inbox_selected = 0;
+
+        // Open accept modal
+        state.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(
+            state.accept_modal.as_ref().unwrap().kind,
+            Kind::Content {
+                format: Some(loom_api::ContentFormat::Talk)
+            }
+        );
+
+        // Next option: advances to Research (not back to start of list)
+        state.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(state.accept_modal.as_ref().unwrap().kind, Kind::Research);
+
+        // Prev option: cycles back to Content { format: None }
+        state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(
+            state.accept_modal.as_ref().unwrap().kind,
+            Kind::Content { format: None }
+        );
+
+        // Prev option again: cycles back to Story
+        state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(state.accept_modal.as_ref().unwrap().kind, Kind::Story);
     }
 
     #[test]

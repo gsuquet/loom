@@ -564,8 +564,8 @@ fn an_inbox_task_is_accepted_with_fields_and_undone() {
     let accepted_plain = gesture(&sandbox, &["accept", &id]);
     assert_eq!(accepted_plain.summary.task.unwrap().status, Status::Ready);
 
-    // Accepting a ready task with fields is refused as illegal transition
-    let output = sandbox.run(&sandbox.home(), None, &["accept", &id, "--kind", "bug"]);
+    // Accepting a ready task (even with no fields) is refused as illegal transition
+    let output = sandbox.run(&sandbox.home(), None, &["accept", &id]);
     assert_eq!(output.status.code(), Some(1));
     let err = stderr(&output);
     assert!(
@@ -573,7 +573,19 @@ fn an_inbox_task_is_accepted_with_fields_and_undone() {
         "unexpected error: {err}"
     );
 
-    // Undo reverts back to Inbox again
+    // Marking a task done then calling accept without fields is also refused
+    let done_task = sandbox.add(&["-c", "work", "--ready", "Already done"]);
+    let done_id = done_task.summary.id.to_string();
+    gesture(&sandbox, &["done", &done_id]);
+    let output_done = sandbox.run(&sandbox.home(), None, &["accept", &done_id]);
+    assert_eq!(output_done.status.code(), Some(1));
+    let err_done = stderr(&output_done);
+    assert!(
+        err_done.contains("illegal_transition") || err_done.contains("cannot move"),
+        "unexpected error: {err_done}"
+    );
+
+    // Undo reverts back to Inbox
     let undone_plain = gesture(&sandbox, &["undo", &id]);
     assert_eq!(undone_plain.summary.task.unwrap().status, Status::Inbox);
 
@@ -587,6 +599,18 @@ fn an_inbox_task_is_accepted_with_fields_and_undone() {
     assert_eq!(bug_task.kind.name(), "bug");
     assert_eq!(bug_task.importance, loom_api::Importance::P1);
     assert_eq!(bug_task.due, Some("2026-10-30".parse().unwrap()));
+
+    // Undo reverts back to Inbox
+    gesture(&sandbox, &["undo", &id]);
+
+    // Manually set importance to p0 with set, then accept with same kind (--kind bug):
+    // importance remains p0 rather than being overwritten with bug's default (p1)
+    gesture(&sandbox, &["set", &id, "kind=bug", "importance=p0"]);
+    let accepted_same_kind = gesture(&sandbox, &["accept", &id, "--kind", "bug"]);
+    let same_kind_task = accepted_same_kind.summary.task.unwrap();
+    assert_eq!(same_kind_task.status, Status::Ready);
+    assert_eq!(same_kind_task.kind.name(), "bug");
+    assert_eq!(same_kind_task.importance, loom_api::Importance::P0);
 
     // Undo reverts back to Inbox
     gesture(&sandbox, &["undo", &id]);

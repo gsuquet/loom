@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "due": {
-      "description": "`ready` only, optional: new due date. `Some(None)` (`null`) removes it.",
+      "description": "`accept` only, optional: new due date. `Some(None)` (`null`) removes it.",
       "type": [
         "string",
         "null"
@@ -13,7 +13,7 @@
       "format": "date"
     },
     "importance": {
-      "description": "`ready` only, optional: new importance.",
+      "description": "`accept` only, optional: new importance.",
       "anyOf": [
         {
           "$ref": "#/$defs/Importance"
@@ -24,7 +24,7 @@
       ]
     },
     "kind": {
-      "description": "`ready` only, optional: new kind.",
+      "description": "`accept` only, optional: new kind.",
       "anyOf": [
         {
           "$ref": "#/$defs/Kind"

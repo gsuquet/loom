@@ -47,6 +47,11 @@
       "description": "Log a note, with `text`.",
       "type": "string",
       "const": "log_note"
+    },
+    {
+      "description": "Accept an inbox task: move to ready, and optionally change kind, importance or due date.",
+      "type": "string",
+      "const": "accept"
     }
   ]
 }

@@ -594,6 +594,26 @@ fn accept_with_kind_defaults_importance_when_omitted() {
 }
 
 #[test]
+fn accept_keeps_manually_set_importance_when_kind_is_unchanged() {
+    let (mut task, mut log) = task_with(Status::Inbox);
+    // Bug task with importance manually set to P0
+    task.importance = Importance::P0;
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: Some(Kind::Bug),
+            importance: None,
+            due: None,
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.kind, Kind::Bug);
+    assert_eq!(accepted.importance, Importance::P0);
+}
+
+#[test]
 fn accept_can_clear_due_date_with_some_none() {
     let mut new = new_task(Kind::Bug);
     new.due = Some("2026-10-25".parse().unwrap());

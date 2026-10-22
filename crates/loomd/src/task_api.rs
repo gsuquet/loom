@@ -430,23 +430,20 @@ pub fn action_command(
     let status = |status: Status| Command::SetStatus { status };
     match action {
         TaskActionName::Inbox => plain(status(Status::Inbox)),
-        TaskActionName::Ready => {
-            refuse(wait_field.or(text_field))?;
-            if kind.is_none() && importance.is_none() && due.is_none() {
-                Ok(status(Status::Ready))
-            } else {
-                Ok(Command::Accept {
-                    kind,
-                    importance,
-                    due,
-                })
-            }
-        }
+        TaskActionName::Ready => plain(status(Status::Ready)),
         TaskActionName::Active => plain(status(Status::Active)),
         TaskActionName::Done => plain(status(Status::Done)),
         TaskActionName::Cancelled => plain(status(Status::Cancelled)),
         TaskActionName::Pin => plain(Command::Pin),
         TaskActionName::Unpin => plain(Command::Unpin),
+        TaskActionName::Accept => {
+            refuse(wait_field.or(text_field))?;
+            Ok(Command::Accept {
+                kind,
+                importance,
+                due,
+            })
+        }
         TaskActionName::Waiting => {
             refuse(text_field.or(accept_field))?;
             Ok(status(Status::Waiting { on, until }))
