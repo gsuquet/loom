@@ -621,14 +621,14 @@ fn today_view_snapshots_at_80_columns() {
     ];
     assert_buffer_lines(&terminal_80, &expected_why);
 
-    // Toggle parent grouping with 'p': groups root m9v4x1nb first, then child k3q7zm2a indented
+    // Toggle parent grouping with 'p': parent grouping enabled, selection stays on k3q7zm2a
     state.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
     terminal_80.draw(|f| render(f, &state)).unwrap();
     let expected_parent = [
         " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
         "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
-        "│▶ p1 ready   [work] bug  Task m9v4x1nb (overdue or due today)                 │",
-        "│  └─ p1 active  [work] bug  Task k3q7zm2a [parent: p8w2nc4d] (first)          │",
+        "│▶ └─ p1 active  [work] bug  Task k3q7zm2a [parent: p8w2nc4d] (first)          │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb (overdue or due today)                 │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",

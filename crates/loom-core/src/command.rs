@@ -300,9 +300,12 @@ pub fn apply(
             importance,
             due,
         } => {
-            if task.status != Status::Inbox {
+            let from = task.status.name().ok_or_else(|| {
+                DomainError::ReadOnly(ReadOnlyReason::UnknownStatus("unknown".to_owned()))
+            })?;
+            if from != StatusName::Inbox {
                 return Err(DomainError::IllegalTransition {
-                    from: task.status.name().unwrap_or(StatusName::Inbox),
+                    from,
                     to: StatusName::Ready,
                 });
             }
@@ -313,8 +316,8 @@ pub fn apply(
             }
             let target_importance = match (importance, &kind) {
                 (Some(imp), _) => Some(imp),
-                (None, Some(k)) => Some(Importance::default_for(k)),
-                (None, None) => None,
+                (None, Some(k)) if *k != task.kind => Some(Importance::default_for(k)),
+                _ => None,
             };
             if let Some(kind) = kind
                 && kind != task.kind

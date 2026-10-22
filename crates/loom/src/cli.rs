@@ -480,7 +480,7 @@ pub struct AcceptArgs {
     /// Importance of the task.
     #[arg(long, value_enum)]
     pub importance: Option<ImportanceArg>,
-    /// Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d` or `+<n>w`.
+    /// Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d`, `+<n>w` or `none`.
     #[arg(long, value_name = "DATE")]
     pub due: Option<String>,
     /// Print the task as JSON (`TaskDetail` schema).

@@ -129,6 +129,26 @@ fn cycle_prev<T: PartialEq + Clone>(items: &[T], current: &T) -> T {
     }
 }
 
+fn cycle_kind_next(items: &[Kind], current: &Kind) -> Kind {
+    let pos = items
+        .iter()
+        .position(|i| i.name() == current.name())
+        .unwrap_or(0);
+    items[(pos + 1) % items.len()].clone()
+}
+
+fn cycle_kind_prev(items: &[Kind], current: &Kind) -> Kind {
+    let pos = items
+        .iter()
+        .position(|i| i.name() == current.name())
+        .unwrap_or(0);
+    if pos == 0 {
+        items[items.len() - 1].clone()
+    } else {
+        items[pos - 1].clone()
+    }
+}
+
 /// Connection state of the `GET /v1/events` SSE stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SseState {
@@ -352,6 +372,16 @@ impl AppState {
         self.local_date = local_date;
     }
 
+    /// Records the successful completion of an action on a task for undo.
+    pub fn record_action_success(&mut self, task_id: TaskId) {
+        self.last_action = Some(task_id);
+    }
+
+    /// Sets or clears the task ID tracked for undo.
+    pub fn set_last_action(&mut self, task_id: Option<TaskId>) {
+        self.last_action = task_id;
+    }
+
     /// Sets the fallback default context.
     #[must_use]
     pub fn with_default_context(mut self, default_context: Option<ContextName>) -> Self {
@@ -373,8 +403,15 @@ impl AppState {
 
     /// Sorts tasks in the Today queue by priority rank (default order).
     pub fn sort_today_by_rank(&mut self) {
+        if self.today.is_empty() {
+            return;
+        }
+        let selected_id = self.today.get(self.today_selected).map(|t| t.id.clone());
         self.today
             .sort_by_key(|t| t.rank.map_or(usize::MAX, |r| r.position));
+        if let Some(id) = selected_id {
+            self.today_selected = self.today.iter().position(|t| t.id == id).unwrap_or(0);
+        }
     }
 
     /// Groups tasks in the Today queue by parent project.
@@ -382,66 +419,44 @@ impl AppState {
         if self.today.is_empty() {
             return;
         }
+        let selected_id = self.today.get(self.today_selected).map(|t| t.id.clone());
         self.sort_today_by_rank();
 
+        let ids_in_today: std::collections::HashSet<&TaskId> =
+            self.today.iter().map(|t| &t.id).collect();
         let mut grouped: Vec<TaskSummary> = Vec::with_capacity(self.today.len());
         let mut placed = vec![false; self.today.len()];
 
-        // 1. Root tasks (no parent), immediately followed by any of their children present in Today.
+        // 1. Root tasks: tasks that have no parent, OR whose parent is not in Today.
         for i in 0..self.today.len() {
-            let has_parent = self.today[i]
+            let parent_in_today = self.today[i]
                 .task
                 .as_ref()
                 .and_then(|t| t.relations.parent.as_ref())
-                .is_some();
-            if !has_parent && !placed[i] {
+                .is_some_and(|p| ids_in_today.contains(p));
+
+            if !parent_in_today && !placed[i] {
                 placed[i] = true;
                 let parent_id = self.today[i].id.clone();
                 grouped.push(self.today[i].clone());
-
-                for (j, is_placed) in placed.iter_mut().enumerate() {
-                    if !*is_placed
-                        && self.today[j]
-                            .task
-                            .as_ref()
-                            .and_then(|t| t.relations.parent.as_ref())
-                            == Some(&parent_id)
-                    {
-                        *is_placed = true;
-                        grouped.push(self.today[j].clone());
-                    }
-                }
+                place_subtree(&parent_id, &self.today, &mut placed, &mut grouped);
             }
         }
 
-        // 2. Remaining child tasks whose parent is not in Today: group by parent ID.
+        // 2. Any remaining tasks (e.g. cycles):
         for i in 0..self.today.len() {
             if !placed[i] {
                 placed[i] = true;
-                let parent_opt = self.today[i]
-                    .task
-                    .as_ref()
-                    .and_then(|t| t.relations.parent.clone());
+                let parent_id = self.today[i].id.clone();
                 grouped.push(self.today[i].clone());
-
-                if let Some(parent_id) = parent_opt {
-                    for (j, is_placed) in placed.iter_mut().enumerate().skip(i + 1) {
-                        if !*is_placed
-                            && self.today[j]
-                                .task
-                                .as_ref()
-                                .and_then(|t| t.relations.parent.as_ref())
-                                == Some(&parent_id)
-                        {
-                            *is_placed = true;
-                            grouped.push(self.today[j].clone());
-                        }
-                    }
-                }
+                place_subtree(&parent_id, &self.today, &mut placed, &mut grouped);
             }
         }
 
         self.today = grouped;
+        if let Some(id) = selected_id {
+            self.today_selected = self.today.iter().position(|t| t.id == id).unwrap_or(0);
+        }
     }
 
     /// Active view under any modal.
@@ -824,45 +839,22 @@ impl AppState {
         match cmd {
             KeyCommand::TriageAccept => self.open_accept_modal(),
             KeyCommand::TriageSnooze => self.open_snooze_modal(),
-            KeyCommand::TriageCancel => {
-                if let Some(id) = self.editable_action_task(StatusName::Cancelled) {
-                    self.last_action = Some(id.clone());
-                    AppEffect::CancelTask(id)
-                } else {
+            KeyCommand::TriageCancel => self
+                .editable_action_task(StatusName::Cancelled)
+                .map_or(AppEffect::None, AppEffect::CancelTask),
+            KeyCommand::TriageDone => self
+                .editable_action_task(StatusName::Done)
+                .map_or(AppEffect::None, AppEffect::DoneTask),
+            KeyCommand::TriageGo => self
+                .go_action_task()
+                .map_or(AppEffect::None, AppEffect::GoTask),
+            KeyCommand::Undo => self.last_action.take().map_or_else(
+                || {
+                    self.set_status("nothing to undo");
                     AppEffect::None
-                }
-            }
-            KeyCommand::TriageDone => {
-                if let Some(id) = self.editable_action_task(StatusName::Done) {
-                    self.last_action = Some(id.clone());
-                    AppEffect::DoneTask(id)
-                } else {
-                    AppEffect::None
-                }
-            }
-            KeyCommand::TriageGo => {
-                if let Some(id) = self.go_action_task() {
-                    self.last_action = Some(id.clone());
-                    AppEffect::GoTask(id)
-                } else {
-                    AppEffect::None
-                }
-            }
-            KeyCommand::Undo => {
-                if let Some(id) = self.last_action.take() {
-                    AppEffect::UndoTask(id)
-                } else if let Some(task) = self.selected_task() {
-                    if let Some(ro) = &task.read_only {
-                        self.status_message =
-                            Some(format!("task is read-only: {}", read_only_text(ro)));
-                        AppEffect::None
-                    } else {
-                        AppEffect::UndoTask(task.id.clone())
-                    }
-                } else {
-                    AppEffect::None
-                }
-            }
+                },
+                AppEffect::UndoTask,
+            ),
             KeyCommand::NewTask => self.open_new_task_modal(),
             KeyCommand::ToggleWhy => {
                 self.today_options.why = !self.today_options.why;
@@ -913,7 +905,7 @@ impl AppState {
                 {
                     match m.field {
                         AcceptField::Kind => {
-                            m.kind = cycle_prev(TRIAGE_KINDS, &m.kind);
+                            m.kind = cycle_kind_prev(TRIAGE_KINDS, &m.kind);
                             m.importance = Importance::default_for(&m.kind);
                         }
                         AcceptField::Importance => {
@@ -930,7 +922,7 @@ impl AppState {
                 {
                     match m.field {
                         AcceptField::Kind => {
-                            m.kind = cycle_next(TRIAGE_KINDS, &m.kind);
+                            m.kind = cycle_kind_next(TRIAGE_KINDS, &m.kind);
                             m.importance = Importance::default_for(&m.kind);
                         }
                         AcceptField::Importance => {
@@ -991,7 +983,6 @@ impl AppState {
             importance: Some(m.importance),
             due,
         };
-        self.last_action = Some(m.task_id.clone());
         self.modal = None;
         self.accept_modal = None;
         effect
@@ -1015,7 +1006,6 @@ impl AppState {
             until,
             on,
         };
-        self.last_action = Some(m.task_id.clone());
         self.modal = None;
         self.snooze_modal = None;
         effect
@@ -1294,10 +1284,31 @@ impl AppState {
     }
 }
 
+fn place_subtree(
+    parent_id: &TaskId,
+    today: &[TaskSummary],
+    placed: &mut [bool],
+    result: &mut Vec<TaskSummary>,
+) {
+    for j in 0..today.len() {
+        if !placed[j]
+            && today[j]
+                .task
+                .as_ref()
+                .and_then(|t| t.relations.parent.as_ref())
+                == Some(parent_id)
+        {
+            placed[j] = true;
+            result.push(today[j].clone());
+            place_subtree(&today[j].id, today, placed, result);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_api::TaskReadOnly;
+    use loom_api::{RankReason, TaskReadOnly};
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
@@ -1541,7 +1552,7 @@ mod tests {
             Some(TaskReadOnly::InvalidFile("line 1: bad syntax".to_owned())),
         )];
 
-        let keys_to_test = ['a', 'z', 'x', 'c', 'g', 'u'];
+        let keys_to_test = ['a', 'z', 'x', 'c', 'g'];
         for ch in keys_to_test {
             let key = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
             let effect = state.handle_key(key);
@@ -1662,7 +1673,8 @@ mod tests {
             AppEffect::CancelTask("k3q7zm2a".parse().unwrap())
         );
 
-        // 'u' emits UndoTask
+        // 'u' with recorded action emits UndoTask
+        state.record_action_success("k3q7zm2a".parse().unwrap());
         let u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE);
         assert_eq!(
             state.handle_key(u),
@@ -1701,6 +1713,11 @@ mod tests {
         // Confirm accept modal
         let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(effect, AppEffect::AcceptTask { ref id, .. } if id == &task_id));
+        // Action has not succeeded yet: last_action is not set eagerly
+        assert_eq!(state.last_action, None);
+
+        // Simulated success callback from runtime
+        state.record_action_success(task_id.clone());
 
         // Simulated refresh: the accepted task is removed from inbox, next task is now at index 0
         state.inbox = vec![make_task("m9x2rt4b", Status::Inbox, None)];
@@ -1709,6 +1726,129 @@ mod tests {
         // Press 'u': must undo the accepted task (k3q7zm2a), not the currently selected one (m9x2rt4b)
         let undo_effect = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         assert_eq!(undo_effect, AppEffect::UndoTask(task_id));
+
+        // Pressing 'u' a second time shows "nothing to undo" instead of acting on the selected task
+        let second_undo = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(second_undo, AppEffect::None);
+        assert_eq!(state.status_message.as_deref(), Some("nothing to undo"));
+    }
+
+    #[test]
+    fn failed_action_does_not_set_last_action_and_shows_nothing_to_undo() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Inbox;
+        state.inbox = vec![make_task("k3q7zm2a", Status::Inbox, None)];
+        state.inbox_selected = 0;
+
+        // Open and confirm accept modal
+        state.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(effect, AppEffect::AcceptTask { .. }));
+
+        // Action failed: record_action_success is NOT called
+        assert_eq!(state.last_action, None);
+
+        // Pressing 'u' refuses cleanly with "nothing to undo"
+        let undo_effect = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(undo_effect, AppEffect::None);
+        assert_eq!(state.status_message.as_deref(), Some("nothing to undo"));
+    }
+
+    #[test]
+    fn cycling_kind_from_content_with_format() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Inbox;
+        let mut task = make_task("k3q7zm2a", Status::Inbox, None);
+        if let Some(t) = &mut task.task {
+            t.kind = Kind::Content {
+                format: Some(loom_api::ContentFormat::Talk),
+            };
+        }
+        state.inbox = vec![task];
+        state.inbox_selected = 0;
+
+        // Open accept modal
+        state.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(
+            state.accept_modal.as_ref().unwrap().kind,
+            Kind::Content {
+                format: Some(loom_api::ContentFormat::Talk)
+            }
+        );
+
+        // Next option: advances to Research (not back to start of list)
+        state.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(state.accept_modal.as_ref().unwrap().kind, Kind::Research);
+
+        // Prev option: cycles back to Content { format: None }
+        state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(
+            state.accept_modal.as_ref().unwrap().kind,
+            Kind::Content { format: None }
+        );
+
+        // Prev option again: cycles back to Story
+        state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(state.accept_modal.as_ref().unwrap().kind, Kind::Story);
+    }
+
+    #[test]
+    fn parent_grouping_groups_grandchildren_and_preserves_selection() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Today;
+
+        let root_id: TaskId = "task0001".parse().unwrap();
+        let child_id: TaskId = "task0003".parse().unwrap();
+
+        let mut root = make_task("task0001", Status::Ready, None);
+        root.rank = Some(loom_api::TaskRank {
+            position: 3,
+            reason: RankReason::DueDate,
+        });
+
+        let mut other = make_task("task0002", Status::Ready, None);
+        other.rank = Some(loom_api::TaskRank {
+            position: 1,
+            reason: RankReason::Urgent,
+        });
+
+        let mut child = make_task("task0003", Status::Ready, None);
+        if let Some(t) = &mut child.task {
+            t.relations.parent = Some(root_id);
+        }
+        child.rank = Some(loom_api::TaskRank {
+            position: 2,
+            reason: RankReason::Urgent,
+        });
+
+        let mut grand = make_task("task0004", Status::Ready, None);
+        if let Some(t) = &mut grand.task {
+            t.relations.parent = Some(child_id);
+        }
+        grand.rank = Some(loom_api::TaskRank {
+            position: 4,
+            reason: RankReason::First,
+        });
+
+        // Insert in arbitrary order: other, child, root, grand
+        state.today = vec![other, child, root, grand];
+        // Select child (index 1)
+        state.today_selected = 1;
+
+        // Group by parent
+        state.sort_today_by_parent();
+
+        // Expected order:
+        // 1. Root task 'other' (rank 1, no children)
+        // 2. Root task 'root' (rank 3), followed by child (task0003), followed by grandchild (task0004)
+        assert_eq!(state.today[0].id.as_str(), "task0002");
+        assert_eq!(state.today[1].id.as_str(), "task0001");
+        assert_eq!(state.today[2].id.as_str(), "task0003");
+        assert_eq!(state.today[3].id.as_str(), "task0004");
+
+        // Selection must follow task0003 to its new index (2)
+        assert_eq!(state.today_selected, 2);
+        assert_eq!(state.today[state.today_selected].id.as_str(), "task0003");
     }
 
     #[test]

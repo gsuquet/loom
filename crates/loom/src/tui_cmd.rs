@@ -393,6 +393,9 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                 action_in_flight = false;
                 match action_resp {
                     Ok(outcome) => {
+                        if let Some(task_id) = outcome.task_id {
+                            state.record_action_success(task_id);
+                        }
                         if let Some(msg) = outcome.message {
                             state.status_message = Some(msg);
                         }
@@ -434,7 +437,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
 #[allow(clippy::too_many_arguments)]
 fn handle_effect(
     effect: AppEffect,
-    state: &AppState,
+    state: &mut AppState,
     refresh_tx: &mpsc::Sender<RefreshRequest>,
     task_tx: &watch::Sender<Option<TaskId>>,
     fetch_in_flight: &mut bool,
@@ -475,6 +478,7 @@ fn handle_effect(
             due,
         } => {
             if *action_in_flight {
+                state.set_status("action in progress");
                 return;
             }
             *action_in_flight = true;
@@ -487,6 +491,7 @@ fn handle_effect(
         }
         AppEffect::SnoozeTask { id, until, on } => {
             if *action_in_flight {
+                state.set_status("action in progress");
                 return;
             }
             *action_in_flight = true;
@@ -494,6 +499,7 @@ fn handle_effect(
         }
         AppEffect::CancelTask(id) => {
             if *action_in_flight {
+                state.set_status("action in progress");
                 return;
             }
             *action_in_flight = true;
@@ -501,6 +507,7 @@ fn handle_effect(
         }
         AppEffect::DoneTask(id) => {
             if *action_in_flight {
+                state.set_status("action in progress");
                 return;
             }
             *action_in_flight = true;
@@ -508,6 +515,7 @@ fn handle_effect(
         }
         AppEffect::GoTask(id) => {
             if *action_in_flight {
+                state.set_status("action in progress");
                 return;
             }
             *action_in_flight = true;
@@ -515,6 +523,7 @@ fn handle_effect(
         }
         AppEffect::UndoTask(id) => {
             if *action_in_flight {
+                state.set_status("action in progress");
                 return;
             }
             *action_in_flight = true;
@@ -522,6 +531,7 @@ fn handle_effect(
         }
         AppEffect::CreateTask { title, context } => {
             if *action_in_flight {
+                state.set_status("action in progress");
                 return;
             }
             *action_in_flight = true;
@@ -554,6 +564,7 @@ enum ActionRequest {
 }
 
 struct ActionOutcome {
+    task_id: Option<TaskId>,
     should_refresh: bool,
     should_quit: bool,
     message: Option<String>,
@@ -586,6 +597,7 @@ async fn execute_simple_action(
         .await
         .map_err(|e| e.to_string())?;
     Ok(ActionOutcome {
+        task_id: Some(id.clone()),
         should_refresh: true,
         should_quit: false,
         message: Some(msg.to_string()),
@@ -599,6 +611,7 @@ async fn execute_go_action(client: &Client, id: TaskId) -> ActionResponse {
         .map_err(|e| e.to_string())?;
     crate::task_cmd::write_cd_file(result.repo_path.as_deref());
     Ok(ActionOutcome {
+        task_id: None,
         should_refresh: false,
         should_quit: true,
         message: None,
@@ -625,6 +638,7 @@ async fn execute_create_action(
         .await
         .map_err(|e| e.to_string())?;
     Ok(ActionOutcome {
+        task_id: None,
         should_refresh: true,
         should_quit: false,
         message: Some("task created in inbox".into()),
@@ -646,10 +660,11 @@ async fn execute_action(client: &Client, req: ActionRequest) -> ActionResponse {
                 ..Default::default()
             };
             let _detail: TaskDetail = client
-                .post(&format!("/v1/tasks/{id}/actions/ready"), Some(&request))
+                .post(&format!("/v1/tasks/{id}/actions/accept"), Some(&request))
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(ActionOutcome {
+                task_id: Some(id.clone()),
                 should_refresh: true,
                 should_quit: false,
                 message: Some(format!("task {id} accepted")),
@@ -666,6 +681,7 @@ async fn execute_action(client: &Client, req: ActionRequest) -> ActionResponse {
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(ActionOutcome {
+                task_id: Some(id.clone()),
                 should_refresh: true,
                 should_quit: false,
                 message: Some(format!("task {id} snoozed until {until}")),
@@ -684,6 +700,7 @@ async fn execute_action(client: &Client, req: ActionRequest) -> ActionResponse {
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(ActionOutcome {
+                task_id: None,
                 should_refresh: true,
                 should_quit: false,
                 message: Some(format!("undid last change on {id}")),
