@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use loom_core::{
     Action, ContextName, Date, EventRecord, Importance, Kind, RankReason, ReadOnlyReason,
@@ -199,9 +199,20 @@ pub struct TaskActionRequest {
     /// `ready` only, optional: new importance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub importance: Option<Importance>,
-    /// `ready` only, optional: new due date.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub due: Option<Date>,
+    /// `ready` only, optional: new due date. `Some(None)` (`null`) removes it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub due: Option<Option<Date>>,
+}
+
+/// Reads a field that is present, `null` included, as `Some`.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 /// `details` of an `ambiguous_prefix` error.
@@ -297,5 +308,19 @@ mod tests {
         );
         assert!(parse(json!({ "note": "x" })).is_err());
         assert!(parse(json!({ "until": "tomorrow" })).is_err());
+        assert_eq!(
+            parse(json!({ "due": null })).unwrap(),
+            TaskActionRequest {
+                due: Some(None),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            parse(json!({ "due": "2026-10-25" })).unwrap(),
+            TaskActionRequest {
+                due: Some(Some("2026-10-25".parse().unwrap())),
+                ..Default::default()
+            }
+        );
     }
 }

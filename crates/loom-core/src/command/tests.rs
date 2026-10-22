@@ -556,7 +556,7 @@ fn accept_an_inbox_task_with_kind_importance_and_due_updates_fields_and_undo_rev
         Command::Accept {
             kind: Some(Kind::Story),
             importance: Some(Importance::P0),
-            due: Some(due_date),
+            due: Some(Some(due_date)),
         },
         1,
     );
@@ -575,22 +575,74 @@ fn accept_an_inbox_task_with_kind_importance_and_due_updates_fields_and_undo_rev
 }
 
 #[test]
-fn accept_on_an_illegal_transition_is_refused() {
-    let (task, _) = task_with(Status::Ready);
-    let refused = exec(
+fn accept_with_kind_defaults_importance_when_omitted() {
+    let (task, mut log) = task_with(Status::Inbox);
+    assert_eq!(task.importance, Importance::P1); // Bug defaults to P1
+    let accepted = run(
         task,
+        &mut log,
         Command::Accept {
-            kind: None,
+            kind: Some(Kind::Chore), // Chore defaults to P3
             importance: None,
             due: None,
         },
         1,
     );
-    assert!(matches!(
-        refused,
-        Err(DomainError::IllegalTransition {
-            from: StatusName::Ready,
-            to: StatusName::Ready,
-        })
-    ));
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.kind, Kind::Chore);
+    assert_eq!(accepted.importance, Importance::P3);
+}
+
+#[test]
+fn accept_can_clear_due_date_with_some_none() {
+    let mut new = new_task(Kind::Bug);
+    new.due = Some("2026-10-25".parse().unwrap());
+    let (task, mut log) = create(new, &mut || 42, &[], at(0), &origin()).unwrap();
+    assert!(task.due.is_some());
+
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: Some(None),
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.due, None);
+}
+
+#[test]
+fn accept_on_an_illegal_transition_is_refused() {
+    for non_inbox in [
+        Status::Ready,
+        Status::Active,
+        Status::Waiting {
+            on: None,
+            until: None,
+        },
+        Status::Done,
+        Status::Cancelled,
+    ] {
+        let (task, _) = task_with(non_inbox.clone());
+        let from_name = non_inbox.name().unwrap();
+        let refused = exec(
+            task,
+            Command::Accept {
+                kind: None,
+                importance: None,
+                due: None,
+            },
+            1,
+        );
+        assert_eq!(
+            refused,
+            Err(DomainError::IllegalTransition {
+                from: from_name,
+                to: StatusName::Ready,
+            })
+        );
+    }
 }

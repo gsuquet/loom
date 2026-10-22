@@ -564,9 +564,36 @@ fn an_inbox_task_is_accepted_with_fields_and_undone() {
     let accepted_plain = gesture(&sandbox, &["accept", &id]);
     assert_eq!(accepted_plain.summary.task.unwrap().status, Status::Ready);
 
+    // Accepting a ready task with fields is refused as illegal transition
+    let output = sandbox.run(&sandbox.home(), None, &["accept", &id, "--kind", "bug"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains("illegal_transition") || err.contains("cannot move"),
+        "unexpected error: {err}"
+    );
+
     // Undo reverts back to Inbox again
     let undone_plain = gesture(&sandbox, &["undo", &id]);
     assert_eq!(undone_plain.summary.task.unwrap().status, Status::Inbox);
+
+    // Accept with kind only defaults importance to kind's default
+    let accepted_bug = gesture(
+        &sandbox,
+        &["accept", &id, "--kind", "bug", "--due", "2026-10-30"],
+    );
+    let bug_task = accepted_bug.summary.task.unwrap();
+    assert_eq!(bug_task.status, Status::Ready);
+    assert_eq!(bug_task.kind.name(), "bug");
+    assert_eq!(bug_task.importance, loom_api::Importance::P1);
+    assert_eq!(bug_task.due, Some("2026-10-30".parse().unwrap()));
+
+    // Undo reverts back to Inbox
+    gesture(&sandbox, &["undo", &id]);
+
+    // Accept with due none clears due date
+    let accepted_cleared = gesture(&sandbox, &["accept", &id, "--due", "none"]);
+    assert_eq!(accepted_cleared.summary.task.unwrap().due, None);
 }
 
 #[test]

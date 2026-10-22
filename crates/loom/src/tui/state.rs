@@ -3,12 +3,10 @@
 //! No I/O happens in this module: key events and SSE [`ChangeEvent`]s mutate [`AppState`] and
 //! return an [`AppEffect`] that the runtime loop in the binary executes.
 
-use std::str::FromStr;
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use loom_api::{
-    ChangeEvent, ContextName, Date, Importance, Kind, SearchResult, Status, TaskDetail, TaskId,
-    TaskSummary,
+    Action, ChangeEvent, ContextName, Date, Importance, Kind, SearchResult, Status, StatusName,
+    TaskDetail, TaskId, TaskSummary,
 };
 
 use crate::task::{parse_date, read_only_text};
@@ -99,6 +97,7 @@ pub const TRIAGE_KINDS: &[Kind] = &[
     Kind::Chore,
     Kind::Bug,
     Kind::Story,
+    Kind::Content { format: None },
     Kind::Research,
     Kind::Investigation,
     Kind::Review,
@@ -196,7 +195,7 @@ pub enum AppEffect {
         id: TaskId,
         kind: Option<Kind>,
         importance: Option<Importance>,
-        due: Option<Date>,
+        due: Option<Option<Date>>,
     },
     /// Snooze a task until date.
     SnoozeTask {
@@ -282,6 +281,10 @@ pub struct AppState {
     pub snooze_modal: Option<SnoozeModalState>,
     /// State of the active New Task modal, when open.
     pub new_task_modal: Option<NewTaskModalState>,
+    /// Fallback default context if none is active or selected.
+    pub default_context: Option<ContextName>,
+    /// Task ID of the last triage action executed, for undo (`u`).
+    pub last_action: Option<TaskId>,
     /// Injected local date for pure date calculations.
     pub local_date: Date,
     /// Transitory status message shown on bottom bar.
@@ -334,12 +337,26 @@ impl AppState {
             accept_modal: None,
             snooze_modal: None,
             new_task_modal: None,
+            default_context: None,
+            last_action: None,
             local_date,
             status_message: None,
             last_error: None,
             sse_state: SseState::Disconnected,
             should_quit: false,
         }
+    }
+
+    /// Updates the current local date for pure date calculations.
+    pub const fn set_local_date(&mut self, local_date: Date) {
+        self.local_date = local_date;
+    }
+
+    /// Sets the fallback default context.
+    #[must_use]
+    pub fn with_default_context(mut self, default_context: Option<ContextName>) -> Self {
+        self.default_context = default_context;
+        self
     }
 
     /// Whether priority reasons are displayed in the Today queue.
@@ -597,103 +614,183 @@ impl AppState {
         AppEffect::None
     }
 
-    fn editable_selected_task(&mut self) -> Option<TaskId> {
-        let task = self.selected_task()?;
+    fn actions_for_selected(&self) -> (Option<&TaskSummary>, Vec<Action>) {
+        let Some(summary) = self.selected_task() else {
+            return (None, Vec::new());
+        };
+        let actions = if let Some(detail) = &self.preview_detail
+            && detail.summary.id == summary.id
+        {
+            detail.actions.clone()
+        } else if let Some(task) = &summary.task {
+            loom_core::available_actions(task)
+        } else {
+            Vec::new()
+        };
+        (Some(summary), actions)
+    }
+
+    fn editable_action_task(&mut self, required_status: StatusName) -> Option<TaskId> {
+        let (summary, actions) = self.actions_for_selected();
+        let summary = summary?;
+        if let Some(ro) = &summary.read_only {
+            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            return None;
+        }
+        if actions.contains(&Action::SetStatus(required_status)) {
+            Some(summary.id.clone())
+        } else {
+            self.status_message = Some(format!("cannot move task to {required_status}"));
+            None
+        }
+    }
+
+    fn go_action_task(&mut self) -> Option<TaskId> {
+        let (summary, actions) = self.actions_for_selected();
+        let summary = summary?;
+        if let Some(ro) = &summary.read_only {
+            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            return None;
+        }
+        let is_active = summary.task.as_ref().map(|t| &t.status) == Some(&Status::Active);
+        if is_active || actions.contains(&Action::SetStatus(StatusName::Active)) {
+            Some(summary.id.clone())
+        } else {
+            self.status_message = Some("cannot activate task".into());
+            None
+        }
+    }
+
+    fn open_accept_modal(&mut self) -> AppEffect {
+        let (summary, actions) = self.actions_for_selected();
+        let Some(task) = summary else {
+            return AppEffect::None;
+        };
         if let Some(ro) = &task.read_only {
             self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
-            None
-        } else {
-            Some(task.id.clone())
+            return AppEffect::None;
         }
+        if !actions.contains(&Action::SetStatus(StatusName::Ready))
+            || task.task.as_ref().map(|t| &t.status) != Some(&Status::Inbox)
+        {
+            self.status_message = Some("cannot accept: task is not in inbox".into());
+            return AppEffect::None;
+        }
+        let default_kind = task.task.as_ref().map_or(Kind::Chore, |t| match &t.kind {
+            Kind::Unknown { .. } => Kind::Chore,
+            k => k.clone(),
+        });
+        let default_importance = task
+            .task
+            .as_ref()
+            .map_or_else(|| Importance::default_for(&default_kind), |t| t.importance);
+        let default_due = task
+            .task
+            .as_ref()
+            .and_then(|t| t.due)
+            .map_or(String::new(), |d| d.to_string());
+
+        self.accept_modal = Some(AcceptModalState {
+            task_id: task.id.clone(),
+            kind: default_kind,
+            importance: default_importance,
+            due_input: default_due,
+            field: AcceptField::Kind,
+            error: None,
+        });
+        self.modal = Some(ModalKind::Accept);
+        AppEffect::None
+    }
+
+    fn open_snooze_modal(&mut self) -> AppEffect {
+        let (summary, actions) = self.actions_for_selected();
+        let Some(task) = summary else {
+            return AppEffect::None;
+        };
+        if let Some(ro) = &task.read_only {
+            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            return AppEffect::None;
+        }
+        if !actions.contains(&Action::SetStatus(StatusName::Waiting)) {
+            self.status_message = Some("cannot snooze task".into());
+            return AppEffect::None;
+        }
+        self.snooze_modal = Some(SnoozeModalState {
+            task_id: task.id.clone(),
+            until_input: "tomorrow".into(),
+            on_input: String::new(),
+            field: SnoozeField::Until,
+            error: None,
+        });
+        self.modal = Some(ModalKind::Snooze);
+        AppEffect::None
+    }
+
+    fn open_new_task_modal(&mut self) -> AppEffect {
+        let context = if let Some(ctx) = &self.active_context {
+            ctx.clone()
+        } else if let Some(task) = self.selected_task() {
+            task.context.clone()
+        } else if let Some(ctx) = &self.default_context {
+            ctx.clone()
+        } else {
+            self.status_message =
+                Some("no context: select a task or configure default_context".into());
+            return AppEffect::None;
+        };
+        self.new_task_modal = Some(NewTaskModalState {
+            title_input: String::new(),
+            context,
+            error: None,
+        });
+        self.modal = Some(ModalKind::NewTask);
+        AppEffect::None
     }
 
     fn apply_triage_command(&mut self, cmd: KeyCommand) -> AppEffect {
         match cmd {
-            KeyCommand::TriageAccept => {
-                let Some(task) = self.selected_task() else {
-                    return AppEffect::None;
-                };
-                if let Some(ro) = &task.read_only {
-                    self.status_message =
-                        Some(format!("task is read-only: {}", read_only_text(ro)));
-                    return AppEffect::None;
-                }
-                if task.task.as_ref().map(|t| &t.status) != Some(&Status::Inbox) {
-                    self.status_message = Some("cannot accept: task is not in inbox".into());
-                    return AppEffect::None;
-                }
-                let default_kind = task.task.as_ref().map_or(Kind::Chore, |t| match &t.kind {
-                    Kind::Unknown { .. } => Kind::Chore,
-                    k => k.clone(),
-                });
-                let default_importance =
-                    task.task.as_ref().map_or(Importance::P2, |t| t.importance);
-                let default_due = task
-                    .task
-                    .as_ref()
-                    .and_then(|t| t.due)
-                    .map_or(String::new(), |d| d.to_string());
-
-                self.accept_modal = Some(AcceptModalState {
-                    task_id: task.id.clone(),
-                    kind: default_kind,
-                    importance: default_importance,
-                    due_input: default_due,
-                    field: AcceptField::Kind,
-                    error: None,
-                });
-                self.modal = Some(ModalKind::Accept);
-                AppEffect::None
-            }
-            KeyCommand::TriageSnooze => {
-                let Some(task) = self.selected_task() else {
-                    return AppEffect::None;
-                };
-                if let Some(ro) = &task.read_only {
-                    self.status_message =
-                        Some(format!("task is read-only: {}", read_only_text(ro)));
-                    return AppEffect::None;
-                }
-                self.snooze_modal = Some(SnoozeModalState {
-                    task_id: task.id.clone(),
-                    until_input: "tomorrow".into(),
-                    on_input: String::new(),
-                    field: SnoozeField::Until,
-                    error: None,
-                });
-                self.modal = Some(ModalKind::Snooze);
-                AppEffect::None
-            }
-            KeyCommand::TriageCancel => self
-                .editable_selected_task()
-                .map_or(AppEffect::None, AppEffect::CancelTask),
-            KeyCommand::TriageDone => self
-                .editable_selected_task()
-                .map_or(AppEffect::None, AppEffect::DoneTask),
-            KeyCommand::TriageGo => self
-                .editable_selected_task()
-                .map_or(AppEffect::None, AppEffect::GoTask),
-            KeyCommand::Undo => self
-                .editable_selected_task()
-                .map_or(AppEffect::None, AppEffect::UndoTask),
-            KeyCommand::NewTask => {
-                let context = if let Some(ctx) = &self.active_context {
-                    ctx.clone()
-                } else if let Some(ctx) = self.contexts.first() {
-                    ctx.clone()
-                } else if let Ok(ctx) = ContextName::from_str("default") {
-                    ctx
+            KeyCommand::TriageAccept => self.open_accept_modal(),
+            KeyCommand::TriageSnooze => self.open_snooze_modal(),
+            KeyCommand::TriageCancel => {
+                if let Some(id) = self.editable_action_task(StatusName::Cancelled) {
+                    self.last_action = Some(id.clone());
+                    AppEffect::CancelTask(id)
                 } else {
-                    return AppEffect::None;
-                };
-                self.new_task_modal = Some(NewTaskModalState {
-                    title_input: String::new(),
-                    context,
-                    error: None,
-                });
-                self.modal = Some(ModalKind::NewTask);
-                AppEffect::None
+                    AppEffect::None
+                }
             }
+            KeyCommand::TriageDone => {
+                if let Some(id) = self.editable_action_task(StatusName::Done) {
+                    self.last_action = Some(id.clone());
+                    AppEffect::DoneTask(id)
+                } else {
+                    AppEffect::None
+                }
+            }
+            KeyCommand::TriageGo => {
+                if let Some(id) = self.go_action_task() {
+                    self.last_action = Some(id.clone());
+                    AppEffect::GoTask(id)
+                } else {
+                    AppEffect::None
+                }
+            }
+            KeyCommand::Undo => {
+                if let Some(id) = self.last_action.take() {
+                    AppEffect::UndoTask(id)
+                } else if let Some(task) = self.selected_task() {
+                    if let Some(ro) = &task.read_only {
+                        self.status_message =
+                            Some(format!("task is read-only: {}", read_only_text(ro)));
+                        AppEffect::None
+                    } else {
+                        AppEffect::UndoTask(task.id.clone())
+                    }
+                } else {
+                    AppEffect::None
+                }
+            }
+            KeyCommand::NewTask => self.open_new_task_modal(),
             KeyCommand::ToggleWhy => {
                 self.today_options.why = !self.today_options.why;
                 AppEffect::None
@@ -739,6 +836,7 @@ impl AppState {
                     match m.field {
                         AcceptField::Kind => {
                             m.kind = cycle_prev(TRIAGE_KINDS, &m.kind);
+                            m.importance = Importance::default_for(&m.kind);
                         }
                         AcceptField::Importance => {
                             m.importance = cycle_prev(TRIAGE_IMPORTANCES, &m.importance);
@@ -755,6 +853,7 @@ impl AppState {
                     match m.field {
                         AcceptField::Kind => {
                             m.kind = cycle_next(TRIAGE_KINDS, &m.kind);
+                            m.importance = Importance::default_for(&m.kind);
                         }
                         AcceptField::Importance => {
                             m.importance = cycle_next(TRIAGE_IMPORTANCES, &m.importance);
@@ -800,13 +899,13 @@ impl AppState {
             return AppEffect::None;
         };
         let due = if m.due_input.trim().is_empty() {
-            None
+            Some(None)
         } else {
             let Ok(d) = parse_date(m.due_input.trim(), self.local_date) else {
                 m.error = Some(format!("invalid date {:?}", m.due_input.trim()));
                 return AppEffect::None;
             };
-            Some(d)
+            Some(Some(d))
         };
         let effect = AppEffect::AcceptTask {
             id: m.task_id.clone(),
@@ -814,6 +913,7 @@ impl AppState {
             importance: Some(m.importance),
             due,
         };
+        self.last_action = Some(m.task_id.clone());
         self.modal = None;
         self.accept_modal = None;
         effect
@@ -837,6 +937,7 @@ impl AppState {
             until,
             on,
         };
+        self.last_action = Some(m.task_id.clone());
         self.modal = None;
         self.snooze_modal = None;
         effect
@@ -1120,6 +1221,7 @@ mod tests {
     use super::*;
     use loom_api::TaskReadOnly;
     use std::collections::BTreeMap;
+    use std::str::FromStr;
 
     fn test_theme() -> Theme {
         Theme::from_config(&BTreeMap::new(), false)
@@ -1261,10 +1363,14 @@ mod tests {
         assert_eq!(modal.importance, Importance::P1);
         assert_eq!(modal.due_input, "2026-10-25");
 
-        // Next option on Kind cycles kind
+        // Next option on Kind cycles kind and updates default importance to P2
         let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
         state.handle_key(right);
         assert_eq!(state.accept_modal.as_ref().unwrap().kind, Kind::Story);
+        assert_eq!(
+            state.accept_modal.as_ref().unwrap().importance,
+            Importance::P2
+        );
 
         // Next field moves to Importance
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
@@ -1274,11 +1380,11 @@ mod tests {
             AcceptField::Importance
         );
 
-        // Next option on Importance cycles importance
+        // Next option on Importance cycles importance from P2 to P3
         state.handle_key(right);
         assert_eq!(
             state.accept_modal.as_ref().unwrap().importance,
-            Importance::P2
+            Importance::P3
         );
 
         // Next field moves to Due
@@ -1308,8 +1414,8 @@ mod tests {
             AppEffect::AcceptTask {
                 id: "k3q7zm2a".parse().unwrap(),
                 kind: Some(Kind::Story),
-                importance: Some(Importance::P2),
-                due: Some(jiff::civil::date(2026, 10, 23)),
+                importance: Some(Importance::P3),
+                due: Some(Some(jiff::civil::date(2026, 10, 23))),
             }
         );
     }
@@ -1499,5 +1605,71 @@ mod tests {
         let p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
         state.handle_key(p);
         assert!(state.group_by_parent());
+    }
+
+    #[test]
+    fn undo_after_accept_restores_accepted_task_even_when_gone_from_queue() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        let task_id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.active_tab = QueueTab::Inbox;
+        state.inbox = vec![
+            make_task("k3q7zm2a", Status::Inbox, None),
+            make_task("m9x2rt4b", Status::Inbox, None),
+        ];
+        state.inbox_selected = 0;
+
+        // Open accept modal
+        state.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        // Confirm accept modal
+        let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(effect, AppEffect::AcceptTask { ref id, .. } if id == &task_id));
+
+        // Simulated refresh: the accepted task is removed from inbox, next task is now at index 0
+        state.inbox = vec![make_task("m9x2rt4b", Status::Inbox, None)];
+        state.inbox_selected = 0;
+
+        // Press 'u': must undo the accepted task (k3q7zm2a), not the currently selected one (m9x2rt4b)
+        let undo_effect = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(undo_effect, AppEffect::UndoTask(task_id));
+    }
+
+    #[test]
+    fn new_task_uses_selected_task_context_or_default_context() {
+        let mut state = AppState::new(
+            test_theme(),
+            None,
+            vec!["alpha".parse().unwrap(), "work".parse().unwrap()],
+            test_date(),
+        );
+        state.active_tab = QueueTab::Today;
+        let mut task = make_task("k3q7zm2a", Status::Ready, None);
+        task.context = "work".parse().unwrap();
+        state.today = vec![task];
+        state.today_selected = 0;
+
+        // With [all] active, '+' uses the selected task's context ('work'), NOT contexts.first() ('alpha')
+        state.handle_key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE));
+        assert_eq!(
+            state.new_task_modal.as_ref().unwrap().context,
+            "work".parse::<ContextName>().unwrap()
+        );
+        state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        // When queue is empty and default_context is set, '+' uses default_context
+        state.today.clear();
+        state.default_context = Some("personal".parse().unwrap());
+        state.handle_key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE));
+        assert_eq!(
+            state.new_task_modal.as_ref().unwrap().context,
+            "personal".parse::<ContextName>().unwrap()
+        );
+        state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        // When queue is empty and no default_context, '+' refuses cleanly
+        state.default_context = None;
+        let effect = state.handle_key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE));
+        assert_eq!(effect, AppEffect::None);
+        assert_eq!(state.modal, None);
+        assert!(state.status_message.is_some());
     }
 }

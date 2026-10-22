@@ -422,16 +422,14 @@ fn actions_become_commands() {
     let empty = TaskActionRequest::default();
     assert_eq!(
         action_command(TaskActionName::Ready, empty.clone()).unwrap(),
-        Command::Accept {
-            kind: None,
-            importance: None,
-            due: None,
+        Command::SetStatus {
+            status: Status::Ready,
         }
     );
     let accept_fields = TaskActionRequest {
         kind: Some(Kind::Story),
         importance: Some(Importance::P0),
-        due: Some(date("2026-10-25")),
+        due: Some(Some(date("2026-10-25"))),
         ..TaskActionRequest::default()
     };
     assert_eq!(
@@ -439,7 +437,7 @@ fn actions_become_commands() {
         Command::Accept {
             kind: Some(Kind::Story),
             importance: Some(Importance::P0),
-            due: Some(date("2026-10-25")),
+            due: Some(Some(date("2026-10-25"))),
         }
     );
     assert_eq!(
