@@ -4,6 +4,7 @@
 if command -v loom >/dev/null 2>&1; then
   loom() {
     local is_go=0
+    local is_tui=1
     local skip_next=0
     local arg
     for arg in "$@"; do
@@ -23,14 +24,16 @@ if command -v loom >/dev/null 2>&1; then
           ;;
         go)
           is_go=1
+          is_tui=0
           break
           ;;
         *)
+          is_tui=0
           break
           ;;
       esac
     done
-    if [[ "$is_go" == 1 ]]; then
+    if [[ "$is_go" == 1 || "$is_tui" == 1 ]]; then
       local cd_file
       cd_file=$(mktemp "${TMPDIR:-/tmp}/loom-cd.XXXXXX") || { command loom "$@"; return $?; }
       LOOM_CD_FILE="$cd_file" command loom "$@"

@@ -526,6 +526,101 @@ fn a_task_is_changed_closed_snoozed_and_undone() {
 }
 
 #[test]
+fn an_inbox_task_is_accepted_with_fields_and_undone() {
+    let sandbox = Sandbox::new();
+    let task = sandbox.add(&["-c", "work", "Triage me"]);
+    let id = task.summary.id.to_string();
+    assert_eq!(task.summary.task.unwrap().status, Status::Inbox);
+
+    // Accept with new kind, importance, due
+    let accepted = gesture(
+        &sandbox,
+        &[
+            "accept",
+            &id,
+            "--kind",
+            "story",
+            "--importance",
+            "p1",
+            "--due",
+            "2026-10-30",
+        ],
+    );
+    let accepted_task = accepted.summary.task.unwrap();
+    assert_eq!(accepted_task.status, Status::Ready);
+    assert_eq!(accepted_task.kind.name(), "story");
+    assert_eq!(accepted_task.importance, loom_api::Importance::P1);
+    assert_eq!(accepted_task.due, Some("2026-10-30".parse().unwrap()));
+
+    // Undo reverts back to Inbox and restores original fields
+    let undone = gesture(&sandbox, &["undo", &id]);
+    let undone_task = undone.summary.task.unwrap();
+    assert_eq!(undone_task.status, Status::Inbox);
+    assert_eq!(undone_task.kind.name(), "chore");
+    assert_eq!(undone_task.importance, loom_api::Importance::P3);
+    assert_eq!(undone_task.due, None);
+
+    // Accept with no fields moves status to ready
+    let accepted_plain = gesture(&sandbox, &["accept", &id]);
+    assert_eq!(accepted_plain.summary.task.unwrap().status, Status::Ready);
+
+    // Accepting a ready task (even with no fields) is refused as illegal transition
+    let output = sandbox.run(&sandbox.home(), None, &["accept", &id]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains("illegal_transition") || err.contains("cannot move"),
+        "unexpected error: {err}"
+    );
+
+    // Marking a task done then calling accept without fields is also refused
+    let done_task = sandbox.add(&["-c", "work", "--ready", "Already done"]);
+    let done_id = done_task.summary.id.to_string();
+    gesture(&sandbox, &["done", &done_id]);
+    let output_done = sandbox.run(&sandbox.home(), None, &["accept", &done_id]);
+    assert_eq!(output_done.status.code(), Some(1));
+    let err_done = stderr(&output_done);
+    assert!(
+        err_done.contains("illegal_transition") || err_done.contains("cannot move"),
+        "unexpected error: {err_done}"
+    );
+
+    // Undo reverts back to Inbox
+    let undone_plain = gesture(&sandbox, &["undo", &id]);
+    assert_eq!(undone_plain.summary.task.unwrap().status, Status::Inbox);
+
+    // Accept with kind only defaults importance to kind's default
+    let accepted_bug = gesture(
+        &sandbox,
+        &["accept", &id, "--kind", "bug", "--due", "2026-10-30"],
+    );
+    let bug_task = accepted_bug.summary.task.unwrap();
+    assert_eq!(bug_task.status, Status::Ready);
+    assert_eq!(bug_task.kind.name(), "bug");
+    assert_eq!(bug_task.importance, loom_api::Importance::P1);
+    assert_eq!(bug_task.due, Some("2026-10-30".parse().unwrap()));
+
+    // Undo reverts back to Inbox
+    gesture(&sandbox, &["undo", &id]);
+
+    // Manually set importance to p0 with set, then accept with same kind (--kind bug):
+    // importance remains p0 rather than being overwritten with bug's default (p1)
+    gesture(&sandbox, &["set", &id, "kind=bug", "importance=p0"]);
+    let accepted_same_kind = gesture(&sandbox, &["accept", &id, "--kind", "bug"]);
+    let same_kind_task = accepted_same_kind.summary.task.unwrap();
+    assert_eq!(same_kind_task.status, Status::Ready);
+    assert_eq!(same_kind_task.kind.name(), "bug");
+    assert_eq!(same_kind_task.importance, loom_api::Importance::P0);
+
+    // Undo reverts back to Inbox
+    gesture(&sandbox, &["undo", &id]);
+
+    // Accept with due none clears due date
+    let accepted_cleared = gesture(&sandbox, &["accept", &id, "--due", "none"]);
+    assert_eq!(accepted_cleared.summary.task.unwrap().due, None);
+}
+
+#[test]
 fn set_arguments_are_checked_before_loomd() {
     let sandbox = Sandbox::new();
     let id = sandbox.add(&["-c", "work", "X"]).summary.id.to_string();

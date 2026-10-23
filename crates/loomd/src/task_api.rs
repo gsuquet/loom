@@ -389,7 +389,14 @@ pub fn action_command(
     action: TaskActionName,
     request: TaskActionRequest,
 ) -> Result<Command, ApiError> {
-    let TaskActionRequest { on, until, text } = request;
+    let TaskActionRequest {
+        on,
+        until,
+        text,
+        kind,
+        importance,
+        due,
+    } = request;
     // The first field of `request` the action does not take, if any.
     let wait_field = if on.is_some() {
         Some("on")
@@ -399,6 +406,15 @@ pub fn action_command(
         None
     };
     let text_field = text.is_some().then_some("text");
+    let accept_field = if kind.is_some() {
+        Some("kind")
+    } else if importance.is_some() {
+        Some("importance")
+    } else if due.is_some() {
+        Some("due")
+    } else {
+        None
+    };
     let refuse = |field: Option<&str>| {
         field.map_or(Ok(()), |field| {
             Err(invalid_request(format!(
@@ -408,7 +424,7 @@ pub fn action_command(
         })
     };
     let plain = |command: Command| {
-        refuse(wait_field.or(text_field))?;
+        refuse(wait_field.or(text_field).or(accept_field))?;
         Ok(command)
     };
     let status = |status: Status| Command::SetStatus { status };
@@ -420,12 +436,20 @@ pub fn action_command(
         TaskActionName::Cancelled => plain(status(Status::Cancelled)),
         TaskActionName::Pin => plain(Command::Pin),
         TaskActionName::Unpin => plain(Command::Unpin),
+        TaskActionName::Accept => {
+            refuse(wait_field.or(text_field))?;
+            Ok(Command::Accept {
+                kind,
+                importance,
+                due,
+            })
+        }
         TaskActionName::Waiting => {
-            refuse(text_field)?;
+            refuse(text_field.or(accept_field))?;
             Ok(status(Status::Waiting { on, until }))
         }
         TaskActionName::LogNote => {
-            refuse(wait_field)?;
+            refuse(wait_field.or(accept_field))?;
             text.map(|text| Command::LogNote { text })
                 .ok_or_else(|| invalid_request("the action `log_note` needs a `text`"))
         }

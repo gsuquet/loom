@@ -1162,6 +1162,7 @@ fn task_requests_and_problems_validate_against_their_schema() {
             on: Some("Alice".to_owned()),
             until: Some("2026-10-20".parse().unwrap()),
             text: None,
+            ..Default::default()
         })
         .unwrap(),
     );

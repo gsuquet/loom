@@ -407,6 +407,9 @@ for arg in "$@"; do
         exit 0
     fi
 done
+if [ -n "$LOOM_CD_FILE" ] && [ "$SIMULATE_TUI_GO" = 1 ]; then
+    printf '%s\n' "{target_str}" > "$LOOM_CD_FILE"
+fi
 exit 0
 "#
         );
@@ -442,5 +445,19 @@ exit 0
             stdout.contains(&fixture.home().display().to_string()),
             "{shell:?}: {stdout}"
         );
+
+        // 4. `loom` with no subcommand (TUI) provisions LOOM_CD_FILE and changes directory when g is pressed
+        let script = format!("{EVAL_SNIPPET}cd \"$HOME\"\nSIMULATE_TUI_GO=1 loom\npwd\n");
+        let output = fixture.run(&script, true);
+        assert_eq!(output.status.code(), Some(0), "{shell:?}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.trim(), target_str, "{shell:?}: {stdout}");
+
+        // 5. `loom -c work` with no subcommand (TUI) provisions LOOM_CD_FILE and changes directory
+        let script = format!("{EVAL_SNIPPET}cd \"$HOME\"\nSIMULATE_TUI_GO=1 loom -c work\npwd\n");
+        let output = fixture.run(&script, true);
+        assert_eq!(output.status.code(), Some(0), "{shell:?}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.trim(), target_str, "{shell:?}: {stdout}");
     });
 }

@@ -90,6 +90,19 @@
           ]
         },
         {
+          "description": "Accept a task from the inbox.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "accept"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
           "description": "Edit fields.",
           "type": "object",
           "properties": {
