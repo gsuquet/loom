@@ -217,11 +217,12 @@ The priority list holds the `ready` and `active` tasks, and the `waiting` tasks 
 | Action | Body | Change |
 | --- | --- | --- |
 | `inbox`, `ready`, `active`, `done`, `cancelled` | none | Moves the task to this status. |
+| `accept` | `kind`, `importance`, `due`, all optional | Moves an `inbox` task to `ready` and updates the specified fields. |
 | `waiting` | `on`, `until`, both optional | Moves the task to `waiting` (or changes what it waits on and until when). |
 | `pin`, `unpin` | none | Pins or unpins the task. |
 | `log_note` | `text`, required | Logs a note as a `note_logged` event. |
 
-A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to any other status, and from `waiting` to `waiting` too. A task `done` or `cancelled` can move only to `ready`. Any other action name is a `not_found`. An empty body (or a body of only whitespace) is no body. A field that the action does not take is an `invalid_request`.
+A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to any other status, and from `waiting` to `waiting` too. A task `done` or `cancelled` can move only to `ready`. The `accept` action requires an `inbox` task and moves it to `ready` while updating any specified `kind`, `importance`, or `due` fields in a single event. If `kind` changes without `importance`, `importance` resets to the default of the new kind; if `kind` is unchanged, existing importance is kept. An `accept` call on a task not in `inbox` returns `400 illegal_transition`. Any other action name is a `not_found`. An empty body (or a body of only whitespace) is no body. A field that the action does not take is an `invalid_request`.
 
 `POST /v1/tasks/{id}/undo` reverts the last change of the task. It appends an `undone` event with the inverse changes. A change is an edit, a status change, a pin, a hand edit or an undo, but not a note or the creation. The undo of an undo does the change again. `loomd` computes the inverse from the log of the task. The request has no body.
 

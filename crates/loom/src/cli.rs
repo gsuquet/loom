@@ -471,13 +471,13 @@ pub struct AcceptArgs {
     /// Task ID, or a unique prefix of one.
     #[arg(value_name = "ID", value_parser = task_prefix)]
     pub id: String,
-    /// Kind of the task.
+    /// Kind of the task. If changed without --importance, resets importance to the kind's default.
     #[arg(long, value_enum)]
     pub kind: Option<KindArg>,
     /// Format of a `content` task.
     #[arg(long, value_enum)]
     pub format: Option<FormatArg>,
-    /// Importance of the task.
+    /// Importance of the task. If omitted when kind changes, resets to the kind's default; if omitted when kind is unchanged, keeps existing importance.
     #[arg(long, value_enum)]
     pub importance: Option<ImportanceArg>,
     /// Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d`, `+<n>w` or `none`.

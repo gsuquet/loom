@@ -597,9 +597,9 @@ loom accept [OPTIONS] <ID>
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--kind <KIND>` | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview`, `learning` |  | Kind of the task |
+| `--kind <KIND>` | `story`, `bug`, `chore`, `research`, `investigation`, `review`, `support`, `content`, `admin`, `interview`, `learning` |  | Kind of the task. If changed without --importance, resets importance to the kind's default |
 | `--format <FORMAT>` | `talk`, `article`, `training`, `workshop` |  | Format of a `content` task |
-| `--importance <IMPORTANCE>` | `p0`, `p1`, `p2`, `p3` |  | Importance of the task |
+| `--importance <IMPORTANCE>` | `p0`, `p1`, `p2`, `p3` |  | Importance of the task. If omitted when kind changes, resets to the kind's default; if omitted when kind is unchanged, keeps existing importance |
 | `--due <DATE>` |  |  | Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d`, `+<n>w` or `none` |
 | `--json` |  |  | Print the task as JSON (`TaskDetail` schema) |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |

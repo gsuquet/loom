@@ -13,7 +13,7 @@
       "format": "date"
     },
     "importance": {
-      "description": "`accept` only, optional: new importance.",
+      "description": "`accept` only, optional: new importance. If omitted when kind changes, resets to the new kind's default; if omitted when kind is unchanged, keeps existing importance.",
       "anyOf": [
         {
           "$ref": "#/$defs/Importance"
@@ -24,7 +24,7 @@
       ]
     },
     "kind": {
-      "description": "`accept` only, optional: new kind.",
+      "description": "`accept` only, optional: new kind. If changed without importance, resets importance to the kind's default.",
       "anyOf": [
         {
           "$ref": "#/$defs/Kind"
