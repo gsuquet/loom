@@ -144,6 +144,8 @@ fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 pub enum Action {
     /// Move to this status.
     SetStatus(StatusName),
+    /// Accept a task from the inbox.
+    Accept,
     /// Edit fields.
     Edit,
     /// Pin.
@@ -236,6 +238,9 @@ pub fn available_actions(task: &Task) -> Vec<Action> {
         .filter(|to| is_legal_transition(from, *to))
         .map(Action::SetStatus)
         .collect();
+    if from == StatusName::Inbox {
+        actions.push(Action::Accept);
+    }
     actions.push(Action::Edit);
     actions.push(if task.pinned {
         Action::Unpin

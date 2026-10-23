@@ -174,6 +174,7 @@ impl TaskActionName {
                 StatusName::Done => Self::Done,
                 StatusName::Cancelled => Self::Cancelled,
             }),
+            Action::Accept => Some(Self::Accept),
             Action::Pin => Some(Self::Pin),
             Action::Unpin => Some(Self::Unpin),
             Action::LogNote => Some(Self::LogNote),
@@ -195,10 +196,10 @@ pub struct TaskActionRequest {
     /// `log_note` only, required: the note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// `accept` only, optional: new kind.
+    /// `accept` only, optional: new kind. If changed without importance, resets importance to the kind's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<Kind>,
-    /// `accept` only, optional: new importance.
+    /// `accept` only, optional: new importance. If omitted when kind changes, resets to the new kind's default; if omitted when kind is unchanged, keeps existing importance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub importance: Option<Importance>,
     /// `accept` only, optional: new due date. `Some(None)` (`null`) removes it.
