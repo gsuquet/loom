@@ -758,9 +758,7 @@ impl AppState {
             self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
             return AppEffect::None;
         }
-        if !actions.contains(&Action::SetStatus(StatusName::Ready))
-            || task.task.as_ref().map(|t| &t.status) != Some(&Status::Inbox)
-        {
+        if !actions.contains(&Action::Accept) {
             self.status_message = Some("cannot accept: task is not in inbox".into());
             return AppEffect::None;
         }
