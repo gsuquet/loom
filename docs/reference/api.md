@@ -774,7 +774,7 @@ Answer of `GET /v1/tasks/{id}` and of every task write: the fields of `TaskSumma
 | Field | Type | Content |
 | --- | --- | --- |
 | `body` | string | The notes after the frontmatter; the whole file when `task.md` is invalid. |
-| `actions` | list of `Action` | What the task accepts, empty when it is read-only: `{"action": "set_status", "status": …}` for each status it can move to, then `{"action": "edit"}` (`PATCH`), `{"action": "pin"}` or `{"action": "unpin"}`, `{"action": "log_note"}`. |
+| `actions` | list of `Action` | What the task accepts, empty when it is read-only: `{"action": "set_status", "status": …}` for each status it can move to, `{"action": "accept"}` when in inbox, then `{"action": "edit"}` (`PATCH`), `{"action": "pin"}` or `{"action": "unpin"}`, `{"action": "log_note"}`. |
 
 ### `TaskEvents`
 
@@ -818,7 +818,7 @@ Body of `PATCH /v1/tasks/{id}`: the fields to change, each optional. An absent f
 | `links` | list | Replaces every link. |
 | `relations` | object | Replaces every relation. |
 
-[Actions](#task-endpoints) change the status and the pin. `status` or `pinned` in the body is an `invalid_request`.
+[Actions](#task-endpoints) change the status, accept inbox tasks, pin, unpin, or log notes. `status` or `pinned` in the body is an `invalid_request`.
 
 ### `TaskActionRequest`
 
@@ -829,6 +829,9 @@ Body of `POST /v1/tasks/{id}/actions/{action}`, optional.
 | `on` | string, optional | `waiting` only: what or whom the task waits on. |
 | `until` | date, optional | `waiting` only: hidden from the priority list until this date. |
 | `text` | string | `log_note` only, required: the note, not blank. |
+| `kind` | object, optional | `accept` only: `{"kind": …, "format": …}`, as in `NewTask`. Resets importance to default unless `importance` is also set. |
+| `importance` | string, optional | `accept` only: `p0` to `p3`. |
+| `due` | date \| `null`, optional | `accept` only: due date; `null` removes it. |
 
 ### Problem details
 
