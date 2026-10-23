@@ -11,13 +11,14 @@ use loom::cli::{Cli, GlobalArgs};
 use loom::client::Client;
 use loom::conventions::{Exit, use_color};
 use loom::search::search_api_path;
-use loom::task::list_api_path;
+use loom::task::{AddRequest, list_api_path, new_task};
 use loom::tui::color::Theme;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, SseState};
 use loom::tui::terminal::TerminalGuard;
 use loom_api::{
-    ContextName, DEFAULT_SEARCH_LIMIT, EventCursor, SearchResults, TaskDetail, TaskId, TaskList,
+    ContextName, DEFAULT_SEARCH_LIMIT, Date, EventCursor, GoResult, Importance, Kind,
+    SearchResults, TaskActionRequest, TaskDetail, TaskId, TaskList,
 };
 use miette::{IntoDiagnostic as _, Result};
 use ratatui::Terminal;
@@ -83,7 +84,9 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     );
     let theme = Theme::from_config(&config.contexts, color_enabled);
     let contexts: Vec<ContextName> = config.contexts.keys().cloned().collect();
-    let mut state = AppState::new(theme, global.context.clone(), contexts, local_today());
+    let default_context = config.default_context.as_ref().map(|s| s.get_ref().clone());
+    let mut state = AppState::new(theme, global.context.clone(), contexts, local_today())
+        .with_default_context(default_context);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -181,7 +184,15 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
         run_sse_worker(sse_client, sse_tx).await;
     });
 
-    // 5. Initial draw and trigger initial refresh.
+    // 5. Spawn action worker for task triage operations (accept, snooze, cancel, done, go, undo, create).
+    let (action_tx, action_rx) = mpsc::channel::<ActionRequest>(16);
+    let (action_done_tx, mut action_done_rx) = mpsc::channel::<ActionResponse>(16);
+    let action_client = client.clone();
+    tokio::spawn(async move {
+        run_action_worker(action_client, action_rx, action_done_tx).await;
+    });
+
+    // 6. Initial draw and trigger initial refresh.
     terminal.draw(|f| render(f, state)).into_diagnostic()?;
 
     let mut refresh_queued = false;
@@ -190,6 +201,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
         open_id: None,
     });
     let mut fetch_in_flight = true;
+    let mut action_in_flight = false;
 
     let mut event_stream = crossterm::event::EventStream::new();
     let mut pending_search: Option<String> = None;
@@ -213,6 +225,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                 if let Ok(event) = event_res {
                     match event {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            state.set_local_date(local_today());
                             let effect = state.handle_key(key);
                             handle_effect(
                                 effect,
@@ -223,6 +236,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                                 &mut refresh_queued,
                                 &mut pending_search,
                                 &mut search_timer,
+                                &action_tx,
+                                &mut action_in_flight,
                             );
                             needs_redraw = true;
                         }
@@ -256,6 +271,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                             &mut refresh_queued,
                             &mut pending_search,
                             &mut search_timer,
+                            &action_tx,
+                            &mut action_in_flight,
                         );
                         needs_redraw = true;
                     }
@@ -314,7 +331,12 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                     && data.open.as_ref().is_none_or(|(_, r)| r.is_ok());
 
                 match data.today {
-                    Ok(list) => state.today = list.tasks,
+                    Ok(list) => {
+                        state.today = list.tasks;
+                        if state.group_by_parent() {
+                            state.sort_today_by_parent();
+                        }
+                    }
                     Err(err) => state.set_error(err),
                 }
                 match data.inbox {
@@ -365,6 +387,42 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                 }
                 needs_redraw = true;
             }
+
+            // Handle action worker responses
+            Some(action_resp) = action_done_rx.recv() => {
+                action_in_flight = false;
+                match action_resp {
+                    Ok(outcome) => {
+                        if let Some(task_id) = outcome.task_id {
+                            state.record_action_success(task_id);
+                        }
+                        if let Some(msg) = outcome.message {
+                            state.status_message = Some(msg);
+                        }
+                        if outcome.should_quit {
+                            state.should_quit = true;
+                        }
+                        if outcome.should_refresh {
+                            handle_effect(
+                                AppEffect::Refresh,
+                                state,
+                                &refresh_tx,
+                                &task_tx,
+                                &mut fetch_in_flight,
+                                &mut refresh_queued,
+                                &mut pending_search,
+                                &mut search_timer,
+                                &action_tx,
+                                &mut action_in_flight,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        state.set_error(err);
+                    }
+                }
+                needs_redraw = true;
+            }
         }
 
         if needs_redraw {
@@ -379,23 +437,18 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
 #[allow(clippy::too_many_arguments)]
 fn handle_effect(
     effect: AppEffect,
-    state: &AppState,
+    state: &mut AppState,
     refresh_tx: &mpsc::Sender<RefreshRequest>,
     task_tx: &watch::Sender<Option<TaskId>>,
     fetch_in_flight: &mut bool,
     refresh_queued: &mut bool,
     pending_search: &mut Option<String>,
     search_timer: &mut std::pin::Pin<Box<tokio::time::Sleep>>,
+    action_tx: &mpsc::Sender<ActionRequest>,
+    action_in_flight: &mut bool,
 ) {
     match effect {
-        AppEffect::None
-        | AppEffect::AcceptTask { .. }
-        | AppEffect::SnoozeTask { .. }
-        | AppEffect::CancelTask(_)
-        | AppEffect::DoneTask(_)
-        | AppEffect::GoTask(_)
-        | AppEffect::UndoTask(_)
-        | AppEffect::CreateTask { .. } => {}
+        AppEffect::None => {}
         AppEffect::Refresh => {
             if *fetch_in_flight {
                 *refresh_queued = true;
@@ -417,6 +470,244 @@ fn handle_effect(
         AppEffect::Search(query) => {
             *pending_search = Some(query);
             *search_timer = Box::pin(tokio::time::sleep(SEARCH_DEBOUNCE));
+        }
+        AppEffect::AcceptTask {
+            id,
+            kind,
+            importance,
+            due,
+        } => {
+            if *action_in_flight {
+                state.set_status("action in progress");
+                return;
+            }
+            *action_in_flight = true;
+            let _ = action_tx.try_send(ActionRequest::Accept {
+                id,
+                kind,
+                importance,
+                due,
+            });
+        }
+        AppEffect::SnoozeTask { id, until, on } => {
+            if *action_in_flight {
+                state.set_status("action in progress");
+                return;
+            }
+            *action_in_flight = true;
+            let _ = action_tx.try_send(ActionRequest::Snooze { id, until, on });
+        }
+        AppEffect::CancelTask(id) => {
+            if *action_in_flight {
+                state.set_status("action in progress");
+                return;
+            }
+            *action_in_flight = true;
+            let _ = action_tx.try_send(ActionRequest::Cancel(id));
+        }
+        AppEffect::DoneTask(id) => {
+            if *action_in_flight {
+                state.set_status("action in progress");
+                return;
+            }
+            *action_in_flight = true;
+            let _ = action_tx.try_send(ActionRequest::Done(id));
+        }
+        AppEffect::GoTask(id) => {
+            if *action_in_flight {
+                state.set_status("action in progress");
+                return;
+            }
+            *action_in_flight = true;
+            let _ = action_tx.try_send(ActionRequest::Go(id));
+        }
+        AppEffect::UndoTask(id) => {
+            if *action_in_flight {
+                state.set_status("action in progress");
+                return;
+            }
+            *action_in_flight = true;
+            let _ = action_tx.try_send(ActionRequest::Undo(id));
+        }
+        AppEffect::CreateTask { title, context } => {
+            if *action_in_flight {
+                state.set_status("action in progress");
+                return;
+            }
+            *action_in_flight = true;
+            let _ = action_tx.try_send(ActionRequest::Create { title, context });
+        }
+    }
+}
+
+#[allow(clippy::option_option)]
+enum ActionRequest {
+    Accept {
+        id: TaskId,
+        kind: Option<Kind>,
+        importance: Option<Importance>,
+        due: Option<Option<Date>>,
+    },
+    Snooze {
+        id: TaskId,
+        until: Date,
+        on: Option<String>,
+    },
+    Cancel(TaskId),
+    Done(TaskId),
+    Go(TaskId),
+    Undo(TaskId),
+    Create {
+        title: String,
+        context: ContextName,
+    },
+}
+
+struct ActionOutcome {
+    task_id: Option<TaskId>,
+    should_refresh: bool,
+    should_quit: bool,
+    message: Option<String>,
+}
+
+type ActionResponse = std::result::Result<ActionOutcome, String>;
+
+async fn run_action_worker(
+    client: Client,
+    mut requests: mpsc::Receiver<ActionRequest>,
+    responses: mpsc::Sender<ActionResponse>,
+) {
+    while let Some(req) = requests.recv().await {
+        let resp = execute_action(&client, req).await;
+        let _ = responses.send(resp).await;
+    }
+}
+
+async fn execute_simple_action(
+    client: &Client,
+    id: &TaskId,
+    name: &str,
+    msg: &str,
+) -> ActionResponse {
+    let _detail: TaskDetail = client
+        .post(
+            &format!("/v1/tasks/{id}/actions/{name}"),
+            None::<&TaskActionRequest>,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ActionOutcome {
+        task_id: Some(id.clone()),
+        should_refresh: true,
+        should_quit: false,
+        message: Some(msg.to_string()),
+    })
+}
+
+async fn execute_go_action(client: &Client, id: TaskId) -> ActionResponse {
+    let result: GoResult = client
+        .post(&format!("/v1/tasks/{id}/go"), None::<&()>)
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::task_cmd::write_cd_file(result.repo_path.as_deref());
+    Ok(ActionOutcome {
+        task_id: None,
+        should_refresh: false,
+        should_quit: true,
+        message: None,
+    })
+}
+
+async fn execute_create_action(
+    client: &Client,
+    title: String,
+    context: ContextName,
+) -> ActionResponse {
+    let request = new_task(AddRequest {
+        title,
+        context,
+        kind: Kind::Chore,
+        importance: None,
+        due: None,
+        parent: None,
+        repo: None,
+        ready: false,
+    });
+    let _detail: TaskDetail = client
+        .post("/v1/tasks", Some(&request))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ActionOutcome {
+        task_id: None,
+        should_refresh: true,
+        should_quit: false,
+        message: Some("task created in inbox".into()),
+    })
+}
+
+async fn execute_action(client: &Client, req: ActionRequest) -> ActionResponse {
+    match req {
+        ActionRequest::Accept {
+            id,
+            kind,
+            importance,
+            due,
+        } => {
+            let request = TaskActionRequest {
+                kind,
+                importance,
+                due,
+                ..Default::default()
+            };
+            let _detail: TaskDetail = client
+                .post(&format!("/v1/tasks/{id}/actions/accept"), Some(&request))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(ActionOutcome {
+                task_id: Some(id.clone()),
+                should_refresh: true,
+                should_quit: false,
+                message: Some(format!("task {id} accepted")),
+            })
+        }
+        ActionRequest::Snooze { id, until, on } => {
+            let request = TaskActionRequest {
+                on,
+                until: Some(until),
+                ..Default::default()
+            };
+            let _detail: TaskDetail = client
+                .post(&format!("/v1/tasks/{id}/actions/waiting"), Some(&request))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(ActionOutcome {
+                task_id: Some(id.clone()),
+                should_refresh: true,
+                should_quit: false,
+                message: Some(format!("task {id} snoozed until {until}")),
+            })
+        }
+        ActionRequest::Cancel(id) => {
+            execute_simple_action(client, &id, "cancelled", &format!("task {id} cancelled")).await
+        }
+        ActionRequest::Done(id) => {
+            execute_simple_action(client, &id, "done", &format!("task {id} marked done")).await
+        }
+        ActionRequest::Go(id) => execute_go_action(client, id).await,
+        ActionRequest::Undo(id) => {
+            let _detail: TaskDetail = client
+                .post(&format!("/v1/tasks/{id}/undo"), None::<&()>)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(ActionOutcome {
+                task_id: None,
+                should_refresh: true,
+                should_quit: false,
+                message: Some(format!("undid last change on {id}")),
+            })
+        }
+        ActionRequest::Create { title, context } => {
+            execute_create_action(client, title, context).await
         }
     }
 }

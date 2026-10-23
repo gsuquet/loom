@@ -2,7 +2,7 @@
 
 #![allow(clippy::option_if_let_else)]
 
-use loom_api::{ContextName, Importance, SearchResult, Status, TaskDetail};
+use loom_api::{ContextName, Importance, SearchResult, Status, TaskDetail, TaskSummary};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use super::keymap::{Layer, ModalKind, QueueTab, ViewKind, bindings_for_layer};
 use super::state::{AppState, ObjectPageContent, ObjectPageState, ObjectTarget, PREVIEW_MIN_WIDTH};
+use crate::task::{read_only_text, reason_text};
 
 const fn importance_label(importance: Importance) -> &'static str {
     match importance {
@@ -132,65 +133,124 @@ fn render_queue_list(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let items: Vec<ListItem<'_>> = tasks
         .iter()
         .enumerate()
-        .map(|(idx, summary)| {
-            let is_sel = idx == selected;
-            let mut spans: Vec<Span<'_>> = Vec::new();
-
-            if is_sel {
-                spans.push(Span::raw("▶ "));
-            } else {
-                spans.push(Span::raw("  "));
-            }
-
-            if let Some(task) = &summary.task {
-                let imp = task.importance;
-                spans.push(Span::styled(
-                    format!("{:<3}", importance_label(imp)),
-                    state.theme.importance_style(imp),
-                ));
-
-                let status_style = state.theme.status_style(task.status.name());
-                let status_str = match &task.status {
-                    Status::Inbox => "inbox",
-                    Status::Ready => "ready",
-                    Status::Active => "active",
-                    Status::Waiting { .. } => "waiting",
-                    Status::Done => "done",
-                    Status::Cancelled => "cancelled",
-                    Status::Unknown(name) => name.as_str(),
-                };
-                spans.push(Span::styled(format!("{status_str:<8}"), status_style));
-            } else {
-                spans.push(Span::styled("   ", state.theme.dim_style()));
-                spans.push(Span::styled("        ", state.theme.dim_style()));
-            }
-
-            spans.push(Span::styled(
-                format!("[{}] ", summary.context),
-                state.theme.context_badge(summary.context.as_str()),
-            ));
-
-            if let Some(task) = &summary.task {
-                spans.push(Span::styled(
-                    format!("{:<5}", task.kind.name()),
-                    state.theme.dim_style(),
-                ));
-                spans.push(Span::raw(task.title.clone()));
-            } else {
-                spans.push(Span::raw(summary.id.to_string()));
-            }
-
-            let style = if is_sel {
-                state.theme.selected_style()
-            } else {
-                ratatui::style::Style::default()
-            };
-            ListItem::new(Line::from(spans)).style(style)
-        })
+        .map(|(idx, summary)| render_queue_item(summary, idx == selected, state))
         .collect();
 
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
+}
+
+fn prefix_string(is_sel: bool, depth: usize) -> String {
+    let sel = if is_sel { "▶ " } else { "  " };
+    if depth == 0 {
+        sel.to_string()
+    } else {
+        let indent = "  ".repeat(depth - 1);
+        format!("{sel}{indent}└─ ")
+    }
+}
+
+fn render_queue_item<'a>(summary: &'a TaskSummary, is_sel: bool, state: &AppState) -> ListItem<'a> {
+    let mut spans: Vec<Span<'_>> = Vec::new();
+
+    let depth = if state.active_tab == QueueTab::Today {
+        state.task_depth_in_today(summary)
+    } else {
+        0
+    };
+
+    spans.push(Span::raw(prefix_string(is_sel, depth)));
+
+    if let Some(task) = &summary.task {
+        let imp = task.importance;
+        spans.push(Span::styled(
+            format!("{:<3}", importance_label(imp)),
+            state.theme.importance_style(imp),
+        ));
+
+        let status_style = state.theme.status_style(task.status.name());
+        let status_str = match &task.status {
+            Status::Inbox => "inbox",
+            Status::Ready => "ready",
+            Status::Active => "active",
+            Status::Waiting { .. } => "waiting",
+            Status::Done => "done",
+            Status::Cancelled => "cancelled",
+            Status::Unknown(name) => name.as_str(),
+        };
+        spans.push(Span::styled(format!("{status_str:<8}"), status_style));
+    } else {
+        spans.push(Span::styled("   ", state.theme.dim_style()));
+        spans.push(Span::styled("        ", state.theme.dim_style()));
+    }
+
+    spans.push(Span::styled(
+        format!("[{}] ", summary.context),
+        state.theme.context_badge(summary.context.as_str()),
+    ));
+
+    if let Some(task) = &summary.task {
+        spans.push(Span::styled(
+            format!("{:<5}", task.kind.name()),
+            state.theme.dim_style(),
+        ));
+        spans.push(Span::raw(task.title.clone()));
+
+        if state.active_tab == QueueTab::Waiting
+            && let Status::Waiting { on, until } = &task.status
+        {
+            if let Some(until) = until {
+                spans.push(Span::styled(
+                    format!(" (until {until})"),
+                    state.theme.dim_style(),
+                ));
+            } else {
+                spans.push(Span::styled(" (undated)", state.theme.dim_style()));
+            }
+            if let Some(on) = on {
+                spans.push(Span::styled(
+                    format!(" [on: {on}]"),
+                    state.theme.dim_style(),
+                ));
+            }
+        }
+
+        if state.active_tab == QueueTab::Today
+            && state.group_by_parent()
+            && let Some(parent) = &task.relations.parent
+        {
+            spans.push(Span::styled(
+                format!(" [parent: {parent}]"),
+                state.theme.dim_style(),
+            ));
+        }
+
+        if state.active_tab == QueueTab::Today
+            && state.why_enabled()
+            && let Some(rank) = &summary.rank
+        {
+            spans.push(Span::styled(
+                format!(" ({})", reason_text(rank.reason)),
+                state.theme.dim_style(),
+            ));
+        }
+    } else {
+        spans.push(Span::raw(summary.id.to_string()));
+    }
+
+    if let Some(ro) = &summary.read_only {
+        spans.push(Span::styled(
+            format!(" [ro: {}]", read_only_text(ro)),
+            state.theme.error_style(),
+        ));
+    }
+
+    let style = if is_sel {
+        state.theme.selected_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    ListItem::new(Line::from(spans)).style(style)
 }
 
 fn render_preview_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -239,6 +299,16 @@ fn render_task_detail(
 ) {
     let mut lines = Vec::new();
 
+    if let Some(ro) = &detail.summary.read_only {
+        lines.push(Line::from(vec![Span::styled(
+            format!("⚠ READ-ONLY: {}", read_only_text(ro)),
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Red)
+                .bold(),
+        )]));
+        lines.push(Line::raw(""));
+    }
+
     let id_line = Line::from(vec![
         Span::styled("ID: ", ratatui::style::Style::default().bold()),
         Span::raw(detail.summary.id.to_string()),
@@ -269,6 +339,42 @@ fn render_task_detail(
             Span::raw(task.kind.name()),
         ]);
         lines.push(meta_line);
+
+        if let Status::Waiting { on, until } = &task.status {
+            let mut wait_spans = Vec::new();
+            wait_spans.push(Span::styled(
+                "Until: ",
+                ratatui::style::Style::default().bold(),
+            ));
+            if let Some(until) = until {
+                wait_spans.push(Span::raw(until.to_string()));
+                wait_spans.push(Span::raw("   "));
+            } else {
+                wait_spans.push(Span::raw("undated   "));
+            }
+            if let Some(on) = on {
+                wait_spans.push(Span::styled(
+                    "Waiting on: ",
+                    ratatui::style::Style::default().bold(),
+                ));
+                wait_spans.push(Span::raw(on.clone()));
+            }
+            lines.push(Line::from(wait_spans));
+        }
+
+        if let Some(rank) = &detail.summary.rank {
+            lines.push(Line::from(vec![
+                Span::styled("Rank: ", ratatui::style::Style::default().bold()),
+                Span::raw(format!("#{} ({})", rank.position, reason_text(rank.reason))),
+            ]));
+        }
+
+        if let Some(parent) = &task.relations.parent {
+            lines.push(Line::from(vec![
+                Span::styled("Parent: ", ratatui::style::Style::default().bold()),
+                Span::raw(parent.to_string()),
+            ]));
+        }
 
         lines.push(Line::raw(""));
         lines.push(Line::from(vec![

@@ -401,6 +401,118 @@ impl AppState {
         self.today_options.group_by_parent
     }
 
+    /// Sorts tasks in the Today queue by priority rank (default order).
+    pub fn sort_today_by_rank(&mut self) {
+        if self.today.is_empty() {
+            return;
+        }
+        let selected_id = self.today.get(self.today_selected).map(|t| t.id.clone());
+        self.today
+            .sort_by_key(|t| t.rank.map_or(usize::MAX, |r| r.position));
+        if let Some(id) = selected_id {
+            self.today_selected = self.today.iter().position(|t| t.id == id).unwrap_or(0);
+        }
+    }
+
+    /// Indentation depth of a task in the Today queue relative to its ancestors present in Today.
+    #[must_use]
+    pub fn task_depth_in_today(&self, summary: &TaskSummary) -> usize {
+        if !self.group_by_parent() {
+            return 0;
+        }
+        let mut depth = 0;
+        let mut current_parent = summary
+            .task
+            .as_ref()
+            .and_then(|t| t.relations.parent.as_ref());
+
+        let max_depth = self.today.len();
+        while let Some(parent_id) = current_parent {
+            if depth >= max_depth {
+                break;
+            }
+            if let Some(parent_summary) = self.today.iter().find(|t| &t.id == parent_id) {
+                depth += 1;
+                current_parent = parent_summary
+                    .task
+                    .as_ref()
+                    .and_then(|t| t.relations.parent.as_ref());
+            } else {
+                break;
+            }
+        }
+        depth
+    }
+
+    /// Groups tasks in the Today queue by parent project.
+    pub fn sort_today_by_parent(&mut self) {
+        if self.today.is_empty() {
+            return;
+        }
+        let selected_id = self.today.get(self.today_selected).map(|t| t.id.clone());
+        self.sort_today_by_rank();
+
+        let ids_in_today: std::collections::HashSet<&TaskId> =
+            self.today.iter().map(|t| &t.id).collect();
+        let mut grouped: Vec<TaskSummary> = Vec::with_capacity(self.today.len());
+        let mut placed = vec![false; self.today.len()];
+
+        // 1. Place roots (tasks with no parent in Today).
+        // If a task's parent is not in Today, all siblings in Today sharing that parent
+        // are placed together in rank order, each followed by its subtree in Today.
+        for i in 0..self.today.len() {
+            if placed[i] {
+                continue;
+            }
+
+            let parent_opt = self.today[i]
+                .task
+                .as_ref()
+                .and_then(|t| t.relations.parent.as_ref());
+
+            let parent_in_today = parent_opt.is_some_and(|p| ids_in_today.contains(p));
+
+            if !parent_in_today {
+                if let Some(parent_id) = parent_opt {
+                    for j in i..self.today.len() {
+                        if !placed[j]
+                            && self.today[j]
+                                .task
+                                .as_ref()
+                                .and_then(|t| t.relations.parent.as_ref())
+                                == Some(parent_id)
+                        {
+                            placed[j] = true;
+                            let id = self.today[j].id.clone();
+                            grouped.push(self.today[j].clone());
+                            place_subtree(&id, &self.today, &mut placed, &mut grouped);
+                        }
+                    }
+                } else {
+                    placed[i] = true;
+                    let id = self.today[i].id.clone();
+                    grouped.push(self.today[i].clone());
+                    place_subtree(&id, &self.today, &mut placed, &mut grouped);
+                }
+            }
+        }
+
+        // 2. Any remaining tasks (e.g. cycles):
+        for i in 0..self.today.len() {
+            if !placed[i] {
+                placed[i] = true;
+                let id = self.today[i].id.clone();
+                grouped.push(self.today[i].clone());
+                place_subtree(&id, &self.today, &mut placed, &mut grouped);
+            }
+        }
+
+        self.today = grouped;
+        if let Some(id) = selected_id {
+            self.today_selected = self.today.iter().position(|t| t.id == id).unwrap_or(0);
+        }
+    }
+
     /// Active view under any modal.
     #[must_use]
     pub const fn active_view(&self) -> ViewKind {
@@ -802,6 +914,11 @@ impl AppState {
             }
             KeyCommand::ToggleGroupByParent => {
                 self.today_options.group_by_parent = !self.today_options.group_by_parent;
+                if self.today_options.group_by_parent {
+                    self.sort_today_by_parent();
+                } else {
+                    self.sort_today_by_rank();
+                }
                 AppEffect::None
             }
             _ => AppEffect::None,
@@ -1219,10 +1336,31 @@ impl AppState {
     }
 }
 
+fn place_subtree(
+    parent_id: &TaskId,
+    today: &[TaskSummary],
+    placed: &mut [bool],
+    result: &mut Vec<TaskSummary>,
+) {
+    for j in 0..today.len() {
+        if !placed[j]
+            && today[j]
+                .task
+                .as_ref()
+                .and_then(|t| t.relations.parent.as_ref())
+                == Some(parent_id)
+        {
+            placed[j] = true;
+            result.push(today[j].clone());
+            place_subtree(&today[j].id, today, placed, result);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_api::TaskReadOnly;
+    use loom_api::{RankReason, TaskReadOnly};
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
@@ -1704,6 +1842,120 @@ mod tests {
         // Prev option again: cycles back to Story
         state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(state.accept_modal.as_ref().unwrap().kind, Kind::Story);
+    }
+
+    #[test]
+    fn parent_grouping_groups_grandchildren_and_preserves_selection() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Today;
+
+        let root_id: TaskId = "task0001".parse().unwrap();
+        let child_id: TaskId = "task0003".parse().unwrap();
+
+        let mut root = make_task("task0001", Status::Ready, None);
+        root.rank = Some(loom_api::TaskRank {
+            position: 3,
+            reason: RankReason::DueDate,
+        });
+
+        let mut other = make_task("task0002", Status::Ready, None);
+        other.rank = Some(loom_api::TaskRank {
+            position: 1,
+            reason: RankReason::Urgent,
+        });
+
+        let mut child = make_task("task0003", Status::Ready, None);
+        if let Some(t) = &mut child.task {
+            t.relations.parent = Some(root_id);
+        }
+        child.rank = Some(loom_api::TaskRank {
+            position: 2,
+            reason: RankReason::Urgent,
+        });
+
+        let mut grand = make_task("task0004", Status::Ready, None);
+        if let Some(t) = &mut grand.task {
+            t.relations.parent = Some(child_id);
+        }
+        grand.rank = Some(loom_api::TaskRank {
+            position: 4,
+            reason: RankReason::First,
+        });
+
+        // Insert in arbitrary order: other, child, root, grand
+        state.today = vec![other, child, root, grand];
+        // Select child (index 1)
+        state.today_selected = 1;
+
+        // Group by parent
+        state.sort_today_by_parent();
+
+        // Expected order:
+        // 1. Root task 'other' (rank 1, no children)
+        // 2. Root task 'root' (rank 3), followed by child (task0003), followed by grandchild (task0004)
+        assert_eq!(state.today[0].id.as_str(), "task0002");
+        assert_eq!(state.today[1].id.as_str(), "task0001");
+        assert_eq!(state.today[2].id.as_str(), "task0003");
+        assert_eq!(state.today[3].id.as_str(), "task0004");
+
+        // Selection must follow task0003 to its new index (2)
+        assert_eq!(state.today_selected, 2);
+        assert_eq!(state.today[state.today_selected].id.as_str(), "task0003");
+
+        // Depths: roots have depth 0, child has depth 1, grandchild has depth 2
+        state.today_options.group_by_parent = true;
+        assert_eq!(state.task_depth_in_today(&state.today[0]), 0);
+        assert_eq!(state.task_depth_in_today(&state.today[1]), 0);
+        assert_eq!(state.task_depth_in_today(&state.today[2]), 1);
+        assert_eq!(state.task_depth_in_today(&state.today[3]), 2);
+    }
+
+    #[test]
+    fn parent_grouping_groups_siblings_when_parent_is_not_in_today() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.active_tab = QueueTab::Today;
+
+        let epic_id: TaskId = "task0001".parse().unwrap();
+
+        let mut sib1 = make_task("task0002", Status::Ready, None);
+        if let Some(t) = &mut sib1.task {
+            t.relations.parent = Some(epic_id.clone());
+        }
+        sib1.rank = Some(loom_api::TaskRank {
+            position: 1,
+            reason: RankReason::Urgent,
+        });
+
+        let mut unrelated = make_task("task0003", Status::Ready, None);
+        unrelated.rank = Some(loom_api::TaskRank {
+            position: 2,
+            reason: RankReason::Urgent,
+        });
+
+        let mut sib2 = make_task("task0004", Status::Ready, None);
+        if let Some(t) = &mut sib2.task {
+            t.relations.parent = Some(epic_id);
+        }
+        sib2.rank = Some(loom_api::TaskRank {
+            position: 3,
+            reason: RankReason::DueDate,
+        });
+
+        state.today = vec![sib1, unrelated, sib2];
+        state.today_selected = 1;
+
+        state.sort_today_by_parent();
+
+        assert_eq!(state.today[0].id.as_str(), "task0002");
+        assert_eq!(state.today[1].id.as_str(), "task0004");
+        assert_eq!(state.today[2].id.as_str(), "task0003");
+
+        state.today_options.group_by_parent = true;
+        assert_eq!(state.task_depth_in_today(&state.today[0]), 0);
+        assert_eq!(state.task_depth_in_today(&state.today[1]), 0);
+        assert_eq!(state.task_depth_in_today(&state.today[2]), 0);
+
+        assert_eq!(state.today_selected, 2);
     }
 
     #[test]
