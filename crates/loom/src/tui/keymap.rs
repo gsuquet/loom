@@ -101,11 +101,25 @@ pub enum ModalKind {
     Search,
     /// `@` context filter picker.
     ContextPicker,
+    /// `a` accept modal.
+    Accept,
+    /// `z` snooze modal.
+    Snooze,
+    /// `+` new task modal.
+    NewTask,
 }
 
 impl ModalKind {
     /// All modal kinds.
-    pub const ALL: [Self; 4] = [Self::Help, Self::Palette, Self::Search, Self::ContextPicker];
+    pub const ALL: [Self; 7] = [
+        Self::Help,
+        Self::Palette,
+        Self::Search,
+        Self::ContextPicker,
+        Self::Accept,
+        Self::Snooze,
+        Self::NewTask,
+    ];
 
     /// Display title of the modal layer in `?` help.
     #[must_use]
@@ -115,6 +129,9 @@ impl ModalKind {
             Self::Palette => "Command palette",
             Self::Search => "Search modal",
             Self::ContextPicker => "Context picker",
+            Self::Accept => "Accept task",
+            Self::Snooze => "Snooze task",
+            Self::NewTask => "New task",
         }
     }
 }
@@ -153,11 +170,25 @@ pub enum KeyCommand {
     OpenSelected,
     TogglePreview,
     Refresh,
+    // Triage actions
+    TriageAccept,
+    TriageSnooze,
+    TriageCancel,
+    TriageDone,
+    TriageGo,
+    Undo,
+    NewTask,
+    ToggleWhy,
+    ToggleGroupByParent,
     // Object page actions
     Back,
     // Modal actions
     CloseModal,
     ConfirmModal,
+    NextField,
+    PrevField,
+    PrevOption,
+    NextOption,
 }
 
 /// One declarative key binding definition used for both key matching and `?` help generation.
@@ -323,6 +354,69 @@ pub static BINDINGS: &[KeyBinding] = &[
         command: KeyCommand::Refresh,
         label: "r",
         description: "Refresh from loomd",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('a'), KeyModifiers::NONE)],
+        command: KeyCommand::TriageAccept,
+        label: "a",
+        description: "Accept inbox task",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('z'), KeyModifiers::NONE)],
+        command: KeyCommand::TriageSnooze,
+        label: "z",
+        description: "Snooze task until date",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('x'), KeyModifiers::NONE)],
+        command: KeyCommand::TriageCancel,
+        label: "x",
+        description: "Cancel task",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('c'), KeyModifiers::NONE)],
+        command: KeyCommand::TriageDone,
+        label: "c",
+        description: "Mark task done",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('g'), KeyModifiers::NONE)],
+        command: KeyCommand::TriageGo,
+        label: "g",
+        description: "Focus task and cd to repository on quit",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('u'), KeyModifiers::NONE)],
+        command: KeyCommand::Undo,
+        label: "u",
+        description: "Undo last task change",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('+'), KeyModifiers::NONE)],
+        command: KeyCommand::NewTask,
+        label: "+",
+        description: "Create new task",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('w'), KeyModifiers::NONE)],
+        command: KeyCommand::ToggleWhy,
+        label: "w",
+        description: "Toggle priority reasons (--why)",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::Queue),
+        keys: &[(KeyCode::Char('p'), KeyModifiers::NONE)],
+        command: KeyCommand::ToggleGroupByParent,
+        label: "p",
+        description: "Toggle grouping by project",
     },
     // View: ObjectPage
     KeyBinding {
@@ -510,6 +604,111 @@ pub static BINDINGS: &[KeyBinding] = &[
         label: "Enter",
         description: "Open selected result",
     },
+    // Modal: Accept
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Accept),
+        keys: &[(KeyCode::Esc, KeyModifiers::NONE)],
+        command: KeyCommand::CloseModal,
+        label: "Esc",
+        description: "Close accept modal",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Accept),
+        keys: &[(KeyCode::Enter, KeyModifiers::NONE)],
+        command: KeyCommand::ConfirmModal,
+        label: "Enter",
+        description: "Confirm and accept task",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Accept),
+        keys: &[
+            (KeyCode::Tab, KeyModifiers::NONE),
+            (KeyCode::Down, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::NextField,
+        label: "Tab, ↓",
+        description: "Next field",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Accept),
+        keys: &[
+            (KeyCode::BackTab, KeyModifiers::SHIFT),
+            (KeyCode::Up, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::PrevField,
+        label: "Shift+Tab, ↑",
+        description: "Previous field",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Accept),
+        keys: &[
+            (KeyCode::Left, KeyModifiers::NONE),
+            (KeyCode::Char('h'), KeyModifiers::NONE),
+        ],
+        command: KeyCommand::PrevOption,
+        label: "Left, h",
+        description: "Previous option",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Accept),
+        keys: &[
+            (KeyCode::Right, KeyModifiers::NONE),
+            (KeyCode::Char('l'), KeyModifiers::NONE),
+        ],
+        command: KeyCommand::NextOption,
+        label: "Right, l",
+        description: "Next option",
+    },
+    // Modal: Snooze
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Snooze),
+        keys: &[(KeyCode::Esc, KeyModifiers::NONE)],
+        command: KeyCommand::CloseModal,
+        label: "Esc",
+        description: "Close snooze modal",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Snooze),
+        keys: &[(KeyCode::Enter, KeyModifiers::NONE)],
+        command: KeyCommand::ConfirmModal,
+        label: "Enter",
+        description: "Confirm and snooze task",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Snooze),
+        keys: &[
+            (KeyCode::Tab, KeyModifiers::NONE),
+            (KeyCode::Down, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::NextField,
+        label: "Tab, ↓",
+        description: "Next field",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Snooze),
+        keys: &[
+            (KeyCode::BackTab, KeyModifiers::SHIFT),
+            (KeyCode::Up, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::PrevField,
+        label: "Shift+Tab, ↑",
+        description: "Previous field",
+    },
+    // Modal: NewTask
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::NewTask),
+        keys: &[(KeyCode::Esc, KeyModifiers::NONE)],
+        command: KeyCommand::CloseModal,
+        label: "Esc",
+        description: "Close new task modal",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::NewTask),
+        keys: &[(KeyCode::Enter, KeyModifiers::NONE)],
+        command: KeyCommand::ConfirmModal,
+        label: "Enter",
+        description: "Confirm and create task",
+    },
 ];
 
 fn key_matches(key: KeyEvent, expected_code: KeyCode, expected_modifiers: KeyModifiers) -> bool {
@@ -642,6 +841,86 @@ mod tests {
         assert_eq!(
             resolve_key(None, ViewKind::Queue, ctrl_c),
             Some(KeyCommand::Quit)
+        );
+    }
+
+    #[test]
+    fn triage_queue_keys_resolve_in_queue_view() {
+        let test_cases = [
+            ('a', KeyCommand::TriageAccept),
+            ('z', KeyCommand::TriageSnooze),
+            ('x', KeyCommand::TriageCancel),
+            ('c', KeyCommand::TriageDone),
+            ('g', KeyCommand::TriageGo),
+            ('u', KeyCommand::Undo),
+            ('+', KeyCommand::NewTask),
+            ('w', KeyCommand::ToggleWhy),
+            ('p', KeyCommand::ToggleGroupByParent),
+        ];
+
+        for (ch, expected) in test_cases {
+            let event = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+            assert_eq!(
+                resolve_key(None, ViewKind::Queue, event),
+                Some(expected),
+                "expected key '{ch}' to resolve to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_modal_bindings() {
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Accept), ViewKind::Queue, esc),
+            Some(KeyCommand::CloseModal)
+        );
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Accept), ViewKind::Queue, enter),
+            Some(KeyCommand::ConfirmModal)
+        );
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Accept), ViewKind::Queue, tab),
+            Some(KeyCommand::NextField)
+        );
+        let backtab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Accept), ViewKind::Queue, backtab),
+            Some(KeyCommand::PrevField)
+        );
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Accept), ViewKind::Queue, left),
+            Some(KeyCommand::PrevOption)
+        );
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Accept), ViewKind::Queue, right),
+            Some(KeyCommand::NextOption)
+        );
+    }
+
+    #[test]
+    fn snooze_and_new_task_modal_bindings() {
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Snooze), ViewKind::Queue, esc),
+            Some(KeyCommand::CloseModal)
+        );
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            resolve_key(Some(ModalKind::Snooze), ViewKind::Queue, enter),
+            Some(KeyCommand::ConfirmModal)
+        );
+        assert_eq!(
+            resolve_key(Some(ModalKind::NewTask), ViewKind::Queue, esc),
+            Some(KeyCommand::CloseModal)
+        );
+        assert_eq!(
+            resolve_key(Some(ModalKind::NewTask), ViewKind::Queue, enter),
+            Some(KeyCommand::ConfirmModal)
         );
     }
 }

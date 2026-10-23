@@ -25,6 +25,7 @@ use ratatui::backend::CrosstermBackend;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, watch};
 
+use crate::task_cmd::local_today;
 use crate::{load_config, print, repo_cmd};
 
 /// Timeout for task/search requests made by the TUI.
@@ -82,7 +83,7 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     );
     let theme = Theme::from_config(&config.contexts, color_enabled);
     let contexts: Vec<ContextName> = config.contexts.keys().cloned().collect();
-    let mut state = AppState::new(theme, global.context.clone(), contexts);
+    let mut state = AppState::new(theme, global.context.clone(), contexts, local_today());
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -387,7 +388,14 @@ fn handle_effect(
     search_timer: &mut std::pin::Pin<Box<tokio::time::Sleep>>,
 ) {
     match effect {
-        AppEffect::None => {}
+        AppEffect::None
+        | AppEffect::AcceptTask { .. }
+        | AppEffect::SnoozeTask { .. }
+        | AppEffect::CancelTask(_)
+        | AppEffect::DoneTask(_)
+        | AppEffect::GoTask(_)
+        | AppEffect::UndoTask(_)
+        | AppEffect::CreateTask { .. } => {}
         AppEffect::Refresh => {
             if *fetch_in_flight {
                 *refresh_queued = true;

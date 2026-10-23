@@ -490,7 +490,8 @@ const fn importance_text(importance: Importance) -> &'static str {
     }
 }
 
-fn read_only_text(read_only: &TaskReadOnly) -> String {
+#[must_use]
+pub fn read_only_text(read_only: &TaskReadOnly) -> String {
     match read_only {
         TaskReadOnly::UnknownKind(value) => format!("unknown kind {value}"),
         TaskReadOnly::UnknownContentFormat(value) => format!("unknown content format {value}"),

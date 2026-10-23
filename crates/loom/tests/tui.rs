@@ -316,6 +316,7 @@ async fn tui_driven_against_real_loomd_and_renders_snapshot() {
             ContextName::from_str("personal").unwrap(),
             ContextName::from_str("work").unwrap(),
         ],
+        jiff::civil::date(2026, 10, 22),
     );
 
     // 3. Fetch queues from real loomd
