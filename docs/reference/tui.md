@@ -107,7 +107,7 @@ Key resolution uses three layers, from innermost to outermost:
 | `c` | Mark the task as done. |
 | `x` | Cancel the task. |
 | `g` | Focus the task and quit the TUI (`loom shell-init` changes directory to the task repository). |
-| `u` | Undo the last action performed. |
+| `u` | Undo the last action performed (reverts the last change of the task). |
 | `+` | Create a new task in the active context (or from the selected task or default context). |
 | `w` | Toggle priority reasons (`--why`) in `Today` queue. |
 | `p` | Toggle grouping by parent task in `Today` queue. |

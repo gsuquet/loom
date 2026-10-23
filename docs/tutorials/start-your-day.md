@@ -44,7 +44,7 @@ New tasks from forges or quick captures enter the `Inbox` queue.
    - Press `Tab` to move to `Importance`, and use `Left` and `Right` (or `h` and `l`) to adjust the level (`p0` to `p3`).
    - Press `Tab` to move to `Due date`. Type a date such as `tomorrow` or `+2d`.
    - Press `Enter` to confirm. The task moves to the `ready` state and joins `Today`.
-4. If you made a mistake on a triaged task, press `u` to undo the change immediately. Loom undoes the action you just performed (such as accepting or snoozing a task) and restores the item to the inbox.
+4. If you make a mistake on a triaged task, press `u` to undo immediately. Loom reverts the last change of the task (such as restoring an accepted or snoozed task to the inbox). Because `u` reverts the last event in the task's log, if a tracker sync or another client modified the task after your action, `u` reverts that change instead.
 5. Select a task that waits on external input, and press `z` to snooze it:
    - Type an until date (for example `tomorrow` or `+1w`).
    - Press `Tab` and type what you wait on (for example `design review`).
