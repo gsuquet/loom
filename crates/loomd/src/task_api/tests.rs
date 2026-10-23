@@ -418,7 +418,7 @@ fn an_edit_rejects_unknown_fields_and_reads_null_as_removal() {
 }
 
 #[test]
-fn status_and_pin_actions_become_commands() {
+fn actions_become_commands() {
     let empty = TaskActionRequest::default();
     assert_eq!(
         action_command(TaskActionName::Ready, empty.clone()).unwrap(),
@@ -426,10 +426,32 @@ fn status_and_pin_actions_become_commands() {
             status: Status::Ready,
         }
     );
+    let accept_fields = TaskActionRequest {
+        kind: Some(Kind::Story),
+        importance: Some(Importance::P0),
+        due: Some(Some(date("2026-10-25"))),
+        ..TaskActionRequest::default()
+    };
+    assert_eq!(
+        action_command(TaskActionName::Accept, empty.clone()).unwrap(),
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: None,
+        }
+    );
+    assert_eq!(
+        action_command(TaskActionName::Accept, accept_fields).unwrap(),
+        Command::Accept {
+            kind: Some(Kind::Story),
+            importance: Some(Importance::P0),
+            due: Some(Some(date("2026-10-25"))),
+        }
+    );
     assert_eq!(
         action_command(TaskActionName::Done, empty.clone()).unwrap(),
         Command::SetStatus {
-            status: Status::Done,
+            status: Status::Done
         }
     );
     assert_eq!(
@@ -440,56 +462,13 @@ fn status_and_pin_actions_become_commands() {
         action_command(TaskActionName::Unpin, empty).unwrap(),
         Command::Unpin
     );
-}
-
-#[test]
-fn accept_and_wait_actions_become_commands() {
-    let empty = TaskActionRequest::default();
-    let accept_fields = TaskActionRequest {
-        kind: Some(Kind::Story),
-        importance: Some(Importance::P0),
-        due: Some(Some(date("2026-10-25"))),
-        ..TaskActionRequest::default()
-    };
-    assert_eq!(
-        action_command(TaskActionName::Ready, accept_fields.clone())
-            .unwrap_err()
-            .code,
-        ErrorCode::InvalidRequest
-    );
-    assert_eq!(
-        action_command(TaskActionName::Accept, empty.clone()).unwrap(),
-        Command::Accept {
-            kind: None,
-            importance: None,
-            due: None,
-        }
-    );
-    assert_eq!(
-        action_command(TaskActionName::Accept, accept_fields.clone()).unwrap(),
-        Command::Accept {
-            kind: Some(Kind::Story),
-            importance: Some(Importance::P0),
-            due: Some(Some(date("2026-10-25"))),
-        }
-    );
-    let wait_with_accept = TaskActionRequest {
-        on: Some("Alice".to_owned()),
-        ..accept_fields.clone()
-    };
-    assert_eq!(
-        action_command(TaskActionName::Accept, wait_with_accept)
-            .unwrap_err()
-            .code,
-        ErrorCode::InvalidRequest
-    );
     let wait = TaskActionRequest {
         on: Some("Alice".to_owned()),
         until: Some(date("2026-10-20")),
         ..TaskActionRequest::default()
     };
     assert_eq!(
-        action_command(TaskActionName::Waiting, wait.clone()).unwrap(),
+        action_command(TaskActionName::Waiting, wait).unwrap(),
         Command::SetStatus {
             status: Status::Waiting {
                 on: Some("Alice".to_owned()),
@@ -502,10 +481,46 @@ fn accept_and_wait_actions_become_commands() {
         ..TaskActionRequest::default()
     };
     assert_eq!(
-        action_command(TaskActionName::LogNote, note.clone()).unwrap(),
+        action_command(TaskActionName::LogNote, note).unwrap(),
         Command::LogNote {
             text: "Called back".to_owned()
         }
+    );
+}
+
+#[test]
+fn invalid_action_requests_are_rejected() {
+    let empty = TaskActionRequest::default();
+    let accept_fields = TaskActionRequest {
+        kind: Some(Kind::Story),
+        importance: Some(Importance::P0),
+        due: Some(Some(date("2026-10-25"))),
+        ..TaskActionRequest::default()
+    };
+    let wait = TaskActionRequest {
+        on: Some("Alice".to_owned()),
+        until: Some(date("2026-10-20")),
+        ..TaskActionRequest::default()
+    };
+    let note = TaskActionRequest {
+        text: Some("Called back".to_owned()),
+        ..TaskActionRequest::default()
+    };
+    let wait_with_accept = TaskActionRequest {
+        on: Some("Alice".to_owned()),
+        ..accept_fields.clone()
+    };
+    assert_eq!(
+        action_command(TaskActionName::Ready, accept_fields.clone())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        action_command(TaskActionName::Accept, wait_with_accept)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
     );
     for (action, request) in [
         (TaskActionName::LogNote, empty),
