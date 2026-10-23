@@ -627,7 +627,7 @@ fn today_view_snapshots_at_80_columns() {
     let expected_parent = [
         " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
         "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
-        "│▶ └─ p1 active  [work] bug  Task k3q7zm2a [parent: p8w2nc4d] (first)          │",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a [parent: p8w2nc4d] (first)             │",
         "│  p1 ready   [work] bug  Task m9v4x1nb (overdue or due today)                 │",
         "│                                                                              │",
         "│                                                                              │",
