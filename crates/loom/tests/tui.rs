@@ -1523,18 +1523,38 @@ async fn the_context_picker_moves_a_task_like_loom_set() {
     let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
     state.page_stack[0].content = ObjectPageContent::Task(Box::new(detail));
 
+    // A change was made on this page before: `u` would undo it.
+    state.record_action_success(id.clone());
     // The picker lists the other contexts only; `personal` is the first.
     press(&mut state, KeyCode::Char('c'));
     let effect = press(&mut state, KeyCode::Enter);
     let outcome = execute_action(&client, ActionRequest::from_effect(effect).unwrap(), None)
         .await
         .unwrap();
-    // A move is not undone: it is not the target of `u`.
+    // A move is not undone: it clears the target of `u`.
     assert_eq!(outcome.task_id, None);
+    assert_eq!(outcome.undone.as_ref(), Some(&id));
     assert!(outcome.should_refresh);
+
+    // After a change, then a move, `u` has nothing to undo (and sends no call).
+    state.set_last_action(outcome.next_undo_target(Some(&id)));
+    assert_eq!(press(&mut state, KeyCode::Char('u')), AppEffect::None);
 
     let moved: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
     assert_eq!(moved.summary.context.as_str(), "personal");
+
+    // A context without a store on this machine: loomd refuses and the toast says why.
+    let refused = execute_action(
+        &client,
+        ActionRequest::Move {
+            id: id.clone(),
+            context: ContextName::from_str("nowhere").unwrap(),
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("no task store for context"), "{refused}");
     let output = sandbox.run(&["set", &by_cli.summary.id.to_string(), "context=personal"]);
     assert!(output.status.success());
 

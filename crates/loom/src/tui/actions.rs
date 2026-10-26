@@ -135,7 +135,8 @@ impl ActionRequest {
 pub struct ActionOutcome {
     /// Task that `u` undoes next, when the action changed one.
     pub task_id: Option<TaskId>,
-    /// Task whose last change the action undid.
+    /// Task whose last change the action undid, or that the action made impossible to undo (a
+    /// move).
     pub undone: Option<TaskId>,
     /// Reload the queues.
     pub should_refresh: bool,
@@ -386,10 +387,10 @@ async fn move_to_context(client: &Client, id: TaskId, context: ContextName) -> A
         )
         .await
         .map_err(|error| error.to_string())?;
-    // A move is not undone, so it is not the target of `u`.
+    // A move is not undone: it ends what `u` can undo for this task, as an undo does.
     Ok(ActionOutcome {
         task_id: None,
-        undone: None,
+        undone: Some(id),
         should_refresh: true,
         should_quit: false,
         message: Some(message),
