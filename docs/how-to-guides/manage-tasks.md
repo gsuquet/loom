@@ -79,7 +79,10 @@ The output shows the fields first, then the notes. For scripts, each command acc
 loom set k3q8 importance=p0 due=+3d
 loom set k3q8 parent=h8w2 pinned=yes
 loom set k3q8 due=none
+loom set k3q8 status=active
 ```
+
+`status` accepts every status except `waiting`. To move a task to `waiting`, use `loom snooze`.
 
 To change the notes, or several fields at the same time, open the file.
 

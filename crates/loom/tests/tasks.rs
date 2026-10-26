@@ -494,6 +494,18 @@ fn a_task_is_changed_closed_snoozed_and_undone() {
     assert_eq!(cleared.relations.parent, None);
     assert_eq!(cleared.due, None);
 
+    // `status=` is the same gesture as `loom done`; `waiting` belongs to `loom snooze`.
+    let active = gesture(&sandbox, &["set", &id, "status=active"]);
+    assert_eq!(active.summary.task.unwrap().status, Status::Active);
+    let refused = sandbox.run(&sandbox.home(), None, &["set", &id, "status=waiting"]);
+    assert_ne!(refused.status.code(), Some(0));
+    assert!(
+        stderr(&refused).contains("loom snooze"),
+        "{}",
+        stderr(&refused)
+    );
+    gesture(&sandbox, &["set", &id, "status=ready"]);
+
     // One line per gesture.
     let line = sandbox.ok(&["done", &id]);
     assert!(
