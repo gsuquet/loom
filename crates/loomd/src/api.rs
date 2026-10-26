@@ -48,6 +48,8 @@ pub const TASK_GO_PATH: &str = "/v1/tasks/{id}/go";
 pub const FOCUS_PATH: &str = "/v1/focus";
 /// Path of the backup state of the context stores.
 pub const TASKS_BACKUP_PATH: &str = "/v1/tasks/backup";
+/// Path of the problems of the task stores.
+pub const TASKS_HEALTH_PATH: &str = "/v1/tasks/health";
 /// Path of the sync of the context stores with their backup remotes.
 pub const TASKS_SYNC_PATH: &str = "/v1/tasks/sync";
 

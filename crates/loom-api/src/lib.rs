@@ -68,7 +68,7 @@ pub use task::{
     TaskActionRequest, TaskCandidate, TaskDetail, TaskEvents, TaskList, TaskRank, TaskReadOnly,
     TaskSummary, UndoConflict,
 };
-pub use task_index::{FailedTaskFile, InvalidTaskFile, ReindexResult};
+pub use task_index::{FailedTaskFile, InvalidTaskFile, ReindexResult, TaskStoreHealth};
 pub use update::{
     DaemonRestart, InstallReport, RollbackReport, UpgradeDecision, UpgradeReport,
     UpgradeSkipReason, UpgradeSource,

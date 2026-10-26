@@ -4,10 +4,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use loom_api::{ContextName, FailedTaskFile, InvalidTaskFile, ReindexResult, TaskId};
+use loom_api::{
+    ContextName, FailedTaskFile, InvalidTaskFile, ReindexResult, TaskId, TaskStoreHealth,
+};
 use loom_store::files::{ARCHIVE_DIR, TASKS_DIR};
-use loom_store::port::{archive_year_dir, task_dir_id};
-use loom_store::tasks::{IndexedState, Reindexed, TaskFailure};
+use loom_store::port::{TaskLocation, archive_year_dir, task_dir_id};
+use loom_store::tasks::{IndexedState, IndexedTask, Reindexed, TaskFailure};
 
 /// What a reindex reports: every row counted, the invalid ones listed by context and ID, the
 /// failures with their path under `stores` (root of each context store).
@@ -16,23 +18,69 @@ pub fn reindex_result(
     reindexed: &Reindexed,
     stores: &BTreeMap<ContextName, PathBuf>,
 ) -> ReindexResult {
-    let mut invalid: Vec<InvalidTaskFile> = reindexed
-        .rows
+    ReindexResult {
+        tasks: reindexed.rows.len(),
+        invalid: invalid_files(&reindexed.rows, stores),
+        failed: failed_files(&reindexed.failed, stores),
+    }
+}
+
+/// The tasks of `rows` whose `task.md` cannot be read, sorted by context and ID.
+#[must_use]
+pub fn invalid_files(
+    rows: &[IndexedTask],
+    stores: &BTreeMap<ContextName, PathBuf>,
+) -> Vec<InvalidTaskFile> {
+    let mut invalid: Vec<InvalidTaskFile> = rows
         .iter()
         .filter_map(|row| match &row.state {
             IndexedState::Invalid { error, .. } => Some(InvalidTaskFile {
                 context: row.context.clone(),
                 id: row.id.clone(),
+                path: task_path(stores, &row.context, &row.id, row.location),
                 error: error.clone(),
             }),
             IndexedState::Valid { .. } => None,
         })
         .collect();
     invalid.sort_by(|a, b| (&a.context, &a.id).cmp(&(&b.context, &b.id)));
-    ReindexResult {
-        tasks: reindexed.rows.len(),
-        invalid,
-        failed: failed_files(&reindexed.failed, stores),
+    invalid
+}
+
+/// The directory of a task: `tasks/<id>` or `archive/<yyyy>/<id>` under the store root, or
+/// the same relative path when the context has no store here.
+fn task_path(
+    stores: &BTreeMap<ContextName, PathBuf>,
+    context: &ContextName,
+    id: &TaskId,
+    location: TaskLocation,
+) -> PathBuf {
+    let root = stores.get(context).cloned().unwrap_or_default();
+    location.archive_year().map_or_else(
+        || root.join(TASKS_DIR).join(id.as_str()),
+        |year| {
+            root.join(ARCHIVE_DIR)
+                .join(format!("{year:04}"))
+                .join(id.as_str())
+        },
+    )
+}
+
+/// The problems of the task stores: the invalid files of `rows` (every indexed task), the
+/// failures of the last reconciliation, and whether the file watcher runs.
+#[must_use]
+pub fn task_store_health(
+    watching: bool,
+    unwatched: Vec<FailedTaskFile>,
+    failed: Vec<FailedTaskFile>,
+    rows: &[IndexedTask],
+    stores: &BTreeMap<ContextName, PathBuf>,
+) -> TaskStoreHealth {
+    TaskStoreHealth {
+        watching: watching && unwatched.is_empty(),
+        unwatched,
+        invalid: invalid_files(rows, stores),
+        failed,
     }
 }
 
@@ -212,11 +260,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    use loom_api::{ContextName, ReindexResult};
+    use loom_api::{ContextName, FailedTaskFile, ReindexResult};
     use loom_store::port::{ContentHash, TaskLocation};
     use loom_store::tasks::{IndexedState, IndexedTask, Reindexed, TaskFailure};
 
-    use super::{failed_files, reindex_result};
+    use super::{failed_files, reindex_result, task_store_health};
 
     fn context(name: &str) -> ContextName {
         name.parse().unwrap()
@@ -319,5 +367,82 @@ mod tests {
             failed: Vec::new(),
         };
         assert_eq!(reindex_result(&empty, &stores()), ReindexResult::default());
+    }
+
+    #[test]
+    fn health_lists_the_invalid_files_sorted_and_carries_the_rest_as_given() {
+        let valid = IndexedTask {
+            state: IndexedState::Valid {
+                task: Box::new(loom_api::Task {
+                    id: "k3q7zm2a".parse().unwrap(),
+                    title: "Fine".to_owned(),
+                    kind: loom_api::Kind::Chore,
+                    context: context("work"),
+                    status: loom_api::Status::Ready,
+                    importance: loom_api::Importance::P2,
+                    due: None,
+                    pinned: false,
+                    links: Vec::new(),
+                    relations: loom_api::Relations::default(),
+                    created: loom_api::Timestamp::EPOCH,
+                    updated: loom_api::Timestamp::EPOCH,
+                }),
+                body: String::new(),
+            },
+            ..invalid("work", "k3q7zm2a", "")
+        };
+        let rows = vec![
+            invalid("work", "m0000000", "line 2: invalid TOML"),
+            valid,
+            invalid("home", "k3r00000", "no `+++` frontmatter"),
+        ];
+        let failed = failed_files(
+            &[TaskFailure {
+                context: context("work"),
+                id: None,
+                error: "permission denied".to_owned(),
+            }],
+            &stores(),
+        );
+        let mut archived = invalid("work", "m1111111", "bad");
+        archived.location = TaskLocation::Archived(2025);
+        let mut rows = rows;
+        rows.push(archived);
+        let health = task_store_health(false, Vec::new(), failed.clone(), &rows, &stores());
+        assert!(!health.watching);
+        let ids: Vec<(&str, &str)> = health
+            .invalid
+            .iter()
+            .map(|file| (file.context.as_str(), file.id.as_str()))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("home", "k3r00000"),
+                ("work", "m0000000"),
+                ("work", "m1111111")
+            ]
+        );
+        assert_eq!(health.invalid[1].error, "line 2: invalid TOML");
+        assert_eq!(
+            health.invalid[0].path,
+            PathBuf::from("/u/stores/home/tasks/k3r00000")
+        );
+        assert_eq!(
+            health.invalid[2].path,
+            PathBuf::from("/l/contexts/work/archive/2025/m1111111")
+        );
+        // A directory that is not watched makes `watching` false, whatever the watcher says.
+        let unwatched = vec![FailedTaskFile {
+            path: PathBuf::from("/l/contexts/work/archive"),
+            error: "No such file or directory".to_owned(),
+        }];
+        let not_watched = task_store_health(true, unwatched.clone(), Vec::new(), &[], &stores());
+        assert!(!not_watched.watching);
+        assert_eq!(not_watched.unwatched, unwatched);
+        assert_eq!(health.failed, failed);
+        // A clean store: nothing listed.
+        let clean = task_store_health(true, Vec::new(), Vec::new(), &[], &stores());
+        assert!(clean.watching && clean.invalid.is_empty() && clean.failed.is_empty());
     }
 }

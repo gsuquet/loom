@@ -18,16 +18,17 @@ use loom_api::{
     ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
     ChangeEvent, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
     ContextBackup, ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart,
-    DaemonRestartReport, DiskUsage, DoctorCheck, DoctorReport, ErrorCode, ForgeKind, InstallReport,
-    LastUpdate, MaybeKnown, PendingUpgrade, PlannedAction, Profile, RegisterRequest, ReindexResult,
-    Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme,
-    RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary,
-    RepoSync, RepoUpdatePolicy, RestartVia, RollbackReport, ScanIssue, ScanResult, SearchField,
-    SearchResult, SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket,
-    StateField, StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField,
-    Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult,
-    UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason,
-    UpgradeSource, Upstream, VersionInfo,
+    DaemonRestartReport, DiskUsage, DoctorCheck, DoctorReport, ErrorCode, FailedTaskFile,
+    ForgeKind, InstallReport, InvalidTaskFile, LastUpdate, MaybeKnown, PendingUpgrade,
+    PlannedAction, Profile, RegisterRequest, ReindexResult, Remote, RemoteCheck,
+    RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl, RepoHead,
+    RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
+    RepoUpdatePolicy, RestartVia, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
+    SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
+    StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField,
+    TaskStoreHealth, Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode,
+    UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -54,6 +55,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("new_task", schema_for!(NewTask)),
         ("register_request", schema_for!(RegisterRequest)),
         ("reindex_result", schema_for!(ReindexResult)),
+        ("task_store_health", schema_for!(TaskStoreHealth)),
         ("remote_check_result", schema_for!(RemoteCheckResult)),
         ("repo_identity", schema_for!(RepoIdentity)),
         ("repo_list", schema_for!(RepoList)),
@@ -231,6 +233,29 @@ fn update_states(at: Timestamp) -> Vec<UpdateState> {
         ..full.clone()
     }));
     states
+}
+
+#[test]
+fn a_task_store_health_sample_validates_against_its_schema() {
+    let errors = violations(&TaskStoreHealth {
+        watching: false,
+        unwatched: vec![FailedTaskFile {
+            path: "/home/me/.loom/contexts/work/archive".into(),
+            error: "No such file or directory".to_owned(),
+        }],
+        invalid: vec![InvalidTaskFile {
+            context: "work".parse().unwrap(),
+            id: "k3q7zm2a".parse().unwrap(),
+            path: "/home/me/.loom/contexts/work/tasks/k3q7zm2a".into(),
+            error: "line 3: bad status".to_owned(),
+        }],
+        failed: vec![FailedTaskFile {
+            path: "/home/me/.loom/contexts/work/tasks".into(),
+            error: "permission denied".to_owned(),
+        }],
+    })
+    .unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 #[test]

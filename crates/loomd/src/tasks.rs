@@ -35,8 +35,8 @@ use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ChangeEvent, ContextName, Date, FocusList, GoResult, NewTask, ReindexResult, TaskDetail,
-    TaskEvents, TaskId, TaskList, Timestamp,
+    ChangeEvent, ContextName, Date, FailedTaskFile, FocusList, GoResult, NewTask, ReindexResult,
+    TaskDetail, TaskEvents, TaskId, TaskList, TaskStoreHealth, Timestamp,
 };
 use loom_config::schedules::Schedule;
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
@@ -57,7 +57,9 @@ use loomd::task_api::{
     task_list, task_problem,
 };
 use loomd::task_archive::{ARCHIVE_BATCH, archive_now};
-use loomd::task_index::{WatchedPath, failed_files, reindex_result, watched_path};
+use loomd::task_index::{
+    WatchedPath, failed_files, reindex_result, task_store_health, watched_path,
+};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -134,11 +136,23 @@ enum Command {
         schedules: Arc<Schedules>,
         today: Date,
     },
+    /// Whether the file watcher runs, and the tasks that the last reconciliation could not read.
+    Health {
+        reply: oneshot::Sender<HealthState>,
+    },
     /// The stores whose changes are not all committed, with the last failure.
     Pending {
         reply: oneshot::Sender<BTreeMap<ContextName, String>>,
     },
     Stop,
+}
+
+/// What the task thread knows about the health of the stores.
+struct HealthState {
+    watching: bool,
+    unwatched: Vec<FailedTaskFile>,
+    failed: Vec<FailedTaskFile>,
+    stores: BTreeMap<ContextName, PathBuf>,
 }
 
 /// The running task thread and its file watcher.
@@ -185,7 +199,7 @@ pub fn start(
     // Set: the reconciliation on start is queued below, before any watcher event.
     let reconcile_queued = Arc::new(AtomicBool::new(true));
     // Before the reconciliation: an edit made while it runs is seen by one or the other.
-    let watcher = watch(stores, &commands, Arc::clone(&reconcile_queued));
+    let (watcher, unwatched) = watch(stores, &commands, Arc::clone(&reconcile_queued));
     let _ = commands.send(Command::ReconcileAll);
     // After the reconciliation on start: the closings recorded by it count.
     let _ = commands.send(Command::Archive);
@@ -195,6 +209,9 @@ pub fn start(
         tasks: Tasks::new(files, index),
         commits: StoreCommits::new(GitRunner::from_env(), stores.clone()),
         stores: stores.clone(),
+        watching: watcher.is_some(),
+        unwatched,
+        failures: BTreeMap::new(),
         origin: Origin {
             actor: Actor::File,
             machine_id: machine_id.clone(),
@@ -241,12 +258,14 @@ pub fn start(
 }
 
 /// Watches `tasks/` and `archive/` of every store and sends the tasks whose files change. `None`, with a
-/// warning, when the watcher cannot start: hand edits are then picked up at the next start.
+/// warning, when the watcher cannot start: hand edits are then picked up at the next start. The
+/// directories that it could not watch (a missing directory, a permission, the inotify limit) are
+/// returned with the error.
 fn watch(
     stores: &BTreeMap<ContextName, PathBuf>,
     commands: &mpsc::Sender<Command>,
     reconcile_queued: Arc<AtomicBool>,
-) -> Option<RecommendedWatcher> {
+) -> (Option<RecommendedWatcher>, Vec<FailedTaskFile>) {
     // Events may name the canonical path (FSEvents resolves `/tmp` to `/private/tmp`): both
     // spellings of each root are matched.
     let mut roots: Vec<(ContextName, PathBuf)> = Vec::new();
@@ -290,18 +309,23 @@ fn watch(
         Ok(watcher) => watcher,
         Err(error) => {
             warn!(%error, "cannot watch the task stores: hand edits are picked up at the next start");
-            return None;
+            return (None, Vec::new());
         }
     };
+    let mut unwatched = Vec::new();
     for root in stores.values() {
         for dir in [loom_store::files::TASKS_DIR, loom_store::files::ARCHIVE_DIR] {
             let dir = root.join(dir);
             if let Err(error) = watcher.watch(&dir, RecursiveMode::Recursive) {
                 warn!(path = %dir.display(), %error, "cannot watch a task store");
+                unwatched.push(FailedTaskFile {
+                    path: dir,
+                    error: error.to_string(),
+                });
             }
         }
     }
-    Some(watcher)
+    (Some(watcher), unwatched)
 }
 
 /// Queues a reconciliation of every task, unless one is queued and not started yet: a burst of
@@ -414,6 +438,34 @@ impl TaskHandle {
         self.commands
             .send(Command::RunSchedules { schedules, today })
             .is_ok()
+    }
+
+    /// The problems of the task stores: invalid files, tasks that could not be read, and whether
+    /// the file watcher runs.
+    pub async fn health(&self) -> Result<TaskStoreHealth, Failure> {
+        let (reply, answer) = oneshot::channel();
+        let stopped = || {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                unavailable("loomd is stopping"),
+            )
+        };
+        self.commands
+            .send(Command::Health { reply })
+            .map_err(|_| stopped())?;
+        let state = answer.await.map_err(|_| stopped())?;
+        // The read loads every row, as the other task endpoints do: the invalid ones are
+        // picked out of it.
+        self.read(move |rows| {
+            Ok(task_store_health(
+                state.watching,
+                state.unwatched,
+                state.failed,
+                &rows,
+                &state.stores,
+            ))
+        })
+        .await
     }
 
     /// The stores whose changes are not all committed, with the last failure.
@@ -597,6 +649,12 @@ struct Worker {
     commits: StoreCommits,
     /// Root of each context store, for the paths of the failures.
     stores: BTreeMap<ContextName, PathBuf>,
+    /// The file watcher runs.
+    watching: bool,
+    /// The directories that the watcher could not watch.
+    unwatched: Vec<FailedTaskFile>,
+    /// The tasks (or stores) that the last read of them could not handle, by context and task.
+    failures: BTreeMap<(ContextName, Option<TaskId>), TaskFailure>,
     /// Who hand edits are recorded as: the actor `file`, on this machine.
     origin: Origin,
     /// Who the changes of the API are recorded as: the actor `user`, on this machine.
@@ -693,6 +751,15 @@ impl Worker {
                 Command::RunSchedules { schedules, today } => {
                     self.run_schedules(&schedules, today);
                 }
+                Command::Health { reply } => {
+                    let failed: Vec<TaskFailure> = self.failures.values().cloned().collect();
+                    let _ = reply.send(HealthState {
+                        watching: self.watching,
+                        unwatched: self.unwatched.clone(),
+                        failed: failed_files(&failed, &self.stores),
+                        stores: self.stores.clone(),
+                    });
+                }
                 Command::Pending { reply } => {
                     let _ = reply.send(
                         self.commits
@@ -716,6 +783,7 @@ impl Worker {
             Ok(mut reindexed) => {
                 // A task that failed both is listed once, with its first error.
                 reindexed.failed.splice(0..0, unreconciled);
+                self.failures = failures_by_task(&reindexed.failed);
                 let result = reindex_result(&reindexed, &self.stores);
                 for file in &result.invalid {
                     warn!(context = %file.context, id = %file.id, error = %file.error, "invalid task file");
@@ -939,6 +1007,7 @@ impl Worker {
                 {
                     self.events.publish(ChangeEvent::Resync);
                 }
+                self.failures = failures_by_task(&report.failed);
                 report.failed
             }
             Err(error) => {
@@ -1009,6 +1078,7 @@ impl Worker {
             .reconcile(context, id, now, &self.origin, &mut self.random)
         {
             Ok(reconciled) => {
+                self.failures.remove(&(context.clone(), Some(id.clone())));
                 log_reconciled(id, &reconciled);
                 let location = self.location(id);
                 let result = match &reconciled {
@@ -1037,9 +1107,32 @@ impl Worker {
                 log_commit(context, Some(id), result);
                 self.changed(context, id);
             }
-            Err(error) => warn!(%context, %id, %error, "cannot reconcile a task"),
+            Err(error) => {
+                warn!(%context, %id, %error, "cannot reconcile a task");
+                self.failures.insert(
+                    (context.clone(), Some(id.clone())),
+                    TaskFailure {
+                        context: context.clone(),
+                        id: Some(id.clone()),
+                        error: error.to_string(),
+                    },
+                );
+            }
         }
     }
+}
+
+/// `failures`, one per context and task (the first error of a task stays).
+fn failures_by_task(
+    failures: &[TaskFailure],
+) -> BTreeMap<(ContextName, Option<TaskId>), TaskFailure> {
+    let mut by_task = BTreeMap::new();
+    for failure in failures {
+        by_task
+            .entry((failure.context.clone(), failure.id.clone()))
+            .or_insert_with(|| failure.clone());
+    }
+    by_task
 }
 
 /// The problem of a refused task operation; failures of the daemon are logged.
@@ -1233,7 +1326,34 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{Command, TaskHandle, queue_reconcile_all};
+    use super::{Command, TaskHandle, queue_reconcile_all, watch as watch_stores};
+
+    #[test]
+    fn a_directory_that_cannot_be_watched_is_listed_with_its_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        // No `archive/`: the watcher cannot watch it.
+        let stores = std::collections::BTreeMap::from([("work".parse().unwrap(), root.clone())]);
+        let (commands, _received) = mpsc::channel();
+        let (watcher, unwatched) = watch_stores(
+            &stores,
+            &commands,
+            std::sync::Arc::new(AtomicBool::new(false)),
+        );
+        assert!(watcher.is_some());
+        assert_eq!(unwatched.len(), 1);
+        assert_eq!(unwatched[0].path, root.join("archive"));
+        assert_ne!(unwatched[0].error, "");
+
+        std::fs::create_dir(root.join("archive")).unwrap();
+        let (_watcher, unwatched) = watch_stores(
+            &stores,
+            &commands,
+            std::sync::Arc::new(AtomicBool::new(false)),
+        );
+        assert_eq!(unwatched.len(), 0);
+    }
 
     #[test]
     fn a_burst_of_events_queues_one_reconciliation_until_it_starts() {
