@@ -104,6 +104,9 @@ pub struct Outcome {
     pub warnings: Vec<String>,
     /// The file was saved as it was: nothing changed.
     pub unchanged: bool,
+    /// loomd recorded the save. `false` when the wait for it ran out: the text says so, and a
+    /// caller must not present the edit as a success.
+    pub recorded: bool,
 }
 
 fn api(error: &impl std::fmt::Display) -> EditError {
@@ -219,6 +222,7 @@ pub async fn finish(client: &Client, session: &Session) -> Result<Outcome, EditE
             text: format!("{} unchanged\n", session.prefix),
             warnings: Vec::new(),
             unchanged: true,
+            recorded: true,
         });
     }
     let document = loom_core::parse_task_md(&saved).map_err(|error| EditError::Invalid {
@@ -252,6 +256,7 @@ pub async fn finish(client: &Client, session: &Session) -> Result<Outcome, EditE
                 text: render_change(&after),
                 warnings,
                 unchanged: false,
+                recorded: true,
             });
         }
         if Instant::now() >= deadline {
@@ -278,6 +283,7 @@ fn timed_out(appended: &[EventRecord], prefix: &str, after: &TaskDetail) -> Outc
             ),
             warnings: Vec::new(),
             unchanged: false,
+            recorded: false,
         };
     }
     let after_save = changed_after_save(appended);
@@ -295,5 +301,64 @@ fn timed_out(appended: &[EventRecord], prefix: &str, after: &TaskDetail) -> Outc
             "the task changed again after the save{by}: `loom show {prefix}` shows it"
         )],
         unchanged: false,
+        recorded: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::render_change;
+    use loom_api::{TaskDetail, TaskSummary};
+
+    fn detail() -> TaskDetail {
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        TaskDetail {
+            summary: TaskSummary {
+                id,
+                prefix: "k3q7".to_owned(),
+                context: "work".parse().unwrap(),
+                task: None,
+                read_only: None,
+                rank: None,
+            },
+            body: String::new(),
+            actions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_save_that_loomd_has_not_recorded_is_not_a_success() {
+        let outcome = timed_out(&[], "k3q7", &detail());
+        assert!(!outcome.recorded);
+        assert!(
+            outcome.text.contains("not recorded it within"),
+            "{outcome:?}"
+        );
+        // The CLI prints this text on standard output; nothing is added to the warnings.
+        assert_eq!(outcome.warnings, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_recorded_save_that_changed_again_is_recorded() {
+        let record = |actor| {
+            let origin = loom_core::Origin {
+                actor,
+                machine_id: loom_api::MachineId("desk".to_owned()),
+            };
+            EventRecord::new(
+                "aaaaaaaa".parse().unwrap(),
+                loom_api::Event::NoteLogged {
+                    text: "x".to_owned(),
+                },
+                loom_api::Timestamp::from_unix_secs(1_791_792_000).unwrap(),
+                &origin,
+            )
+        };
+        let appended = [record(Actor::File), record(Actor::User)];
+        let outcome = timed_out(&appended, "k3q7", &detail());
+        assert!(outcome.recorded);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.text.contains(&render_change(&detail())));
     }
 }

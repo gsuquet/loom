@@ -573,7 +573,8 @@ async fn edit_in_editor(
             Ok(outcome) if !outcome.warnings.is_empty() => {
                 state.set_status(outcome.warnings.join("; "));
             }
-            Ok(outcome) if outcome.unchanged => {
+            // Not recorded in time, or unchanged: information, with no check mark.
+            Ok(outcome) if outcome.unchanged || !outcome.recorded => {
                 state.set_status(outcome.text.lines().next().unwrap_or_default());
             }
             Ok(outcome) => state.set_success(outcome.text.lines().next().unwrap_or_default()),
