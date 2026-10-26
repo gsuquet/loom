@@ -13,7 +13,7 @@ use crate::task::{parse_date, read_only_text};
 
 use super::actions::ActionRequest;
 use super::color::Theme;
-use super::keymap::{KeyCommand, ModalKind, QueueTab, ViewKind, resolve_key};
+use super::keymap::{KeyCommand, ModalKind, PickField, QueueTab, ViewKind, resolve_key};
 use super::palette::{PaletteAction, PaletteItem, build_palette_items, filter_palette};
 
 /// Minimum terminal width (in columns) required to display the right-hand preview pane.
@@ -82,6 +82,28 @@ pub struct SnoozeModalState {
     pub until_input: String,
     pub on_input: String,
     pub field: SnoozeField,
+    pub error: Option<String>,
+}
+
+/// A choice in the field picker of the task page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickOption {
+    /// A kind.
+    Kind(Kind),
+    /// An importance.
+    Importance(Importance),
+}
+
+/// State of the open field picker (`t`, `i`, `d` on the task page).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickModalState {
+    pub task_id: TaskId,
+    pub field: PickField,
+    /// The choices of `Kind` and `Importance`; empty for `Due`.
+    pub options: Vec<PickOption>,
+    pub selected: usize,
+    /// The text of the `Due` field.
+    pub due_input: String,
     pub error: Option<String>,
 }
 
@@ -256,6 +278,17 @@ pub enum AppEffect {
     None,
     /// Refresh the queues and current open/previewed object.
     Refresh,
+    /// Edit fields of a task (`PATCH`).
+    EditTask {
+        /// Task to edit.
+        id: TaskId,
+        /// New kind.
+        kind: Option<Kind>,
+        /// New importance.
+        importance: Option<Importance>,
+        /// New due date, `Some(None)` removes it.
+        due: Option<Option<Date>>,
+    },
     /// Fetch task detail for preview or open page.
     FetchTask(TaskId),
     /// Search query changed; debounce before requesting `/v1/search`.
@@ -345,6 +378,8 @@ pub struct AppState {
     pub context_picker_selected: usize,
     /// View options for the Today queue.
     pub today_options: TodayOptions,
+    /// State of the field picker, when open.
+    pub pick_modal: Option<PickModalState>,
     /// State of the active Accept modal, when open.
     pub accept_modal: Option<AcceptModalState>,
     /// State of the active Snooze modal, when open.
@@ -367,6 +402,21 @@ pub struct AppState {
     pub sse_state: SseState,
     /// Flag requesting the event loop to exit cleanly.
     pub should_quit: bool,
+}
+
+/// Types into or deletes from a text input; false when the key is not text.
+fn edit_text(input: &mut String, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            input.push(c);
+            true
+        }
+        KeyCode::Backspace => {
+            input.pop();
+            true
+        }
+        _ => false,
+    }
 }
 
 impl AppState {
@@ -395,6 +445,7 @@ impl AppState {
             preview_enabled: true,
             preview_detail: None,
             page_stack: Vec::new(),
+            pick_modal: None,
             modal: None,
             help_scroll: 0,
             palette_items,
@@ -612,57 +663,35 @@ impl AppState {
                 ModalKind::Accept => {
                     if let Some(m) = &mut self.accept_modal
                         && m.field == AcceptField::Due
+                        && edit_text(&mut m.due_input, key)
                     {
-                        if let KeyCode::Char(c) = key.code
-                            && !key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            m.due_input.push(c);
-                            return AppEffect::None;
-                        } else if key.code == KeyCode::Backspace {
-                            m.due_input.pop();
-                            return AppEffect::None;
-                        }
+                        return AppEffect::None;
                     }
                 }
                 ModalKind::Snooze => {
                     if let Some(m) = &mut self.snooze_modal {
-                        match m.field {
-                            SnoozeField::Until => {
-                                if let KeyCode::Char(c) = key.code
-                                    && !key.modifiers.contains(KeyModifiers::CONTROL)
-                                {
-                                    m.until_input.push(c);
-                                    return AppEffect::None;
-                                } else if key.code == KeyCode::Backspace {
-                                    m.until_input.pop();
-                                    return AppEffect::None;
-                                }
-                            }
-                            SnoozeField::On => {
-                                if let KeyCode::Char(c) = key.code
-                                    && !key.modifiers.contains(KeyModifiers::CONTROL)
-                                {
-                                    m.on_input.push(c);
-                                    return AppEffect::None;
-                                } else if key.code == KeyCode::Backspace {
-                                    m.on_input.pop();
-                                    return AppEffect::None;
-                                }
-                            }
+                        let input = match m.field {
+                            SnoozeField::Until => &mut m.until_input,
+                            SnoozeField::On => &mut m.on_input,
+                        };
+                        if edit_text(input, key) {
+                            return AppEffect::None;
                         }
                     }
                 }
                 ModalKind::NewTask => {
-                    if let Some(m) = &mut self.new_task_modal {
-                        if let KeyCode::Char(c) = key.code
-                            && !key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            m.title_input.push(c);
-                            return AppEffect::None;
-                        } else if key.code == KeyCode::Backspace {
-                            m.title_input.pop();
-                            return AppEffect::None;
-                        }
+                    if let Some(m) = &mut self.new_task_modal
+                        && edit_text(&mut m.title_input, key)
+                    {
+                        return AppEffect::None;
+                    }
+                }
+                ModalKind::Pick => {
+                    if let Some(m) = &mut self.pick_modal
+                        && m.field == PickField::Due
+                        && edit_text(&mut m.due_input, key)
+                    {
+                        return AppEffect::None;
                     }
                 }
                 ModalKind::Help | ModalKind::ContextPicker => {}
@@ -694,6 +723,8 @@ impl AppState {
             | KeyCommand::Back
             | KeyCommand::NextPageTab
             | KeyCommand::PrevPageTab => self.apply_navigation_command(cmd),
+
+            KeyCommand::OpenPicker(field) => self.open_picker(field),
 
             KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
@@ -794,6 +825,7 @@ impl AppState {
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
             | KeyCommand::OpenContextPicker
+            | KeyCommand::OpenPicker(_)
             | KeyCommand::TriageAccept
             | KeyCommand::TriageSnooze
             | KeyCommand::TriageCancel
@@ -855,6 +887,7 @@ impl AppState {
             | KeyCommand::Back
             | KeyCommand::NextPageTab
             | KeyCommand::PrevPageTab
+            | KeyCommand::OpenPicker(_)
             | KeyCommand::TriageAccept
             | KeyCommand::TriageSnooze
             | KeyCommand::TriageCancel
@@ -960,6 +993,95 @@ impl AppState {
         AppEffect::None
     }
 
+    /// Opens the picker of `field` for the task of the open page.
+    fn open_picker(&mut self, field: PickField) -> AppEffect {
+        let Some(ObjectPageContent::Task(detail)) = self.page_stack.last().map(|p| &p.content)
+        else {
+            self.status_message = Some("the task is not loaded yet".into());
+            return AppEffect::None;
+        };
+        if let Some(ro) = &detail.summary.read_only {
+            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            return AppEffect::None;
+        }
+        let (Some(task), true) = (&detail.summary.task, detail.actions.contains(&Action::Edit))
+        else {
+            self.status_message = Some("cannot edit task".into());
+            return AppEffect::None;
+        };
+        let (options, selected, due_input) = match field {
+            PickField::Kind => (
+                TRIAGE_KINDS.iter().cloned().map(PickOption::Kind).collect(),
+                TRIAGE_KINDS
+                    .iter()
+                    .position(|k| k.name() == task.kind.name())
+                    .unwrap_or(0),
+                String::new(),
+            ),
+            PickField::Importance => (
+                TRIAGE_IMPORTANCES
+                    .iter()
+                    .copied()
+                    .map(PickOption::Importance)
+                    .collect(),
+                TRIAGE_IMPORTANCES
+                    .iter()
+                    .position(|i| *i == task.importance)
+                    .unwrap_or(0),
+                String::new(),
+            ),
+            PickField::Due => (
+                Vec::new(),
+                0,
+                task.due.map_or_else(String::new, |d| d.to_string()),
+            ),
+        };
+        self.pick_modal = Some(PickModalState {
+            task_id: detail.summary.id.clone(),
+            field,
+            options,
+            selected,
+            due_input,
+            error: None,
+        });
+        self.modal = Some(ModalKind::Pick);
+        AppEffect::None
+    }
+
+    fn confirm_pick_modal(&mut self) -> AppEffect {
+        let Some(m) = &mut self.pick_modal else {
+            return AppEffect::None;
+        };
+        let id = m.task_id.clone();
+        let mut edit = (None, None, None);
+        match m.field {
+            PickField::Kind | PickField::Importance => match m.options.get(m.selected) {
+                Some(PickOption::Kind(kind)) => edit.0 = Some(kind.clone()),
+                Some(PickOption::Importance(importance)) => edit.1 = Some(*importance),
+                None => {}
+            },
+            PickField::Due => {
+                let text = m.due_input.trim();
+                if text.is_empty() {
+                    edit.2 = Some(None);
+                } else if let Ok(date) = parse_date(text, self.local_date) {
+                    edit.2 = Some(Some(date));
+                } else {
+                    m.error = Some(format!("invalid date {text:?}"));
+                    return AppEffect::None;
+                }
+            }
+        }
+        self.modal = None;
+        self.pick_modal = None;
+        AppEffect::EditTask {
+            id,
+            kind: edit.0,
+            importance: edit.1,
+            due: edit.2,
+        }
+    }
+
     fn open_snooze_modal(&mut self) -> AppEffect {
         let (summary, actions) = self.actions_for_selected();
         let Some(task) = summary else {
@@ -1056,6 +1178,7 @@ impl AppState {
             | KeyCommand::Back
             | KeyCommand::NextPageTab
             | KeyCommand::PrevPageTab
+            | KeyCommand::OpenPicker(_)
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1134,6 +1257,7 @@ impl AppState {
                 self.accept_modal = None;
                 self.snooze_modal = None;
                 self.new_task_modal = None;
+                self.pick_modal = None;
                 AppEffect::None
             }
             KeyCommand::ConfirmModal => self.confirm_modal(),
@@ -1153,6 +1277,7 @@ impl AppState {
             | KeyCommand::Back
             | KeyCommand::NextPageTab
             | KeyCommand::PrevPageTab
+            | KeyCommand::OpenPicker(_)
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1178,6 +1303,7 @@ impl AppState {
             ModalKind::Accept => self.confirm_accept_modal(),
             ModalKind::Snooze => self.confirm_snooze_modal(),
             ModalKind::NewTask => self.confirm_new_task_modal(),
+            ModalKind::Pick => self.confirm_pick_modal(),
             ModalKind::Palette => self.confirm_palette_modal(),
             ModalKind::ContextPicker => self.confirm_context_picker_modal(),
             ModalKind::Search => self.confirm_search_modal(),
@@ -1400,6 +1526,13 @@ impl AppState {
                     let len = self.contexts.len() + 1; // 1 for 'all'
                     self.context_picker_selected = (self.context_picker_selected + 1).min(len - 1);
                 }
+                ModalKind::Pick => {
+                    if let Some(m) = &mut self.pick_modal
+                        && !m.options.is_empty()
+                    {
+                        m.selected = (m.selected + 1).min(m.options.len() - 1);
+                    }
+                }
                 // Field modals bind their own keys, so they never reach here.
                 ModalKind::Accept | ModalKind::Snooze | ModalKind::NewTask => {}
             }
@@ -1430,6 +1563,11 @@ impl AppState {
                 }
                 ModalKind::ContextPicker => {
                     self.context_picker_selected = self.context_picker_selected.saturating_sub(1);
+                }
+                ModalKind::Pick => {
+                    if let Some(m) = &mut self.pick_modal {
+                        m.selected = m.selected.saturating_sub(1);
+                    }
                 }
                 // Field modals bind their own keys, so they never reach here.
                 ModalKind::Accept | ModalKind::Snooze | ModalKind::NewTask => {}
@@ -1564,6 +1702,163 @@ mod tests {
             tab: PageTab::default(),
         });
         state
+    }
+
+    fn state_with_loaded_page(read_only: Option<&TaskReadOnly>) -> AppState {
+        let mut state = state_with_task_page();
+        let summary = make_task("k3q7zm2a", Status::Ready, read_only.cloned());
+        let actions = if read_only.is_some() {
+            Vec::new()
+        } else {
+            loom_core::available_actions(summary.task.as_ref().unwrap())
+        };
+        state.page_stack[0].content = ObjectPageContent::Task(Box::new(TaskDetail {
+            summary,
+            body: String::new(),
+            actions,
+        }));
+        state
+    }
+
+    fn press(state: &mut AppState, code: KeyCode) -> AppEffect {
+        state.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn the_importance_picker_starts_on_the_current_value_and_applies_the_choice() {
+        let mut state = state_with_loaded_page(None);
+        press(&mut state, KeyCode::Char('i'));
+        assert_eq!(state.modal, Some(ModalKind::Pick));
+        // The task is p1: the picker starts there.
+        assert_eq!(state.pick_modal.as_ref().unwrap().selected, 1);
+
+        press(&mut state, KeyCode::Char('k'));
+        let effect = press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            effect,
+            AppEffect::EditTask {
+                id: "k3q7zm2a".parse().unwrap(),
+                kind: None,
+                importance: Some(Importance::P0),
+                due: None,
+            }
+        );
+        assert_eq!(state.modal, None);
+        assert_eq!(state.pick_modal, None);
+    }
+
+    #[test]
+    fn the_kind_picker_applies_the_chosen_kind_only() {
+        let mut state = state_with_loaded_page(None);
+        press(&mut state, KeyCode::Char('t'));
+        // The task is a bug: the picker starts on it.
+        let picker = state.pick_modal.as_ref().unwrap();
+        assert_eq!(picker.options[picker.selected], PickOption::Kind(Kind::Bug));
+        press(&mut state, KeyCode::Down);
+        let effect = press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            effect,
+            AppEffect::EditTask {
+                id: "k3q7zm2a".parse().unwrap(),
+                kind: Some(Kind::Story),
+                importance: None,
+                due: None,
+            }
+        );
+    }
+
+    #[test]
+    fn the_due_picker_types_a_date_and_empty_removes_it() {
+        let mut state = state_with_loaded_page(None);
+        press(&mut state, KeyCode::Char('d'));
+        // The task is due 2026-10-25; type over it.
+        assert_eq!(state.pick_modal.as_ref().unwrap().due_input, "2026-10-25");
+        for _ in 0..10 {
+            press(&mut state, KeyCode::Backspace);
+        }
+        for c in "tomorrow".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+        let effect = press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            effect,
+            AppEffect::EditTask {
+                id: "k3q7zm2a".parse().unwrap(),
+                kind: None,
+                importance: None,
+                due: Some(Some(jiff::civil::date(2026, 10, 23))),
+            }
+        );
+
+        press(&mut state, KeyCode::Char('d'));
+        for _ in 0..10 {
+            press(&mut state, KeyCode::Backspace);
+        }
+        let effect = press(&mut state, KeyCode::Enter);
+        assert_eq!(
+            effect,
+            AppEffect::EditTask {
+                id: "k3q7zm2a".parse().unwrap(),
+                kind: None,
+                importance: None,
+                due: Some(None),
+            }
+        );
+    }
+
+    #[test]
+    fn an_invalid_due_date_keeps_the_picker_open_with_an_error() {
+        let mut state = state_with_loaded_page(None);
+        press(&mut state, KeyCode::Char('d'));
+        press(&mut state, KeyCode::Char('x'));
+        assert_eq!(press(&mut state, KeyCode::Enter), AppEffect::None);
+        assert_eq!(state.modal, Some(ModalKind::Pick));
+        assert!(state.pick_modal.as_ref().unwrap().error.is_some());
+    }
+
+    #[test]
+    fn esc_closes_the_picker_without_an_effect() {
+        let mut state = state_with_loaded_page(None);
+        press(&mut state, KeyCode::Char('i'));
+        assert_eq!(press(&mut state, KeyCode::Esc), AppEffect::None);
+        assert_eq!(state.modal, None);
+        assert_eq!(state.pick_modal, None);
+    }
+
+    #[test]
+    fn a_read_only_task_refuses_the_pickers() {
+        let mut state = state_with_loaded_page(Some(&TaskReadOnly::Archived(2026)));
+        press(&mut state, KeyCode::Char('i'));
+        assert_eq!(state.modal, None);
+        assert!(
+            state
+                .status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("read-only")),
+            "{:?}",
+            state.status_message
+        );
+    }
+
+    #[test]
+    fn a_page_that_is_still_loading_refuses_the_pickers() {
+        let mut state = state_with_task_page();
+        press(&mut state, KeyCode::Char('i'));
+        assert_eq!(state.modal, None);
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("the task is not loaded yet")
+        );
+    }
+
+    #[test]
+    fn u_on_the_task_page_undoes_the_last_change() {
+        let mut state = state_with_loaded_page(None);
+        state.last_action = Some("k3q7zm2a".parse().unwrap());
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u')),
+            AppEffect::UndoTask("k3q7zm2a".parse().unwrap())
+        );
     }
 
     #[test]
