@@ -563,14 +563,20 @@ async fn edit_in_editor(
             return Err(miette::miette!("cannot take the terminal back: {error}"));
         }
     };
+    // One turn of the scheduler first, so that a signal that is on its way is counted.
+    tokio::task::yield_now().await;
     drain_signal(sigint);
     let _ = terminal.clear();
     match ran {
         Ok(Ok(())) => match edit::finish(client, &session).await {
-            Ok(outcome) if outcome.warnings.is_empty() => {
+            // The save worked: a warning is information, not an error.
+            Ok(outcome) if !outcome.warnings.is_empty() => {
+                state.set_status(outcome.warnings.join("; "));
+            }
+            Ok(outcome) if outcome.unchanged => {
                 state.set_status(outcome.text.lines().next().unwrap_or_default());
             }
-            Ok(outcome) => state.set_error(outcome.warnings.join("; ")),
+            Ok(outcome) => state.set_success(outcome.text.lines().next().unwrap_or_default()),
             Err(error) => state.set_error(error.to_string()),
         },
         Ok(Err(error)) => state.set_error(error.to_string()),

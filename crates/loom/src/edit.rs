@@ -102,6 +102,8 @@ pub struct Outcome {
     pub text: String,
     /// Warnings, one per entry.
     pub warnings: Vec<String>,
+    /// The file was saved as it was: nothing changed.
+    pub unchanged: bool,
 }
 
 fn api(error: &impl std::fmt::Display) -> EditError {
@@ -216,6 +218,7 @@ pub async fn finish(client: &Client, session: &Session) -> Result<Outcome, EditE
         return Ok(Outcome {
             text: format!("{} unchanged\n", session.prefix),
             warnings: Vec::new(),
+            unchanged: true,
         });
     }
     let document = loom_core::parse_task_md(&saved).map_err(|error| EditError::Invalid {
@@ -248,6 +251,7 @@ pub async fn finish(client: &Client, session: &Session) -> Result<Outcome, EditE
             return Ok(Outcome {
                 text: render_change(&after),
                 warnings,
+                unchanged: false,
             });
         }
         if Instant::now() >= deadline {
@@ -273,6 +277,7 @@ fn timed_out(appended: &[EventRecord], prefix: &str, after: &TaskDetail) -> Outc
                 RECORD_TIMEOUT.as_secs()
             ),
             warnings: Vec::new(),
+            unchanged: false,
         };
     }
     let after_save = changed_after_save(appended);
@@ -289,5 +294,6 @@ fn timed_out(appended: &[EventRecord], prefix: &str, after: &TaskDetail) -> Outc
         warnings: vec![format!(
             "the task changed again after the save{by}: `loom show {prefix}` shows it"
         )],
+        unchanged: false,
     }
 }
