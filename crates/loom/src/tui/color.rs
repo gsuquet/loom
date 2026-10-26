@@ -166,6 +166,21 @@ impl Theme {
         Style::default().fg(Color::White).bold()
     }
 
+    /// Strong text: titles, labels of the focused element, key names in hints.
+    #[must_use]
+    pub fn strong_style(&self) -> Style {
+        Style::default().add_modifier(Modifier::BOLD)
+    }
+
+    /// Style for a success glyph or message.
+    #[must_use]
+    pub fn success_style(&self) -> Style {
+        if !self.color_enabled {
+            return Style::default().bold();
+        }
+        Style::default().fg(Color::Green).bold()
+    }
+
     /// Selection bar / highlight style.
     #[must_use]
     pub fn selected_style(&self) -> Style {

@@ -25,6 +25,8 @@ The TUI has three regions:
 | Main area | Middle | The active queue (with an optional right-hand preview pane) or the active object page. |
 | Status bar | Bottom line | When an error occurs, the error banner. When a status message is present, the message. Otherwise, key shortcuts for the active view. |
 
+The error banner `[Error: <message>]` stays until the next successful reload from `loomd`. A status message goes away after 4 seconds or at the next key press. A status message for a successful action starts with `✓` (for example `✓ task created in inbox`).
+
 ## Queues and preview pane
 
 The TUI has three queues:
@@ -42,6 +44,8 @@ A queue view shows a list on the left and a preview pane on the right when two c
 
 When the terminal width is below `120` columns, or when you switch the preview pane off with `|`, the list uses the full width of the main area.
 
+Each row has these columns, from left to right: the selection marker `▶`, the importance, the status, the context badge, the kind, and the title. Each column has the width of its longest value in the queue. A kind longer than 10 characters is cut and ends with `…`. On the selected row, only the marker and the title are in reverse video.
+
 A task that is read-only shows `[ro: <reason>]` in the list row and a banner `⚠ READ-ONLY: <reason>` in the preview pane. `loom` refuses edits to read-only tasks and displays an error message.
 
 ## Object pages
@@ -52,7 +56,7 @@ When you press `Enter` on a selected row in a queue, or on a search result, the 
 | --- | --- |
 | Task | A tab bar and the selected tab. The tabs are `Overview`, `Relations` and `Events`. |
 
-The task page opens on the `Overview` tab. `Overview` shows the `id`, the context badge, the status, the importance, the kind, the title, the due date, and the notes of the task. The TUI renders the notes as Markdown. It supports headings, bullet and numbered lists, quotes, rules, fenced code, and the inline marks `**bold**`, `*italic*` and `` `code` ``. It shows any other Markdown as written.
+The task page opens on the `Overview` tab. `Overview` and the preview pane show the title of the task, then one line for each field (`Status`, `Importance`, `Kind`, `Context`, `Due`, `Waiting`, `Rank`, `Parent`, `ID`), then the `Notes` section. A field with no value is not shown. When the notes start with a `Notes` heading, the TUI does not show that heading again. When the notes are empty, the section shows `No notes.` The TUI renders the notes as Markdown. It supports headings, bullet and numbered lists, quotes, rules, fenced code, and the inline marks `**bold**`, `*italic*` and `` `code` ``. It shows any other Markdown as written.
 
 The `Relations` and `Events` tabs show the text `The <tab> tab has no content in this version.`
 
@@ -60,7 +64,7 @@ When `loomd` sends a change event for the task, the TUI reloads the page.
 
 ## Modals
 
-A modal sits on top of the active view and captures key presses until you close it with `Esc` or confirm a choice with `Enter`:
+A modal sits on top of the active view and captures key presses until you close it with `Esc` or confirm a choice with `Enter`. Each modal has a border with its title. In a form (`Accept`, `Snooze`, `New task`), the field that has the focus has a thick border, and the last line shows the keys of the form or its error:
 
 | Key | Modal | Behavior |
 | --- | --- | --- |

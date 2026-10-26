@@ -85,6 +85,15 @@ pub struct SnoozeModalState {
     pub error: Option<String>,
 }
 
+/// Tone of a toast on the bottom bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastTone {
+    /// Information, shown as plain text.
+    Info,
+    /// A successful action, shown with a `✓`.
+    Success,
+}
+
 /// State of the open New Task modal (`+`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTaskModalState {
@@ -359,8 +368,10 @@ pub struct AppState {
     pub queued_action: Option<ActionRequest>,
     /// Injected local date for pure date calculations.
     pub local_date: Date,
-    /// Transitory status message shown on bottom bar.
+    /// Toast shown on the bottom bar until it expires or the next key press.
     pub status_message: Option<String>,
+    /// Tone of [`Self::status_message`].
+    pub status_tone: ToastTone,
     /// Visible error state from a failed network request or daemon error.
     pub last_error: Option<String>,
     /// SSE connection state.
@@ -414,6 +425,7 @@ impl AppState {
             queued_action: None,
             local_date,
             status_message: None,
+            status_tone: ToastTone::Info,
             last_error: None,
             sse_state: SseState::Disconnected,
             should_quit: false,
@@ -578,6 +590,8 @@ impl AppState {
 
     /// Handles a key event and produces an [`AppEffect`].
     pub fn handle_key(&mut self, key: KeyEvent) -> AppEffect {
+        // A key press dismisses the previous toast (docs/design/ui-style.md, 4.8).
+        self.clear_status();
         // Modal text input takes priority for character typing.
         if let Some(modal) = self.modal {
             match modal {
@@ -894,13 +908,13 @@ impl AppState {
         let (summary, actions) = self.actions_for_selected();
         let summary = summary?;
         if let Some(ro) = &summary.read_only {
-            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            self.set_status(format!("task is read-only: {}", read_only_text(ro)));
             return None;
         }
         if actions.contains(&Action::SetStatus(required_status)) {
             Some(summary.id.clone())
         } else {
-            self.status_message = Some(format!("cannot move task to {required_status}"));
+            self.set_status(format!("cannot move task to {required_status}"));
             None
         }
     }
@@ -909,14 +923,14 @@ impl AppState {
         let (summary, actions) = self.actions_for_selected();
         let summary = summary?;
         if let Some(ro) = &summary.read_only {
-            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            self.set_status(format!("task is read-only: {}", read_only_text(ro)));
             return None;
         }
         let is_active = summary.task.as_ref().map(|t| &t.status) == Some(&Status::Active);
         if is_active || actions.contains(&Action::SetStatus(StatusName::Active)) {
             Some(summary.id.clone())
         } else {
-            self.status_message = Some("cannot activate task".into());
+            self.set_status("cannot activate task");
             None
         }
     }
@@ -927,11 +941,11 @@ impl AppState {
             return AppEffect::None;
         };
         if let Some(ro) = &task.read_only {
-            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            self.set_status(format!("task is read-only: {}", read_only_text(ro)));
             return AppEffect::None;
         }
         if !actions.contains(&Action::Accept) {
-            self.status_message = Some("cannot accept: task is not in inbox".into());
+            self.set_status("cannot accept: task is not in inbox");
             return AppEffect::None;
         }
         let default_kind = task.task.as_ref().map_or(Kind::Chore, |t| match &t.kind {
@@ -966,11 +980,11 @@ impl AppState {
             return AppEffect::None;
         };
         if let Some(ro) = &task.read_only {
-            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            self.set_status(format!("task is read-only: {}", read_only_text(ro)));
             return AppEffect::None;
         }
         if !actions.contains(&Action::SetStatus(StatusName::Waiting)) {
-            self.status_message = Some("cannot snooze task".into());
+            self.set_status("cannot snooze task");
             return AppEffect::None;
         }
         self.snooze_modal = Some(SnoozeModalState {
@@ -992,8 +1006,7 @@ impl AppState {
         } else if let Some(ctx) = &self.default_context {
             ctx.clone()
         } else {
-            self.status_message =
-                Some("no context: select a task or configure default_context".into());
+            self.set_status("no context: select a task or configure default_context");
             return AppEffect::None;
         };
         self.new_task_modal = Some(NewTaskModalState {
@@ -1479,6 +1492,19 @@ impl AppState {
     /// Sets a temporary status message on the status bar.
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+        self.status_tone = ToastTone::Info;
+    }
+
+    /// Sets a toast that reports a successful action.
+    pub fn set_success(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+        self.status_tone = ToastTone::Success;
+    }
+
+    /// Removes the toast.
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
+        self.status_tone = ToastTone::Info;
     }
 
     /// Sets an error message to display prominently.
@@ -2167,6 +2193,16 @@ mod tests {
         assert_eq!(state.task_depth_in_today(&state.today[2]), 0);
 
         assert_eq!(state.today_selected, 2);
+    }
+
+    #[test]
+    fn a_key_press_dismisses_the_toast() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.set_success("task created in inbox");
+        assert_eq!(state.status_tone, ToastTone::Success);
+        state.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(state.status_message, None);
+        assert_eq!(state.status_tone, ToastTone::Info);
     }
 
     #[test]

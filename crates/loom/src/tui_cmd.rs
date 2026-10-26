@@ -43,6 +43,8 @@ const SSE_INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(500);
 const SSE_MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 /// Inactivity pause before sending a debounced live search query.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
+/// How long a toast stays on the bottom bar (docs/design/ui-style.md, 4.8).
+const TOAST_LIFETIME: Duration = Duration::from_secs(4);
 
 struct RefreshRequest {
     context: Option<ContextName>,
@@ -213,6 +215,9 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
     let mut event_stream = crossterm::event::EventStream::new();
     let mut pending_search: Option<String> = None;
     let mut search_timer = Box::pin(tokio::time::sleep(SEARCH_DEBOUNCE));
+    // The toast that the timer expires; a new toast restarts the timer.
+    let mut shown_toast: Option<String> = None;
+    let mut toast_timer = Box::pin(tokio::time::sleep(TOAST_LIFETIME));
     let mut exit = Exit::Success;
 
     while !state.should_quit {
@@ -284,6 +289,15 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                         needs_redraw = true;
                     }
                 }
+            }
+
+            // Expire the toast
+            () = &mut toast_timer, if shown_toast.is_some() => {
+                if state.status_message == shown_toast {
+                    state.clear_status();
+                    needs_redraw = true;
+                }
+                shown_toast = None;
             }
 
             // Handle debounced search query trigger
@@ -404,7 +418,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                         let target = outcome.next_undo_target(state.last_action.as_ref());
                         state.set_last_action(target);
                         if let Some(msg) = outcome.message {
-                            state.status_message = Some(msg);
+                            state.set_success(msg);
                         }
                         if outcome.should_quit {
                             state.should_quit = true;
@@ -437,6 +451,15 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                     Next::Dropped(reason) => state.set_status(reason),
                 }
                 needs_redraw = true;
+            }
+        }
+
+        if state.status_message != shown_toast {
+            shown_toast.clone_from(&state.status_message);
+            if shown_toast.is_some() {
+                toast_timer
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + TOAST_LIFETIME);
             }
         }
 
