@@ -15,6 +15,7 @@ use super::color::Theme;
 use super::events::{self, EventsLoad, EventsView};
 use super::keymap::{Layer, ModalKind, PickField, QueueTab, ViewKind, bindings_for_layer};
 use super::markdown;
+use super::relations::{self, RelationsLoad, RelationsView, Row};
 use super::state::{
     AppState, ObjectPageContent, ObjectPageState, ObjectTarget, PREVIEW_MIN_WIDTH, PageTab,
     PickOption, ToastTone,
@@ -449,13 +450,7 @@ fn render_task_page(
         PageTab::Events => {
             render_events(frame, chunks[2], &page.events, page.scroll, zone, theme);
         }
-        PageTab::Relations => {
-            let text = Paragraph::new(Line::styled(
-                "The Relations tab has no content in this version.",
-                theme.dim_style(),
-            ));
-            frame.render_widget(text, chunks[2]);
-        }
+        PageTab::Relations => render_relations(frame, chunks[2], &page.relations, theme),
     }
 }
 
@@ -466,6 +461,78 @@ fn clip(text: &str, width: usize) -> String {
     }
     let kept: String = text.chars().take(width.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+/// The lines of the Relations tab, and the index of the selected line among them.
+fn relations_lines(
+    view: &RelationsView,
+    width: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, usize) {
+    let data = match &view.load {
+        RelationsLoad::NotLoaded | RelationsLoad::Loading => {
+            return (
+                vec![Line::styled("Loading relations...", theme.dim_style())],
+                0,
+            );
+        }
+        RelationsLoad::Failed(error) => {
+            return (
+                vec![Line::styled(
+                    format!("Cannot load the relations: {error}"),
+                    theme.error_style(),
+                )],
+                0,
+            );
+        }
+        RelationsLoad::Loaded(data) => data,
+    };
+    let mut lines = Vec::new();
+    let mut followable = 0;
+    let mut selected_line = 0;
+    for row in relations::rows(data) {
+        match row {
+            Row::Header(label) => lines.push(section_header(label, width, theme)),
+            Row::Note(text) => lines.push(Line::styled(format!("  {text}"), theme.dim_style())),
+            Row::Repo(slug) => lines.push(Line::raw(format!("  {slug}"))),
+            Row::Task { depth, id, summary } => {
+                let followable_here = summary.is_some();
+                let is_selected = followable_here && followable == view.selected;
+                if is_selected {
+                    selected_line = lines.len();
+                }
+                if followable_here {
+                    followable += 1;
+                }
+                let mark = if is_selected { "▸ " } else { "  " };
+                let text = clip(
+                    &format!(
+                        "{mark}{}{}",
+                        "  ".repeat(depth),
+                        relations::task_text(&id, summary.as_ref())
+                    ),
+                    width,
+                );
+                let style = if is_selected {
+                    theme.selected_style()
+                } else if followable_here {
+                    Style::default()
+                } else {
+                    theme.dim_style()
+                };
+                lines.push(Line::styled(text, style));
+            }
+        }
+    }
+    (lines, selected_line)
+}
+
+fn render_relations(frame: &mut Frame<'_>, area: Rect, view: &RelationsView, theme: &Theme) {
+    let (lines, selected) = relations_lines(view, usize::from(area.width), theme);
+    // Scroll just far enough to keep the selected line in the pane.
+    let top = (selected + 1).saturating_sub(usize::from(area.height));
+    let shown = lines.into_iter().skip(top).collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(shown), area);
 }
 
 /// The longest actor name shown in full; a longer one is cut with `…`.
@@ -748,6 +815,17 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     match state.page_stack.last() {
         Some(page) if page.tab == PageTab::Events => {
             spans.extend(hint_line(&events_hints(&page.events), &state.theme).spans);
+        }
+        Some(page) if page.tab == PageTab::Relations => {
+            let hints = [
+                ("Esc", "back"),
+                ("[/]", "tab"),
+                ("j/k", "select"),
+                ("Enter", "open"),
+                ("?", "help"),
+                ("q", "quit"),
+            ];
+            spans.extend(hint_line(&hints, &state.theme).spans);
         }
         Some(_) | None => spans.extend(hint_line(&hints, &state.theme).spans),
     }
@@ -1445,6 +1523,7 @@ mod tests {
             scroll: 0,
             tab,
             events: EventsView::default(),
+            relations: RelationsView::default(),
         });
         let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
         terminal.draw(|f| render(f, &state)).unwrap();
@@ -1482,6 +1561,7 @@ mod tests {
             scroll: 0,
             tab: PageTab::Events,
             events: view,
+            relations: RelationsView::default(),
         });
         let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
         terminal.draw(|f| render(f, &state)).unwrap();
@@ -1654,6 +1734,7 @@ mod tests {
             scroll: 0,
             tab: PageTab::Overview,
             events: EventsView::default(),
+            relations: RelationsView::default(),
         });
         state.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
@@ -1748,15 +1829,145 @@ mod tests {
         assert_eq!(lines, expected);
     }
 
+    fn relations_summary(id: &str, title: &str) -> TaskSummary {
+        let mut d = detail("", None);
+        d.summary.id = id.parse().unwrap();
+        d.summary.prefix = id[..4].to_owned();
+        if let Some(task) = d.summary.task.as_mut() {
+            task.id = id.parse().unwrap();
+            task.title = title.to_owned();
+        }
+        d.summary
+    }
+
+    fn relations_view(selected: usize) -> RelationsView {
+        use crate::tui::relations::{ChildNode, RelatedTask, RelationsData};
+        let data = RelationsData {
+            parent: Some(RelatedTask {
+                id: "aaaaaaaa".parse().unwrap(),
+                summary: Some(relations_summary("aaaaaaaa", "Checkout project")),
+            }),
+            children: vec![ChildNode {
+                task: relations_summary("bbbbbbbb", "Fix the login timeout"),
+                children: vec![ChildNode {
+                    task: relations_summary("cccccccc", "Add a retry"),
+                    children: Vec::new(),
+                }],
+            }],
+            spawned_from: vec![RelatedTask {
+                id: "dddddddd".parse().unwrap(),
+                summary: None,
+            }],
+            blocks: Vec::new(),
+            repos: vec!["work/api".to_owned()],
+            truncated: false,
+        };
+        RelationsView {
+            load: RelationsLoad::Loaded(Box::new(data)),
+            selected,
+        }
+    }
+
+    fn relations_page_lines(width: u16, height: u16, view: RelationsView) -> Vec<String> {
+        let mut state = AppState::new(
+            test_theme(),
+            None,
+            Vec::new(),
+            jiff::civil::date(2026, 10, 22),
+        );
+        state.page_stack.push(ObjectPageState {
+            target: ObjectTarget::Task("k3q7zm2a".parse().unwrap()),
+            content: ObjectPageContent::Task(Box::new(detail("", None))),
+            scroll: 0,
+            tab: PageTab::Relations,
+            events: EventsView::default(),
+            relations: view,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        buffer_text_lines(&terminal)
+    }
+
     #[test]
-    fn other_tabs_say_that_they_have_no_content() {
-        let text = task_page_lines(80, PageTab::Relations).join("\n");
+    fn relations_tab_shows_the_sections_and_the_tree_at_80_columns() {
+        let lines = relations_page_lines(80, 20, relations_view(1));
+        let text = lines.join("\n");
+        assert!(lines[4].starts_with("│ ── Parent"), "{text}");
         assert!(
-            text.contains("The Relations tab has no content in this version."),
+            lines[5].contains("  aaaa  ready  p1  Checkout project"),
             "{text}"
         );
-        assert!(!text.contains("Login timeout"), "{text}");
+        assert!(lines[6].contains("── Children"), "{text}");
+        // The selected task has the mark; the grandchild is one level deeper.
+        assert!(
+            lines[7].contains("▸ bbbb  ready  p1  Fix the login timeout"),
+            "{text}"
+        );
+        assert!(
+            lines[8].contains("│     cccc  ready  p1  Add a retry"),
+            "{text}"
+        );
+        assert!(lines[10].contains("dddddddd  (no such task)"), "{text}");
+        assert!(text.contains("── Blocks"), "{text}");
+        assert!(text.contains("work/api"), "{text}");
+        assert!(lines.iter().all(|l| l.chars().count() <= 80), "{text}");
+        assert!(lines[19].contains("Enter open"), "{text}");
     }
+
+    #[test]
+    fn relations_tab_cuts_long_rows_at_80_and_keeps_them_whole_at_160() {
+        let mut view = relations_view(0);
+        if let RelationsLoad::Loaded(data) = &mut view.load {
+            data.parent = Some(crate::tui::relations::RelatedTask {
+                id: "aaaaaaaa".parse().unwrap(),
+                summary: Some(relations_summary(
+                    "aaaaaaaa",
+                    &"a very long title ".repeat(5),
+                )),
+            });
+        }
+        let narrow = relations_page_lines(80, 20, view.clone()).join("\n");
+        assert!(narrow.contains('…'), "{narrow}");
+        let wide = relations_page_lines(160, 20, view).join("\n");
+        assert!(!wide.contains('…'), "{wide}");
+    }
+
+    #[test]
+    fn relations_tab_scrolls_to_keep_the_selection_visible() {
+        // A pane of 3 lines cannot show the whole tab: the last task must still show.
+        let lines = relations_page_lines(80, 9, relations_view(2));
+        let text = lines.join("\n");
+        assert!(text.contains("▸"), "{text}");
+        assert!(text.contains("cccc"), "{text}");
+    }
+
+    #[test]
+    fn relations_tab_tells_loading_and_failure() {
+        let loading = relations_page_lines(
+            80,
+            12,
+            RelationsView {
+                load: RelationsLoad::Loading,
+                selected: 0,
+            },
+        )
+        .join("\n");
+        assert!(loading.contains("Loading relations..."), "{loading}");
+        let failed = relations_page_lines(
+            80,
+            12,
+            RelationsView {
+                load: RelationsLoad::Failed("boom".to_owned()),
+                selected: 0,
+            },
+        )
+        .join("\n");
+        assert!(
+            failed.contains("Cannot load the relations: boom"),
+            "{failed}"
+        );
+    }
+
     fn summary(id: &str, title: &str, kind: loom_core::Kind, context: &str) -> TaskSummary {
         let mut d = detail("", None);
         let id: loom_core::TaskId = id.parse().unwrap();
@@ -1921,6 +2132,7 @@ mod tests {
             scroll: 0,
             tab: PageTab::Overview,
             events: EventsView::default(),
+            relations: RelationsView::default(),
         });
         state.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

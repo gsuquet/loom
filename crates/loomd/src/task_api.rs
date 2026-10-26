@@ -59,8 +59,26 @@ pub struct TaskListQuery {
     pub status: Option<String>,
     /// `true`: the priority list.
     pub ranked: Option<bool>,
-    /// `true`: the archived tasks instead of the others.
-    pub archived: Option<bool>,
+    /// `true`: the archived tasks instead of the others; `any`: both.
+    pub archived: Option<ArchivedFilter>,
+    /// Only the tasks whose parent is one of these tasks (full IDs, separated by commas);
+    /// ignored when empty.
+    pub parent: Option<String>,
+}
+
+/// Which locations `GET /v1/tasks` lists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum ArchivedFilter {
+    /// The tasks of `tasks/` only.
+    #[default]
+    #[serde(rename = "false")]
+    Active,
+    /// The archived tasks only.
+    #[serde(rename = "true")]
+    Archived,
+    /// Both.
+    #[serde(rename = "any")]
+    Any,
 }
 
 /// Query parameters of `GET /v1/focus`.
@@ -88,6 +106,17 @@ pub fn focus_context(query: FocusQuery) -> Result<Option<ContextName>, ApiError>
         })
 }
 
+impl ArchivedFilter {
+    /// Whether a task at `location` is listed.
+    const fn keeps(self, location: TaskLocation) -> bool {
+        match self {
+            Self::Active => matches!(location, TaskLocation::Active),
+            Self::Archived => !matches!(location, TaskLocation::Active),
+            Self::Any => true,
+        }
+    }
+}
+
 /// The filter of a task list, checked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskFilter {
@@ -97,8 +126,10 @@ pub struct TaskFilter {
     pub status: Option<StatusName>,
     /// The priority list: the tasks [`loom_core::rank`] lists, in its order.
     pub ranked: bool,
-    /// The archived tasks only; otherwise the tasks of `tasks/` only.
-    pub archived: bool,
+    /// Which locations to list.
+    pub archived: ArchivedFilter,
+    /// Only the children of these tasks; empty keeps every task.
+    pub parent: Vec<TaskId>,
 }
 
 /// The filter of `query`.
@@ -120,11 +151,23 @@ pub fn task_filter(query: TaskListQuery) -> Result<TaskFilter, ApiError> {
             })?,
         ),
     };
+    let parent = query
+        .parent
+        .iter()
+        .flat_map(|parents| parents.split(','))
+        .filter(|parent| !parent.is_empty())
+        .map(|parent| {
+            parent
+                .parse::<TaskId>()
+                .map_err(|error| invalid_request(format!("invalid parent `{parent}`: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(TaskFilter {
         context,
         status,
         ranked: query.ranked.unwrap_or(false),
-        archived: query.archived.unwrap_or(false),
+        archived: query.archived.unwrap_or_default(),
+        parent,
     })
 }
 
@@ -140,7 +183,7 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
             .map_or_else(|| id.to_string(), |prefix| (*prefix).to_owned())
     };
     let kept = rows.iter().filter(|row| {
-        (row.location != TaskLocation::Active) == filter.archived
+        filter.archived.keeps(row.location)
             && filter
                 .context
                 .as_ref()
@@ -148,6 +191,13 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
             && filter.status.is_none_or(|status| {
                 task_of(row).and_then(|task| task.status.name()) == Some(status)
             })
+            && (filter.parent.is_empty()
+                || task_of(row).is_some_and(|task| {
+                    task.relations
+                        .parent
+                        .as_ref()
+                        .is_some_and(|parent| filter.parent.contains(parent))
+                }))
     });
     let mut kept: Vec<&IndexedTask> = kept.collect();
     if !filter.ranked {

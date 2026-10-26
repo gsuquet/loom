@@ -19,6 +19,8 @@ use loom::tui::actions::{
     ActionRequest, ActionResponse, Next, Submission, execute_action, submit, take_next,
 };
 use loom::tui::color::Theme;
+use loom::tui::events::EventsLoad;
+use loom::tui::relations::{RelationsData, RelationsLoad};
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, PageTab, SseState};
 use loom::tui::terminal::{SuspendError, TerminalGuard, while_suspended};
@@ -73,6 +75,10 @@ enum FetchResponse {
     TaskEvents {
         id: TaskId,
         result: Box<Result<TaskEvents, String>>,
+    },
+    TaskRelations {
+        id: TaskId,
+        result: Box<Result<RelationsData, String>>,
     },
 }
 
@@ -169,24 +175,37 @@ async fn run_tui_loop(
     });
 
     // 2b. Watch channel for the event log of the task whose Events tab is open.
-    let (events_tx, mut events_rx) = watch::channel::<Option<TaskId>>(None);
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel::<TaskId>();
     let events_client = client.clone();
     let (events_done_tx, mut events_done_rx) = mpsc::channel::<FetchResponse>(16);
     tokio::spawn(async move {
-        while events_rx.changed().await.is_ok() {
-            let maybe_id = events_rx.borrow().clone();
-            if let Some(id) = maybe_id {
-                let result = events_client
-                    .get::<TaskEvents>(&format!("/v1/tasks/{id}/events"))
-                    .await
-                    .map_err(|e| e.to_string());
-                let _ = events_done_tx
-                    .send(FetchResponse::TaskEvents {
-                        id,
-                        result: Box::new(result),
-                    })
-                    .await;
-            }
+        while let Some(id) = events_rx.recv().await {
+            let result = events_client
+                .get::<TaskEvents>(&format!("/v1/tasks/{id}/events"))
+                .await
+                .map_err(|e| e.to_string());
+            let _ = events_done_tx
+                .send(FetchResponse::TaskEvents {
+                    id,
+                    result: Box::new(result),
+                })
+                .await;
+        }
+    });
+
+    // 2c. Watch channel for the relations of the task whose Relations tab is open.
+    let (relations_tx, mut relations_rx) = mpsc::unbounded_channel::<TaskId>();
+    let relations_client = client.clone();
+    let (relations_done_tx, mut relations_done_rx) = mpsc::channel::<FetchResponse>(16);
+    tokio::spawn(async move {
+        while let Some(id) = relations_rx.recv().await {
+            let result = loom::tui::load::fetch_relations(&relations_client, &id).await;
+            let _ = relations_done_tx
+                .send(FetchResponse::TaskRelations {
+                    id,
+                    result: Box::new(result),
+                })
+                .await;
         }
     });
 
@@ -290,6 +309,7 @@ async fn run_tui_loop(
                                 &refresh_tx,
                                 &task_tx,
                                 &events_tx,
+                                &relations_tx,
                                 &mut fetch_in_flight,
                                 &mut refresh_queued,
                                 &mut pending_search,
@@ -326,6 +346,7 @@ async fn run_tui_loop(
                             &refresh_tx,
                             &task_tx,
                             &events_tx,
+                            &relations_tx,
                             &mut fetch_in_flight,
                             &mut refresh_queued,
                             &mut pending_search,
@@ -394,6 +415,14 @@ async fn run_tui_loop(
             Some(events_resp) = events_done_rx.recv() => {
                 if let FetchResponse::TaskEvents { id, result } = events_resp {
                     state.apply_events(&id, *result);
+                    needs_redraw = true;
+                }
+            }
+
+            // Handle relations for the Relations tab
+            Some(relations_resp) = relations_done_rx.recv() => {
+                if let FetchResponse::TaskRelations { id, result } = relations_resp {
+                    state.apply_relations(&id, *result);
                     needs_redraw = true;
                 }
             }
@@ -485,6 +514,7 @@ async fn run_tui_loop(
                                 &refresh_tx,
                                 &task_tx,
                                 &events_tx,
+                                &relations_tx,
                                 &mut fetch_in_flight,
                                 &mut refresh_queued,
                                 &mut pending_search,
@@ -659,13 +689,41 @@ async fn run_action_worker(
     }
 }
 
+/// Asks for the data of the tab of the top page, when it is the Events or the Relations tab.
+fn fetch_tab_data(
+    state: &mut AppState,
+    events_tx: &mpsc::UnboundedSender<TaskId>,
+    relations_tx: &mpsc::UnboundedSender<TaskId>,
+) {
+    let Some(page) = state.page_stack.last_mut() else {
+        return;
+    };
+    let ObjectTarget::Task(id) = &page.target;
+    match page.tab {
+        PageTab::Events => {
+            if !matches!(page.events.load, EventsLoad::Loaded(_)) {
+                page.events.load = EventsLoad::Loading;
+            }
+            let _ = events_tx.send(id.clone());
+        }
+        PageTab::Relations => {
+            if !matches!(page.relations.load, RelationsLoad::Loaded(_)) {
+                page.relations.load = RelationsLoad::Loading;
+            }
+            let _ = relations_tx.send(id.clone());
+        }
+        PageTab::Overview => {}
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_effect(
     effect: AppEffect,
     state: &mut AppState,
     refresh_tx: &mpsc::Sender<RefreshRequest>,
     task_tx: &watch::Sender<Option<TaskId>>,
-    events_tx: &watch::Sender<Option<TaskId>>,
+    events_tx: &mpsc::UnboundedSender<TaskId>,
+    relations_tx: &mpsc::UnboundedSender<TaskId>,
     fetch_in_flight: &mut bool,
     refresh_queued: &mut bool,
     pending_search: &mut Option<String>,
@@ -676,13 +734,9 @@ fn handle_effect(
     match effect {
         AppEffect::None => {}
         AppEffect::Refresh => {
-            // A change of the task adds events: read the log again while its tab is open.
-            if let Some(page) = state.page_stack.last()
-                && page.tab == PageTab::Events
-            {
-                let ObjectTarget::Task(id) = &page.target;
-                let _ = events_tx.send(Some(id.clone()));
-            }
+            // A change of the task adds events or moves relations: read them again while their
+            // tab is open.
+            fetch_tab_data(state, events_tx, relations_tx);
             if *fetch_in_flight {
                 *refresh_queued = true;
             } else {
@@ -701,7 +755,20 @@ fn handle_effect(
             let _ = task_tx.send(Some(id));
         }
         AppEffect::FetchEvents(id) => {
-            let _ = events_tx.send(Some(id));
+            let _ = events_tx.send(id);
+        }
+        AppEffect::FetchRelations(id) => {
+            let _ = relations_tx.send(id);
+        }
+        AppEffect::ReloadPage => {
+            // A page that is the top page again shows what it showed before: read its task and
+            // the data of its tab again. This also repairs a page whose first read was
+            // replaced by a later one.
+            if let Some(page) = state.page_stack.last() {
+                let ObjectTarget::Task(id) = &page.target;
+                let _ = task_tx.send(Some(id.clone()));
+            }
+            fetch_tab_data(state, events_tx, relations_tx);
         }
         AppEffect::Search(query) => {
             *pending_search = Some(query);
