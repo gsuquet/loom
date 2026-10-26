@@ -41,7 +41,7 @@ use loomd::api::{
     DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH,
     REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH,
     STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_GO_PATH,
-    TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH,
+    TASK_MOVE_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH,
     TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value, invalid_request,
     method_not_allowed, not_found, register_path, repo_filter, search_request, slug, status_at,
     timestamp,
@@ -546,6 +546,7 @@ fn router(app: App) -> Router {
         .route(TASK_ACTION_PATH, post(task_action))
         .route(TASK_EVENTS_PATH, get(task_events))
         .route(TASK_UNDO_PATH, post(undo_task))
+        .route(TASK_MOVE_PATH, post(move_task))
         .route(TASK_GO_PATH, post(go_task))
         .route(FOCUS_PATH, get(list_focus))
         .route(EVENTS_PATH, get(change_events))
@@ -853,6 +854,25 @@ async fn task_events(
             invalid_request(rejection.body_text()),
         ),
     }
+}
+
+/// Moves the task to the store of another context.
+async fn move_task(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+    body: Result<Json<loom_api::TaskMoveRequest>, JsonRejection>,
+) -> Response {
+    let request = path
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|UrlPath(prefix)| {
+            let body = body.map_err(|rejection| invalid_request(rejection.body_text()))?;
+            Ok((prefix, body.0.context))
+        });
+    let (prefix, to) = match request {
+        Ok(request) => request,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    respond(resolve_then(&app, prefix, |id| app.tasks.move_task(id, to)).await)
 }
 
 /// Reverts the last change of the task: loomd computes the compensating change from its log;

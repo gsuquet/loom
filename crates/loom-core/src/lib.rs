@@ -21,7 +21,7 @@ mod timestamp;
 pub use archive::{archive_year, closed_at};
 pub use command::{
     Action, Command, DomainError, NewTask, ReplayError, TaskEdit, apply, available_actions, create,
-    hand_edit_changes, replay, undo,
+    hand_edit_changes, move_task, replay, undo,
 };
 pub use context::{CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, UNASSIGNED};
 pub use event::{

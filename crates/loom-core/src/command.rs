@@ -46,6 +46,22 @@ pub enum DomainError {
     /// No task ID could be generated.
     #[error(transparent)]
     Id(#[from] IdError),
+    /// The task is in this context already.
+    #[error("the task is in context `{0}` already")]
+    SameContext(ContextName),
+    /// A task with a parent cannot move: a parent is a task of the child's context.
+    #[error(
+        "the task has the parent {0}: remove the parent first, a parent is in the context of its children"
+    )]
+    MoveWithParent(TaskId),
+    /// A task with children cannot move: they would be left in another context.
+    #[error(
+        "the task has {0} child task(s): move or detach them first, a parent is in the context of its children"
+    )]
+    MoveWithChildren(usize),
+    /// The last change is a move: it is undone by moving the task back.
+    #[error("cannot undo a move: move the task back to context `{0}`")]
+    UndoMove(ContextName),
     /// The parent cannot be the parent of this task.
     #[error("{parent} cannot be the parent: {problem}")]
     InvalidParent {
@@ -368,6 +384,54 @@ pub fn apply(
     Ok((task, vec![EventRecord::new(id, event, now, origin)]))
 }
 
+/// Moves `task` to the context `to` at `now`: the moved task and the event to append to `log`,
+/// its event log. `children` is how many tasks have `task` as parent, archived ones included.
+///
+/// The task keeps its ID, its fields and its history; only `context` changes. Where the files go
+/// is the caller's work.
+///
+/// # Errors
+///
+/// [`DomainError::ReadOnly`] for a read-only task, [`DomainError::SameContext`] when the task is
+/// in `to`, [`DomainError::MoveWithParent`] and [`DomainError::MoveWithChildren`] for a task that
+/// would be left in another context than its parent or its children.
+pub fn move_task(
+    task: Task,
+    to: &ContextName,
+    children: usize,
+    log: &[EventRecord],
+    now: Timestamp,
+    origin: &Origin,
+    random: &mut impl RandomSource,
+) -> Result<(Task, EventRecord), DomainError> {
+    if let Some(reason) = task.read_only_reason() {
+        return Err(DomainError::ReadOnly(reason));
+    }
+    if task.context == *to {
+        return Err(DomainError::SameContext(to.clone()));
+    }
+    if let Some(parent) = &task.relations.parent {
+        return Err(DomainError::MoveWithParent(parent.clone()));
+    }
+    if children > 0 {
+        return Err(DomainError::MoveWithChildren(children));
+    }
+    let mut task = task;
+    let event = Event::Edited {
+        changes: vec![FieldChange::Context(Change {
+            from: task.context.clone(),
+            to: to.clone(),
+        })],
+    };
+    for change in event.changes().unwrap_or_default() {
+        write(&mut task, change)?;
+    }
+    task.updated = now;
+    let taken: Vec<EventId> = log.iter().map(|record| record.id.clone()).collect();
+    let id = EventId::generate(random, &taken)?;
+    Ok((task, EventRecord::new(id, event, now, origin)))
+}
+
 /// The command that reverts the last change recorded in `events`, the log of `task`.
 ///
 /// Notes and the creation are not changes and are skipped. The last change can itself be an
@@ -391,6 +455,12 @@ pub fn undo(task: &Task, events: &[EventRecord]) -> Result<Command, DomainError>
                 .map(|changes| (record.id.clone(), changes))
         })
         .ok_or(DomainError::NothingToUndo)?;
+    if let Some(FieldChange::Context(moved)) = changes
+        .iter()
+        .find(|change| matches!(change, FieldChange::Context(_)))
+    {
+        return Err(DomainError::UndoMove(moved.from.clone()));
+    }
     Ok(Command::Undo {
         of,
         changes: changes
@@ -460,6 +530,10 @@ fn replay_change(task: &mut Task, change: FieldChange) -> Result<(), ReplayError
         | DomainError::EmptyNote
         | DomainError::NothingToUndo
         | DomainError::Id(_)
+        | DomainError::SameContext(_)
+        | DomainError::MoveWithParent(_)
+        | DomainError::MoveWithChildren(_)
+        | DomainError::UndoMove(_)
         | DomainError::InvalidParent { .. } => ReplayError::Conflict("task"),
     })
 }
@@ -581,6 +655,7 @@ fn write(task: &mut Task, change: FieldChange) -> Result<(), DomainError> {
         FieldChange::Pinned(change) => set(&mut task.pinned, change, name),
         FieldChange::Links(change) => set(&mut task.links, change, name),
         FieldChange::Relations(change) => set(&mut task.relations, change, name),
+        FieldChange::Context(change) => set(&mut task.context, change, name),
     }
 }
 

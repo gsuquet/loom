@@ -18,7 +18,7 @@ use loom::task::{
 };
 use loom_api::{
     ContextName, Date, FocusList, GoResult, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents,
-    TaskList,
+    TaskList, TaskMoveRequest,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -184,6 +184,18 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
         if let Some(pinned) = plan.pinned {
             let name = if pinned { "pin" } else { "unpin" };
             detail = action(&client, &id, name, None).await?;
+        }
+        // Last: a task with a parent cannot move, and `parent=none` is applied above.
+        if let Some(context) = plan.context
+            && context != detail.summary.context
+        {
+            detail = client
+                .post(
+                    &format!("{TASKS_PATH}/{id}/move"),
+                    Some(&TaskMoveRequest { context }),
+                )
+                .await
+                .map_err(|error| api_error(&error))?;
         }
         output(&detail, args.json, || render_change(&detail))
     })

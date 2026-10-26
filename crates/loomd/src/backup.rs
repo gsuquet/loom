@@ -74,6 +74,12 @@ pub fn archived_message(id: &TaskId, year: u16) -> String {
     format!("archived({id}): moved to archive/{year:04}")
 }
 
+/// The message of the commit of the store a task moved out of: `moved(<id>): moved to <context>`.
+#[must_use]
+pub fn moved_message(id: &TaskId, to: &ContextName) -> String {
+    format!("moved({id}): moved to {to}")
+}
+
 /// The message of a hand edit of task `id` that changed no field (notes, a new or invalid
 /// file): `edited(<id>): changed by hand`.
 #[must_use]

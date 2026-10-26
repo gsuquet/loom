@@ -564,7 +564,10 @@ pub fn task_problem(error: &TaskError) -> Problem {
             ),
         ),
         TaskError::Domain(refused) => domain_problem(refused, message),
-        TaskError::Files(_) | TaskError::Index(_) => {
+        TaskError::Files(_)
+        | TaskError::Index(_)
+        | TaskError::MoveFailed { .. }
+        | TaskError::MoveIncomplete { .. } => {
             (StatusCode::INTERNAL_SERVER_ERROR, internal(message))
         }
     }
@@ -602,7 +605,19 @@ fn domain_problem(refused: &DomainError, message: String) -> Problem {
             StatusCode::CONFLICT,
             ApiError::new(ErrorCode::NothingToUndo, message),
         ),
-        DomainError::UnknownValue(_)
+        DomainError::UndoMove(_) => (
+            StatusCode::CONFLICT,
+            with_details(
+                ApiError::new(ErrorCode::Conflict, message),
+                &UndoConflict {
+                    field: "context".to_owned(),
+                },
+            ),
+        ),
+        DomainError::SameContext(_)
+        | DomainError::MoveWithParent(_)
+        | DomainError::MoveWithChildren(_)
+        | DomainError::UnknownValue(_)
         | DomainError::EmptyTitle
         | DomainError::EmptyNote
         | DomainError::InvalidParent { .. } => (StatusCode::BAD_REQUEST, invalid_request(message)),

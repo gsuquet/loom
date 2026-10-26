@@ -254,17 +254,20 @@ pub enum CrashStage {
     BeforeArchiveRename,
     /// After renaming `tasks/<id>/` to `archive/<year>/<id>/`, before syncing parent directories.
     AfterArchiveRename,
+    /// After the copy of a moved task is in place in the target store, before the source is removed.
+    AfterReceive,
 }
 
 impl CrashStage {
     /// Every crash stage, in order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::AfterTaskStage,
         Self::AfterTaskRename,
         Self::AfterEventsAppend,
         Self::AfterCreateStage,
         Self::BeforeArchiveRename,
         Self::AfterArchiveRename,
+        Self::AfterReceive,
     ];
 
     /// Canonical name of the crash stage in [`TEST_CRASH_STAGE_ENV`].
@@ -277,6 +280,7 @@ impl CrashStage {
             Self::AfterCreateStage => "after_create_stage",
             Self::BeforeArchiveRename => "before_archive_rename",
             Self::AfterArchiveRename => "after_archive_rename",
+            Self::AfterReceive => "after_receive",
         }
     }
 
@@ -434,6 +438,107 @@ impl StorePort for FileStore {
         sync_dir(year_dir).map_err(error)?;
         sync_parent(&source).map_err(error)
     }
+
+    fn receive(&self, from: &Self, id: &TaskId, write: &TaskWrite) -> Result<(), PortError> {
+        let document = write.document.as_ref().ok_or(PortError::MissingDocument)?;
+        let task = document.task(Timestamp::EPOCH);
+        if task.context != self.context {
+            return Err(PortError::WrongContext {
+                id: task.id,
+                expected: self.context.clone(),
+                found: task.context,
+            });
+        }
+        // Source first, then target: the same order for every move.
+        let source_lock = from.lock(id);
+        let _source_held = lock_guard(&source_lock);
+        let target_lock = self.lock(id);
+        let _target_held = lock_guard(&target_lock);
+        let source = from.task_dir(id);
+        if !source.is_dir() {
+            return Err(from.not_found(id));
+        }
+        self.init()?;
+        let target = self.task_dir(id);
+        if target.exists() || self.locate(id)?.is_some() {
+            return Err(PortError::AlreadyExists {
+                context: self.context.clone(),
+                id: id.clone(),
+            });
+        }
+        // As in `create`: staged under a hidden name, then renamed into place.
+        let staging = self.tasks_dir().join(format!(".{id}.tmp"));
+        let received = (|| {
+            match fs::remove_dir_all(&staging) {
+                Ok(()) => {}
+                Err(error) if is_missing(&error) => {}
+                Err(error) => return Err(error),
+            }
+            copy_dir(&source, &staging)?;
+            let path = staging.join(TASK_FILE);
+            atomic::write_file(&path, render_task_md(document).as_bytes(), TASK_FILE_MODE)?;
+            append_events(&staging.join(EVENTS_FILE), write)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            sync_dir(&staging)?;
+            fs::rename(&staging, &target)?;
+            sync_parent(&target)?;
+            crash_if(CrashStage::AfterReceive);
+            Ok(())
+        })();
+        received.map_err(|source| {
+            // Nothing half-copied is left under the name of a task.
+            let _ = fs::remove_dir_all(&staging);
+            io_error(&target, source)
+        })
+    }
+
+    fn remove(&self, id: &TaskId) -> Result<(), PortError> {
+        let lock = self.lock(id);
+        let _held = lock_guard(&lock);
+        match self.locate(id)? {
+            None => return Err(self.not_found(id)),
+            Some(TaskLocation::Archived(year)) => {
+                return Err(PortError::Archived {
+                    context: self.context.clone(),
+                    id: id.clone(),
+                    year,
+                });
+            }
+            Some(TaskLocation::Active) => {}
+        }
+        let source = self.task_dir(id);
+        // Out of the namespace of tasks in one step; what is left of the files is cleaned up
+        // after, or by the next start (`.<id>.tmp`).
+        let trash = self.tasks_dir().join(format!(".{id}.tmp"));
+        match fs::remove_dir_all(&trash) {
+            Ok(()) => {}
+            Err(failure) if is_missing(&failure) => {}
+            Err(failure) => return Err(io_error(&trash, failure)),
+        }
+        fs::rename(&source, &trash).map_err(|failure| io_error(&source, failure))?;
+        sync_parent(&source).map_err(|failure| io_error(&source, failure))?;
+        let _ = fs::remove_dir_all(&trash);
+        Ok(())
+    }
+}
+
+/// Copies the directory `from` to `to`, files and subdirectories (mode `0700`), symbolic links
+/// as links.
+fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+    DirBuilder::new().mode(TASK_DIR_MODE).create(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(entry.path())?, &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// The task directories of `dir`, unsorted; none when it is missing.

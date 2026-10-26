@@ -42,6 +42,8 @@ pub const TASK_ACTION_PATH: &str = "/v1/tasks/{id}/actions/{action}";
 pub const TASK_EVENTS_PATH: &str = "/v1/tasks/{id}/events";
 /// Route of the undo of the last change of a task.
 pub const TASK_UNDO_PATH: &str = "/v1/tasks/{id}/undo";
+/// Route of the move of a task to another context.
+pub const TASK_MOVE_PATH: &str = "/v1/tasks/{id}/move";
 /// Route of focusing a task (`POST /v1/tasks/{id}/go`).
 pub const TASK_GO_PATH: &str = "/v1/tasks/{id}/go";
 /// Path of the focus list (`GET /v1/focus`).

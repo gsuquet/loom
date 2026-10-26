@@ -18,3 +18,4 @@
 | [0012](0012-repo-index.md) | Repo index, contexts and automatic updates |
 | [0013](0013-task-store.md) | Task store, kinds, priority, focus and backup |
 | [0014](0014-tui-architecture.md) | TUI architecture: queues, pages, modals, structured attach |
+| [0015](0015-move-a-task-between-contexts.md) | Move a task between context stores: copy, remove, roll back |

@@ -1,6 +1,6 @@
 # How loom stores tasks
 
-> This page tells where a task lives, and why its files are the truth and the index is only a copy. It also tells how `loomd` never leaves half a file, and how it records the edits that you make by hand. Layout and modes: [context stores](../reference/configuration.md#context-stores). Formats: [task files](../reference/task-file.md). Endpoint: [`POST /v1/tasks/reindex`](../reference/api.md#tasks). Decisions: [ADR-0002](../adr/0002-files-source-of-truth.md), [ADR-0003](../adr/0003-one-store-per-context.md), [ADR-0013](../adr/0013-task-store.md).
+> This page tells where a task lives, and why its files are the truth and the index is only a copy. It also tells how `loomd` never leaves half a file, and how it records the edits that you make by hand. Layout and modes: [context stores](../reference/configuration.md#context-stores). Formats: [task files](../reference/task-file.md). Endpoint: [`POST /v1/tasks/reindex`](../reference/api.md#tasks). Decisions: [ADR-0002](../adr/0002-files-source-of-truth.md), [ADR-0003](../adr/0003-one-store-per-context.md), [ADR-0013](../adr/0013-task-store.md), [ADR-0015](../adr/0015-move-a-task-between-contexts.md).
 
 ## Files first
 
@@ -56,6 +56,19 @@ The comparison uses the log, not the index, so the result is correct in every or
 `loom reindex` reconciles every task before it rebuilds the rows, so it can append `edited` events. Without this step, a rebuild can store the hash of an edit whose watcher event is still in the queue. That edit then looks like a write of `loomd`.
 
 A write by `loomd` changes `task.md`, then appends its events. If `loomd` crashes between the two, the next reconciliation finds a file that its log does not explain. It records the difference as a hand edit. The change stays, with the actor `file` instead of your actor.
+
+## Moving a task
+
+A task moves to another context when the first context was wrong, or when the work changes client. Two stores are involved, and there is no step that is atomic across two stores. So `loomd` makes the move in an order where every step can fail without losing the task:
+
+1. `loomd` records any hand edit that was not recorded yet, and checks that the task can move (see [`POST /v1/tasks/{id}/move`](../reference/api.md#tasks)).
+2. `loomd` copies the whole task directory to a hidden directory of the target store, writes the new `task.md` and appends the `edited` event. Then it renames the copy to `tasks/<id>`. After a crash before the rename, the target store has no task.
+3. `loomd` removes the task from the source store. It renames the directory to a hidden name first, so the task leaves `tasks/` in one step.
+4. `loomd` commits the target store, then the source store.
+
+If step 3 fails, `loomd` removes the copy of step 2. The task stays where it was, and the error says so. If the removal of the copy fails too, or if `loomd` stops between step 2 and step 3, both stores hold the task. This is the case of a task directory that you copy by hand: the task is a duplicate ID, `loomd` does not choose, and the task is read-only. Remove one of the two directories. The task is whole again at the next reconciliation or `loom reindex`.
+
+The task keeps its ID, so a link from another task to it stays valid. A move is not undone with `loom undo`; the log says where the task came from, and a new move goes back. Reason for this design: [ADR-0015](../adr/0015-move-a-task-between-contexts.md).
 
 ## Archived tasks
 

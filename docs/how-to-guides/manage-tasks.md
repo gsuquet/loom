@@ -84,7 +84,27 @@ loom set k3q8 status=active
 
 `status` accepts every status except `waiting`. To move a task to `waiting`, use `loom snooze`. `loomd` checks the move as for `loom done`: a task that has this status already, or a closed task that does not reopen to `ready`, is refused.
 
-When `loom set` has several keys, each change is its own event and `loom set` applies them in this order: the fields, the status, the pin. If `loomd` refuses one, `loom set` stops there. The changes that came before it stay, and `loom undo` reverts them one at a time.
+When `loom set` has several keys, each change is its own event and `loom set` applies them in this order: the fields, the status, the pin, the context. If `loomd` refuses one, `loom set` stops there. The changes that came before it stay, and `loom undo` reverts them one at a time.
+
+## Move a task to another context
+
+```bash
+loom set k3q8 context=company-b
+```
+
+The task keeps its ID and its history. Its files move to the store of the other context, and the log ends with an `edited` event that has a `context` change. `loom set` prints the task in its new context.
+
+A task with a parent or with children does not move, because a parent is in the context of its children. To move a child, clear its parent in the same command:
+
+```bash
+loom set k3q8 parent=none context=company-b
+```
+
+An archived task, and a task that is read-only, do not move. The target context needs a store on this machine.
+
+`loom undo` does not undo a move. To go back, move the task again.
+
+If a move fails, `loom` prints why. In almost every case the task stays in its first context. If the message says that the task is in two stores, remove the task directory from the store that you do not want, then run `loom reindex`.
 
 To change the notes, or several fields at the same time, open the file.
 

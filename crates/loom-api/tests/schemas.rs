@@ -12,7 +12,8 @@ use loom_api::{
     Action, Actor, AmbiguousPrefix, Change, EventId, EventRecord, FieldChange, FocusEntry,
     FocusList, GoResult, IllegalTransition, Kind, MachineId, NewTask, RankReason, Relations,
     Status, StatusName, Task, TaskActionName, TaskActionRequest, TaskCandidate, TaskDetail,
-    TaskEdit, TaskEvents, TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary, UndoConflict,
+    TaskEdit, TaskEvents, TaskId, TaskList, TaskMoveRequest, TaskRank, TaskReadOnly, TaskSummary,
+    UndoConflict,
 };
 use loom_api::{
     ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
@@ -71,6 +72,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("sync_result", schema_for!(SyncResult)),
         ("task_action_name", schema_for!(TaskActionName)),
         ("task_action_request", schema_for!(TaskActionRequest)),
+        ("task_move_request", schema_for!(TaskMoveRequest)),
         ("task_detail", schema_for!(TaskDetail)),
         ("task_edit", schema_for!(TaskEdit)),
         ("task_events", schema_for!(TaskEvents)),
@@ -233,6 +235,16 @@ fn update_states(at: Timestamp) -> Vec<UpdateState> {
         ..full.clone()
     }));
     states
+}
+
+#[test]
+fn a_move_request_validates_against_its_schema_and_rejects_unknown_fields() {
+    let request = TaskMoveRequest {
+        context: "work".parse().unwrap(),
+    };
+    assert_eq!(violations(&request).unwrap().len(), 0);
+    assert!(serde_json::from_str::<TaskMoveRequest>(r#"{"context":"work","x":1}"#).is_err());
+    assert!(serde_json::from_str::<TaskMoveRequest>("{}").is_err());
 }
 
 #[test]

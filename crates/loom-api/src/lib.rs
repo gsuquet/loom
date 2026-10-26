@@ -65,8 +65,8 @@ pub use service::{DaemonRestartReport, RestartVia, ServicePlatform, ServiceStatu
 pub use status::StatusResponse;
 pub use task::{
     AmbiguousPrefix, FocusEntry, FocusList, GoResult, IllegalTransition, TaskActionName,
-    TaskActionRequest, TaskCandidate, TaskDetail, TaskEvents, TaskList, TaskRank, TaskReadOnly,
-    TaskSummary, UndoConflict,
+    TaskActionRequest, TaskCandidate, TaskDetail, TaskEvents, TaskList, TaskMoveRequest, TaskRank,
+    TaskReadOnly, TaskSummary, UndoConflict,
 };
 pub use task_index::{FailedTaskFile, InvalidTaskFile, ReindexResult, TaskStoreHealth};
 pub use update::{

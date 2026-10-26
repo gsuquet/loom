@@ -63,6 +63,12 @@ Free notes, kind template sections.
 - Frontmatter is TOML between `+++` lines, rewritten with `toml_edit`: comments, key order and unknown keys survive ([ADR-0013](../adr/0013-task-store.md)). A task of an unknown kind or status, written by a newer version, is shown read-only.
 - `events.jsonl` lines carry a schema version `v`, the actor and the `machine_id`.
 
+## Moving a task between contexts
+
+- The task directory is copied into the target store, then removed from the source store ([ADR-0015](../adr/0015-move-a-task-between-contexts.md)). The task keeps its ID, its files and its log; an `edited` event with a `context` field change ends the log.
+- If the removal fails, the copy is removed and the task stays in the source store. Only a crash, or a failed rollback, leaves two copies: they are a duplicate ID, read-only until one is removed by hand.
+- The source and the target store each get one commit.
+
 ## Backup (v0.3)
 
 - Each context store is a git repository. loomd commits each change, unsigned (store repositories only: private data, no forge review).

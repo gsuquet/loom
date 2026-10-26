@@ -642,10 +642,12 @@ pub enum SetKey {
     Pinned,
     /// `status`: a status other than `waiting`.
     Status,
+    /// `context`: move the task to the store of another context.
+    Context,
 }
 
 impl SetKey {
-    const ALL: [(&'static str, Self); 9] = [
+    const ALL: [(&'static str, Self); 10] = [
         ("title", Self::Title),
         ("kind", Self::Kind),
         ("format", Self::Format),
@@ -655,6 +657,7 @@ impl SetKey {
         ("repo", Self::Repo),
         ("pinned", Self::Pinned),
         ("status", Self::Status),
+        ("context", Self::Context),
     ];
 
     /// Name of the key.
@@ -709,6 +712,8 @@ pub struct SetPlan {
     pub pinned: Option<bool>,
     /// The status to move to, as named in the path of the action.
     pub status: Option<StatusArg>,
+    /// The context to move the task to, after the other changes.
+    pub context: Option<ContextName>,
 }
 
 /// Why `loom set` cannot apply its arguments.
@@ -801,6 +806,13 @@ pub fn set_plan(assignments: &[Assignment], today: Date) -> Result<SetPlan, SetE
                     ));
                 }
                 plan.status = Some(status);
+            }
+            SetKey::Context => {
+                plan.context = Some(
+                    value
+                        .parse::<ContextName>()
+                        .map_err(|error| invalid(error.to_string()))?,
+                );
             }
             SetKey::Pinned => {
                 plan.pinned = Some(match value.as_str() {
@@ -1479,6 +1491,24 @@ mod tests {
         assert_eq!(
             plan(&["status=done"]).unwrap().status,
             Some(StatusArg::Done)
+        );
+    }
+
+    #[test]
+    fn set_reads_a_context_to_move_to() {
+        let set = plan(&["context=company-b", "parent=none"]).unwrap();
+        assert_eq!(set.context, Some(name("company-b")));
+        assert_eq!(set.parent, Some(None));
+        assert_eq!(plan(&["title=x"]).unwrap().context, None);
+        for bad in ["context=", "context=Not A Name", "context=a/b"] {
+            assert!(
+                matches!(plan(&[bad]), Err(SetError::Invalid { .. })),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            plan(&["context=a", "context=b"]),
+            Err(SetError::Repeated("context"))
         );
     }
 

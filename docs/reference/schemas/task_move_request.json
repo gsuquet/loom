@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskMoveRequest",
+  "description": "Body of `POST /v1/tasks/{id}/move`.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "description": "The context to move the task to.",
+      "$ref": "#/$defs/ContextName"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "context"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    }
+  }
+}
