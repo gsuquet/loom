@@ -540,7 +540,7 @@ fn output(value: &impl Serialize, json: bool, text: impl FnOnce() -> String) -> 
 }
 
 /// The local date, as loomd reads it: relative due dates match its priority list.
-fn local_today() -> Date {
+pub fn local_today() -> Date {
     today(
         env::var(TEST_TODAY_ENV).ok().as_deref(),
         cfg!(debug_assertions),
