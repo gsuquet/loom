@@ -439,10 +439,13 @@ fn render_task_overview(frame: &mut Frame<'_>, area: Rect, detail: &TaskDetail, 
     if !detail.body.is_empty() {
         lines.push(Line::raw(""));
         lines.push(Line::styled(
-            "── Notes ──────────────────────────────────────────",
+            format!(
+                "── Notes {}",
+                "─".repeat(usize::from(area.width).saturating_sub(10).min(39))
+            ),
             ratatui::style::Style::default(),
         ));
-        lines.extend(markdown::render(&detail.body));
+        lines.extend(markdown::render(&detail.body, usize::from(area.width)));
     }
 
     let skipped = lines.into_iter().skip(scroll).collect::<Vec<_>>();
@@ -999,7 +1002,7 @@ mod tests {
         assert_eq!(buffer_text_lines(&terminal), expected);
     }
 
-    fn detail(body: &str) -> TaskDetail {
+    fn detail(body: &str, read_only: Option<loom_api::TaskReadOnly>) -> TaskDetail {
         let created = loom_core::Timestamp::EPOCH;
         let id: loom_core::TaskId = "k3q7zm2a".parse().unwrap();
         let context: ContextName = "work".parse().unwrap();
@@ -1022,7 +1025,7 @@ mod tests {
                     created,
                     updated: created,
                 }),
-                read_only: None,
+                read_only,
                 rank: None,
             },
             body: body.to_owned(),
@@ -1031,6 +1034,14 @@ mod tests {
     }
 
     fn task_page_lines(width: u16, tab: PageTab) -> Vec<String> {
+        task_page_lines_with(width, tab, None)
+    }
+
+    fn task_page_lines_with(
+        width: u16,
+        tab: PageTab,
+        read_only: Option<loom_api::TaskReadOnly>,
+    ) -> Vec<String> {
         let mut state = AppState::new(
             test_theme(),
             None,
@@ -1042,6 +1053,7 @@ mod tests {
             target: ObjectTarget::Task(id),
             content: ObjectPageContent::Task(Box::new(detail(
                 "## Symptoms\n- **Mobile** users time out\n- retry `3` times",
+                read_only,
             ))),
             scroll: 0,
             tab,
@@ -1069,15 +1081,77 @@ mod tests {
     }
 
     #[test]
-    fn task_page_keeps_the_same_layout_at_160_columns() {
-        let lines = task_page_lines(160, PageTab::Overview);
-        let text = lines.join("\n");
-        assert_eq!(lines[1].chars().count(), 160);
-        assert!(
-            lines[2].contains(" Overview  │  Relations  │  Events "),
-            "{text}"
+    fn task_page_overview_frame_at_80_columns() {
+        let expected = [
+            " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline                        ",
+            "┌ Task k3q7zm2a ───────────────────────────────────────────────────────────────┐",
+            "│  Overview  │  Relations  │  Events                                           │",
+            "│ID: k3q7zm2a   Context: [work]                                                │",
+            "│Status: ready   Importance: p1   Kind: bug                                    │",
+            "│                                                                              │",
+            "│Title: Login timeout                                                          │",
+            "│                                                                              │",
+            "│── Notes ───────────────────────────────────────                              │",
+            "│Symptoms                                                                      │",
+            "│• Mobile users time out                                                       │",
+            "│• retry 3 times                                                               │",
+            "│                                                                              │",
+            "│                                                                              │",
+            "└──────────────────────────────────────────────────────────────────────────────┘",
+            " Esc back  [/] tab  j/k scroll  r refresh  : palette  / search  ? help  q quit  ",
+        ];
+        assert_eq!(task_page_lines(80, PageTab::Overview), expected);
+    }
+
+    #[test]
+    fn task_page_overview_frame_at_160_columns() {
+        let expected = [
+            " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline                                                                                                        ",
+            "┌ Task k3q7zm2a ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐",
+            "│  Overview  │  Relations  │  Events                                                                                                                           │",
+            "│ID: k3q7zm2a   Context: [work]                                                                                                                                │",
+            "│Status: ready   Importance: p1   Kind: bug                                                                                                                    │",
+            "│                                                                                                                                                              │",
+            "│Title: Login timeout                                                                                                                                          │",
+            "│                                                                                                                                                              │",
+            "│── Notes ───────────────────────────────────────                                                                                                              │",
+            "│Symptoms                                                                                                                                                      │",
+            "│• Mobile users time out                                                                                                                                       │",
+            "│• retry 3 times                                                                                                                                               │",
+            "│                                                                                                                                                              │",
+            "│                                                                                                                                                              │",
+            "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
+            " Esc back  [/] tab  j/k scroll  r refresh  : palette  / search  ? help  q quit                                                                                  ",
+        ];
+        assert_eq!(task_page_lines(160, PageTab::Overview), expected);
+    }
+
+    #[test]
+    fn a_read_only_task_page_shows_why() {
+        let expected = [
+            " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline                        ",
+            "┌ Task k3q7zm2a ───────────────────────────────────────────────────────────────┐",
+            "│  Overview  │  Relations  │  Events                                           │",
+            "│⚠ READ-ONLY: archived in archive/2026                                         │",
+            "│                                                                              │",
+            "│ID: k3q7zm2a   Context: [work]                                                │",
+            "│Status: ready   Importance: p1   Kind: bug                                    │",
+            "│                                                                              │",
+            "│Title: Login timeout                                                          │",
+            "│                                                                              │",
+            "│── Notes ───────────────────────────────────────                              │",
+            "│Symptoms                                                                      │",
+            "│• Mobile users time out                                                       │",
+            "│• retry 3 times                                                               │",
+            "└──────────────────────────────────────────────────────────────────────────────┘",
+            " Esc back  [/] tab  j/k scroll  r refresh  : palette  / search  ? help  q quit  ",
+        ];
+        let lines = task_page_lines_with(
+            80,
+            PageTab::Overview,
+            Some(loom_api::TaskReadOnly::Archived(2026)),
         );
-        assert!(text.contains("• Mobile users time out"), "{text}");
+        assert_eq!(lines, expected);
     }
 
     #[test]
