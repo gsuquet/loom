@@ -3,10 +3,11 @@
 //! No I/O happens in this module: key events and SSE [`ChangeEvent`]s mutate [`AppState`] and
 //! return an [`AppEffect`] that the runtime loop in the binary executes.
 
+use crate::tui::events::{self, EventsFilter, EventsLoad, EventsView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use loom_api::{
     Action, ChangeEvent, ContextName, Date, Importance, Kind, SearchResult, Status, StatusName,
-    TaskDetail, TaskId, TaskSummary,
+    TaskDetail, TaskEvents, TaskId, TaskSummary,
 };
 
 use crate::task::{parse_date, read_only_text};
@@ -284,6 +285,19 @@ pub struct ObjectPageState {
     pub scroll: usize,
     /// Selected tab of the page.
     pub tab: PageTab,
+    /// Event timeline of the Events tab.
+    pub events: EventsView,
+}
+
+impl ObjectPageState {
+    /// The last offset that `j` scrolls to. Only the Events tab is bounded: the Overview scrolls
+    /// as far as the user asks.
+    fn scroll_max(&self) -> usize {
+        match self.tab {
+            PageTab::Events => events::scroll_max(&self.events),
+            PageTab::Overview | PageTab::Relations => usize::MAX,
+        }
+    }
 }
 
 /// Pure application effects requested by state transitions.
@@ -306,6 +320,8 @@ pub enum AppEffect {
     },
     /// Fetch task detail for preview or open page.
     FetchTask(TaskId),
+    /// Fetch the event log of a task for the Events tab.
+    FetchEvents(TaskId),
     /// Search query changed; debounce before requesting `/v1/search`.
     Search(String),
     /// Accept an inbox task: sets status to ready with optional fields.
@@ -413,6 +429,8 @@ pub struct AppState {
     pub queued_action: Option<ActionRequest>,
     /// Injected local date for pure date calculations.
     pub local_date: Date,
+    /// Time zone of the times shown (the Events tab). UTC until the runtime sets the local one.
+    pub time_zone: jiff::tz::TimeZone,
     /// Toast shown on the bottom bar until it expires or the next key press.
     pub status_message: Option<String>,
     /// Tone of [`Self::status_message`].
@@ -487,6 +505,7 @@ impl AppState {
             last_action: None,
             queued_action: None,
             local_date,
+            time_zone: jiff::tz::TimeZone::UTC,
             status_message: None,
             status_tone: ToastTone::Info,
             status_generation: 0,
@@ -515,6 +534,13 @@ impl AppState {
     #[must_use]
     pub fn with_default_context(mut self, default_context: Option<ContextName>) -> Self {
         self.default_context = default_context;
+        self
+    }
+
+    /// Sets the time zone of the times shown.
+    #[must_use]
+    pub fn with_time_zone(mut self, time_zone: jiff::tz::TimeZone) -> Self {
+        self.time_zone = time_zone;
         self
     }
 
@@ -753,6 +779,7 @@ impl AppState {
 
             KeyCommand::OpenPicker(field) => self.open_picker(field),
             KeyCommand::EditBody => self.edit_body(),
+            KeyCommand::CycleEventsFilter(filter) => self.cycle_events_filter(filter),
 
             KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
@@ -800,6 +827,21 @@ impl AppState {
                 self.move_up();
                 self.update_preview_effect()
             }
+            KeyCommand::MoveFirst if !self.page_stack.is_empty() => {
+                self.scroll_page(|_| 0);
+                AppEffect::None
+            }
+            // Only the Events tab has a known last line: elsewhere `End` does nothing.
+            KeyCommand::MoveLast if !self.page_stack.is_empty() => {
+                if self
+                    .page_stack
+                    .last()
+                    .is_some_and(|p| p.tab == PageTab::Events)
+                {
+                    self.scroll_page(ObjectPageState::scroll_max);
+                }
+                AppEffect::None
+            }
             KeyCommand::MoveFirst => {
                 self.set_selected(0);
                 self.update_preview_effect()
@@ -834,20 +876,8 @@ impl AppState {
                 self.page_stack.pop();
                 self.update_preview_effect()
             }
-            KeyCommand::NextPageTab => {
-                if let Some(page) = self.page_stack.last_mut() {
-                    page.tab = page.tab.next();
-                    page.scroll = 0;
-                }
-                AppEffect::None
-            }
-            KeyCommand::PrevPageTab => {
-                if let Some(page) = self.page_stack.last_mut() {
-                    page.tab = page.tab.prev();
-                    page.scroll = 0;
-                }
-                AppEffect::None
-            }
+            KeyCommand::NextPageTab => self.switch_page_tab(PageTab::next),
+            KeyCommand::PrevPageTab => self.switch_page_tab(PageTab::prev),
             KeyCommand::Quit
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
@@ -855,6 +885,7 @@ impl AppState {
             | KeyCommand::OpenContextPicker
             | KeyCommand::OpenPicker(_)
             | KeyCommand::EditBody
+            | KeyCommand::CycleEventsFilter(_)
             | KeyCommand::TriageAccept
             | KeyCommand::TriageSnooze
             | KeyCommand::TriageCancel
@@ -918,6 +949,7 @@ impl AppState {
             | KeyCommand::PrevPageTab
             | KeyCommand::OpenPicker(_)
             | KeyCommand::EditBody
+            | KeyCommand::CycleEventsFilter(_)
             | KeyCommand::TriageAccept
             | KeyCommand::TriageSnooze
             | KeyCommand::TriageCancel
@@ -1030,6 +1062,73 @@ impl AppState {
             Some(ObjectTarget::Task(id)) => self.last_action.clone().filter(|last| last == id),
             None => self.last_action.clone(),
         }
+    }
+
+    /// `[` and `]`: moves to another tab. The Events tab asks for the log.
+    fn switch_page_tab(&mut self, step: fn(PageTab) -> PageTab) -> AppEffect {
+        let Some(page) = self.page_stack.last_mut() else {
+            return AppEffect::None;
+        };
+        page.tab = step(page.tab);
+        page.scroll = 0;
+        if page.tab == PageTab::Events {
+            // The log is read each time the tab is selected: the task may have changed on
+            // another tab. A log already loaded stays on screen until the answer arrives.
+            let ObjectTarget::Task(id) = &page.target;
+            if !matches!(page.events.load, EventsLoad::Loaded(_)) {
+                page.events.load = EventsLoad::Loading;
+            }
+            return AppEffect::FetchEvents(id.clone());
+        }
+        AppEffect::None
+    }
+
+    /// `f` and `a`: the next value of a filter of the Events tab.
+    fn cycle_events_filter(&mut self, filter: EventsFilter) -> AppEffect {
+        let Some(page) = self.page_stack.last_mut() else {
+            return AppEffect::None;
+        };
+        if page.tab != PageTab::Events {
+            self.status_message = Some("go to the Events tab to filter the events".into());
+            return AppEffect::None;
+        }
+        let EventsLoad::Loaded(log) = &page.events.load else {
+            self.status_message = Some("events not loaded yet".into());
+            return AppEffect::None;
+        };
+        match filter {
+            EventsFilter::Type => {
+                page.events.type_filter = events::next_filter(
+                    page.events.type_filter.as_deref(),
+                    &events::types_present(log),
+                );
+            }
+            EventsFilter::Actor => {
+                page.events.actor_filter = events::next_filter(
+                    page.events.actor_filter.as_deref(),
+                    &events::actors_present(log),
+                );
+            }
+        }
+        page.scroll = 0;
+        AppEffect::None
+    }
+
+    /// The answer of loomd to `FetchEvents`. An answer for a page that is not open any more is
+    /// dropped.
+    pub fn apply_events(&mut self, id: &TaskId, result: Result<TaskEvents, String>) {
+        let Some(page) = self
+            .page_stack
+            .iter_mut()
+            .rev()
+            .find(|p| matches!(&p.target, ObjectTarget::Task(t) if t == id))
+        else {
+            return;
+        };
+        page.events.load = match result {
+            Ok(log) => EventsLoad::Loaded(Box::new(log)),
+            Err(error) => EventsLoad::Failed(error),
+        };
     }
 
     /// `e`: the task to edit in the editor. Like `loom edit`, it accepts a task that is read-only
@@ -1315,6 +1414,7 @@ impl AppState {
             | KeyCommand::PrevPageTab
             | KeyCommand::OpenPicker(_)
             | KeyCommand::EditBody
+            | KeyCommand::CycleEventsFilter(_)
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1328,6 +1428,8 @@ impl AppState {
         }
     }
 
+    // The closing arm lists every key command of the other layers: it grows with each new command.
+    #[allow(clippy::too_many_lines)]
     fn apply_modal_command(&mut self, cmd: KeyCommand) -> AppEffect {
         match cmd {
             KeyCommand::NextField => {
@@ -1415,6 +1517,7 @@ impl AppState {
             | KeyCommand::PrevPageTab
             | KeyCommand::OpenPicker(_)
             | KeyCommand::EditBody
+            | KeyCommand::CycleEventsFilter(_)
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1581,6 +1684,7 @@ impl AppState {
                     content: ObjectPageContent::Loading(ObjectTarget::Task(task.id.clone())),
                     scroll: 0,
                     tab: PageTab::default(),
+                    events: EventsView::default(),
                 });
                 AppEffect::FetchTask(task.id.clone())
             }
@@ -1597,6 +1701,7 @@ impl AppState {
                 content: ObjectPageContent::Loading(ObjectTarget::Task(id.clone())),
                 scroll: 0,
                 tab: PageTab::default(),
+                events: EventsView::default(),
             });
             AppEffect::FetchTask(id)
         } else {
@@ -1643,6 +1748,12 @@ impl AppState {
         }
     }
 
+    fn scroll_page(&mut self, to: impl Fn(&ObjectPageState) -> usize) {
+        if let Some(page) = self.page_stack.last_mut() {
+            page.scroll = to(page);
+        }
+    }
+
     fn move_down(&mut self) {
         if let Some(modal) = self.modal {
             match modal {
@@ -1677,7 +1788,7 @@ impl AppState {
         }
 
         if let Some(page) = self.page_stack.last_mut() {
-            page.scroll = page.scroll.saturating_add(1);
+            page.scroll = page.scroll.saturating_add(1).min(page.scroll_max());
             return;
         }
 
@@ -1862,6 +1973,7 @@ mod tests {
             content: ObjectPageContent::Loading(ObjectTarget::Task(id)),
             scroll: 0,
             tab: PageTab::default(),
+            events: EventsView::default(),
         });
         state
     }
@@ -2288,6 +2400,169 @@ mod tests {
         assert_eq!(state.page_stack[0].tab, PageTab::Events);
     }
 
+    fn sample_log() -> TaskEvents {
+        use loom_api::{Actor, Change, Event, EventRecord, MachineId, Timestamp};
+        let origin = |actor| loom_core::Origin {
+            actor,
+            machine_id: MachineId("desk".to_owned()),
+        };
+        let record = |actor, event, secs| {
+            EventRecord::new(
+                "aaaaaaaa".parse().unwrap(),
+                event,
+                Timestamp::from_unix_secs(secs).unwrap(),
+                &origin(actor),
+            )
+        };
+        TaskEvents {
+            id: "k3q7zm2a".parse().unwrap(),
+            events: vec![
+                record(
+                    Actor::User,
+                    Event::NoteLogged {
+                        text: "called".to_owned(),
+                    },
+                    1_791_792_000,
+                ),
+                record(
+                    Actor::Daemon,
+                    Event::StatusChanged(Change {
+                        from: Status::Inbox,
+                        to: Status::Ready,
+                    }),
+                    1_791_792_060,
+                ),
+            ],
+            skipped: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_events_tab_asks_for_the_log_once() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        press(&mut state, KeyCode::Char(']'));
+        // Relations: nothing to fetch.
+        assert_eq!(
+            press(&mut state, KeyCode::Char(']')),
+            AppEffect::FetchEvents(id)
+        );
+        assert_eq!(state.page_stack[0].events.load, EventsLoad::Loading);
+    }
+
+    #[test]
+    fn the_events_tab_reads_the_log_again_each_time_it_is_selected() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack[0].tab = PageTab::Relations;
+        press(&mut state, KeyCode::Char(']'));
+        state.apply_events(&id, Ok(sample_log()));
+        // Overview, change the task there, back to Events: the old log is read again, and it
+        // stays on screen until the answer arrives.
+        press(&mut state, KeyCode::Char(']'));
+        press(&mut state, KeyCode::Char(']'));
+        assert_eq!(
+            press(&mut state, KeyCode::Char(']')),
+            AppEffect::FetchEvents(id.clone())
+        );
+        assert!(matches!(
+            state.page_stack[0].events.load,
+            EventsLoad::Loaded(_)
+        ));
+        // A failed read is tried again too.
+        state.apply_events(&id, Err("boom".to_owned()));
+        press(&mut state, KeyCode::Char(']'));
+        press(&mut state, KeyCode::Char(']'));
+        press(&mut state, KeyCode::Char(']'));
+        assert_eq!(state.page_stack[0].events.load, EventsLoad::Loading);
+    }
+
+    #[test]
+    fn the_events_scroll_stops_at_the_last_line_and_end_and_home_jump() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.apply_events(&id, Ok(sample_log()));
+        state.page_stack[0].tab = PageTab::Events;
+        for _ in 0..10 {
+            press(&mut state, KeyCode::Char('j'));
+        }
+        assert_eq!(state.page_stack[0].scroll, 1);
+        press(&mut state, KeyCode::Home);
+        assert_eq!(state.page_stack[0].scroll, 0);
+        press(&mut state, KeyCode::End);
+        assert_eq!(state.page_stack[0].scroll, 1);
+    }
+
+    #[test]
+    fn end_does_nothing_off_the_events_tab() {
+        let mut state = state_with_task_page();
+        state.page_stack[0].scroll = 3;
+        press(&mut state, KeyCode::End);
+        assert_eq!(state.page_stack[0].scroll, 3);
+        press(&mut state, KeyCode::Home);
+        assert_eq!(state.page_stack[0].scroll, 0);
+    }
+
+    #[test]
+    fn the_filters_say_when_the_events_are_not_loaded() {
+        let mut state = state_with_task_page();
+        state.page_stack[0].tab = PageTab::Events;
+        press(&mut state, KeyCode::Char('f'));
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("events not loaded yet")
+        );
+    }
+
+    #[test]
+    fn the_events_answer_fills_the_page_it_belongs_to() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.apply_events(&id, Ok(sample_log()));
+        assert!(matches!(
+            state.page_stack[0].events.load,
+            EventsLoad::Loaded(_)
+        ));
+        state.apply_events(&id, Err("boom".to_owned()));
+        assert_eq!(
+            state.page_stack[0].events.load,
+            EventsLoad::Failed("boom".to_owned())
+        );
+        // A page that is not open: dropped.
+        let other: TaskId = "bbbbbbbb".parse().unwrap();
+        state.apply_events(&other, Ok(sample_log()));
+        assert_eq!(state.page_stack.len(), 1);
+    }
+
+    #[test]
+    fn f_and_a_cycle_the_filters_on_the_events_tab_only() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.apply_events(&id, Ok(sample_log()));
+        press(&mut state, KeyCode::Char('f'));
+        assert_eq!(state.page_stack[0].events.type_filter, None);
+        assert!(state.status_message.is_some());
+
+        state.page_stack[0].tab = PageTab::Events;
+        press(&mut state, KeyCode::Char('f'));
+        assert_eq!(
+            state.page_stack[0].events.type_filter.as_deref(),
+            Some("note_logged")
+        );
+        press(&mut state, KeyCode::Char('f'));
+        assert_eq!(
+            state.page_stack[0].events.type_filter.as_deref(),
+            Some("status_changed")
+        );
+        press(&mut state, KeyCode::Char('f'));
+        assert_eq!(state.page_stack[0].events.type_filter, None);
+        press(&mut state, KeyCode::Char('a'));
+        assert_eq!(
+            state.page_stack[0].events.actor_filter.as_deref(),
+            Some("user")
+        );
+    }
+
     #[test]
     fn esc_and_backspace_go_back_one_page_at_a_time() {
         let mut state = state_with_task_page();
@@ -2360,6 +2635,7 @@ mod tests {
             content: ObjectPageContent::Loading(ObjectTarget::Task(task_id.clone())),
             scroll: 0,
             tab: PageTab::default(),
+            events: EventsView::default(),
         });
 
         let event = ChangeEvent::TaskChanged {
