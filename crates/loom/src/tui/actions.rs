@@ -114,6 +114,7 @@ impl ActionRequest {
             | AppEffect::Refresh
             | AppEffect::FetchTask(_)
             | AppEffect::FetchEvents(_)
+            | AppEffect::FetchRelations(_)
             | AppEffect::EditBody(_)
             | AppEffect::Search(_)) => Err(effect),
         }

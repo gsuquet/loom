@@ -510,6 +510,13 @@ pub static BINDINGS: &[KeyBinding] = &[
     },
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Enter, KeyModifiers::NONE)],
+        command: KeyCommand::OpenSelected,
+        label: "Enter",
+        description: "Open the selected relation (Relations tab)",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
         keys: &[(KeyCode::Home, KeyModifiers::NONE)],
         command: KeyCommand::MoveFirst,
         label: "Home",

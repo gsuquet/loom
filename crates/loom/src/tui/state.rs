@@ -4,6 +4,7 @@
 //! return an [`AppEffect`] that the runtime loop in the binary executes.
 
 use crate::tui::events::{self, EventsFilter, EventsLoad, EventsView};
+use crate::tui::relations::{self, RelationsData, RelationsLoad, RelationsView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use loom_api::{
     Action, ChangeEvent, ContextName, Date, Importance, Kind, SearchResult, Status, StatusName,
@@ -287,9 +288,24 @@ pub struct ObjectPageState {
     pub tab: PageTab,
     /// Event timeline of the Events tab.
     pub events: EventsView,
+    /// Relations of the Relations tab.
+    pub relations: RelationsView,
 }
 
 impl ObjectPageState {
+    /// `j` and `k` on the Relations tab: the next or the previous followable task.
+    fn move_relation(&mut self, down: bool) {
+        let RelationsLoad::Loaded(data) = &self.relations.load else {
+            return;
+        };
+        let last = relations::selectable(data).saturating_sub(1);
+        self.relations.selected = if down {
+            (self.relations.selected + 1).min(last)
+        } else {
+            self.relations.selected.saturating_sub(1)
+        };
+    }
+
     /// The last offset that `j` scrolls to. Only the Events tab is bounded: the Overview scrolls
     /// as far as the user asks.
     fn scroll_max(&self) -> usize {
@@ -322,6 +338,8 @@ pub enum AppEffect {
     FetchTask(TaskId),
     /// Fetch the event log of a task for the Events tab.
     FetchEvents(TaskId),
+    /// Fetch the relations of a task for the Relations tab.
+    FetchRelations(TaskId),
     /// Search query changed; debounce before requesting `/v1/search`.
     Search(String),
     /// Accept an inbox task: sets status to ready with optional fields.
@@ -866,7 +884,8 @@ impl AppState {
                 self.set_selected(curr.saturating_sub(10));
                 self.update_preview_effect()
             }
-            KeyCommand::OpenSelected => self.open_selected(),
+            KeyCommand::OpenSelected if self.page_stack.is_empty() => self.open_selected(),
+            KeyCommand::OpenSelected => self.follow_relation(),
             KeyCommand::TogglePreview => {
                 self.preview_enabled = !self.preview_enabled;
                 self.update_preview_effect()
@@ -1071,6 +1090,14 @@ impl AppState {
         };
         page.tab = step(page.tab);
         page.scroll = 0;
+        if page.tab == PageTab::Relations {
+            // Read each time too: a task changes on another tab.
+            let ObjectTarget::Task(id) = &page.target;
+            if !matches!(page.relations.load, RelationsLoad::Loaded(_)) {
+                page.relations.load = RelationsLoad::Loading;
+            }
+            return AppEffect::FetchRelations(id.clone());
+        }
         if page.tab == PageTab::Events {
             // The log is read each time the tab is selected: the task may have changed on
             // another tab. A log already loaded stays on screen until the answer arrives.
@@ -1112,6 +1139,28 @@ impl AppState {
         }
         page.scroll = 0;
         AppEffect::None
+    }
+
+    /// The answer of loomd to `FetchRelations`. An answer for a page that is not open any more is
+    /// dropped.
+    pub fn apply_relations(&mut self, id: &TaskId, result: Result<RelationsData, String>) {
+        let Some(page) = self
+            .page_stack
+            .iter_mut()
+            .rev()
+            .find(|p| matches!(&p.target, ObjectTarget::Task(t) if t == id))
+        else {
+            return;
+        };
+        page.relations.load = match result {
+            Ok(data) => {
+                // The same row stays selected as far as the new tree still has it.
+                let last = relations::selectable(&data).saturating_sub(1);
+                page.relations.selected = page.relations.selected.min(last);
+                RelationsLoad::Loaded(Box::new(data))
+            }
+            Err(error) => RelationsLoad::Failed(error),
+        };
     }
 
     /// The answer of loomd to `FetchEvents`. An answer for a page that is not open any more is
@@ -1685,11 +1734,37 @@ impl AppState {
                     scroll: 0,
                     tab: PageTab::default(),
                     events: EventsView::default(),
+                    relations: RelationsView::default(),
                 });
                 AppEffect::FetchTask(task.id.clone())
             }
             SearchResult::Repo(_) => AppEffect::None,
         }
+    }
+
+    /// Enter on an object page: follows the selected relation of the Relations tab.
+    fn follow_relation(&mut self) -> AppEffect {
+        let Some(page) = self.page_stack.last() else {
+            return AppEffect::None;
+        };
+        let RelationsLoad::Loaded(data) = &page.relations.load else {
+            return AppEffect::None;
+        };
+        if page.tab != PageTab::Relations {
+            return AppEffect::None;
+        }
+        let Some(id) = relations::target_at(data, page.relations.selected) else {
+            return AppEffect::None;
+        };
+        self.page_stack.push(ObjectPageState {
+            target: ObjectTarget::Task(id.clone()),
+            content: ObjectPageContent::Loading(ObjectTarget::Task(id.clone())),
+            scroll: 0,
+            tab: PageTab::default(),
+            events: EventsView::default(),
+            relations: RelationsView::default(),
+        });
+        AppEffect::FetchTask(id)
     }
 
     /// Opens the currently selected item in an object page.
@@ -1702,6 +1777,7 @@ impl AppState {
                 scroll: 0,
                 tab: PageTab::default(),
                 events: EventsView::default(),
+                relations: RelationsView::default(),
             });
             AppEffect::FetchTask(id)
         } else {
@@ -1788,7 +1864,11 @@ impl AppState {
         }
 
         if let Some(page) = self.page_stack.last_mut() {
-            page.scroll = page.scroll.saturating_add(1).min(page.scroll_max());
+            if page.tab == PageTab::Relations {
+                page.move_relation(true);
+            } else {
+                page.scroll = page.scroll.saturating_add(1).min(page.scroll_max());
+            }
             return;
         }
 
@@ -1824,7 +1904,11 @@ impl AppState {
         }
 
         if let Some(page) = self.page_stack.last_mut() {
-            page.scroll = page.scroll.saturating_sub(1);
+            if page.tab == PageTab::Relations {
+                page.move_relation(false);
+            } else {
+                page.scroll = page.scroll.saturating_sub(1);
+            }
             return;
         }
 
@@ -1974,6 +2058,7 @@ mod tests {
             scroll: 0,
             tab: PageTab::default(),
             events: EventsView::default(),
+            relations: RelationsView::default(),
         });
         state
     }
@@ -2563,6 +2648,130 @@ mod tests {
         );
     }
 
+    fn sample_relations() -> RelationsData {
+        use crate::tui::relations::{ChildNode, RelatedTask};
+        RelationsData {
+            parent: Some(RelatedTask {
+                id: "pppppppp".parse().unwrap(),
+                summary: Some(make_task("pppppppp", Status::Ready, None)),
+            }),
+            children: vec![ChildNode {
+                task: make_task("cccccccc", Status::Ready, None),
+                children: Vec::new(),
+            }],
+            spawned_from: vec![RelatedTask {
+                id: "gggggggg".parse().unwrap(),
+                summary: None,
+            }],
+            ..RelationsData::default()
+        }
+    }
+
+    #[test]
+    fn the_relations_tab_reads_the_relations_each_time_it_is_selected() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        assert_eq!(
+            press(&mut state, KeyCode::Char(']')),
+            AppEffect::FetchRelations(id.clone())
+        );
+        assert_eq!(state.page_stack[0].relations.load, RelationsLoad::Loading);
+        state.apply_relations(&id, Ok(sample_relations()));
+        press(&mut state, KeyCode::Char(']'));
+        press(&mut state, KeyCode::Char(']'));
+        assert_eq!(
+            press(&mut state, KeyCode::Char(']')),
+            AppEffect::FetchRelations(id.clone())
+        );
+        // The old relations stay until the answer arrives; a failure is tried again.
+        assert!(matches!(
+            state.page_stack[0].relations.load,
+            RelationsLoad::Loaded(_)
+        ));
+        state.apply_relations(&id, Err("boom".to_owned()));
+        assert_eq!(
+            state.page_stack[0].relations.load,
+            RelationsLoad::Failed("boom".to_owned())
+        );
+        // An answer for a page that is not open is dropped.
+        state.apply_relations(&"bbbbbbbb".parse().unwrap(), Ok(sample_relations()));
+        assert_eq!(state.page_stack.len(), 1);
+    }
+
+    #[test]
+    fn j_and_k_select_the_followable_tasks_and_stop_at_both_ends() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack[0].tab = PageTab::Relations;
+        state.apply_relations(&id, Ok(sample_relations()));
+        // Two tasks can be followed: the parent and the child. The spawned-from task is missing.
+        for _ in 0..5 {
+            press(&mut state, KeyCode::Char('j'));
+        }
+        assert_eq!(state.page_stack[0].relations.selected, 1);
+        assert_eq!(state.page_stack[0].scroll, 0);
+        for _ in 0..5 {
+            press(&mut state, KeyCode::Char('k'));
+        }
+        assert_eq!(state.page_stack[0].relations.selected, 0);
+    }
+
+    #[test]
+    fn enter_follows_the_selected_relation_and_back_keeps_three_levels_of_history() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        // Enter does nothing off the Relations tab or before the relations are loaded.
+        assert_eq!(press(&mut state, KeyCode::Enter), AppEffect::None);
+        state.page_stack[0].tab = PageTab::Relations;
+        assert_eq!(press(&mut state, KeyCode::Enter), AppEffect::None);
+        state.apply_relations(&id, Ok(sample_relations()));
+        press(&mut state, KeyCode::Char('j'));
+        let child: TaskId = "cccccccc".parse().unwrap();
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            AppEffect::FetchTask(child.clone())
+        );
+        assert_eq!(state.page_stack.len(), 2);
+        assert_eq!(state.page_stack[1].tab, PageTab::Overview);
+        assert_eq!(
+            state.page_stack[1].content,
+            ObjectPageContent::Loading(ObjectTarget::Task(child))
+        );
+        // Two more levels down, then back up level by level to the first page.
+        for next in ["dddddddd", "eeeeeeee"] {
+            let top = state.page_stack.last_mut().unwrap();
+            top.tab = PageTab::Relations;
+            let at = top.target.clone();
+            let ObjectTarget::Task(top_id) = at;
+            let mut data = sample_relations();
+            data.parent.as_mut().unwrap().id = next.parse().unwrap();
+            data.parent.as_mut().unwrap().summary = Some(make_task(next, Status::Ready, None));
+            state.apply_relations(&top_id, Ok(data));
+            assert_eq!(
+                press(&mut state, KeyCode::Enter),
+                AppEffect::FetchTask(next.parse().unwrap())
+            );
+        }
+        assert_eq!(state.page_stack.len(), 4);
+        for expected in [3, 2, 1, 0] {
+            press(&mut state, KeyCode::Backspace);
+            assert_eq!(state.page_stack.len(), expected);
+        }
+    }
+
+    #[test]
+    fn enter_on_a_missing_task_does_nothing() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack[0].tab = PageTab::Relations;
+        let mut data = sample_relations();
+        data.parent = None;
+        data.children.clear();
+        state.apply_relations(&id, Ok(data));
+        assert_eq!(press(&mut state, KeyCode::Enter), AppEffect::None);
+        assert_eq!(state.page_stack.len(), 1);
+    }
+
     #[test]
     fn esc_and_backspace_go_back_one_page_at_a_time() {
         let mut state = state_with_task_page();
@@ -2636,6 +2845,7 @@ mod tests {
             scroll: 0,
             tab: PageTab::default(),
             events: EventsView::default(),
+            relations: RelationsView::default(),
         });
 
         let event = ChangeEvent::TaskChanged {

@@ -58,7 +58,23 @@ When you press `Enter` on a selected row in a queue, or on a search result, the 
 
 The task page opens on the `Overview` tab. `Overview` and the preview pane show the title of the task, then one line for each field (`Status`, `Importance`, `Kind`, `Context`, `Due`, `Waiting`, `Rank`, `Parent`, `ID`), then the `Notes` section. A field with no value is not shown. When the notes start with a `Notes` heading, the TUI does not show that heading again. When the notes are empty, the section shows `No notes.` The TUI renders the notes as Markdown. It supports headings, bullet and numbered lists, quotes, rules, fenced code, and the inline marks `**bold**`, `*italic*` and `` `code` ``. It shows any other Markdown as written.
 
-The `Relations` tab shows the text `The Relations tab has no content in this version.`
+### Relations tab
+
+The `Relations` tab lists the tasks that the task links to, in five sections:
+
+| Section | Content |
+| --- | --- |
+| `Parent` | The parent task. |
+| `Children` | The tasks whose parent is this task, as a tree: each child shows its own children, one level deeper. The tree stops at 4 levels or 100 tasks and then shows `the tree is cut here`. Archived children are included. |
+| `Spawned from` | The tasks in `spawned_from`. |
+| `Blocks` | The tasks in `blocks`. |
+| `Repository` | The repository slugs in the `repo` links of the task. |
+
+A section with no entry shows `none`. A task row shows `<prefix>  <status>  <importance>  <title>`. A relation to a task that does not exist shows `<id>  (no such task)`. The TUI cuts a long row at the edge of the pane and shows `…`. Until the relations arrive, the tab shows `Loading relations...`. When the read fails, the tab shows `Cannot load the relations: <reason>`.
+
+The TUI reads the relations each time that you select the tab, and again each time the page reloads while the tab is open. The previous relations stay on screen until the new ones arrive. The reads are `GET /v1/tasks/{id}` for the task and for each task that it names, and `GET /v1/tasks?parent={id}` (with and without `archived=true`) for the children.
+
+`j` and `k` select a task row that exists. The pane scrolls to keep the selected row in view. `Enter` opens the selected task on a new page. `Esc` or `Backspace` goes back to the previous page, with its tab and selection as they were. The pages form a stack with no fixed depth. Archived and read-only tasks have a `Relations` tab like any other task.
 
 When `loomd` sends a change event for the task, the TUI reloads the page.
 
@@ -159,10 +175,11 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `Esc`, `Backspace` | Go back to the previous page. On the first page, return to the queue view. |
 | `]`, `Right` | Select the next tab. The scroll position goes back to the top. |
 | `[`, `Left` | Select the previous tab. The scroll position goes back to the top. |
-| `j`, `Down` | Scroll down one line. On the `Events` tab, the scroll stops at the last line. |
-| `k`, `Up` | Scroll up one line. |
+| `j`, `Down` | Scroll down one line. On the `Events` tab, the scroll stops at the last line. On the `Relations` tab, select the next task. |
+| `k`, `Up` | Scroll up one line. On the `Relations` tab, select the previous task. |
 | `PgDn` | Scroll down one page. |
 | `PgUp` | Scroll up one page. |
+| `Enter` | On the `Relations` tab, open the selected task. On the other tabs, it does nothing. |
 | `r` | Reload the task from `loomd`. |
 | `Home` | Scroll to the top. |
 | `End` | On the `Events` tab, scroll to the last line, the oldest event. On the other tabs, it does nothing. |

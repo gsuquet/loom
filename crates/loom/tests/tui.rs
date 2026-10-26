@@ -1431,3 +1431,65 @@ async fn task_page_events_tab_lists_the_log_of_loomd_and_filters_it() {
     assert!(text.contains("f type: created"), "{text}");
     assert!(!text.contains("status_changed  "), "{text}");
 }
+
+#[tokio::test]
+async fn task_page_relations_tab_reads_the_tree_of_loomd_and_follows_it() {
+    let sandbox = Sandbox::new();
+    let parent = sandbox
+        .add(&["-c", "work", "--ready", "Project"])
+        .summary
+        .id;
+    let child = sandbox
+        .add(&["--ready", "--parent", parent.as_str(), "Child"])
+        .summary
+        .id;
+    let grandchild = sandbox
+        .add(&["--ready", "--parent", child.as_str(), "Grandchild"])
+        .summary
+        .id;
+    let client = Client::new(sandbox.socket());
+
+    // The tree and the links, read from the real daemon.
+    let data = loom::tui::load::fetch_relations(&client, &parent)
+        .await
+        .unwrap();
+    assert_eq!(data.parent, None);
+    assert_eq!(data.children.len(), 1);
+    assert_eq!(data.children[0].task.id, child);
+    assert_eq!(data.children[0].children[0].task.id, grandchild);
+    assert!(!data.truncated);
+    let data = loom::tui::load::fetch_relations(&client, &child)
+        .await
+        .unwrap();
+    assert_eq!(data.parent.as_ref().map(|p| &p.id), Some(&parent));
+    assert!(data.parent.unwrap().summary.is_some());
+    assert_eq!(data.children[0].task.id, grandchild);
+
+    // In the TUI: open the child, go to Relations, follow the parent, then go back.
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    let list: TaskList = client.get(&list_api_path(None, None, false)).await.unwrap();
+    state.today = list.tasks;
+    state.active_tab = QueueTab::Today;
+    let position = state.today.iter().position(|t| t.id == child).unwrap();
+    state.set_selected(position);
+    press(&mut state, KeyCode::Enter);
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{child}")).await.unwrap();
+    state.page_stack[0].content = ObjectPageContent::Task(Box::new(detail));
+    let effect = press(&mut state, KeyCode::Char(']'));
+    assert_eq!(effect, AppEffect::FetchRelations(child.clone()));
+    let data = loom::tui::load::fetch_relations(&client, &child)
+        .await
+        .unwrap();
+    state.apply_relations(&child, Ok(data));
+    // Selected: the parent first, then the grandchild.
+    let effect = press(&mut state, KeyCode::Enter);
+    assert_eq!(effect, AppEffect::FetchTask(parent.clone()));
+    assert_eq!(state.page_stack.len(), 2);
+    press(&mut state, KeyCode::Esc);
+    assert_eq!(state.page_stack.len(), 1);
+}
