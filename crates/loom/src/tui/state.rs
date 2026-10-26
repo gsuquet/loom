@@ -831,8 +831,15 @@ impl AppState {
                 self.scroll_page(|_| 0);
                 AppEffect::None
             }
+            // Only the Events tab has a known last line: elsewhere `End` does nothing.
             KeyCommand::MoveLast if !self.page_stack.is_empty() => {
-                self.scroll_page(ObjectPageState::scroll_max);
+                if self
+                    .page_stack
+                    .last()
+                    .is_some_and(|p| p.tab == PageTab::Events)
+                {
+                    self.scroll_page(ObjectPageState::scroll_max);
+                }
                 AppEffect::None
             }
             KeyCommand::MoveFirst => {
@@ -2484,6 +2491,16 @@ mod tests {
         assert_eq!(state.page_stack[0].scroll, 0);
         press(&mut state, KeyCode::End);
         assert_eq!(state.page_stack[0].scroll, 1);
+    }
+
+    #[test]
+    fn end_does_nothing_off_the_events_tab() {
+        let mut state = state_with_task_page();
+        state.page_stack[0].scroll = 3;
+        press(&mut state, KeyCode::End);
+        assert_eq!(state.page_stack[0].scroll, 3);
+        press(&mut state, KeyCode::Home);
+        assert_eq!(state.page_stack[0].scroll, 0);
     }
 
     #[test]

@@ -1640,6 +1640,29 @@ mod tests {
     }
 
     #[test]
+    fn end_on_the_overview_keeps_the_page_visible() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut state = AppState::new(
+            test_theme(),
+            None,
+            Vec::new(),
+            jiff::civil::date(2026, 10, 22),
+        );
+        state.page_stack.push(ObjectPageState {
+            target: ObjectTarget::Task("k3q7zm2a".parse().unwrap()),
+            content: ObjectPageContent::Task(Box::new(detail("## Symptoms\n- one", None))),
+            scroll: 0,
+            tab: PageTab::Overview,
+            events: EventsView::default(),
+        });
+        state.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let text = buffer_text_lines(&terminal).join("\n");
+        assert!(text.contains("Login timeout"), "{text}");
+    }
+
+    #[test]
     fn task_page_overview_frame_at_80_columns() {
         let expected = [
             " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline                        ",

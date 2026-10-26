@@ -164,7 +164,8 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `PgDn` | Scroll down one page. |
 | `PgUp` | Scroll up one page. |
 | `r` | Reload the task from `loomd`. |
-| `Home`, `End` | Scroll to the top, or to the last line (on the `Events` tab, the oldest event). |
+| `Home` | Scroll to the top. |
+| `End` | On the `Events` tab, scroll to the last line, the oldest event. On the other tabs, it does nothing. |
 | `f` | On the `Events` tab, select the next event type in the log, then no type. |
 | `a` | On the `Events` tab, select the next actor in the log, then no actor. |
 | `e` | Open the task file in the editor (see [Edit the task file](#edit-the-task-file)). |
