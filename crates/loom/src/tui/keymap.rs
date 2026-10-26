@@ -107,11 +107,13 @@ pub enum ModalKind {
     Snooze,
     /// `+` new task modal.
     NewTask,
+    /// `t`, `i`, `d` field picker of the task page.
+    Pick,
 }
 
 impl ModalKind {
     /// All modal kinds.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Help,
         Self::Palette,
         Self::Search,
@@ -119,6 +121,7 @@ impl ModalKind {
         Self::Accept,
         Self::Snooze,
         Self::NewTask,
+        Self::Pick,
     ];
 
     /// Display title of the modal layer in `?` help.
@@ -132,6 +135,30 @@ impl ModalKind {
             Self::Accept => "Accept task",
             Self::Snooze => "Snooze task",
             Self::NewTask => "New task",
+            Self::Pick => "Change field",
+        }
+    }
+}
+
+/// A task field that the task page edits with a picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PickField {
+    /// The kind of the task.
+    Kind,
+    /// The importance of the task.
+    Importance,
+    /// The due date of the task.
+    Due,
+}
+
+impl PickField {
+    /// Name of the field in the title of the picker.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Kind => "kind",
+            Self::Importance => "importance",
+            Self::Due => "due date",
         }
     }
 }
@@ -181,6 +208,7 @@ pub enum KeyCommand {
     ToggleWhy,
     ToggleGroupByParent,
     // Object page actions
+    OpenPicker(PickField),
     Back,
     NextPageTab,
     PrevPageTab,
@@ -492,6 +520,34 @@ pub static BINDINGS: &[KeyBinding] = &[
         label: "r",
         description: "Refresh object",
     },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('t'), KeyModifiers::NONE)],
+        command: KeyCommand::OpenPicker(PickField::Kind),
+        label: "t",
+        description: "Change the kind",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('i'), KeyModifiers::NONE)],
+        command: KeyCommand::OpenPicker(PickField::Importance),
+        label: "i",
+        description: "Change the importance",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('d'), KeyModifiers::NONE)],
+        command: KeyCommand::OpenPicker(PickField::Due),
+        label: "d",
+        description: "Change the due date",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('u'), KeyModifiers::NONE)],
+        command: KeyCommand::Undo,
+        label: "u",
+        description: "Undo last task change",
+    },
     // Modal: Help
     KeyBinding {
         layer: Layer::Modal(ModalKind::Help),
@@ -733,6 +789,41 @@ pub static BINDINGS: &[KeyBinding] = &[
         command: KeyCommand::ConfirmModal,
         label: "Enter",
         description: "Confirm and create task",
+    },
+    // Modal: Pick
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Pick),
+        keys: &[(KeyCode::Esc, KeyModifiers::NONE)],
+        command: KeyCommand::CloseModal,
+        label: "Esc",
+        description: "Close without changing",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Pick),
+        keys: &[(KeyCode::Enter, KeyModifiers::NONE)],
+        command: KeyCommand::ConfirmModal,
+        label: "Enter",
+        description: "Apply the choice",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Pick),
+        keys: &[
+            (KeyCode::Char('j'), KeyModifiers::NONE),
+            (KeyCode::Down, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::MoveDown,
+        label: "j, ↓",
+        description: "Next choice",
+    },
+    KeyBinding {
+        layer: Layer::Modal(ModalKind::Pick),
+        keys: &[
+            (KeyCode::Char('k'), KeyModifiers::NONE),
+            (KeyCode::Up, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::MoveUp,
+        label: "k, ↑",
+        description: "Previous choice",
     },
 ];
 

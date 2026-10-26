@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use loom_api::{
-    ContextName, Date, GoResult, Importance, Kind, TaskActionRequest, TaskDetail, TaskId,
+    ContextName, Date, GoResult, Importance, Kind, TaskActionRequest, TaskDetail, TaskEdit, TaskId,
 };
 
 use crate::client::Client;
@@ -36,6 +36,17 @@ pub enum ActionRequest {
         until: Date,
         /// What the task waits on.
         on: Option<String>,
+    },
+    /// `PATCH /v1/tasks/{id}`.
+    Edit {
+        /// Task to edit.
+        id: TaskId,
+        /// New kind.
+        kind: Option<Kind>,
+        /// New importance.
+        importance: Option<Importance>,
+        /// New due date, `Some(None)` removes it.
+        due: Option<Option<Date>>,
     },
     /// `POST /v1/tasks/{id}/actions/cancelled`.
     Cancel(TaskId),
@@ -74,6 +85,17 @@ impl ActionRequest {
                 due,
             }),
             AppEffect::SnoozeTask { id, until, on } => Ok(Self::Snooze { id, until, on }),
+            AppEffect::EditTask {
+                id,
+                kind,
+                importance,
+                due,
+            } => Ok(Self::Edit {
+                id,
+                kind,
+                importance,
+                due,
+            }),
             AppEffect::CancelTask(id) => Ok(Self::Cancel(id)),
             AppEffect::DoneTask(id) => Ok(Self::Done(id)),
             AppEffect::GoTask(id) => Ok(Self::Go(id)),
@@ -178,6 +200,7 @@ pub fn take_next(
         ActionRequest::Undo(_)
         | ActionRequest::Accept { .. }
         | ActionRequest::Snooze { .. }
+        | ActionRequest::Edit { .. }
         | ActionRequest::Cancel(_)
         | ActionRequest::Done(_)
         | ActionRequest::Go(_)
@@ -235,6 +258,12 @@ pub async fn execute_action(
             let message = format!("task {id} snoozed until {until}");
             Ok(changed(id, message))
         }
+        ActionRequest::Edit {
+            id,
+            kind,
+            importance,
+            due,
+        } => edit_task(client, id, kind, importance, due).await,
         ActionRequest::Cancel(id) => {
             post_action(client, &id, "cancelled", None).await?;
             let message = format!("task {id} cancelled");
@@ -297,6 +326,29 @@ pub async fn execute_action(
             })
         }
     }
+}
+
+// `due` follows `TaskEdit`: `Some(None)` removes the date.
+#[allow(clippy::option_option)]
+async fn edit_task(
+    client: &Client,
+    id: TaskId,
+    kind: Option<Kind>,
+    importance: Option<Importance>,
+    due: Option<Option<Date>>,
+) -> ActionResponse {
+    let edit = TaskEdit {
+        kind,
+        importance,
+        due,
+        ..Default::default()
+    };
+    let _detail: TaskDetail = client
+        .patch(&format!("/v1/tasks/{id}"), &edit)
+        .await
+        .map_err(|error| error.to_string())?;
+    let message = format!("task {id} updated");
+    Ok(changed(id, message))
 }
 
 async fn post_action(
@@ -456,5 +508,24 @@ mod tests {
             Some(id("m9x2rt4b"))
         );
         assert_eq!(outcome.next_undo_target(None), None);
+    }
+
+    #[test]
+    fn an_edit_effect_becomes_an_edit_call() {
+        let effect = AppEffect::EditTask {
+            id: id("k3q7zm2a"),
+            kind: None,
+            importance: Some(loom_core::Importance::P1),
+            due: None,
+        };
+        assert_eq!(
+            ActionRequest::from_effect(effect),
+            Ok(ActionRequest::Edit {
+                id: id("k3q7zm2a"),
+                kind: None,
+                importance: Some(loom_core::Importance::P1),
+                due: None,
+            })
+        );
     }
 }

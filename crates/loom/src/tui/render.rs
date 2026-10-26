@@ -12,11 +12,11 @@ use ratatui::widgets::{
 };
 
 use super::color::Theme;
-use super::keymap::{Layer, ModalKind, QueueTab, ViewKind, bindings_for_layer};
+use super::keymap::{Layer, ModalKind, PickField, QueueTab, ViewKind, bindings_for_layer};
 use super::markdown;
 use super::state::{
     AppState, ObjectPageContent, ObjectPageState, ObjectTarget, PREVIEW_MIN_WIDTH, PageTab,
-    ToastTone,
+    PickOption, ToastTone,
 };
 use crate::task::{read_only_text, reason_text};
 
@@ -638,10 +638,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         vec![
             ("Esc", "back"),
             ("[/]", "tab"),
+            ("t/i/d", "edit"),
+            ("u", "undo"),
             ("j/k", "scroll"),
-            ("r", "refresh"),
             (":", "palette"),
-            ("/", "search"),
             ("?", "help"),
             ("q", "quit"),
         ]
@@ -658,6 +658,16 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, state: &AppState, modal: Moda
         ModalKind::NewTask => centered_form(area, 8),
         ModalKind::Snooze => centered_form(area, 10),
         ModalKind::Accept => centered_form(area, 13),
+        ModalKind::Pick => {
+            let rows = state.pick_modal.as_ref().map_or(3, |m| {
+                if m.field == PickField::Due {
+                    3
+                } else {
+                    u16::try_from(m.options.len()).unwrap_or(u16::MAX)
+                }
+            });
+            centered_form(area, rows.saturating_add(4))
+        }
         ModalKind::Help | ModalKind::Palette | ModalKind::ContextPicker | ModalKind::Search => {
             centered_rect(70, 70, area)
         }
@@ -665,10 +675,11 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, state: &AppState, modal: Moda
     frame.render_widget(Clear, popup);
 
     // Every modal has a border and a title (docs/design/ui-style.md, 4.6).
-    let block = pane(Line::styled(
-        format!(" {} ", modal.title()),
-        state.theme.strong_style(),
-    ));
+    let title = match &state.pick_modal {
+        Some(m) if modal == ModalKind::Pick => format!(" Change {} ", m.field.name()),
+        Some(_) | None => format!(" {} ", modal.title()),
+    };
+    let block = pane(Line::styled(title, state.theme.strong_style()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -680,6 +691,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, state: &AppState, modal: Moda
         ModalKind::Accept => render_accept_modal(frame, inner, state),
         ModalKind::Snooze => render_snooze_modal(frame, inner, state),
         ModalKind::NewTask => render_new_task_modal(frame, inner, state),
+        ModalKind::Pick => render_pick_modal(frame, inner, state),
     }
 }
 
@@ -1029,6 +1041,78 @@ fn render_snooze_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState) {
     );
 }
 
+fn render_pick_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState) {
+    let Some(m) = &state.pick_modal else {
+        return;
+    };
+    let theme = &state.theme;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(popup);
+
+    let footer = if m.field == PickField::Due {
+        form_footer(
+            m.error.as_ref(),
+            &[("Enter", "apply"), ("Esc", "cancel")],
+            theme,
+        )
+    } else {
+        form_footer(
+            m.error.as_ref(),
+            &[("j/k", "choose"), ("Enter", "apply"), ("Esc", "cancel")],
+            theme,
+        )
+    };
+    frame.render_widget(footer, chunks[2]);
+
+    if m.field == PickField::Due {
+        let field = text_field(
+            "Due",
+            &m.due_input,
+            "YYYY-MM-DD, today, tomorrow, +1d, +1w; empty removes",
+            true,
+            theme,
+        );
+        let area = Rect {
+            height: chunks[0].height.min(3),
+            ..chunks[0]
+        };
+        frame.render_widget(field, area);
+        return;
+    }
+    let items: Vec<ListItem<'_>> = m
+        .options
+        .iter()
+        .enumerate()
+        .map(|(idx, option)| {
+            let label = match option {
+                PickOption::Kind(kind) => Span::raw(kind.name().to_owned()),
+                PickOption::Importance(importance) => Span::styled(
+                    importance_label(*importance),
+                    theme.importance_style(*importance),
+                ),
+            };
+            let is_sel = idx == m.selected;
+            let marker = if is_sel {
+                Span::styled("▶", theme.selected_style().patch(theme.strong_style()))
+            } else {
+                Span::raw(" ")
+            };
+            let mut spans = vec![marker, Span::raw(" "), label];
+            if m.current.as_ref() == Some(option) {
+                spans.push(Span::styled(" (current)", theme.dim_style()));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    frame.render_widget(List::new(items), chunks[0]);
+}
+
 fn render_new_task_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState) {
     let Some(m) = &state.new_task_modal else {
         return;
@@ -1280,7 +1364,7 @@ mod tests {
             "│                                                                              │",
             "│                                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  j/k scroll  r refresh  : palette  / search  ? help  q quit  ",
+            " Esc back  [/] tab  t/i/d edit  u undo  j/k scroll  : palette  ? help  q quit   ",
         ];
         assert_eq!(task_page_lines(80, PageTab::Overview), expected);
     }
@@ -1307,7 +1391,7 @@ mod tests {
             "│                                                                                                                                                              │",
             "│                                                                                                                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  j/k scroll  r refresh  : palette  / search  ? help  q quit                                                                                  ",
+            " Esc back  [/] tab  t/i/d edit  u undo  j/k scroll  : palette  ? help  q quit                                                                                   ",
         ];
         assert_eq!(task_page_lines(160, PageTab::Overview), expected);
     }
@@ -1334,7 +1418,7 @@ mod tests {
             "│ • Mobile users time out                                                      │",
             "│ • retry 3 times                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  j/k scroll  r refresh  : palette  / search  ? help  q quit  ",
+            " Esc back  [/] tab  t/i/d edit  u undo  j/k scroll  : palette  ? help  q quit   ",
         ];
         let lines = task_page_lines_with(
             80,
@@ -1497,5 +1581,45 @@ mod tests {
             lines[4].starts_with(" ✓ task created in inbox"),
             "{lines:?}"
         );
+    }
+
+    fn pick_modal_text(key: char) -> String {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut state = AppState::new(
+            test_theme(),
+            None,
+            Vec::new(),
+            jiff::civil::date(2026, 10, 22),
+        );
+        let id: loom_core::TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack.push(ObjectPageState {
+            target: ObjectTarget::Task(id),
+            content: ObjectPageContent::Task(Box::new(TaskDetail {
+                actions: vec![loom_api::Action::Edit],
+                ..detail("", None)
+            })),
+            scroll: 0,
+            tab: PageTab::Overview,
+        });
+        state.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        buffer_text_lines(&terminal).join("\n")
+    }
+
+    #[test]
+    fn the_importance_picker_lists_the_choices_and_its_keys() {
+        let text = pick_modal_text('i');
+        assert!(text.contains("Change importance"), "{text}");
+        assert!(text.contains("p0"), "{text}");
+        assert!(text.contains("p3"), "{text}");
+        assert!(text.contains("Enter apply"), "{text}");
+    }
+
+    #[test]
+    fn the_due_picker_shows_the_current_date_and_the_accepted_forms() {
+        let text = pick_modal_text('d');
+        assert!(text.contains("Change due"), "{text}");
+        assert!(text.contains("YYYY-MM-DD"), "{text}");
     }
 }
