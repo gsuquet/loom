@@ -334,6 +334,15 @@ mod tests {
     }
 
     #[test]
+    fn nested_emphasis_is_a_known_limit_that_keeps_every_word() {
+        // `*a **b** c*` is not nested correctly: marks may be misplaced, but no word is lost.
+        let rendered = text(&render80("*a **b** c*")[0]);
+        for word in ["a", "b", "c"] {
+            assert!(rendered.contains(word), "{rendered}");
+        }
+    }
+
+    #[test]
     fn an_empty_body_has_no_lines() {
         assert_eq!(render80("").len(), 0);
     }
