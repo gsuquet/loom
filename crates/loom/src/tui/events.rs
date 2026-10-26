@@ -102,6 +102,7 @@ fn change_text(change: &FieldChange) -> String {
         FieldChange::Pinned(c) => format!("pinned: {} -> {}", c.from, c.to),
         FieldChange::Links(_) => "links".to_owned(),
         FieldChange::Relations(_) => "relations".to_owned(),
+        FieldChange::Context(c) => format!("context: {} -> {}", c.from, c.to),
     }
 }
 
@@ -286,6 +287,23 @@ mod tests {
         assert_eq!(rows[1].summary, "status: inbox -> ready");
         assert_eq!(rows[1].actor, "loomd");
         assert!(rows[0].time > rows[2].time);
+    }
+
+    #[test]
+    fn a_move_shows_both_contexts() {
+        let moved = Event::Edited {
+            changes: vec![FieldChange::Context(Change {
+                from: "personal".parse().unwrap(),
+                to: "acme".parse().unwrap(),
+            })],
+        };
+        let log = TaskEvents {
+            id: "k3q7zm2a".parse().unwrap(),
+            events: vec![record(Actor::User, moved, 1_791_792_000)],
+            skipped: Vec::new(),
+        };
+        let rows = rows(&log, &TimeZone::UTC, None, None);
+        assert_eq!(rows[0].summary, "context: personal -> acme");
     }
 
     #[test]

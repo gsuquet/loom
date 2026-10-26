@@ -18,7 +18,7 @@ use loom::task::{
 };
 use loom_api::{
     ContextName, Date, FocusList, GoResult, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents,
-    TaskList,
+    TaskList, TaskMoveRequest,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -145,6 +145,24 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
         let client = client(layout).await?;
         let mut detail = get(&client, &args.id).await?;
         let id = detail.summary.id.to_string();
+        // Before any change: a move that will be refused must not leave the other changes half applied.
+        if let Some(context) = &plan.context
+            && *context != detail.summary.context
+        {
+            let parent_after = match &plan.parent {
+                Some(change) => change.is_some(),
+                None => detail
+                    .summary
+                    .task
+                    .as_ref()
+                    .is_some_and(|task| task.relations.parent.is_some()),
+            };
+            if parent_after {
+                return Err(miette!(
+                    "the task has a parent and does not move: add `parent=none` to the same command"
+                ));
+            }
+        }
         let mut edit = plan.edit;
         if let Some(parent) = plan.parent {
             let parent = match parent {
@@ -184,6 +202,18 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
         if let Some(pinned) = plan.pinned {
             let name = if pinned { "pin" } else { "unpin" };
             detail = action(&client, &id, name, None).await?;
+        }
+        // Last: a task with a parent cannot move, and `parent=none` is applied above.
+        if let Some(context) = plan.context
+            && context != detail.summary.context
+        {
+            detail = client
+                .post(
+                    &format!("{TASKS_PATH}/{id}/move"),
+                    Some(&TaskMoveRequest { context }),
+                )
+                .await
+                .map_err(|error| api_error(&error))?;
         }
         output(&detail, args.json, || render_change(&detail))
     })

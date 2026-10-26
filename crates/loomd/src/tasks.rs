@@ -46,7 +46,8 @@ use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskInd
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
 use loomd::backup::{
-    archived_message, catch_up_message, commit_message, hand_edit_message, removed_message,
+    archived_message, catch_up_message, commit_message, hand_edit_message, moved_message,
+    removed_message,
 };
 use loomd::events::Bus;
 use loomd::recurring::{Outcome, plan};
@@ -103,6 +104,12 @@ enum Command {
     },
     Undo {
         id: TaskId,
+        reply: Reply<TaskDetail>,
+        parent: Span,
+    },
+    Move {
+        id: TaskId,
+        to: ContextName,
         reply: Reply<TaskDetail>,
         parent: Span,
     },
@@ -532,6 +539,17 @@ impl TaskHandle {
             .await
     }
 
+    /// Moves the task with `id` to the store of context `to`.
+    pub async fn move_task(&self, id: TaskId, to: ContextName) -> Result<TaskDetail, Failure> {
+        self.send(|reply, parent| Command::Move {
+            id,
+            to,
+            reply,
+            parent,
+        })
+        .await
+    }
+
     /// Reverts the last change of the task with `id`.
     pub async fn undo(&self, id: TaskId) -> Result<TaskDetail, Failure> {
         self.send(|reply, parent| Command::Undo { id, reply, parent })
@@ -717,6 +735,14 @@ impl Worker {
                 }
                 Command::Undo { id, reply, parent } => {
                     let _ = reply.send(self.undo(&id, &parent));
+                }
+                Command::Move {
+                    id,
+                    to,
+                    reply,
+                    parent,
+                } => {
+                    let _ = reply.send(self.move_task(&id, &to, &parent));
                 }
                 Command::Events { id, reply, parent } => {
                     let _ = reply.send(self.events(&id, &parent));
@@ -909,6 +935,37 @@ impl Worker {
         if self.event_count(id) > before {
             self.changed(&task.context, id);
         }
+        self.detail(id)
+    }
+
+    fn move_task(
+        &mut self,
+        id: &TaskId,
+        to: &ContextName,
+        parent: &Span,
+    ) -> Result<TaskDetail, Failure> {
+        let _span = info_span!(parent: parent, "tasks.move", %id, %to).entered();
+        let before = self.event_count(id);
+        let from = self
+            .tasks
+            .index()
+            .get(id)
+            .map_err(|error| index_failure(&error))?
+            .map(|row| row.context);
+        let task = self
+            .tasks
+            .move_to(id, to, now(), &self.user, &mut self.random)
+            .map_err(|error| refused(&error))?;
+        info!(%id, %to, "task moved");
+        // The target store gets the task and its new events; the source store loses the task
+        // directory, which may never have been committed there: every change is taken.
+        self.commit_change(&task.context, id, before);
+        if let Some(from) = from {
+            let result = self.commits.commit_all(&from, &moved_message(id, to));
+            log_commit(&from, Some(id), result);
+            self.changed(&from, id);
+        }
+        self.changed(&task.context, id);
         self.detail(id)
     }
 

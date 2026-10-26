@@ -195,7 +195,7 @@ In `created`, a task carries the frontmatter keys as JSON, plus `pinned` and `up
 
 A status object is `{"status":"<status>"}`, with `waiting_on` and `waiting_until` when the status is `waiting`.
 
-A field change is `{"field":"<field>","from":<value>,"to":<value>}`, with `field` one of `title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`. `kind` and `status` values are objects (`{"kind":"content","format":"talk"}`, a status object). `links` and `relations` values are the whole array or table.
+A field change is `{"field":"<field>","from":<value>,"to":<value>}`, with `field` one of `title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`, `context`. A `context` change is a move to another context store: `from` and `to` are context names. A hand edit never makes one: a `context` key that is not the context of the store makes the file invalid. `kind` and `status` values are objects (`{"kind":"content","format":"talk"}`, a status object). `links` and `relations` values are the whole array or table.
 
 ```json
 {"v":1,"id":"e0000001","at":"2026-10-12T09:14:00Z","actor":{"type":"user"},"machine_id":"laptop","type":"edited","changes":[{"field":"due","from":null,"to":"2026-10-15"}]}

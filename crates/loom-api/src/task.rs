@@ -211,6 +211,14 @@ pub struct TaskActionRequest {
     pub due: Option<Option<Date>>,
 }
 
+/// Body of `POST /v1/tasks/{id}/move`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskMoveRequest {
+    /// The context to move the task to.
+    pub context: ContextName,
+}
+
 /// Reads a field that is present, `null` included, as `Some`.
 fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,

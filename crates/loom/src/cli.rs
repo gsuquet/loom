@@ -133,8 +133,10 @@ pub enum Command {
     Show(ShowArgs),
     /// Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format`
     /// (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or
-    /// `none`), `repo` (a repository, or `none`), `pinned` (`yes` or `no`) and `status` (any
-    /// status except `waiting`, which `loom snooze` sets).
+    /// `none`), `repo` (a repository, or `none`), `pinned` (`yes` or `no`), `status` (any
+    /// status except `waiting`, which `loom snooze` sets) and `context` (moves the task to
+    /// another context). A task with a parent or children does not move. Loom applies the
+    /// move last.
     Set(SetArgs),
     /// Make a task the focus of its context, set its status to `active`, and change to its
     /// repository.

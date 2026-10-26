@@ -16,7 +16,7 @@ use std::time::Duration;
 use loom_core::{
     Actor, Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
     Importance, Link, NewTask, Origin, ParentLink, RandomSource, Status, Task, TaskDocument,
-    TaskId, Timestamp, apply, archive_year, check_parent, create, undo,
+    TaskId, Timestamp, apply, archive_year, check_parent, create, move_task, undo,
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
@@ -307,6 +307,30 @@ pub enum TaskError {
     /// The command was refused.
     #[error(transparent)]
     Domain(#[from] DomainError),
+    /// A move failed before it changed anything that remains: the task is still in `from`.
+    #[error("the task `{id}` was not moved and stays in context `{from}`: {source}")]
+    MoveFailed {
+        /// The task.
+        id: TaskId,
+        /// Context of the store that still holds the task.
+        from: ContextName,
+        /// What failed.
+        source: Box<PortError>,
+    },
+    /// A move failed halfway and its rollback failed too: both stores hold a copy.
+    #[error(
+        "the task `{id}` is in the stores of `{from}` and `{to}`, a move failed halfway ({source}) and could not be undone: remove the task directory `{id}` from the store you do not want, then run `loom reindex`"
+    )]
+    MoveIncomplete {
+        /// The task.
+        id: TaskId,
+        /// Context the task was moved from.
+        from: ContextName,
+        /// Context the task was moved to.
+        to: ContextName,
+        /// What failed.
+        source: Box<PortError>,
+    },
     /// The task files cannot be read or written.
     #[error(transparent)]
     Files(#[from] PortError),
@@ -716,6 +740,119 @@ impl<P: StorePort> Tasks<P> {
         self.index
             .upsert(&IndexedTask::from_stored(&store.read(id)?))?;
         Ok(())
+    }
+
+    /// Moves the active task `id` to the store of context `to` at `now`, and indexes it there.
+    ///
+    /// The task keeps its ID, its files and its history; an `edited` event records the change
+    /// of context (after the event of a hand edit that was not recorded yet). The copy is made
+    /// in the target store first, and the task removed from the source after: if the removal
+    /// fails, the copy is removed again and the task stays where it was
+    /// ([`TaskError::MoveFailed`]). Only a crash between the two steps, or a failed rollback
+    /// ([`TaskError::MoveIncomplete`]), leaves the task in both stores, where the reconciliation
+    /// flags it as a duplicate ID: read-only until one copy is removed by hand.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::NotFound`], [`TaskError::UnknownContext`] for a context this machine holds no
+    /// store of, [`TaskError::Archived`], [`TaskError::Invalid`] for an invalid file or a
+    /// duplicate ID, the refusal of [`loom_core::move_task`], [`TaskError::MoveFailed`],
+    /// [`TaskError::MoveIncomplete`], or the read or index error.
+    pub fn move_to(
+        &mut self,
+        id: &TaskId,
+        to: &ContextName,
+        now: Timestamp,
+        origin: &Origin,
+        random: &mut impl RandomSource,
+    ) -> Result<Task, TaskError> {
+        let from_store = store_of(&self.index, &self.stores, id)?;
+        let to_store = self
+            .stores
+            .get(to)
+            .ok_or_else(|| TaskError::UnknownContext(to.clone()))?;
+        let holders = self.holders(id);
+        if holders.len() > 1 {
+            return Err(TaskError::Invalid(InvalidTask::DuplicateId {
+                id: id.clone(),
+                contexts: holders,
+            }));
+        }
+        let from = from_store.context().clone();
+        let stored = from_store.read(id).map_err(|error| match error {
+            PortError::NotFound { .. } => TaskError::NotFound(id.clone()),
+            error => TaskError::Files(error),
+        })?;
+        if let TaskLocation::Archived(year) = stored.location {
+            return Err(TaskError::Archived {
+                id: id.clone(),
+                year,
+            });
+        }
+        let indexed = self.index.get(id)?;
+        let last = indexed.as_ref().map(|row| (&row.hash, row.location));
+        let mut events = stored.events.events.clone();
+        let mut written = Vec::new();
+        if let Reconciliation::Record(changes) = decide(last, &stored) {
+            let taken: Vec<EventId> = events.iter().map(|event| event.id.clone()).collect();
+            let event_id = EventId::generate(random, &taken).map_err(DomainError::from)?;
+            let file_origin = Origin {
+                actor: Actor::File,
+                machine_id: origin.machine_id.clone(),
+            };
+            let record = EventRecord::new(event_id, Event::Edited { changes }, now, &file_origin);
+            events.push(record.clone());
+            written.push(record);
+        }
+        let current = stored
+            .task()
+            .map_err(|error| TaskError::Invalid(error.clone()))?;
+        let mut document = stored.file.document.map_err(TaskError::Invalid)?;
+        let children = self
+            .index
+            .tasks()?
+            .iter()
+            .filter(|row| match &row.state {
+                IndexedState::Valid { task, .. } => task.relations.parent.as_ref() == Some(id),
+                IndexedState::Invalid { .. } => false,
+            })
+            .count();
+        let (moved, record) = move_task(current, to, children, &events, now, origin, random)?;
+        written.push(record);
+        document.set_task(&moved).map_err(DomainError::ReadOnly)?;
+        let write = TaskWrite {
+            document: Some(document),
+            events: written,
+        };
+        to_store
+            .receive(from_store, id, &write)
+            .map_err(|source| TaskError::MoveFailed {
+                id: id.clone(),
+                from: from.clone(),
+                source: Box::new(source),
+            })?;
+        // A removal that failed after the task left `tasks/` is a removal that happened: a
+        // rollback then would delete the only copy.
+        if let Err(source) = from_store.remove(id)
+            && from_store.contains(id).unwrap_or(true)
+        {
+            return Err(match to_store.remove(id) {
+                Ok(()) => TaskError::MoveFailed {
+                    id: id.clone(),
+                    from,
+                    source: Box::new(source),
+                },
+                Err(_) => TaskError::MoveIncomplete {
+                    id: id.clone(),
+                    from,
+                    to: to.clone(),
+                    source: Box::new(source),
+                },
+            });
+        }
+        self.index
+            .upsert(&IndexedTask::from_stored(&to_store.read(id)?))?;
+        Ok(moved)
     }
 
     /// Rebuilds the task rows from the files of every store, in one transaction: rows of tasks

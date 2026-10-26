@@ -84,6 +84,28 @@ pub trait StorePort {
     ///
     /// [`PortError::NotFound`] when there is no such task, or the read error.
     fn read_events(&self, id: &TaskId) -> Result<EventLog, PortError>;
+
+    /// Copies the active task `id` of `from`, files and history, into this store, all at once:
+    /// a crash leaves no copy or the whole copy. `write` is applied to the copy: its
+    /// `task.md`, and the events appended to the copied log. The task stays in `from`; the
+    /// caller removes it there once the copy is in place.
+    ///
+    /// # Errors
+    ///
+    /// [`PortError::NotFound`] when `from` has no active task `id`,
+    /// [`PortError::AlreadyExists`] when this store holds a task with this ID,
+    /// [`PortError::WrongContext`] when the document is of another context,
+    /// [`PortError::MissingDocument`] without a document, or the write error.
+    fn receive(&self, from: &Self, id: &TaskId, write: &TaskWrite) -> Result<(), PortError>;
+
+    /// Removes the active task `id` and its files, all at once and under its lock: a crash
+    /// leaves the task or nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`PortError::NotFound`] when there is no such task, [`PortError::Archived`] when it is
+    /// archived, or the write error.
+    fn remove(&self, id: &TaskId) -> Result<(), PortError>;
 }
 
 /// What a write changes: `task.md`, and events appended to `events.jsonl`.

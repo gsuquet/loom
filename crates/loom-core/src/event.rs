@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::Date;
+use crate::context::ContextName;
 use crate::id::EventId;
 use crate::task::{Importance, Kind, Link, Relations, Status, Task};
 use crate::timestamp::Timestamp;
@@ -156,6 +157,8 @@ pub enum FieldChange {
     Links(Change<Vec<Link>>),
     /// `relations`, as a whole.
     Relations(Change<Relations>),
+    /// `context`: the task moved to the store of another context.
+    Context(Change<ContextName>),
 }
 
 impl FieldChange {
@@ -171,6 +174,7 @@ impl FieldChange {
             Self::Pinned(change) => Self::Pinned(change.inverse()),
             Self::Links(change) => Self::Links(change.inverse()),
             Self::Relations(change) => Self::Relations(change.inverse()),
+            Self::Context(change) => Self::Context(change.inverse()),
         }
     }
 
@@ -186,6 +190,7 @@ impl FieldChange {
             Self::Pinned(_) => "pinned",
             Self::Links(_) => "links",
             Self::Relations(_) => "relations",
+            Self::Context(_) => "context",
         }
     }
 }

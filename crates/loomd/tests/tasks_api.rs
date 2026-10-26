@@ -576,6 +576,112 @@ fn a_parent_is_a_task_of_the_same_context_and_never_a_descendant() {
     assert_eq!(moved.summary.task.unwrap().relations.parent, Some(other));
 }
 
+#[test]
+fn a_task_moves_to_another_context_and_keeps_its_id_and_history() {
+    let sandbox = Sandbox::new();
+    let _daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let new = |title: &str| json!({ "title": title, "kind": "chore", "context": "work", "status": "ready" });
+    let task = create(&socket, &new("Move me")).summary.id;
+    let move_to = |id: &str, context: &str| {
+        call(
+            &socket,
+            "POST",
+            &format!("/v1/tasks/{id}/move"),
+            Some(&json!({ "context": context })),
+        )
+    };
+
+    let moved: TaskDetail = ok(&move_to(task.as_str(), "home"));
+    assert_eq!(moved.summary.id, task);
+    assert_eq!(moved.summary.context.as_str(), "home");
+    assert_eq!(moved.summary.task.unwrap().context.as_str(), "home");
+    // Listed in the target context only; one task in all.
+    let in_work: TaskList = ok(&call(&socket, "GET", "/v1/tasks?context=work", None));
+    let in_home: TaskList = ok(&call(&socket, "GET", "/v1/tasks?context=home", None));
+    assert_eq!(in_work.tasks.len(), 0);
+    assert_eq!(in_home.tasks.len(), 1);
+    // The files are in the target store only.
+    let dir = |context: &str| {
+        sandbox
+            .loom_home()
+            .join("contexts")
+            .join(context)
+            .join("tasks")
+            .join(task.as_str())
+    };
+    assert!(!dir("work").exists());
+    assert!(dir("home").join("task.md").is_file());
+    // The history follows and ends with the move.
+    let events: TaskEvents = ok(&call(
+        &socket,
+        "GET",
+        &format!("/v1/tasks/{task}/events"),
+        None,
+    ));
+    assert_eq!(event_types(&events), ["created", "edited"]);
+    // The last change is the move: it is moved back, not undone.
+    let refused = call(&socket, "POST", &format!("/v1/tasks/{task}/undo"), None);
+    let error = problem(&refused, 409);
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(
+        error
+            .message
+            .contains("move the task back to context `work`")
+    );
+    let back: TaskDetail = ok(&move_to(task.as_str(), "work"));
+    assert_eq!(back.summary.context.as_str(), "work");
+}
+
+#[test]
+fn a_move_that_cannot_happen_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    sandbox.write_task("work", "pppppppp", &task_md("pppppppp", "work", "ready"));
+    sandbox.write_task(
+        "work",
+        "cccccccc",
+        &task_md_with_parent("cccccccc", "work", "chore", "pppppppp"),
+    );
+    sandbox.write_task("work", "bbbbbbbb", "not a task file\n");
+    let _daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let move_to =
+        |id: &str, body: &Value| call(&socket, "POST", &format!("/v1/tasks/{id}/move"), Some(body));
+    let home = json!({ "context": "home" });
+
+    // The same context, an unknown context, a parent, a child, a bad body.
+    for (id, body, text) in [
+        ("pppppppp", json!({ "context": "work" }), "already"),
+        ("pppppppp", json!({ "context": "nowhere" }), "no task store"),
+        ("pppppppp", home.clone(), "child task"),
+        ("cccccccc", home.clone(), "has the parent"),
+    ] {
+        let error = problem(&move_to(id, &body), 400);
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains(text), "{}", error.message);
+    }
+    for body in [json!({}), json!({ "context": "home", "x": 1 }), json!([1])] {
+        problem(&move_to("pppppppp", &body), 400);
+    }
+    // A task that does not exist, and one whose file is invalid.
+    problem(&move_to("zzzzzzzz", &home), 404);
+    let invalid = problem(&move_to("bbbbbbbb", &home), 409);
+    assert_eq!(invalid.code, ErrorCode::ReadOnly);
+
+    for id in ["pppppppp", "cccccccc", "bbbbbbbb"] {
+        let dir = |context: &str| {
+            sandbox
+                .loom_home()
+                .join("contexts")
+                .join(context)
+                .join("tasks")
+                .join(id)
+        };
+        assert!(dir("work").is_dir(), "{id}");
+        assert!(!dir("home").exists(), "{id}");
+    }
+}
+
 /// A `task.md` of task `id` in `context` whose parent is `parent`, written by hand.
 fn task_md_with_parent(id: &str, context: &str, kind: &str, parent: &str) -> String {
     format!(

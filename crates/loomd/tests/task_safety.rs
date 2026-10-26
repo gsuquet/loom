@@ -1271,3 +1271,87 @@ fn a_rejected_push_reports_the_failure_and_keeps_local_tasks_and_commits_intact(
     sandbox.assert_store_clean("work", 3);
     daemon.stop();
 }
+
+/// A move commits the task in the target store and its removal in the source store, and both
+/// working trees are clean.
+#[test]
+fn a_move_is_committed_in_both_stores() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let created = create(
+        &sandbox.socket(),
+        &json!({ "title": "Travelling", "kind": "chore", "context": "work", "status": "ready" }),
+    );
+    let id = created.summary.id;
+    sandbox.wait_for_commits("work", 1);
+    let _: TaskDetail = ok(&request(
+        &sandbox.socket(),
+        "POST",
+        &format!("/v1/tasks/{id}/move"),
+        Some(&json!({ "context": "home" })),
+    ));
+
+    let work = sandbox.wait_for_commits("work", 2);
+    assert_eq!(work[1], format!("moved({id}): moved to home"));
+    let home = sandbox.wait_for_commits("home", 1);
+    assert_eq!(home[0], format!("edited({id}): context"));
+    sandbox.assert_store_clean("work", 2);
+    sandbox.assert_store_clean("home", 1);
+    assert!(!sandbox.task_dir("work", id.as_str()).exists());
+    assert!(sandbox.task_dir("home", id.as_str()).is_dir());
+    daemon.stop();
+}
+
+/// Kill `loomd` (`SIGKILL`) after the copy of a moved task is in place and before the source is
+/// removed (`after_receive`): both stores hold the task. On restart it is flagged as a duplicate
+/// ID, read-only, and removing one copy heals it.
+#[test]
+fn loomd_killed_during_a_move_leaves_a_flagged_duplicate_that_one_removal_heals() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let created = create(
+        &sandbox.socket(),
+        &json!({ "title": "Interrupted", "kind": "chore", "context": "work", "status": "ready" }),
+    );
+    let id = created.summary.id;
+    daemon.stop();
+
+    let mut crashing = sandbox.spawn_crashable(CrashStage::AfterReceive.as_str());
+    send_expecting_crash(
+        &sandbox.socket(),
+        "POST",
+        &format!("/v1/tasks/{id}/move"),
+        &json!({ "context": "home" }),
+        &mut crashing,
+    );
+    assert!(sandbox.task_dir("work", id.as_str()).is_dir());
+    assert!(sandbox.task_dir("home", id.as_str()).is_dir());
+
+    // Restarted: flagged, not chosen between.
+    let daemon = sandbox.start();
+    let reindexed = sandbox.reindex();
+    assert_eq!(reindexed.invalid.len(), 1, "{reindexed:?}");
+    assert!(
+        reindexed.invalid[0]
+            .error
+            .contains("duplicate ID across contexts"),
+        "{}",
+        reindexed.invalid[0].error
+    );
+    let refused = request(
+        &sandbox.socket(),
+        "POST",
+        &format!("/v1/tasks/{id}/actions/done"),
+        None,
+    );
+    assert_eq!(refused.status, 409, "{}", refused.body);
+
+    // One removal, then the task is whole again, in the context left.
+    fs::remove_dir_all(sandbox.task_dir("work", id.as_str())).unwrap();
+    let reindexed = sandbox.reindex();
+    assert_eq!(reindexed.invalid, []);
+    let rows = sandbox.indexed();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].context.as_str(), "home");
+    daemon.stop();
+}

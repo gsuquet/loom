@@ -34,7 +34,8 @@ pub fn closed_at(task: &Task, events: &[EventRecord]) -> Option<Timestamp> {
                 | FieldChange::Due(_)
                 | FieldChange::Pinned(_)
                 | FieldChange::Links(_)
-                | FieldChange::Relations(_) => false,
+                | FieldChange::Relations(_)
+                | FieldChange::Context(_) => false,
             })
         }
         Event::NoteLogged { .. } => false,

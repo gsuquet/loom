@@ -74,7 +74,7 @@ One focus task per context, machine-local (two terminals in two contexts each ha
 
 ### Context
 
-Exactly one per task. Resolution order: `-c`/`--context` -> `LOOM_CONTEXT` -> current repo remote -> `match.paths` -> `default_context`. No global "current context" file: two terminals can be in two contexts. Repos are assigned to contexts by the same `match` rules ([Repositories](repos.md#contexts)).
+Exactly one per task. Resolution order: `-c`/`--context` -> `LOOM_CONTEXT` -> current repo remote -> `match.paths` -> `default_context`. No global "current context" file: two terminals can be in two contexts. Repos are assigned to contexts by the same `match` rules ([Repositories](repos.md#contexts)). A task moves to another context with `loom set <id> context=<name>` or the context picker (`c`): it keeps its ID and history ([ADR-0015](../adr/0015-move-a-task-between-contexts.md)). A task with a parent or children does not move, since a parent is in the context of its children.
 
 Git identity stays managed by the dotfiles.
 

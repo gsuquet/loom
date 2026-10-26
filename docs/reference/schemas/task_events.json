@@ -245,6 +245,24 @@
         "to"
       ]
     },
+    "Change9": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "to": {
+          "description": "Value after.",
+          "$ref": "#/$defs/ContextName"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
     "ContextName": {
       "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
       "type": "string",
@@ -527,6 +545,20 @@
             }
           },
           "$ref": "#/$defs/Change8",
+          "required": [
+            "field"
+          ]
+        },
+        {
+          "description": "`context`: the task moved to the store of another context.",
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "const": "context"
+            }
+          },
+          "$ref": "#/$defs/Change9",
           "required": [
             "field"
           ]

@@ -671,3 +671,82 @@ fn accept_on_an_illegal_transition_is_refused() {
         );
     }
 }
+
+fn move_to(
+    task: Task,
+    to: &str,
+    children: usize,
+    log: &[EventRecord],
+) -> Result<(Task, EventRecord), DomainError> {
+    super::move_task(
+        task,
+        &to.parse().unwrap(),
+        children,
+        log,
+        at(9),
+        &origin(),
+        &mut || 7,
+    )
+}
+
+#[test]
+fn a_move_changes_only_the_context_and_records_it() {
+    let (task, log) = task_with(Status::Ready);
+    let (moved, record) = move_to(task.clone(), "company-b", 0, &log).unwrap();
+    assert_eq!(moved.context.as_str(), "company-b");
+    assert_eq!(
+        (moved.id.clone(), moved.created),
+        (task.id.clone(), task.created)
+    );
+    assert_eq!(moved.updated, at(9));
+    assert_eq!(
+        record.event,
+        Event::Edited {
+            changes: vec![FieldChange::Context(Change {
+                from: "company-a".parse().unwrap(),
+                to: "company-b".parse().unwrap(),
+            })]
+        }
+    );
+    // The log replays into the moved task.
+    let mut events = log;
+    events.push(record);
+    assert_eq!(replay(&events).unwrap(), moved);
+}
+
+#[test]
+fn a_move_is_refused_in_the_same_context_for_a_read_only_task_and_with_relatives() {
+    let (task, log) = task_with(Status::Ready);
+    assert_eq!(
+        move_to(task.clone(), "company-a", 0, &log).unwrap_err(),
+        DomainError::SameContext("company-a".parse().unwrap())
+    );
+    assert_eq!(
+        move_to(task.clone(), "company-b", 2, &log).unwrap_err(),
+        DomainError::MoveWithChildren(2)
+    );
+    let parent: crate::TaskId = "h8w2nc4d".parse().unwrap();
+    let mut child = task.clone();
+    child.relations.parent = Some(parent.clone());
+    assert_eq!(
+        move_to(child, "company-b", 0, &log).unwrap_err(),
+        DomainError::MoveWithParent(parent)
+    );
+    let mut unknown = task;
+    unknown.status = Status::Unknown("blocked".to_owned());
+    assert!(matches!(
+        move_to(unknown, "company-b", 0, &log).unwrap_err(),
+        DomainError::ReadOnly(_)
+    ));
+}
+
+#[test]
+fn a_move_is_not_undone_but_moved_back() {
+    let (task, mut log) = task_with(Status::Ready);
+    let (moved, record) = move_to(task, "company-b", 0, &log).unwrap();
+    log.push(record);
+    assert_eq!(
+        undo(&moved, &log).unwrap_err(),
+        DomainError::UndoMove("company-a".parse().unwrap())
+    );
+}

@@ -35,6 +35,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `POST` | `/v1/tasks/{id}/actions/{action}` | `200` | [`TaskDetail`](#taskdetail) after the action; takes a [`TaskActionRequest`](#taskactionrequest) or no body |
 | `GET` | `/v1/tasks/{id}/events` | `200` | [`TaskEvents`](#taskevents) |
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
+| `POST` | `/v1/tasks/{id}/move` | `200` | [`TaskDetail`](#taskdetail) after the move; takes a [`TaskMoveRequest`](#taskmoverequest) |
 | `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
 | `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
 | `GET` | `/v1/tasks/health` | `200` | [`TaskStoreHealth`](#taskstorehealth) |
@@ -226,7 +227,9 @@ The priority list holds the `ready` and `active` tasks, and the `waiting` tasks 
 
 A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to any other status, and from `waiting` to `waiting` too. A task `done` or `cancelled` can move only to `ready`. The `accept` action requires an `inbox` task and moves it to `ready` while updating any specified `kind`, `importance`, or `due` fields in a single event. If `kind` changes without `importance`, `importance` resets to the default of the new kind; if `kind` is unchanged, existing importance is kept. An `accept` call on a task not in `inbox` returns `400 illegal_transition`. Any other action name is a `not_found`. An empty body (or a body of only whitespace) is no body. A field that the action does not take is an `invalid_request`.
 
-`POST /v1/tasks/{id}/undo` reverts the last change of the task. It appends an `undone` event with the inverse changes. A change is an edit, a status change, a pin, a hand edit or an undo, but not a note or the creation. The undo of an undo does the change again. `loomd` computes the inverse from the log of the task. The request has no body.
+`POST /v1/tasks/{id}/undo` reverts the last change of the task. It appends an `undone` event with the inverse changes. A change is an edit, a status change, a pin, a hand edit or an undo, but not a note or the creation. The undo of an undo does the change again. `loomd` computes the inverse from the log of the task. The request has no body. A move is not undone: if the last change is a move, the request fails with `conflict` and the message names the context to move back to.
+
+`POST /v1/tasks/{id}/move` moves the task to the store of another context. The task keeps its ID, its files and its events. `loomd` appends an `edited` event with a `context` field change, after any hand edit that was not recorded yet, and answers the task in its new context. It copies the task directory to the target store, then removes it from the source store. If the removal fails, `loomd` removes the copy and answers `500` with `internal`: the message says that the task stays in its context. If that rollback fails too, the message names the two contexts that hold the task. Then the task is a duplicate ID, read-only, until one copy is removed by hand. A move to the context the task is in is refused with `400`, so a repeated move is not idempotent: compare the context first. The move needs a store for the target context on this machine. A task with a parent, or with children (archived children too), is not moved. Archived tasks and read-only tasks are not moved. `loomd` commits the target store (`edited(<id>): context`) and the source store (`moved(<id>): moved to <context>`).
 
 `GET /v1/tasks/{id}/events` answers the event log of the task as `events.jsonl` holds it, with the lines this version cannot replay listed apart.
 
@@ -290,12 +293,14 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: `{id}` not 1 to 8 Crockford base32 characters | `400` | `invalid_request` |
 | Task: no task ID starts with `{id}` | `404` | `not_found` |
 | Task: several task IDs start with `{id}` | `400` | `ambiguous_prefix`, `details`: [`AmbiguousPrefix`](#problem-details) |
-| Task: body not a valid `NewTask`, `TaskEdit` or `TaskActionRequest` (unknown field, absent `text`, field the action does not take), empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status`, `ranked` or `archived`; `relations.parent` of a create or an edit that names no indexed task, a task of another context, the task itself or one of its descendants | `400` | `invalid_request` |
+| Task: body not a valid `NewTask`, `TaskEdit`, `TaskActionRequest` or `TaskMoveRequest` (unknown field, absent `text` or `context`, field the action does not take); move to the context the task is in, to a context without a store on this machine, of a task with a parent or with children; empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status`, `ranked` or `archived`; `relations.parent` of a create or an edit that names no indexed task, a task of another context, the task itself or one of its descendants | `400` | `invalid_request` |
 | Task: unknown `{action}` | `404` | `not_found` |
 | Task: change of an archived task (any action, edit or undo), or of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
 | Task: status change the transitions forbid | `409` | `illegal_transition`, `details`: [`IllegalTransition`](#problem-details) |
 | Task: undo of a change whose field changed since (a hand edit not recorded yet) | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) |
 | Task: undo of a task without a change | `409` | `nothing_to_undo` |
+| Task: undo of a move | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) with `field` `context` |
+| Task: a move failed and was rolled back, or failed halfway and left the task in two stores | `500` | `internal` |
 | Task: the task files cannot be read or written | `500` | `internal` |
 | The index cannot be read or written | `500` | `internal` |
 | The daemon cannot read its clock as a timestamp | `500` | `internal` |
@@ -364,6 +369,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `TaskList` | [`schemas/task_list.json`](schemas/task_list.json) (`TaskSummary` inside) |
 | `TaskReadOnly` | [`schemas/task_read_only.json`](schemas/task_read_only.json) (`details` of `read_only`, `read_only` of a task) |
 | `UndoConflict` | [`schemas/undo_conflict.json`](schemas/undo_conflict.json) (`details` of `conflict`) |
+| `TaskMoveRequest` | [`schemas/task_move_request.json`](schemas/task_move_request.json) |
 | `UpdateState` | [`schemas/update_state.json`](schemas/update_state.json) (file `state/update.json`, see [configuration](configuration.md#state)) |
 | `VersionInfo` | [`schemas/version_info.json`](schemas/version_info.json) |
 
@@ -731,6 +737,14 @@ A task (`kind` `task`):
 | `failed[].path` | string | The task directory, or `tasks/` when the store could not be listed. |
 | `failed[].error` | string | What failed. |
 
+### `TaskMoveRequest`
+
+Body of `POST /v1/tasks/{id}/move`. Unknown fields are rejected.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `context` | string | Required. The context to move the task to. |
+
 ### `ReindexResult`
 
 Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json`.
@@ -806,7 +820,7 @@ Answer of `GET /v1/tasks/{id}/events`.
 | Field | Type | Content |
 | --- | --- | --- |
 | `id` | string | Task ID. |
-| `events` | list of `EventRecord` | The events, in log order: `v`, `id`, `at`, `actor` (tagged by `type`: `user`, `file`, `daemon`, `agent` with `name`), `machine_id`, and the event tagged by `type`: `created` (`task`), `edited` (`changes`), `status_changed` (`from`, `to`), `note_logged` (`text`), `undone` (`of`, `changes`). Each change has `field`, `from` and `to`. |
+| `events` | list of `EventRecord` | The events, in log order: `v`, `id`, `at`, `actor` (tagged by `type`: `user`, `file`, `daemon`, `agent` with `name`), `machine_id`, and the event tagged by `type`: `created` (`task`), `edited` (`changes`; `field` is one of `title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`, `context`), `status_changed` (`from`, `to`), `note_logged` (`text`), `undone` (`of`, `changes`). Each change has `field`, `from` and `to`. |
 | `skipped` | list of objects | Lines not replayed (newer schema version, unknown type, invalid): `line`, `raw`, `reason`. |
 
 ### `NewTask`

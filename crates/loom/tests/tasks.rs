@@ -1033,3 +1033,61 @@ fn set_status_follows_the_transitions_of_the_other_gestures() {
     assert_eq!(shown.title, "Renamed");
     assert_eq!(shown.status, Status::Cancelled);
 }
+
+#[test]
+fn set_context_moves_the_task_after_the_other_changes() {
+    let sandbox = Sandbox::new();
+    let parent = sandbox
+        .add(&["-c", "work", "Parent"])
+        .summary
+        .id
+        .to_string();
+    let id = sandbox.add(&["-c", "work", "Child"]).summary.id.to_string();
+    gesture(&sandbox, &["set", &id, &format!("parent={parent}")]);
+
+    // A task with a parent does not move; the message says what to do.
+    // It is refused before the other changes of the command are applied.
+    let refused = sandbox.run(
+        &sandbox.home(),
+        None,
+        &["set", &id, "title=Renamed", "context=home"],
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        stderr(&refused).contains("has a parent"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(
+        gesture(&sandbox, &["show", &id])
+            .summary
+            .task
+            .unwrap()
+            .title,
+        "Child"
+    );
+    assert_eq!(
+        gesture(&sandbox, &["show", &id]).summary.context.as_str(),
+        "work"
+    );
+
+    // Detached in the same command: the parent is cleared first, then the task moves.
+    let moved = gesture(
+        &sandbox,
+        &["set", &id, "context=home", "parent=none", "importance=p0"],
+    );
+    assert_eq!(moved.summary.id.to_string(), id);
+    assert_eq!(moved.summary.context.as_str(), "home");
+    let task = moved.summary.task.unwrap();
+    assert_eq!(task.importance, loom_api::Importance::P0);
+    assert_eq!(task.relations.parent, None);
+
+    // The same context is a no-op, like the other values already set.
+    let again = gesture(&sandbox, &["set", &id, "context=home"]);
+    assert_eq!(again.summary.context.as_str(), "home");
+    // An unknown context, and a name that is not one.
+    for bad in ["context=nowhere", "context=Not A Name"] {
+        let output = sandbox.run(&sandbox.home(), None, &["set", &id, bad]);
+        assert_eq!(output.status.code(), Some(1), "{bad}");
+    }
+}
