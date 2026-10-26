@@ -114,7 +114,14 @@ Key resolution uses three layers, from innermost to outermost:
 
 The footer of a queue shows the keys of the actions for that queue. `?` shows all keys.
 
-The TUI sends one task action at a time to `loomd`. If you start a second action while the first runs, the TUI keeps it and sends it when the first ends. If a third action arrives, the footer shows `action in progress` and the TUI drops it. An action that `loomd` refuses shows its error in the footer. `u` stays ready until an undo succeeds.
+The TUI sends one task action at a time to `loomd`. These rules apply:
+
+- If you start a second action while the first runs, the TUI keeps it and sends it when the first ends.
+- If a third action arrives, the footer shows `action in progress` and the TUI drops it.
+- If the first action fails, the TUI shows the error and drops the kept action.
+- A kept `u` runs only if the task that it names is still the undo target. A second quick `u` after a successful undo shows `nothing to undo`.
+- `u` stays ready until an undo succeeds.
+- When you quit, the TUI waits up to 5 seconds for the running action to end. It does not send the kept action.
 
 ### Object page
 
