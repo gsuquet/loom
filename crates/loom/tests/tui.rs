@@ -1006,7 +1006,7 @@ async fn triage_keys_accept_undo_go_and_create_through_real_loomd() {
     let request = ActionRequest::from_effect(effect).unwrap();
     let outcome = execute_action(&client, request, None).await.unwrap();
     assert_eq!(outcome.task_id.as_ref(), Some(&id));
-    assert!(outcome.should_refresh && !outcome.undone);
+    assert!(outcome.should_refresh && outcome.undone.is_none());
     assert_eq!(task_status(&client, &id).await, Status::Ready);
     state.record_action_success(id.clone());
 
@@ -1014,9 +1014,9 @@ async fn triage_keys_accept_undo_go_and_create_through_real_loomd() {
     let effect = press(&mut state, KeyCode::Char('u'));
     let request = ActionRequest::from_effect(effect).unwrap();
     let outcome = execute_action(&client, request, None).await.unwrap();
-    assert!(outcome.undone);
+    assert_eq!(outcome.undone.as_ref(), Some(&id));
     assert_eq!(task_status(&client, &id).await, Status::Inbox);
-    state.set_last_action(None);
+    state.set_last_action(outcome.next_undo_target(state.last_action.as_ref()));
     assert_eq!(press(&mut state, KeyCode::Char('u')), AppEffect::None);
 
     // `g` activates the task and quits; a task without repository writes no directory.

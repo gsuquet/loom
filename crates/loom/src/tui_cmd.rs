@@ -13,7 +13,7 @@ use loom::client::Client;
 use loom::conventions::{Exit, use_color};
 use loom::search::search_api_path;
 use loom::task::list_api_path;
-use loom::tui::actions::{ActionRequest, ActionResponse, execute_action};
+use loom::tui::actions::{ActionRequest, ActionResponse, Submission, execute_action, submit};
 use loom::tui::color::Theme;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, SseState};
@@ -395,12 +395,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                 action_in_flight = false;
                 match action_resp {
                     Ok(outcome) => {
-                        if let Some(task_id) = outcome.task_id {
-                            state.record_action_success(task_id);
-                        }
-                        if outcome.undone {
-                            state.set_last_action(None);
-                        }
+                        let target = outcome.next_undo_target(state.last_action.as_ref());
+                        state.set_last_action(target);
                         if let Some(msg) = outcome.message {
                             state.status_message = Some(msg);
                         }
@@ -449,18 +445,16 @@ fn submit_action(
     action_tx: &mpsc::Sender<ActionRequest>,
     action_in_flight: &mut bool,
 ) {
-    if *action_in_flight {
-        if state.queued_action.is_some() {
-            state.set_status("action in progress");
-        } else {
-            state.queued_action = Some(request);
+    match submit(*action_in_flight, &mut state.queued_action, request) {
+        Submission::Send(request) => {
+            if action_tx.try_send(request).is_ok() {
+                *action_in_flight = true;
+            } else {
+                state.set_error("cannot reach the action worker");
+            }
         }
-        return;
-    }
-    if action_tx.try_send(request).is_ok() {
-        *action_in_flight = true;
-    } else {
-        state.set_error("cannot reach the action worker");
+        Submission::Kept => {}
+        Submission::Dropped => state.set_status("action in progress"),
     }
 }
 
