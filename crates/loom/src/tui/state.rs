@@ -608,7 +608,26 @@ impl AppState {
                 self.page_stack.pop();
                 self.update_preview_effect()
             }
-            _ => AppEffect::None,
+            KeyCommand::Quit
+            | KeyCommand::OpenPalette
+            | KeyCommand::OpenSearch
+            | KeyCommand::OpenHelp
+            | KeyCommand::OpenContextPicker
+            | KeyCommand::TriageAccept
+            | KeyCommand::TriageSnooze
+            | KeyCommand::TriageCancel
+            | KeyCommand::TriageDone
+            | KeyCommand::TriageGo
+            | KeyCommand::Undo
+            | KeyCommand::NewTask
+            | KeyCommand::ToggleWhy
+            | KeyCommand::ToggleGroupByParent
+            | KeyCommand::NextField
+            | KeyCommand::PrevField
+            | KeyCommand::PrevOption
+            | KeyCommand::NextOption
+            | KeyCommand::CloseModal
+            | KeyCommand::ConfirmModal => AppEffect::None,
         }
     }
 
@@ -639,7 +658,35 @@ impl AppState {
                         .map_or(0, |idx| idx + 1)
                 });
             }
-            _ => {}
+            KeyCommand::Quit
+            | KeyCommand::SelectTab(_)
+            | KeyCommand::NextTab
+            | KeyCommand::PrevTab
+            | KeyCommand::MoveDown
+            | KeyCommand::MoveUp
+            | KeyCommand::MoveFirst
+            | KeyCommand::MoveLast
+            | KeyCommand::PageDown
+            | KeyCommand::PageUp
+            | KeyCommand::OpenSelected
+            | KeyCommand::TogglePreview
+            | KeyCommand::Refresh
+            | KeyCommand::Back
+            | KeyCommand::TriageAccept
+            | KeyCommand::TriageSnooze
+            | KeyCommand::TriageCancel
+            | KeyCommand::TriageDone
+            | KeyCommand::TriageGo
+            | KeyCommand::Undo
+            | KeyCommand::NewTask
+            | KeyCommand::ToggleWhy
+            | KeyCommand::ToggleGroupByParent
+            | KeyCommand::NextField
+            | KeyCommand::PrevField
+            | KeyCommand::PrevOption
+            | KeyCommand::NextOption
+            | KeyCommand::CloseModal
+            | KeyCommand::ConfirmModal => {}
         }
         AppEffect::None
     }
@@ -805,7 +852,30 @@ impl AppState {
                 self.today_options.group_by_parent = !self.today_options.group_by_parent;
                 AppEffect::None
             }
-            _ => AppEffect::None,
+            KeyCommand::Quit
+            | KeyCommand::SelectTab(_)
+            | KeyCommand::NextTab
+            | KeyCommand::PrevTab
+            | KeyCommand::MoveDown
+            | KeyCommand::MoveUp
+            | KeyCommand::MoveFirst
+            | KeyCommand::MoveLast
+            | KeyCommand::PageDown
+            | KeyCommand::PageUp
+            | KeyCommand::OpenSelected
+            | KeyCommand::TogglePreview
+            | KeyCommand::Refresh
+            | KeyCommand::Back
+            | KeyCommand::OpenPalette
+            | KeyCommand::OpenSearch
+            | KeyCommand::OpenHelp
+            | KeyCommand::OpenContextPicker
+            | KeyCommand::NextField
+            | KeyCommand::PrevField
+            | KeyCommand::PrevOption
+            | KeyCommand::NextOption
+            | KeyCommand::CloseModal
+            | KeyCommand::ConfirmModal => AppEffect::None,
         }
     }
 
@@ -877,7 +947,33 @@ impl AppState {
                 AppEffect::None
             }
             KeyCommand::ConfirmModal => self.confirm_modal(),
-            _ => AppEffect::None,
+            KeyCommand::Quit
+            | KeyCommand::SelectTab(_)
+            | KeyCommand::NextTab
+            | KeyCommand::PrevTab
+            | KeyCommand::MoveDown
+            | KeyCommand::MoveUp
+            | KeyCommand::MoveFirst
+            | KeyCommand::MoveLast
+            | KeyCommand::PageDown
+            | KeyCommand::PageUp
+            | KeyCommand::OpenSelected
+            | KeyCommand::TogglePreview
+            | KeyCommand::Refresh
+            | KeyCommand::Back
+            | KeyCommand::OpenPalette
+            | KeyCommand::OpenSearch
+            | KeyCommand::OpenHelp
+            | KeyCommand::OpenContextPicker
+            | KeyCommand::TriageAccept
+            | KeyCommand::TriageSnooze
+            | KeyCommand::TriageCancel
+            | KeyCommand::TriageDone
+            | KeyCommand::TriageGo
+            | KeyCommand::Undo
+            | KeyCommand::NewTask
+            | KeyCommand::ToggleWhy
+            | KeyCommand::ToggleGroupByParent => AppEffect::None,
         }
     }
 
