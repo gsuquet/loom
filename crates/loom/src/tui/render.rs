@@ -32,6 +32,9 @@ const fn importance_label(importance: Importance) -> &'static str {
 /// Widest kind column of a queue; a longer kind is cut (docs/design/ui-style.md, 4.2).
 const KIND_MAX_WIDTH: usize = 10;
 
+/// Widest status column; only an unknown status can be longer than `cancelled`.
+const STATUS_MAX_WIDTH: usize = 10;
+
 /// Label of the notes section of a task.
 const NOTES_LABEL: &str = "Notes";
 
@@ -231,6 +234,7 @@ impl Columns {
                 columns.kind = columns.kind.max(task.kind.name().chars().count());
             }
         }
+        columns.status = columns.status.min(STATUS_MAX_WIDTH);
         columns.kind = columns.kind.min(KIND_MAX_WIDTH);
         columns
     }
@@ -708,7 +712,13 @@ fn text_field(
         if focused {
             spans.push(Span::styled("▏", theme.strong_style()));
         }
-        spans.push(Span::styled(placeholder.to_owned(), theme.dim_style()));
+        // Italic too, so that a placeholder differs from a value without color.
+        spans.push(Span::styled(
+            placeholder.to_owned(),
+            theme
+                .dim_style()
+                .add_modifier(ratatui::style::Modifier::ITALIC),
+        ));
     } else {
         spans.push(Span::raw(value.to_owned()));
         if focused {
@@ -1460,6 +1470,22 @@ mod tests {
         assert_eq!(lines[header].chars().count(), 40);
         assert_eq!(lines[header + 1], "No notes.");
         assert_eq!(lines.len(), header + 2);
+    }
+
+    #[test]
+    fn modals_do_not_panic_on_a_small_terminal() {
+        let mut state = inbox_state();
+        state.new_task_modal = Some(super::super::state::NewTaskModalState {
+            title_input: "x".to_owned(),
+            context: "personal".parse().unwrap(),
+            error: None,
+        });
+        for modal in [ModalKind::NewTask, ModalKind::Help, ModalKind::Palette] {
+            state.modal = Some(modal);
+            for (width, height) in [(1, 1), (8, 3), (20, 6)] {
+                draw(&state, width, height);
+            }
+        }
     }
 
     #[test]

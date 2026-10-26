@@ -25,7 +25,7 @@ The TUI has three regions:
 | Main area | Middle | The active queue (with an optional right-hand preview pane) or the active object page. |
 | Status bar | Bottom line | When an error occurs, the error banner. When a status message is present, the message. Otherwise, key shortcuts for the active view. |
 
-The error banner `[Error: <message>]` stays until the next successful reload from `loomd`. A status message goes away after 4 seconds or at the next key press. A status message for a successful action starts with `✓` (for example `✓ task created in inbox`).
+The error banner `[Error: <message>]` stays until the next successful reload from `loomd`. `loom` removes a status message after 4 seconds or at the next key press. A status message for a successful action starts with `✓` (for example `✓ task created in inbox`).
 
 ## Queues and preview pane
 
@@ -44,7 +44,7 @@ A queue view shows a list on the left and a preview pane on the right when two c
 
 When the terminal width is below `120` columns, or when you switch the preview pane off with `|`, the list uses the full width of the main area.
 
-Each row has these columns, from left to right: the selection marker `▶`, the importance, the status, the context badge, the kind, and the title. Each column has the width of its longest value in the queue. A kind longer than 10 characters is cut and ends with `…`. On the selected row, only the marker and the title are in reverse video.
+Each row has these columns, from left to right: the selection marker `▶`, the tree indent (`Today` grouped by parent), the importance, the status, the context badge, the kind, the title, and then the notes of the row (`until`, `on`, `parent`, priority reason, `ro`). Each column has the width of its longest value in the queue. A status or a kind longer than 10 characters is cut and ends with `…`. On the selected row, only the marker and the title are in reverse video.
 
 A task that is read-only shows `[ro: <reason>]` in the list row and a banner `⚠ READ-ONLY: <reason>` in the preview pane. `loom` refuses edits to read-only tasks and displays an error message.
 

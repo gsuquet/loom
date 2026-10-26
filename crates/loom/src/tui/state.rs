@@ -372,6 +372,8 @@ pub struct AppState {
     pub status_message: Option<String>,
     /// Tone of [`Self::status_message`].
     pub status_tone: ToastTone,
+    /// Bumped by each new toast, so that the same text shown twice is two toasts.
+    pub status_generation: u64,
     /// Visible error state from a failed network request or daemon error.
     pub last_error: Option<String>,
     /// SSE connection state.
@@ -426,6 +428,7 @@ impl AppState {
             local_date,
             status_message: None,
             status_tone: ToastTone::Info,
+            status_generation: 0,
             last_error: None,
             sse_state: SseState::Disconnected,
             should_quit: false,
@@ -1493,12 +1496,24 @@ impl AppState {
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
         self.status_tone = ToastTone::Info;
+        self.status_generation = self.status_generation.wrapping_add(1);
     }
 
     /// Sets a toast that reports a successful action.
     pub fn set_success(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
         self.status_tone = ToastTone::Success;
+        self.status_generation = self.status_generation.wrapping_add(1);
+    }
+
+    /// The toast that is shown now, as its generation, or `None` when there is no toast.
+    #[must_use]
+    pub const fn shown_toast(&self) -> Option<u64> {
+        if self.status_message.is_some() {
+            Some(self.status_generation)
+        } else {
+            None
+        }
     }
 
     /// Removes the toast.
@@ -2193,6 +2208,20 @@ mod tests {
         assert_eq!(state.task_depth_in_today(&state.today[2]), 0);
 
         assert_eq!(state.today_selected, 2);
+    }
+
+    #[test]
+    fn the_same_text_shown_again_is_a_new_toast() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let first = state.shown_toast();
+        assert_eq!(state.status_message.as_deref(), Some("nothing to undo"));
+        state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(state.status_message.as_deref(), Some("nothing to undo"));
+        assert!(state.shown_toast().is_some());
+        assert_ne!(state.shown_toast(), first);
+        state.clear_status();
+        assert_eq!(state.shown_toast(), None);
     }
 
     #[test]

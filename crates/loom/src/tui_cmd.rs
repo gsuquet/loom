@@ -215,8 +215,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
     let mut event_stream = crossterm::event::EventStream::new();
     let mut pending_search: Option<String> = None;
     let mut search_timer = Box::pin(tokio::time::sleep(SEARCH_DEBOUNCE));
-    // The toast that the timer expires; a new toast restarts the timer.
-    let mut shown_toast: Option<String> = None;
+    // The toast (by generation) that the timer expires; a new toast restarts the timer.
+    let mut shown_toast: Option<u64> = None;
     let mut toast_timer = Box::pin(tokio::time::sleep(TOAST_LIFETIME));
     let mut exit = Exit::Success;
 
@@ -293,7 +293,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
 
             // Expire the toast
             () = &mut toast_timer, if shown_toast.is_some() => {
-                if state.status_message == shown_toast {
+                if state.shown_toast() == shown_toast {
                     state.clear_status();
                     needs_redraw = true;
                 }
@@ -454,8 +454,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
             }
         }
 
-        if state.status_message != shown_toast {
-            shown_toast.clone_from(&state.status_message);
+        if state.shown_toast() != shown_toast {
+            shown_toast = state.shown_toast();
             if shown_toast.is_some() {
                 toast_timer
                     .as_mut()

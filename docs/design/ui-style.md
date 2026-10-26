@@ -75,7 +75,7 @@ A row of a queue, left to right:
 | Selection marker | 2 cells: `▶ ` on the selected row, else 2 spaces |
 | Tree indent (Today, grouped) | `└─ ` for a child, 2 more cells for each deeper level |
 | Importance | 2 cells (`p0` to `p3`) |
-| Status | width of the longest status in the visible rows |
+| Status | width of the longest status in the visible rows, at most 10 cells, cut with `…` like the kind |
 | Context | width of the longest `[context]` in the visible rows |
 | Kind | width of the longest kind in the visible rows, at most 10 cells; a longer kind is cut and ends with `…` |
 | Title | the rest |
@@ -89,7 +89,7 @@ Columns are separated by one cell (section 3). A column never touches the next o
 
 A bordered region with a title.
 
-- The title is ` Name ` (one space on each side) on the top border, in `text-strong` when the pane has the focus, else `text`.
+- The title is ` Name ` (one space on each side) on the top border, in `text`. While a screen has only one pane that takes keys (v0.3), focus is not marked on panes; when two panes can take keys, the focused one gets a `text-strong` title and a thick border, like a form field (section 4.6).
 - The content has the padding of section 3.
 - An empty pane says why, in `muted`: `No tasks in this queue.`, `No item selected.`
 
@@ -116,7 +116,7 @@ A dialog on top of the current view.
 - The content has the padding of section 3.
 - A form is a column of fields. Each field has a bordered box with its label as title.
   - The focused field has a thick border (`┏━┓`) and a `text-strong` label. The other fields have a plain border in `muted`. A field is never filled with reverse video.
-  - A text input shows its value followed by a cursor `▏` when it has the focus, and a `muted` placeholder when it is empty.
+  - A text input shows its value followed by a cursor `▏` when it has the focus, and a `muted` italic placeholder when it is empty (italic, so it differs from a value without color).
   - A read-only value in a form (for example the context of a new task) is shown as its badge, with no input box.
 - The last line is the hint line (section 4.7) or the modal's error in `danger`.
 
