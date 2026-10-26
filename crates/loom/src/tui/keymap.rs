@@ -520,14 +520,14 @@ pub static BINDINGS: &[KeyBinding] = &[
         keys: &[(KeyCode::Home, KeyModifiers::NONE)],
         command: KeyCommand::MoveFirst,
         label: "Home",
-        description: "Scroll to the top of the page",
+        description: "Scroll to the top; select the first task (Relations tab)",
     },
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),
         keys: &[(KeyCode::End, KeyModifiers::NONE)],
         command: KeyCommand::MoveLast,
         label: "End",
-        description: "Scroll to the oldest event (Events tab only)",
+        description: "Scroll to the oldest event (Events tab); select the last task (Relations tab)",
     },
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),

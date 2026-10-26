@@ -84,15 +84,18 @@ fn list_filters_are_checked_and_empty_values_ignored() {
             context: Some("work".parse().unwrap()),
             status: Some(StatusName::Waiting),
             ranked: true,
-            archived: false,
-            parent: None,
+            archived: ArchivedFilter::Active,
+            parent: Vec::new(),
         }
     );
     let archived = TaskListQuery {
-        archived: Some(true),
+        archived: Some(ArchivedFilter::Archived),
         ..filter(None, None, None)
     };
-    assert!(task_filter(archived).unwrap().archived);
+    assert_eq!(
+        task_filter(archived).unwrap().archived,
+        ArchivedFilter::Archived
+    );
     for bad in [
         filter(Some("Bad/ctx"), None, None),
         filter(None, Some("blocked"), None),
@@ -178,19 +181,40 @@ fn the_parent_filter_keeps_the_children_only() {
         ..TaskListQuery::default()
     };
     let filter = task_filter(query).unwrap();
-    assert_eq!(filter.parent, Some(id("k3q7zm2a")));
+    assert_eq!(filter.parent, [id("k3q7zm2a")]);
     let ids: Vec<String> = task_list(&rows, &filter, date("2026-10-14"))
         .tasks
         .into_iter()
         .map(|summary| summary.id.to_string())
         .collect();
     assert_eq!(ids, ["k3r00000"]);
+    // Several parents, separated by commas: the children of each. An unknown parent keeps nothing.
+    let both = task_filter(TaskListQuery {
+        parent: Some("k3q7zm2a,m0000000".to_owned()),
+        ..TaskListQuery::default()
+    })
+    .unwrap();
+    let ids: Vec<String> = task_list(&rows, &both, date("2026-10-14"))
+        .tasks
+        .into_iter()
+        .map(|summary| summary.id.to_string())
+        .collect();
+    assert_eq!(ids, ["k3r00000", "k3s00000"]);
+    let unknown = task_filter(TaskListQuery {
+        parent: Some("zzzzzzzz".to_owned()),
+        ..TaskListQuery::default()
+    })
+    .unwrap();
+    assert_eq!(
+        task_list(&rows, &unknown, date("2026-10-14")).tasks.len(),
+        0
+    );
     // An empty value is ignored; a value that is not a task ID is refused.
     let empty = TaskListQuery {
         parent: Some(String::new()),
         ..TaskListQuery::default()
     };
-    assert_eq!(task_filter(empty).unwrap().parent, None);
+    assert_eq!(task_filter(empty).unwrap().parent, Vec::<TaskId>::new());
     let bad = TaskListQuery {
         parent: Some("not an id".to_owned()),
         ..TaskListQuery::default()
@@ -199,6 +223,31 @@ fn the_parent_filter_keeps_the_children_only() {
         task_filter(bad).unwrap_err().code,
         ErrorCode::InvalidRequest
     );
+}
+
+#[test]
+fn archived_any_lists_both_locations() {
+    let archived = IndexedTask {
+        location: TaskLocation::Archived(2026),
+        ..row(task("k3r00000", "work", 100))
+    };
+    let rows = vec![row(task("k3q7zm2a", "work", 100)), archived];
+    let list = |archived| {
+        let filter = TaskFilter {
+            archived,
+            ..TaskFilter::default()
+        };
+        task_list(&rows, &filter, date("2026-10-14")).tasks.len()
+    };
+    assert_eq!(list(ArchivedFilter::Active), 1);
+    assert_eq!(list(ArchivedFilter::Archived), 1);
+    assert_eq!(list(ArchivedFilter::Any), 2);
+    let parse = |value: &str| {
+        serde_json::from_value::<TaskListQuery>(json!({ "archived": value })).map(|q| q.archived)
+    };
+    assert_eq!(parse("any").unwrap(), Some(ArchivedFilter::Any));
+    assert_eq!(parse("false").unwrap(), Some(ArchivedFilter::Active));
+    assert!(parse("maybe").is_err());
 }
 
 #[test]
@@ -230,7 +279,7 @@ fn archived_tasks_are_listed_apart_and_never_ranked() {
     };
     assert_eq!(ids(&ranked), ["k3q7zm2a:k3q"]);
     let only_archived = TaskFilter {
-        archived: true,
+        archived: ArchivedFilter::Archived,
         ..TaskFilter::default()
     };
     // Prefixes stay unique across every task.

@@ -72,11 +72,13 @@ The `Relations` tab lists the tasks that the task links to, in five sections:
 
 A section with no entry shows `none`. A task row shows `<prefix>  <status>  <importance>  <title>`. A relation to a task that does not exist shows `<id>  (no such task)`. The TUI cuts a long row at the edge of the pane and shows `…`. Until the relations arrive, the tab shows `Loading relations...`. When the read fails, the tab shows `Cannot load the relations: <reason>`.
 
-The TUI reads the relations each time that you select the tab, and again each time the page reloads while the tab is open. The previous relations stay on screen until the new ones arrive. The reads are `GET /v1/tasks/{id}` for the task and for each task that it names, and `GET /v1/tasks?parent={id}` (with and without `archived=true`) for the children.
+The TUI reads the relations each time that you select the tab, and again each time the page reloads while the tab is open. The previous relations stay on screen until the new ones arrive, and the selected task stays selected when it is still in the tree. The reads are `GET /v1/tasks/{id}` for the task and for each task that it names (in parallel), and one `GET /v1/tasks?parent={ids}&archived=any` for each level of the tree of children.
 
-`j` and `k` select a task row that exists. The pane scrolls to keep the selected row in view. `Enter` opens the selected task on a new page. `Esc` or `Backspace` goes back to the previous page, with its tab and selection as they were. The pages form a stack with no fixed depth. Archived and read-only tasks have a `Relations` tab like any other task.
+`j` and `k` select a task row that exists. The pane scrolls to keep the selected row in view. `Enter` opens the selected task on a new page. `Esc` or `Backspace` goes back to the previous page, with its tab and selection as they were. The TUI reads that page again (the task and the data of its tab), so it shows the current state. The pages form a stack with no fixed depth. Archived and read-only tasks have a `Relations` tab like any other task.
 
 When `loomd` sends a change event for the task, the TUI reloads the page.
+
+When a page becomes the top page again, because you pressed `Esc` or `Backspace` on the page above it, the TUI reads its task and the data of its selected tab again.
 
 ### Events tab
 
@@ -181,8 +183,8 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `PgUp` | Scroll up one page. |
 | `Enter` | On the `Relations` tab, open the selected task. On the other tabs, it does nothing. |
 | `r` | Reload the task from `loomd`. |
-| `Home` | Scroll to the top. |
-| `End` | On the `Events` tab, scroll to the last line, the oldest event. On the other tabs, it does nothing. |
+| `Home` | Scroll to the top. On the `Relations` tab, select the first task. |
+| `End` | On the `Events` tab, scroll to the last line, the oldest event. On the `Relations` tab, select the last task. On the `Overview` tab, it does nothing. |
 | `f` | On the `Events` tab, select the next event type in the log, then no type. |
 | `a` | On the `Events` tab, select the next actor in the log, then no actor. |
 | `e` | Open the task file in the editor (see [Edit the task file](#edit-the-task-file)). |

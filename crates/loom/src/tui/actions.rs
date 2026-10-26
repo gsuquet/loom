@@ -112,6 +112,7 @@ impl ActionRequest {
             AppEffect::CreateTask { title, context } => Ok(Self::Create { title, context }),
             effect @ (AppEffect::None
             | AppEffect::Refresh
+            | AppEffect::ReloadPage
             | AppEffect::FetchTask(_)
             | AppEffect::FetchEvents(_)
             | AppEffect::FetchRelations(_)

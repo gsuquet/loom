@@ -184,6 +184,15 @@ pub fn target_at(data: &RelationsData, selected: usize) -> Option<TaskId> {
         .cloned()
 }
 
+/// The place of the task `id` among the followable tasks, if it is one of them.
+#[must_use]
+pub fn index_of(data: &RelationsData, id: &TaskId) -> Option<usize> {
+    rows(data)
+        .iter()
+        .filter_map(Row::target)
+        .position(|task| task == id)
+}
+
 /// The index in [`rows`] of the `selected`th followable task.
 #[must_use]
 pub fn row_of(data: &RelationsData, selected: usize) -> Option<usize> {

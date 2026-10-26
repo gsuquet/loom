@@ -293,6 +293,13 @@ pub struct ObjectPageState {
 }
 
 impl ObjectPageState {
+    /// `End` on the Relations tab: the last followable task.
+    fn select_last_relation(&mut self) {
+        if let RelationsLoad::Loaded(data) = &self.relations.load {
+            self.relations.selected = relations::selectable(data).saturating_sub(1);
+        }
+    }
+
     /// `j` and `k` on the Relations tab: the next or the previous followable task.
     fn move_relation(&mut self, down: bool) {
         let RelationsLoad::Loaded(data) = &self.relations.load else {
@@ -323,6 +330,9 @@ pub enum AppEffect {
     None,
     /// Refresh the queues and current open/previewed object.
     Refresh,
+    /// Read again the top page: its task and the data of its tab. Sent when a page becomes the
+    /// top page again, so that it does not show what it showed before the others opened.
+    ReloadPage,
     /// Edit fields of a task (`PATCH`).
     EditTask {
         /// Task to edit.
@@ -845,21 +855,8 @@ impl AppState {
                 self.move_up();
                 self.update_preview_effect()
             }
-            KeyCommand::MoveFirst if !self.page_stack.is_empty() => {
-                self.scroll_page(|_| 0);
-                AppEffect::None
-            }
-            // Only the Events tab has a known last line: elsewhere `End` does nothing.
-            KeyCommand::MoveLast if !self.page_stack.is_empty() => {
-                if self
-                    .page_stack
-                    .last()
-                    .is_some_and(|p| p.tab == PageTab::Events)
-                {
-                    self.scroll_page(ObjectPageState::scroll_max);
-                }
-                AppEffect::None
-            }
+            KeyCommand::MoveFirst if !self.page_stack.is_empty() => self.page_to_edge(false),
+            KeyCommand::MoveLast if !self.page_stack.is_empty() => self.page_to_edge(true),
             KeyCommand::MoveFirst => {
                 self.set_selected(0);
                 self.update_preview_effect()
@@ -891,10 +888,7 @@ impl AppState {
                 self.update_preview_effect()
             }
             KeyCommand::Refresh => AppEffect::Refresh,
-            KeyCommand::Back => {
-                self.page_stack.pop();
-                self.update_preview_effect()
-            }
+            KeyCommand::Back => self.go_back(),
             KeyCommand::NextPageTab => self.switch_page_tab(PageTab::next),
             KeyCommand::PrevPageTab => self.switch_page_tab(PageTab::prev),
             KeyCommand::Quit
@@ -1083,6 +1077,35 @@ impl AppState {
         }
     }
 
+    /// `Esc`: closes the top page. The page below it is read again.
+    fn go_back(&mut self) -> AppEffect {
+        self.page_stack.pop();
+        if self.page_stack.is_empty() {
+            self.update_preview_effect()
+        } else {
+            AppEffect::ReloadPage
+        }
+    }
+
+    /// `Home` and `End` on an object page: the top (`last` false) or the end of the tab. The
+    /// Overview has no known end.
+    fn page_to_edge(&mut self, last: bool) -> AppEffect {
+        let Some(page) = self.page_stack.last_mut() else {
+            return AppEffect::None;
+        };
+        if !last {
+            page.scroll = 0;
+            page.relations.selected = 0;
+            return AppEffect::None;
+        }
+        match page.tab {
+            PageTab::Events => page.scroll = page.scroll_max(),
+            PageTab::Relations => page.select_last_relation(),
+            PageTab::Overview => {}
+        }
+        AppEffect::None
+    }
+
     /// `[` and `]`: moves to another tab. The Events tab asks for the log.
     fn switch_page_tab(&mut self, step: fn(PageTab) -> PageTab) -> AppEffect {
         let Some(page) = self.page_stack.last_mut() else {
@@ -1154,9 +1177,19 @@ impl AppState {
         };
         page.relations.load = match result {
             Ok(data) => {
-                // The same row stays selected as far as the new tree still has it.
+                // The same task stays selected when the new tree still has it; otherwise the
+                // index stays, within the new tree.
+                let kept = match &page.relations.load {
+                    RelationsLoad::Loaded(old) => {
+                        relations::target_at(old, page.relations.selected)
+                            .and_then(|task| relations::index_of(&data, &task))
+                    }
+                    RelationsLoad::NotLoaded
+                    | RelationsLoad::Loading
+                    | RelationsLoad::Failed(_) => None,
+                };
                 let last = relations::selectable(&data).saturating_sub(1);
-                page.relations.selected = page.relations.selected.min(last);
+                page.relations.selected = kept.unwrap_or_else(|| page.relations.selected.min(last));
                 RelationsLoad::Loaded(Box::new(data))
             }
             Err(error) => RelationsLoad::Failed(error),
@@ -1821,12 +1854,6 @@ impl AppState {
             QueueTab::Today => self.today_selected = idx,
             QueueTab::Inbox => self.inbox_selected = idx,
             QueueTab::Waiting => self.waiting_selected = idx,
-        }
-    }
-
-    fn scroll_page(&mut self, to: impl Fn(&ObjectPageState) -> usize) {
-        if let Some(page) = self.page_stack.last_mut() {
-            page.scroll = to(page);
         }
     }
 
@@ -2757,6 +2784,59 @@ mod tests {
             press(&mut state, KeyCode::Backspace);
             assert_eq!(state.page_stack.len(), expected);
         }
+    }
+
+    #[test]
+    fn a_reload_keeps_the_same_task_selected_when_a_task_is_added_above_it() {
+        use crate::tui::relations::ChildNode;
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack[0].tab = PageTab::Relations;
+        state.apply_relations(&id, Ok(sample_relations()));
+        // Select the child (the second followable task).
+        press(&mut state, KeyCode::Char('j'));
+        let mut changed = sample_relations();
+        changed.children.insert(
+            0,
+            ChildNode {
+                task: make_task("bbbbbbbb", Status::Ready, None),
+                children: Vec::new(),
+            },
+        );
+        state.apply_relations(&id, Ok(changed));
+        let RelationsLoad::Loaded(data) = &state.page_stack[0].relations.load else {
+            panic!("not loaded");
+        };
+        let selected = relations::target_at(data, state.page_stack[0].relations.selected);
+        assert_eq!(selected, Some("cccccccc".parse().unwrap()));
+        // A task that left the tree: the index stays, within the new tree.
+        let mut gone = sample_relations();
+        gone.children.clear();
+        state.apply_relations(&id, Ok(gone));
+        assert_eq!(state.page_stack[0].relations.selected, 0);
+    }
+
+    #[test]
+    fn home_and_end_select_the_first_and_last_task_on_the_relations_tab() {
+        let mut state = state_with_task_page();
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack[0].tab = PageTab::Relations;
+        state.apply_relations(&id, Ok(sample_relations()));
+        press(&mut state, KeyCode::End);
+        assert_eq!(state.page_stack[0].relations.selected, 1);
+        press(&mut state, KeyCode::Home);
+        assert_eq!(state.page_stack[0].relations.selected, 0);
+    }
+
+    #[test]
+    fn going_back_reloads_the_page_that_becomes_the_top_page() {
+        let mut state = state_with_task_page();
+        let second = state.page_stack[0].clone();
+        state.page_stack.push(second);
+        assert_eq!(press(&mut state, KeyCode::Esc), AppEffect::ReloadPage);
+        // Back to the queue: no page to reload.
+        assert_ne!(press(&mut state, KeyCode::Esc), AppEffect::ReloadPage);
+        assert_eq!(state.page_stack.len(), 0);
     }
 
     #[test]
