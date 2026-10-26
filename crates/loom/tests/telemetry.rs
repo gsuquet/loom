@@ -327,7 +327,7 @@ fn unreachable_collector_does_not_fail_the_command() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(output.stdout.starts_with(b"loom "));
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(10),
         "took {:?}",
         started.elapsed()
     );

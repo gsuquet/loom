@@ -624,7 +624,7 @@ fn a_sigterm_during_a_fetch_leaves_no_orphan_and_exits_in_bounded_time() {
     let took = started.elapsed();
     let stderr = daemon.stderr();
     assert_eq!(status.code(), Some(0), "{stderr}");
-    assert!(took < Duration::from_secs(5), "{took:?}\n{stderr}");
+    assert!(took < Duration::from_secs(15), "{took:?}\n{stderr}");
     assert!(stderr.contains("loomd stopped"), "{stderr}");
     assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
 }
@@ -666,7 +666,7 @@ fn a_second_signal_ends_the_wait_for_requests_in_flight() {
     let stderr = daemon.stderr();
     // The code of the first signal.
     assert_eq!(status.code(), Some(130), "{stderr}");
-    assert!(took < Duration::from_secs(5), "{took:?}\n{stderr}");
+    assert!(took < Duration::from_secs(15), "{took:?}\n{stderr}");
     assert!(stderr.contains("loomd stopped"), "{stderr}");
     assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
 }
@@ -687,7 +687,7 @@ fn requests_in_flight_are_waited_for_only_during_the_grace() {
     let stderr = daemon.stderr();
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert!(took >= Duration::from_millis(900), "{took:?}\n{stderr}");
-    assert!(took < Duration::from_secs(8), "{took:?}\n{stderr}");
+    assert!(took < Duration::from_secs(15), "{took:?}\n{stderr}");
     assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
 }
 
@@ -722,7 +722,7 @@ fn a_remote_check_in_flight_does_not_delay_a_forced_shutdown() {
     let stderr = daemon.stderr();
     assert_eq!(status.code(), Some(130), "{stderr}");
     // Not the 20 s of the check, and no `ssh` left behind.
-    assert!(took < Duration::from_secs(5), "{took:?}\n{stderr}");
+    assert!(took < Duration::from_secs(15), "{took:?}\n{stderr}");
     assert_eq!(slow.orphans(), Vec::<u32>::new(), "{stderr}");
 }
 

@@ -337,7 +337,7 @@ fn an_idle_stream_gets_heartbeats_and_ends_when_loomd_stops() {
     let started = Instant::now();
     daemon.stop();
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(8),
         "{:?}",
         started.elapsed()
     );

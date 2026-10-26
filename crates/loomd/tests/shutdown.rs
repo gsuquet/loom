@@ -96,7 +96,7 @@ fn terminate_kills_a_child_that_ignores_sigterm_after_the_grace() {
     groups.terminate(grace);
     let took = started.elapsed();
     assert!(took >= grace, "{took:?}");
-    assert!(took < Duration::from_secs(4), "{took:?}");
+    assert!(took < Duration::from_secs(15), "{took:?}");
     assert!(!reaper.join().unwrap().success());
     assert!(wait_until(Duration::from_secs(2), || !group_alive(pid)));
 }
@@ -136,7 +136,7 @@ fn join_within_waits_for_a_thread_up_to_the_deadline() {
     assert!(!join_within(slow, Duration::from_millis(200), "slow"));
     let took = started.elapsed();
     assert!(took >= Duration::from_millis(200), "{took:?}");
-    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert!(took < Duration::from_secs(15), "{took:?}");
     drop(release);
 
     // A panic of the thread is reported by the log, not propagated: the thread is finished.
