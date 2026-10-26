@@ -22,7 +22,7 @@ globset = { version = "0.4", default-features = false }
 # `status` (index, dirwalk, attributes and excludes come with it) is the only feature needed:
 # HEAD, refs, revision walks and the in-progress operation are in the core. No `parallel`: one
 # repository is read per state thread, and the walks stay interruptible without it.
-gix = { version = "0.89", default-features = false, features = ["sha1", "status"] }
+gix = { version = "0.90", default-features = false, features = ["sha1", "status"] }
 # Already compiled through axum and hyper: `Stream` combinators for the SSE streams.
 futures-util = { version = "0.3.34", default-features = false }
 gix-config = { version = "0.62", default-features = false, features = ["sha1"] }
