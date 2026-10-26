@@ -56,7 +56,8 @@ pub struct InvalidTaskFile {
     /// ID, the name of its directory.
     pub id: TaskId,
     /// The directory of the task: `<store>/tasks/<id>`, or `<store>/archive/<yyyy>/<id>` for an
-    /// archived task.
+    /// archived task. Empty when an older loomd answered.
+    #[serde(default)]
     pub path: PathBuf,
     /// Why, with the line when known.
     pub error: String,

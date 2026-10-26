@@ -317,6 +317,24 @@ pub fn task_store_checks(health: &TaskStoreHealth, home: Option<&Path>) -> Vec<D
         ));
     }
     for file in &health.invalid {
+        if file.path.as_os_str().is_empty() {
+            // An older loomd does not send the place of the file.
+            checks.push(with_fix(
+                check(
+                    "tasks",
+                    CheckStatus::Warn,
+                    format!(
+                        "unknown location, task {} of {}: {}",
+                        file.id, file.context, file.error
+                    ),
+                ),
+                format!(
+                    "edit the task.md of task {} in the store of {} to fix the file; loomd reads it again on its own",
+                    file.id, file.context
+                ),
+            ));
+            continue;
+        }
         let path = tilde(&file.path, home);
         checks.push(with_fix(
             check(
@@ -1182,6 +1200,22 @@ mod tests {
             )
         );
         assert!(checks[2].detail.starts_with("~/.loom/contexts/work/tasks"));
+    }
+
+    #[test]
+    fn a_payload_without_the_path_of_a_file_shows_an_unknown_location() {
+        // What a loomd older than the `path` field sends.
+        let health: TaskStoreHealth = serde_json::from_str(
+            r#"{"watching":true,"invalid":[{"context":"work","id":"k3q7zm2a","error":"line 3: bad"}],"failed":[]}"#,
+        )
+        .unwrap();
+        let checks = task_store_checks(&health, None);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, CheckStatus::Warn);
+        assert_eq!(
+            checks[0].detail,
+            "unknown location, task k3q7zm2a of work: line 3: bad"
+        );
     }
 
     #[test]

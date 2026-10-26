@@ -73,14 +73,14 @@
           "$ref": "#/$defs/TaskId"
         },
         "path": {
-          "description": "The directory of the task: `<store>/tasks/<id>`, or `<store>/archive/<yyyy>/<id>` for an\narchived task.",
-          "type": "string"
+          "description": "The directory of the task: `<store>/tasks/<id>`, or `<store>/archive/<yyyy>/<id>` for an\narchived task. Empty when an older loomd answered.",
+          "type": "string",
+          "default": ""
         }
       },
       "required": [
         "context",
         "id",
-        "path",
         "error"
       ]
     },
