@@ -1003,6 +1003,24 @@ pub fn editor(visual: Option<&str>, editor: Option<&str>) -> String {
         .to_owned()
 }
 
+/// Writes `repo_path` and a newline to `cd_file`, for the `loom` shell function to change directory.
+/// Does nothing when `cd_file` is not set or empty, or when there is no path.
+///
+/// # Errors
+///
+/// Returns the error of the write.
+pub fn write_cd_file(
+    cd_file: Option<&std::path::Path>,
+    repo_path: Option<&std::path::Path>,
+) -> std::io::Result<()> {
+    match (cd_file, repo_path) {
+        (Some(cd_file), Some(repo_path)) if !cd_file.as_os_str().is_empty() => {
+            std::fs::write(cd_file, format!("{}\n", repo_path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1014,6 +1032,23 @@ mod tests {
 
     fn date(text: &str) -> Date {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn the_repository_path_is_written_for_the_shell_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let cd_file = dir.path().join("cd");
+        let repo = std::path::Path::new("/work/repo");
+
+        write_cd_file(Some(&cd_file), Some(repo)).unwrap();
+        assert_eq!(std::fs::read_to_string(&cd_file).unwrap(), "/work/repo\n");
+
+        let untouched = dir.path().join("untouched");
+        write_cd_file(Some(&untouched), None).unwrap();
+        write_cd_file(None, Some(repo)).unwrap();
+        write_cd_file(Some(std::path::Path::new("")), Some(repo)).unwrap();
+        assert!(!untouched.exists());
+        assert!(write_cd_file(Some(&dir.path().join("missing/cd")), Some(repo)).is_err());
     }
 
     #[test]
