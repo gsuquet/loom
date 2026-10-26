@@ -9,7 +9,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use super::keymap::{Layer, ModalKind, QueueTab, ViewKind, bindings_for_layer};
-use super::state::{AppState, ObjectPageContent, ObjectPageState, ObjectTarget, PREVIEW_MIN_WIDTH};
+use super::markdown;
+use super::state::{
+    AppState, ObjectPageContent, ObjectPageState, ObjectTarget, PREVIEW_MIN_WIDTH, PageTab,
+};
 use crate::task::{read_only_text, reason_text};
 
 const fn importance_label(importance: Importance) -> &'static str {
@@ -256,7 +259,9 @@ fn render_queue_item<'a>(summary: &'a TaskSummary, is_sel: bool, state: &AppStat
 fn render_preview_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let block = Block::default().borders(Borders::ALL).title(" Preview ");
     if let Some(detail) = &state.preview_detail {
-        render_task_detail(frame, area, block, detail, 0);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        render_task_overview(frame, inner, detail, 0);
     } else if let Some(summary) = state.selected_task() {
         let loading = Paragraph::new(format!(" Loading {}...", summary.id)).block(block);
         frame.render_widget(loading, area);
@@ -279,7 +284,7 @@ fn render_object_page(
 
     match &page.content {
         ObjectPageContent::Task(detail) => {
-            render_task_detail(frame, area, block, detail, page.scroll);
+            render_task_page(frame, area, block, detail, page);
         }
         ObjectPageContent::Loading(target) => match target {
             ObjectTarget::Task(id) => {
@@ -290,13 +295,54 @@ fn render_object_page(
     }
 }
 
-fn render_task_detail(
+/// The tab bar and the selected tab of a task page.
+fn render_task_page(
     frame: &mut Frame<'_>,
     area: Rect,
     block: Block<'_>,
     detail: &TaskDetail,
-    scroll: usize,
+    page: &ObjectPageState,
 ) {
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 2 {
+        return;
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+    frame.render_widget(Paragraph::new(page_tab_bar(page.tab)), chunks[0]);
+    match page.tab {
+        PageTab::Overview => render_task_overview(frame, chunks[1], detail, page.scroll),
+        PageTab::Relations | PageTab::Events => {
+            let text = Paragraph::new(format!(
+                " The {} tab has no content in this version.",
+                page.tab.name()
+            ));
+            frame.render_widget(text, chunks[1]);
+        }
+    }
+}
+
+fn page_tab_bar(selected: PageTab) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (idx, tab) in PageTab::ALL.into_iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::raw(" │ "));
+        }
+        let style = if tab == selected {
+            ratatui::style::Style::default()
+                .add_modifier(ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD)
+        } else {
+            ratatui::style::Style::default()
+        };
+        spans.push(Span::styled(format!(" {} ", tab.name()), style));
+    }
+    Line::from(spans)
+}
+
+fn render_task_overview(frame: &mut Frame<'_>, area: Rect, detail: &TaskDetail, scroll: usize) {
     let mut lines = Vec::new();
 
     if let Some(ro) = &detail.summary.read_only {
@@ -396,15 +442,11 @@ fn render_task_detail(
             "── Notes ──────────────────────────────────────────",
             ratatui::style::Style::default(),
         ));
-        for note in detail.body.lines() {
-            lines.push(Line::raw(note.to_owned()));
-        }
+        lines.extend(markdown::render(&detail.body));
     }
 
     let skipped = lines.into_iter().skip(scroll).collect::<Vec<_>>();
-    let paragraph = Paragraph::new(skipped)
-        .block(block)
-        .wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(skipped).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
@@ -454,6 +496,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     } else {
         vec![
             ("Esc", "back"),
+            ("[/]", "tab"),
             ("j/k", "scroll"),
             ("r", "refresh"),
             (":", "palette"),
@@ -954,5 +997,96 @@ mod tests {
             " [Error: cannot connect to loomd]                                               ",
         ];
         assert_eq!(buffer_text_lines(&terminal), expected);
+    }
+
+    fn detail(body: &str) -> TaskDetail {
+        let created = loom_core::Timestamp::EPOCH;
+        let id: loom_core::TaskId = "k3q7zm2a".parse().unwrap();
+        let context: ContextName = "work".parse().unwrap();
+        TaskDetail {
+            summary: TaskSummary {
+                id: id.clone(),
+                prefix: "k3q7".to_owned(),
+                context: context.clone(),
+                task: Some(loom_core::Task {
+                    id,
+                    title: "Login timeout".to_owned(),
+                    kind: loom_core::Kind::Bug,
+                    context,
+                    status: Status::Ready,
+                    importance: Importance::P1,
+                    due: None,
+                    pinned: false,
+                    links: Vec::new(),
+                    relations: loom_core::Relations::default(),
+                    created,
+                    updated: created,
+                }),
+                read_only: None,
+                rank: None,
+            },
+            body: body.to_owned(),
+            actions: Vec::new(),
+        }
+    }
+
+    fn task_page_lines(width: u16, tab: PageTab) -> Vec<String> {
+        let mut state = AppState::new(
+            test_theme(),
+            None,
+            Vec::new(),
+            jiff::civil::date(2026, 10, 22),
+        );
+        let id: loom_core::TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack.push(ObjectPageState {
+            target: ObjectTarget::Task(id),
+            content: ObjectPageContent::Task(Box::new(detail(
+                "## Symptoms\n- **Mobile** users time out\n- retry `3` times",
+            ))),
+            scroll: 0,
+            tab,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(width, 16)).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        buffer_text_lines(&terminal)
+    }
+
+    #[test]
+    fn task_page_shows_tabs_fields_and_rendered_body_at_80_columns() {
+        let lines = task_page_lines(80, PageTab::Overview);
+        let text = lines.join("\n");
+        assert!(lines[1].starts_with("┌ Task k3q7zm2a"), "{text}");
+        assert!(
+            lines[2].contains(" Overview  │  Relations  │  Events "),
+            "{text}"
+        );
+        assert!(text.contains("Title: Login timeout"), "{text}");
+        assert!(text.contains("Symptoms"), "{text}");
+        assert!(text.contains("• Mobile users time out"), "{text}");
+        assert!(text.contains("• retry 3 times"), "{text}");
+        assert!(!text.contains("**"), "{text}");
+        assert!(lines[15].contains("[/]"), "{text}");
+    }
+
+    #[test]
+    fn task_page_keeps_the_same_layout_at_160_columns() {
+        let lines = task_page_lines(160, PageTab::Overview);
+        let text = lines.join("\n");
+        assert_eq!(lines[1].chars().count(), 160);
+        assert!(
+            lines[2].contains(" Overview  │  Relations  │  Events "),
+            "{text}"
+        );
+        assert!(text.contains("• Mobile users time out"), "{text}");
+    }
+
+    #[test]
+    fn other_tabs_say_that_they_have_no_content() {
+        let text = task_page_lines(80, PageTab::Relations).join("\n");
+        assert!(
+            text.contains("The Relations tab has no content in this version."),
+            "{text}"
+        );
+        assert!(!text.contains("Title: Login timeout"), "{text}");
     }
 }

@@ -173,6 +173,53 @@ impl SseState {
     }
 }
 
+/// Tabs of a task page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PageTab {
+    /// Fields and body.
+    #[default]
+    Overview,
+    /// Linked tasks.
+    Relations,
+    /// Event timeline.
+    Events,
+}
+
+impl PageTab {
+    /// All tabs, in display order.
+    pub const ALL: [Self; 3] = [Self::Overview, Self::Relations, Self::Events];
+
+    /// Name shown in the tab bar.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Relations => "Relations",
+            Self::Events => "Events",
+        }
+    }
+
+    /// Next tab, wrapping around.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Overview => Self::Relations,
+            Self::Relations => Self::Events,
+            Self::Events => Self::Overview,
+        }
+    }
+
+    /// Previous tab, wrapping around.
+    #[must_use]
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Overview => Self::Events,
+            Self::Relations => Self::Overview,
+            Self::Events => Self::Relations,
+        }
+    }
+}
+
 /// Identifier of an object that can be opened as a full-screen object page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObjectTarget {
@@ -198,6 +245,8 @@ pub struct ObjectPageState {
     pub content: ObjectPageContent,
     /// Vertical scroll offset.
     pub scroll: usize,
+    /// Selected tab of the page.
+    pub tab: PageTab,
 }
 
 /// Pure application effects requested by state transitions.
@@ -642,7 +691,9 @@ impl AppState {
             | KeyCommand::OpenSelected
             | KeyCommand::TogglePreview
             | KeyCommand::Refresh
-            | KeyCommand::Back => self.apply_navigation_command(cmd),
+            | KeyCommand::Back
+            | KeyCommand::NextPageTab
+            | KeyCommand::PrevPageTab => self.apply_navigation_command(cmd),
 
             KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
@@ -724,6 +775,20 @@ impl AppState {
                 self.page_stack.pop();
                 self.update_preview_effect()
             }
+            KeyCommand::NextPageTab => {
+                if let Some(page) = self.page_stack.last_mut() {
+                    page.tab = page.tab.next();
+                    page.scroll = 0;
+                }
+                AppEffect::None
+            }
+            KeyCommand::PrevPageTab => {
+                if let Some(page) = self.page_stack.last_mut() {
+                    page.tab = page.tab.prev();
+                    page.scroll = 0;
+                }
+                AppEffect::None
+            }
             KeyCommand::Quit
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
@@ -788,6 +853,8 @@ impl AppState {
             | KeyCommand::TogglePreview
             | KeyCommand::Refresh
             | KeyCommand::Back
+            | KeyCommand::NextPageTab
+            | KeyCommand::PrevPageTab
             | KeyCommand::TriageAccept
             | KeyCommand::TriageSnooze
             | KeyCommand::TriageCancel
@@ -987,6 +1054,8 @@ impl AppState {
             | KeyCommand::TogglePreview
             | KeyCommand::Refresh
             | KeyCommand::Back
+            | KeyCommand::NextPageTab
+            | KeyCommand::PrevPageTab
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1082,6 +1151,8 @@ impl AppState {
             | KeyCommand::TogglePreview
             | KeyCommand::Refresh
             | KeyCommand::Back
+            | KeyCommand::NextPageTab
+            | KeyCommand::PrevPageTab
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1246,6 +1317,7 @@ impl AppState {
                     target: ObjectTarget::Task(task.id.clone()),
                     content: ObjectPageContent::Loading(ObjectTarget::Task(task.id.clone())),
                     scroll: 0,
+                    tab: PageTab::default(),
                 });
                 AppEffect::FetchTask(task.id.clone())
             }
@@ -1261,6 +1333,7 @@ impl AppState {
                 target: ObjectTarget::Task(id.clone()),
                 content: ObjectPageContent::Loading(ObjectTarget::Task(id.clone())),
                 scroll: 0,
+                tab: PageTab::default(),
             });
             AppEffect::FetchTask(id)
         } else {
@@ -1481,6 +1554,55 @@ mod tests {
         }
     }
 
+    fn state_with_task_page() -> AppState {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack.push(ObjectPageState {
+            target: ObjectTarget::Task(id.clone()),
+            content: ObjectPageContent::Loading(ObjectTarget::Task(id)),
+            scroll: 0,
+            tab: PageTab::default(),
+        });
+        state
+    }
+
+    #[test]
+    fn page_tabs_cycle_both_ways_and_reset_the_scroll() {
+        let mut state = state_with_task_page();
+        state.page_stack[0].scroll = 5;
+        let next = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE);
+        let prev = KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE);
+
+        state.handle_key(next);
+        assert_eq!(state.page_stack[0].tab, PageTab::Relations);
+        assert_eq!(state.page_stack[0].scroll, 0);
+        state.handle_key(next);
+        state.handle_key(next);
+        assert_eq!(state.page_stack[0].tab, PageTab::Overview);
+        state.handle_key(prev);
+        assert_eq!(state.page_stack[0].tab, PageTab::Events);
+    }
+
+    #[test]
+    fn esc_and_backspace_go_back_one_page_at_a_time() {
+        let mut state = state_with_task_page();
+        let second = state.page_stack[0].clone();
+        state.page_stack.push(second);
+
+        state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(state.page_stack.len(), 1);
+        state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(state.page_stack.len(), 0);
+    }
+
+    #[test]
+    fn a_new_page_opens_on_the_overview_tab() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.today = vec![make_task("k3q7zm2a", Status::Ready, None)];
+        state.open_selected();
+        assert_eq!(state.page_stack[0].tab, PageTab::Overview);
+    }
+
     #[test]
     fn initial_state_has_three_tabs_and_empty_queues() {
         let state = AppState::new(test_theme(), None, Vec::new(), test_date());
@@ -1532,6 +1654,7 @@ mod tests {
             target: ObjectTarget::Task(task_id.clone()),
             content: ObjectPageContent::Loading(ObjectTarget::Task(task_id.clone())),
             scroll: 0,
+            tab: PageTab::default(),
         });
 
         let event = ChangeEvent::TaskChanged {
