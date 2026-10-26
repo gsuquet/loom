@@ -415,20 +415,21 @@ async fn tui_driven_against_real_loomd_and_renders_snapshot() {
     terminal.draw(|f| render(f, &state)).unwrap();
     let lines = buffer_text_lines(&terminal);
     assert!(lines[1].contains("Task"), "line 1: {}", lines[1]);
+    assert!(lines[2].contains("Overview"), "line 2: {}", lines[2]);
     assert!(
-        lines[2].contains(&second_task.summary.id.to_string()),
-        "line 2: {}",
-        lines[2]
+        lines[3].contains(&second_task.summary.id.to_string()),
+        "line 3: {}",
+        lines[3]
     );
     assert!(
-        lines[2].contains(&format!("[{}]", second_task.summary.context)),
-        "line 2: {}",
-        lines[2]
+        lines[3].contains(&format!("[{}]", second_task.summary.context)),
+        "line 3: {}",
+        lines[3]
     );
     assert!(
-        lines[5].contains(&second_task.summary.task.as_ref().unwrap().title),
-        "line 5: {}",
-        lines[5]
+        lines[6].contains(&second_task.summary.task.as_ref().unwrap().title),
+        "line 6: {}",
+        lines[6]
     );
 
     // 8. Press Esc to go back to Inbox queue view
