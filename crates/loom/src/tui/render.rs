@@ -1299,6 +1299,7 @@ fn render_pick_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState) {
                 PickOption::Status(status) => {
                     Span::styled(status.to_string(), theme.status_style(Some(*status)))
                 }
+                PickOption::Context(context) => Span::raw(context.to_string()),
             };
             let is_sel = idx == m.selected;
             let marker = if is_sel {

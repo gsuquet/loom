@@ -6,7 +6,7 @@ use std::path::Path;
 
 use loom_api::{
     ContextName, Date, GoResult, Importance, Kind, StatusName, TaskActionRequest, TaskDetail,
-    TaskEdit, TaskId,
+    TaskEdit, TaskId, TaskMoveRequest,
 };
 
 use crate::client::Client;
@@ -44,6 +44,13 @@ pub enum ActionRequest {
         id: TaskId,
         /// The status.
         status: StatusName,
+    },
+    /// `POST /v1/tasks/{id}/move`.
+    Move {
+        /// Task to move.
+        id: TaskId,
+        /// The context to move it to.
+        context: ContextName,
     },
     /// `PATCH /v1/tasks/{id}`.
     Edit {
@@ -105,6 +112,7 @@ impl ActionRequest {
                 due,
             }),
             AppEffect::SetTaskStatus { id, status } => Ok(Self::SetStatus { id, status }),
+            AppEffect::MoveTask { id, context } => Ok(Self::Move { id, context }),
             AppEffect::CancelTask(id) => Ok(Self::Cancel(id)),
             AppEffect::DoneTask(id) => Ok(Self::Done(id)),
             AppEffect::GoTask(id) => Ok(Self::Go(id)),
@@ -127,7 +135,8 @@ impl ActionRequest {
 pub struct ActionOutcome {
     /// Task that `u` undoes next, when the action changed one.
     pub task_id: Option<TaskId>,
-    /// Task whose last change the action undid.
+    /// Task whose last change the action undid, or that the action made impossible to undo (a
+    /// move).
     pub undone: Option<TaskId>,
     /// Reload the queues.
     pub should_refresh: bool,
@@ -215,6 +224,7 @@ pub fn take_next(
         | ActionRequest::Snooze { .. }
         | ActionRequest::Edit { .. }
         | ActionRequest::SetStatus { .. }
+        | ActionRequest::Move { .. }
         | ActionRequest::Cancel(_)
         | ActionRequest::Done(_)
         | ActionRequest::Go(_)
@@ -282,6 +292,7 @@ pub async fn execute_action(
             let message = format!("task {id} moved to {status}");
             move_task(client, id, &status.to_string(), message).await
         }
+        ActionRequest::Move { id, context } => move_to_context(client, id, context).await,
         ActionRequest::Cancel(id) => {
             let message = format!("task {id} cancelled");
             move_task(client, id, "cancelled", message).await
@@ -365,6 +376,25 @@ async fn edit_task(
         .map_err(|error| error.to_string())?;
     let message = format!("task {id} updated");
     Ok(changed(id, message))
+}
+
+async fn move_to_context(client: &Client, id: TaskId, context: ContextName) -> ActionResponse {
+    let message = format!("task {id} moved to context {context}");
+    let _detail: TaskDetail = client
+        .post(
+            &format!("/v1/tasks/{id}/move"),
+            Some(&TaskMoveRequest { context }),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    // A move is not undone: it ends what `u` can undo for this task, as an undo does.
+    Ok(ActionOutcome {
+        task_id: None,
+        undone: Some(id),
+        should_refresh: true,
+        should_quit: false,
+        message: Some(message),
+    })
 }
 
 async fn move_task(client: &Client, id: TaskId, name: &str, message: String) -> ActionResponse {
@@ -546,6 +576,21 @@ mod tests {
                 kind: None,
                 importance: Some(loom_core::Importance::P1),
                 due: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_move_effect_becomes_a_move_call() {
+        let effect = AppEffect::MoveTask {
+            id: id("k3q7zm2a"),
+            context: "home".parse().unwrap(),
+        };
+        assert_eq!(
+            ActionRequest::from_effect(effect),
+            Ok(ActionRequest::Move {
+                id: id("k3q7zm2a"),
+                context: "home".parse().unwrap(),
             })
         );
     }
