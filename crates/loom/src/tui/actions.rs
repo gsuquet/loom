@@ -5,7 +5,8 @@
 use std::path::Path;
 
 use loom_api::{
-    ContextName, Date, GoResult, Importance, Kind, TaskActionRequest, TaskDetail, TaskEdit, TaskId,
+    ContextName, Date, GoResult, Importance, Kind, StatusName, TaskActionRequest, TaskDetail,
+    TaskEdit, TaskId,
 };
 
 use crate::client::Client;
@@ -36,6 +37,13 @@ pub enum ActionRequest {
         until: Date,
         /// What the task waits on.
         on: Option<String>,
+    },
+    /// `POST /v1/tasks/{id}/actions/{status}`, for a status other than `waiting`.
+    SetStatus {
+        /// Task to move.
+        id: TaskId,
+        /// The status.
+        status: StatusName,
     },
     /// `PATCH /v1/tasks/{id}`.
     Edit {
@@ -96,6 +104,7 @@ impl ActionRequest {
                 importance,
                 due,
             }),
+            AppEffect::SetTaskStatus { id, status } => Ok(Self::SetStatus { id, status }),
             AppEffect::CancelTask(id) => Ok(Self::Cancel(id)),
             AppEffect::DoneTask(id) => Ok(Self::Done(id)),
             AppEffect::GoTask(id) => Ok(Self::Go(id)),
@@ -201,6 +210,7 @@ pub fn take_next(
         | ActionRequest::Accept { .. }
         | ActionRequest::Snooze { .. }
         | ActionRequest::Edit { .. }
+        | ActionRequest::SetStatus { .. }
         | ActionRequest::Cancel(_)
         | ActionRequest::Done(_)
         | ActionRequest::Go(_)
@@ -264,15 +274,17 @@ pub async fn execute_action(
             importance,
             due,
         } => edit_task(client, id, kind, importance, due).await,
+        ActionRequest::SetStatus { id, status } => {
+            let message = format!("task {id} moved to {status}");
+            move_task(client, id, &status.to_string(), message).await
+        }
         ActionRequest::Cancel(id) => {
-            post_action(client, &id, "cancelled", None).await?;
             let message = format!("task {id} cancelled");
-            Ok(changed(id, message))
+            move_task(client, id, "cancelled", message).await
         }
         ActionRequest::Done(id) => {
-            post_action(client, &id, "done", None).await?;
             let message = format!("task {id} marked done");
-            Ok(changed(id, message))
+            move_task(client, id, "done", message).await
         }
         ActionRequest::Go(id) => {
             let result: GoResult = client
@@ -348,6 +360,11 @@ async fn edit_task(
         .await
         .map_err(|error| error.to_string())?;
     let message = format!("task {id} updated");
+    Ok(changed(id, message))
+}
+
+async fn move_task(client: &Client, id: TaskId, name: &str, message: String) -> ActionResponse {
+    post_action(client, &id, name, None).await?;
     Ok(changed(id, message))
 }
 
@@ -525,6 +542,21 @@ mod tests {
                 kind: None,
                 importance: Some(loom_core::Importance::P1),
                 due: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_status_effect_becomes_a_status_call() {
+        let effect = AppEffect::SetTaskStatus {
+            id: id("k3q7zm2a"),
+            status: StatusName::Done,
+        };
+        assert_eq!(
+            ActionRequest::from_effect(effect),
+            Ok(ActionRequest::SetStatus {
+                id: id("k3q7zm2a"),
+                status: StatusName::Done,
             })
         );
     }

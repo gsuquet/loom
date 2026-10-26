@@ -101,6 +101,8 @@ pub enum PickOption {
     Kind(Kind),
     /// An importance.
     Importance(Importance),
+    /// A status that the task can move to.
+    Status(StatusName),
 }
 
 /// State of the open field picker (`t`, `i`, `d` on the task page).
@@ -319,6 +321,8 @@ pub enum AppEffect {
         until: Date,
         on: Option<String>,
     },
+    /// Move a task to a status other than `waiting`.
+    SetTaskStatus { id: TaskId, status: StatusName },
     /// Cancel a task.
     CancelTask(TaskId),
     /// Mark a task done.
@@ -1041,8 +1045,9 @@ impl AppState {
             self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
             return AppEffect::None;
         }
-        let (Some(task), true) = (&detail.summary.task, detail.actions.contains(&Action::Edit))
-        else {
+        // The status picker depends on the status moves only; the others need `edit`.
+        let may_open = field == PickField::Status || detail.actions.contains(&Action::Edit);
+        let (Some(task), true) = (&detail.summary.task, may_open) else {
             self.status_message = Some("cannot edit task".into());
             return AppEffect::None;
         };
@@ -1077,6 +1082,25 @@ impl AppState {
                     String::new(),
                 )
             }
+            PickField::Status => {
+                let options = detail
+                    .actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        Action::SetStatus(status) => Some(PickOption::Status(*status)),
+                        Action::Accept
+                        | Action::Edit
+                        | Action::Pin
+                        | Action::Unpin
+                        | Action::LogNote => None,
+                    })
+                    .collect::<Vec<_>>();
+                if options.is_empty() {
+                    self.status_message = Some("the task cannot change status".into());
+                    return AppEffect::None;
+                }
+                (options, None, String::new())
+            }
             PickField::Due => (
                 Vec::new(),
                 None,
@@ -1108,11 +1132,34 @@ impl AppState {
         let id = m.task_id.clone();
         let mut edit = (None, None, None);
         match m.field {
+            PickField::Status => {
+                let status = match m.options.get(m.selected) {
+                    Some(PickOption::Status(status)) => *status,
+                    Some(PickOption::Kind(_) | PickOption::Importance(_)) | None => {
+                        return AppEffect::None;
+                    }
+                };
+                self.pick_modal = None;
+                self.modal = None;
+                if status == StatusName::Waiting {
+                    // `waiting` needs a date: the snooze modal asks for it.
+                    self.snooze_modal = Some(SnoozeModalState {
+                        task_id: id,
+                        until_input: "tomorrow".into(),
+                        on_input: String::new(),
+                        field: SnoozeField::Until,
+                        error: None,
+                    });
+                    self.modal = Some(ModalKind::Snooze);
+                    return AppEffect::None;
+                }
+                return AppEffect::SetTaskStatus { id, status };
+            }
             PickField::Kind | PickField::Importance => match m.options.get(m.selected) {
                 Some(option) if Some(option) == m.current.as_ref() => {}
                 Some(PickOption::Kind(kind)) => edit.0 = Some(kind.clone()),
                 Some(PickOption::Importance(importance)) => edit.1 = Some(*importance),
-                None => {}
+                Some(PickOption::Status(_)) | None => {}
             },
             PickField::Due => {
                 let text = m.due_input.trim();
@@ -1912,6 +1959,150 @@ mod tests {
             press(&mut state, KeyCode::Char('u')),
             AppEffect::UndoTask("k3q7zm2a".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn the_status_picker_lists_the_moves_of_the_core_and_applies_one() {
+        let mut state = state_with_loaded_page(None);
+        press(&mut state, KeyCode::Char('s'));
+        let picker = state.pick_modal.as_ref().unwrap();
+        // A ready task: every other status, as `available_actions` says.
+        assert!(
+            picker
+                .options
+                .contains(&PickOption::Status(StatusName::Done))
+        );
+        assert!(
+            !picker
+                .options
+                .contains(&PickOption::Status(StatusName::Ready))
+        );
+        let at = picker
+            .options
+            .iter()
+            .position(|o| *o == PickOption::Status(StatusName::Done))
+            .unwrap();
+        for _ in 0..at {
+            press(&mut state, KeyCode::Down);
+        }
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            AppEffect::SetTaskStatus {
+                id: "k3q7zm2a".parse().unwrap(),
+                status: StatusName::Done,
+            }
+        );
+        assert_eq!(state.modal, None);
+    }
+
+    #[test]
+    fn choosing_waiting_asks_for_a_date_in_the_snooze_modal() {
+        let mut state = state_with_loaded_page(None);
+        press(&mut state, KeyCode::Char('s'));
+        let at = state
+            .pick_modal
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .position(|o| *o == PickOption::Status(StatusName::Waiting))
+            .unwrap();
+        for _ in 0..at {
+            press(&mut state, KeyCode::Down);
+        }
+        assert_eq!(press(&mut state, KeyCode::Enter), AppEffect::None);
+        assert_eq!(state.modal, Some(ModalKind::Snooze));
+        assert_eq!(
+            state.snooze_modal.as_ref().unwrap().task_id,
+            "k3q7zm2a".parse::<TaskId>().unwrap()
+        );
+        assert!(matches!(
+            press(&mut state, KeyCode::Enter),
+            AppEffect::SnoozeTask { .. }
+        ));
+    }
+
+    #[test]
+    fn the_status_picker_works_without_the_edit_action() {
+        let mut state = state_with_loaded_page(None);
+        if let ObjectPageContent::Task(detail) = &mut state.page_stack[0].content {
+            detail.actions.retain(|a| *a != Action::Edit);
+        }
+        press(&mut state, KeyCode::Char('s'));
+        assert_eq!(state.modal, Some(ModalKind::Pick));
+    }
+
+    #[test]
+    fn the_status_picker_refuses_other_tabs_and_read_only_tasks() {
+        let mut state = state_with_loaded_page(None);
+        state.page_stack[0].tab = PageTab::Relations;
+        press(&mut state, KeyCode::Char('s'));
+        assert_eq!(state.modal, None);
+        assert_eq!(state.pick_modal, None);
+
+        let mut state = state_with_loaded_page(Some(&TaskReadOnly::Archived(2026)));
+        press(&mut state, KeyCode::Char('s'));
+        assert_eq!(state.modal, None);
+        assert!(
+            state
+                .status_message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("task is read-only")),
+            "{:?}",
+            state.status_message
+        );
+    }
+
+    #[test]
+    fn the_snooze_of_the_status_picker_targets_the_page_task_and_esc_goes_back() {
+        let mut state = state_with_loaded_page(None);
+        // Another task is selected in the queue behind the page.
+        state.today = vec![make_task("m4r8wn3b", Status::Ready, None)];
+        press(&mut state, KeyCode::Char('s'));
+        let at = state
+            .pick_modal
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .position(|o| *o == PickOption::Status(StatusName::Waiting))
+            .unwrap();
+        for _ in 0..at {
+            press(&mut state, KeyCode::Down);
+        }
+        press(&mut state, KeyCode::Enter);
+        assert_eq!(state.pick_modal, None);
+        assert_eq!(
+            state.snooze_modal.as_ref().unwrap().task_id,
+            "k3q7zm2a".parse::<TaskId>().unwrap()
+        );
+        assert_eq!(press(&mut state, KeyCode::Esc), AppEffect::None);
+        assert_eq!(state.modal, None);
+        assert_eq!(state.pick_modal, None);
+        assert_eq!(state.snooze_modal, None);
+        assert_eq!(state.page_stack.len(), 1);
+    }
+
+    #[test]
+    fn u_undoes_a_status_move_of_the_page_task() {
+        let mut state = state_with_loaded_page(None);
+        let id: TaskId = "k3q7zm2a".parse().unwrap();
+        state.record_action_success(id.clone());
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u')),
+            AppEffect::UndoTask(id)
+        );
+    }
+
+    #[test]
+    fn the_status_picker_refuses_a_task_with_no_move() {
+        let mut state = state_with_loaded_page(None);
+        if let ObjectPageContent::Task(detail) = &mut state.page_stack[0].content {
+            detail.actions = vec![Action::Edit];
+        }
+        press(&mut state, KeyCode::Char('s'));
+        assert_eq!(state.modal, None);
+        assert!(state.status_message.is_some());
     }
 
     #[test]

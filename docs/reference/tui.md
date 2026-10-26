@@ -75,13 +75,14 @@ A modal sits on top of the active view and captures key presses until you close 
 | `a` | Accept | Triages an `inbox` task to `ready`. Configures `Kind`, `Importance`, and optional `Due` date. |
 | `z` | Snooze | Moves a task to `waiting`. Configures `Until` date and optional `Waiting on` note. |
 | `t`, `i`, `d` | Change field | On an object page only. Changes the kind (`t`), the importance (`i`) or the due date (`d`) of the task. `j`/`k` (or `Down`/`Up`) choose a value and `Enter` applies it. For the due date, type `YYYY-MM-DD`, `today`, `tomorrow`, `+1d` or `+1w`; an empty value removes the due date. A wrong date keeps the modal open with an error. The change is one `PATCH /v1/tasks/{id}` call and one `edited` event. The CLI equivalent is `loom set`. |
+| `s` | Change status | On an object page only. Lists the statuses that the task can move to. `j`/`k` (or `Down`/`Up`) choose one and `Enter` applies it. The call is `POST /v1/tasks/{id}/actions/{status}`, as `loom set status=` does, and it writes one status event. The choice `waiting` opens the snooze modal for the page's task, because that status needs a date; `Esc` there returns to the page. The picker needs the status moves only, not the `edit` action. |
 | `+` | New task | Creates a new task with status `inbox`. Resolves context from the active context filter, or the selected task's context, or the configured default context. Configures `Title`. |
 
 ## Key bindings
 
 Key resolution uses three layers, from innermost to outermost:
 
-1. **Modal layer:** active when a modal (`?`, `:`, `/`, `@`, `a`, `z`, `+`, `t`, `i`, `d`) is open.
+1. **Modal layer:** active when a modal (`?`, `:`, `/`, `@`, `a`, `z`, `+`, `t`, `i`, `d`, `s`) is open.
 2. **View layer:** active for the current view (`Queue` or `Object page`).
 3. **Global layer:** active whenever no modal captures the key.
 
@@ -149,9 +150,10 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `t` | Open the kind picker. |
 | `i` | Open the importance picker. |
 | `d` | Open the due date picker. |
+| `s` | Open the status picker. |
 | `u` | Undo the last change that the TUI made. |
 
-The three pickers open on the `Overview` tab only. They refuse a task that you cannot edit and show a status message: `task is read-only: <reason>`, `the task is not loaded yet`, or `cannot edit task` when the task detail has no `edit` action. A choice that does not change the task sends no call and closes the modal. A change to a `content` task keeps its format. `u` on an object page undoes only the last change of that page's task; otherwise it shows `nothing to undo`.
+The four pickers open on the `Overview` tab only. They show a status message when they refuse: `task is read-only: <reason>`, `the task is not loaded yet`, or `cannot edit task` when the task detail has no `edit` action (the kind, importance and due date pickers) or no status move (the status picker, which then shows `the task cannot change status`). For the kind, importance and due date pickers, a choice that does not change the task sends no call and closes the modal, and a change to a `content` task keeps its format. `u` on an object page undoes only the last change of that page's task, a status move included; otherwise it shows `nothing to undo`.
 
 ### Modals
 

@@ -1152,3 +1152,50 @@ async fn task_page_pickers_edit_one_field_per_event_and_match_loom_set() {
         event_types(&client, &id).await.last()
     );
 }
+
+#[tokio::test]
+async fn task_page_status_picker_moves_the_task_like_loom_set() {
+    let sandbox = Sandbox::new();
+    let added = sandbox.add(&["-c", "work", "--ready", "Move me"]);
+    let id = added.summary.id.clone();
+    let client = Client::new(sandbox.socket());
+
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    let list: TaskList = client.get(&list_api_path(None, None, false)).await.unwrap();
+    state.today = list.tasks;
+    state.active_tab = QueueTab::Today;
+    let position = state.today.iter().position(|t| t.id == id).unwrap();
+    state.set_selected(position);
+    press(&mut state, KeyCode::Enter);
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    state.page_stack[0].content = ObjectPageContent::Task(Box::new(detail));
+
+    let before = event_types(&client, &id).await.len();
+    press(&mut state, KeyCode::Char('s'));
+    let at = state
+        .pick_modal
+        .as_ref()
+        .unwrap()
+        .options
+        .iter()
+        .position(|o| format!("{o:?}") == "Status(Active)")
+        .unwrap();
+    for _ in 0..at {
+        press(&mut state, KeyCode::Down);
+    }
+    let effect = press(&mut state, KeyCode::Enter);
+    execute_action(&client, ActionRequest::from_effect(effect).unwrap(), None)
+        .await
+        .unwrap();
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    assert_eq!(
+        detail.summary.task.unwrap().status,
+        loom_api::Status::Active
+    );
+    assert_eq!(event_types(&client, &id).await.len(), before + 1);
+}
