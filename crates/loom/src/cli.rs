@@ -133,8 +133,8 @@ pub enum Command {
     Show(ShowArgs),
     /// Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format`
     /// (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or
-    /// `none`), `repo` (a repository, or `none`), `pinned` (`yes` or `no`) and `status` (any status except
-    /// `waiting`, which `loom snooze` sets).
+    /// `none`), `repo` (a repository, or `none`), `pinned` (`yes` or `no`) and `status` (any
+    /// status except `waiting`, which `loom snooze` sets).
     Set(SetArgs),
     /// Make a task the focus of its context, set its status to `active`, and change to its
     /// repository.
@@ -497,7 +497,7 @@ pub struct EditArgs {
     pub id: String,
 }
 
-/// Statuses accepted by `loom ls --status`.
+/// Statuses accepted by `loom ls --status` and by `loom set status=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum StatusArg {
     /// To triage.

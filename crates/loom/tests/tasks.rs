@@ -988,3 +988,48 @@ fn two_contexts_keep_two_separate_focuses_checked_through_the_cli() {
     assert!(home_focus.contains("Home focus task"));
     assert!(!home_focus.contains("Work focus task"));
 }
+
+#[test]
+fn set_status_follows_the_transitions_of_the_other_gestures() {
+    let sandbox = Sandbox::new();
+    let id = sandbox
+        .add(&["-c", "work", "Move me"])
+        .summary
+        .id
+        .to_string();
+    let status = |args: &[&str]| gesture(&sandbox, args).summary.task.unwrap().status;
+    let refused = |value: &str| {
+        let output = sandbox.run(&sandbox.home(), None, &["set", &id, value]);
+        assert_eq!(output.status.code(), Some(1), "{value}");
+        stderr(&output)
+    };
+
+    // An inbox task moves to ready, back to inbox, and to active.
+    assert_eq!(status(&["set", &id, "status=ready"]), Status::Ready);
+    assert_eq!(status(&["set", &id, "status=inbox"]), Status::Inbox);
+    assert_eq!(status(&["set", &id, "status=active"]), Status::Active);
+    // Same status: loomd refuses, like `loom done` on a done task.
+    let message = refused("status=active");
+    assert_ne!(message.trim(), "");
+    assert_eq!(status(&["show", &id]), Status::Active);
+
+    assert_eq!(status(&["set", &id, "status=done"]), Status::Done);
+    // A closed task only reopens to ready: the refusal text reaches standard error.
+    let message = refused("status=active");
+    assert!(message.contains("done"), "{message}");
+    assert_eq!(status(&["set", &id, "status=ready"]), Status::Ready);
+    assert_eq!(status(&["set", &id, "status=cancelled"]), Status::Cancelled);
+
+    // Each step is its own event: the title stays changed when the status is refused.
+    let message = refused("status=inbox");
+    assert_ne!(message.trim(), "");
+    let output = sandbox.run(
+        &sandbox.home(),
+        None,
+        &["set", &id, "title=Renamed", "status=inbox"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let shown = gesture(&sandbox, &["show", &id]).summary.task.unwrap();
+    assert_eq!(shown.title, "Renamed");
+    assert_eq!(shown.status, Status::Cancelled);
+}

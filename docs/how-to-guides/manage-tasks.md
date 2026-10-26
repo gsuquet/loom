@@ -82,7 +82,9 @@ loom set k3q8 due=none
 loom set k3q8 status=active
 ```
 
-`status` accepts every status except `waiting`. To move a task to `waiting`, use `loom snooze`.
+`status` accepts every status except `waiting`. To move a task to `waiting`, use `loom snooze`. `loomd` checks the move as for `loom done`: a task that has this status already, or a closed task that does not reopen to `ready`, is refused.
+
+When `loom set` has several keys, each change is its own event and `loom set` applies them in this order: the fields, the status, the pin. If `loomd` refuses one, `loom set` stops there. The changes that came before it stay, and `loom undo` reverts them one at a time.
 
 To change the notes, or several fields at the same time, open the file.
 
