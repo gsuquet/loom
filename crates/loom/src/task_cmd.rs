@@ -16,7 +16,7 @@ use loom::task::{
     changed_after_save, changed_meanwhile, context_with_parent, default_repo, editor,
     focus_api_path, holds_saved, kind_of, list_api_path, new_task, parse_date, render_change,
     render_detail, render_focus, render_go, render_list, resolve_context, set_plan, skipped_notice,
-    today, with_parent, with_repo,
+    today, with_parent, with_repo, write_cd_file,
 };
 use loom_api::{
     Actor, ContextName, Date, EventRecord, FocusList, GoResult, TaskActionRequest, TaskDetail,
@@ -192,14 +192,11 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
     })
 }
 
-/// Writes `repo_path` to the file configured in [`CD_FILE_ENV`], if set and non-empty.
-pub fn write_cd_file(repo_path: Option<&std::path::Path>) {
-    if let Some(path) = repo_path
-        && let Some(cd_file) = env::var_os(CD_FILE_ENV).filter(|value| !value.is_empty())
-        && let Err(error) = fs::write(&cd_file, format!("{}\n", path.display()))
-    {
-        debug!(%error, "cannot write the repository path to {CD_FILE_ENV}");
-    }
+/// The file named by [`CD_FILE_ENV`], if set and non-empty.
+pub fn cd_file_from_env() -> Option<PathBuf> {
+    env::var_os(CD_FILE_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// `loom go`.
@@ -210,7 +207,11 @@ pub fn go(args: &GoArgs, layout: &Layout) -> Result<()> {
             .post(&format!("{TASKS_PATH}/{}/go", args.id), None::<&()>)
             .await
             .map_err(|error| api_error(&error))?;
-        write_cd_file(result.repo_path.as_deref());
+        if let Err(error) =
+            write_cd_file(cd_file_from_env().as_deref(), result.repo_path.as_deref())
+        {
+            debug!(%error, "cannot write the repository path to {CD_FILE_ENV}");
+        }
         output(&result, args.json, || render_go(&result))
     })
 }

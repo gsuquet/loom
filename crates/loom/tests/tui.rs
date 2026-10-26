@@ -22,6 +22,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use loom::client::Client;
 use loom::search::search_api_path;
 use loom::task::list_api_path;
+use loom::tui::actions::{ActionRequest, execute_action};
 use loom::tui::color::Theme;
 use loom::tui::keymap::QueueTab;
 use loom::tui::render::render;
@@ -586,7 +587,7 @@ fn today_view_snapshots_at_80_columns() {
         "│                                                                              │",
         "│                                                                              │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
     ];
     assert_buffer_lines(&terminal_80, &expected_80);
 
@@ -617,7 +618,7 @@ fn today_view_snapshots_at_80_columns() {
         "│                                                                              │",
         "│                                                                              │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
     ];
     assert_buffer_lines(&terminal_80, &expected_why);
 
@@ -648,7 +649,7 @@ fn today_view_snapshots_at_80_columns() {
         "│                                                                              │",
         "│                                                                              │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
     ];
     assert_buffer_lines(&terminal_80, &expected_parent);
 }
@@ -689,7 +690,7 @@ fn today_view_snapshots_at_160_columns() {
         "│                                                                                      ││                                                                      │",
         "│                                                                                      ││                                                                      │",
         "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
     ];
     assert_buffer_lines(&terminal_160, &expected_160);
 }
@@ -734,7 +735,7 @@ fn inbox_view_snapshots_at_80_and_160_columns() {
         "│                                                                              │",
         "│                                                                              │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
     ];
     assert_buffer_lines(&terminal_80, &expected_80);
 
@@ -771,7 +772,7 @@ fn inbox_view_snapshots_at_80_and_160_columns() {
         "│                                                                                      ││                                                                      │",
         "│                                                                                      ││                                                                      │",
         "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
     ];
     assert_buffer_lines(&terminal_160, &expected_160);
 }
@@ -838,7 +839,7 @@ fn waiting_view_snapshots_at_80_and_160_columns() {
         "│                                                                              │",
         "│                                                                              │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  g go  c done  x cancel  + new  : palette",
     ];
     assert_buffer_lines(&terminal_80, &expected_80);
 
@@ -875,7 +876,7 @@ fn waiting_view_snapshots_at_80_and_160_columns() {
         "│                                                                                      ││                                                                      │",
         "│                                                                                      ││                                                                      │",
         "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  g go  c done  x cancel  + new  : palette",
     ];
     assert_buffer_lines(&terminal_160, &expected_160);
 }
@@ -926,7 +927,7 @@ fn read_only_task_snapshot() {
         "│                                                                              │",
         "│                                                                              │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
     ];
     assert_buffer_lines(&terminal_80, &expected_80);
 
@@ -963,7 +964,104 @@ fn read_only_task_snapshot() {
         "│                                                                                      ││                                                                      │",
         "│                                                                                      ││                                                                      │",
         "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
-        " q quit  ? help  : palette  / search  @ context  r refresh",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
     ];
     assert_buffer_lines(&terminal_160, &expected_160);
+}
+
+async fn task_status(client: &Client, id: &TaskId) -> Status {
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    detail.summary.task.unwrap().status
+}
+
+fn press(state: &mut AppState, code: KeyCode) -> AppEffect {
+    state.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+#[tokio::test]
+async fn triage_keys_accept_undo_go_and_create_through_real_loomd() {
+    let sandbox = Sandbox::new();
+    let added = sandbox.add(&["-c", "work", "Triage me"]);
+    let id = added.summary.id.clone();
+    let client = Client::new(sandbox.socket());
+    let cd_dir = tempfile::tempdir().unwrap();
+    let cd_file = cd_dir.path().join("cd");
+
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    let inbox: TaskList = client
+        .get(&list_api_path(None, Some("inbox"), false))
+        .await
+        .unwrap();
+    state.inbox = inbox.tasks;
+    state.active_tab = QueueTab::Inbox;
+
+    // `a` then Enter accepts the task; the outcome names the task for `u`.
+    press(&mut state, KeyCode::Char('a'));
+    let effect = press(&mut state, KeyCode::Enter);
+    let request = ActionRequest::from_effect(effect).unwrap();
+    let outcome = execute_action(&client, request, None).await.unwrap();
+    assert_eq!(outcome.task_id.as_ref(), Some(&id));
+    assert!(outcome.should_refresh && !outcome.undone);
+    assert_eq!(task_status(&client, &id).await, Status::Ready);
+    state.record_action_success(id.clone());
+
+    // `u` undoes it; after the success the target is cleared.
+    let effect = press(&mut state, KeyCode::Char('u'));
+    let request = ActionRequest::from_effect(effect).unwrap();
+    let outcome = execute_action(&client, request, None).await.unwrap();
+    assert!(outcome.undone);
+    assert_eq!(task_status(&client, &id).await, Status::Inbox);
+    state.set_last_action(None);
+    assert_eq!(press(&mut state, KeyCode::Char('u')), AppEffect::None);
+
+    // `g` activates the task and quits; a task without repository writes no directory.
+    let effect = press(&mut state, KeyCode::Char('g'));
+    let request = ActionRequest::from_effect(effect).unwrap();
+    let outcome = execute_action(&client, request, Some(&cd_file))
+        .await
+        .unwrap();
+    assert!(outcome.should_quit);
+    assert_eq!(task_status(&client, &id).await, Status::Active);
+    assert!(!cd_file.exists());
+
+    // `+` creates an inbox task in the context of the selected task.
+    press(&mut state, KeyCode::Char('+'));
+    for c in "Written in the TUI".chars() {
+        press(&mut state, KeyCode::Char(c));
+    }
+    let effect = press(&mut state, KeyCode::Enter);
+    let request = ActionRequest::from_effect(effect).unwrap();
+    execute_action(&client, request, None).await.unwrap();
+    let inbox: TaskList = client
+        .get(&list_api_path(None, Some("inbox"), false))
+        .await
+        .unwrap();
+    let titles: Vec<_> = inbox
+        .tasks
+        .iter()
+        .filter_map(|t| t.task.as_ref().map(|t| t.title.clone()))
+        .collect();
+    assert!(
+        titles.contains(&"Written in the TUI".to_owned()),
+        "{titles:?}"
+    );
+
+    // A refused action returns the error text, without a change.
+    let refused = execute_action(
+        &client,
+        ActionRequest::Accept {
+            id: id.clone(),
+            kind: None,
+            importance: None,
+            due: None,
+        },
+        None,
+    )
+    .await;
+    assert!(refused.is_err());
 }

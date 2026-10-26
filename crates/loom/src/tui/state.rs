@@ -11,6 +11,7 @@ use loom_api::{
 
 use crate::task::{parse_date, read_only_text};
 
+use super::actions::ActionRequest;
 use super::color::Theme;
 use super::keymap::{KeyCommand, ModalKind, QueueTab, ViewKind, resolve_key};
 use super::palette::{PaletteAction, PaletteItem, build_palette_items, filter_palette};
@@ -305,6 +306,8 @@ pub struct AppState {
     pub default_context: Option<ContextName>,
     /// Task ID of the last triage action executed, for undo (`u`).
     pub last_action: Option<TaskId>,
+    /// Action that waits for the running one to end.
+    pub queued_action: Option<ActionRequest>,
     /// Injected local date for pure date calculations.
     pub local_date: Date,
     /// Transitory status message shown on bottom bar.
@@ -359,6 +362,7 @@ impl AppState {
             new_task_modal: None,
             default_context: None,
             last_action: None,
+            queued_action: None,
             local_date,
             status_message: None,
             last_error: None,

@@ -422,14 +422,35 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     }
 
     let hints: Vec<(&str, &str)> = if state.page_stack.is_empty() {
-        vec![
-            ("q", "quit"),
-            ("?", "help"),
-            (":", "palette"),
-            ("/", "search"),
-            ("@", "context"),
-            ("r", "refresh"),
-        ]
+        match state.active_tab {
+            QueueTab::Today => vec![
+                ("q", "quit"),
+                ("?", "help"),
+                ("g", "go"),
+                ("c", "done"),
+                ("z", "snooze"),
+                ("+", "new"),
+                (":", "palette"),
+            ],
+            QueueTab::Inbox => vec![
+                ("q", "quit"),
+                ("?", "help"),
+                ("a", "accept"),
+                ("z", "snooze"),
+                ("x", "cancel"),
+                ("c", "done"),
+                ("+", "new"),
+            ],
+            QueueTab::Waiting => vec![
+                ("q", "quit"),
+                ("?", "help"),
+                ("g", "go"),
+                ("c", "done"),
+                ("x", "cancel"),
+                ("+", "new"),
+                (":", "palette"),
+            ],
+        }
     } else {
         vec![
             ("Esc", "back"),
@@ -901,7 +922,7 @@ mod tests {
             "│                                                                              │",
             "│                                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────┘",
-            " q quit  ? help  : palette  / search  @ context  r refresh                      ",
+            " q quit  ? help  g go  c done  z snooze  + new  : palette                       ",
         ];
         assert_eq!(buffer_text_lines(&terminal), expected);
     }
