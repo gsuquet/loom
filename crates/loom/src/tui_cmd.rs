@@ -175,7 +175,7 @@ async fn run_tui_loop(
     });
 
     // 2b. Watch channel for the event log of the task whose Events tab is open.
-    let (events_tx, mut events_rx) = mpsc::channel::<TaskId>(32);
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel::<TaskId>();
     let events_client = client.clone();
     let (events_done_tx, mut events_done_rx) = mpsc::channel::<FetchResponse>(16);
     tokio::spawn(async move {
@@ -194,7 +194,7 @@ async fn run_tui_loop(
     });
 
     // 2c. Watch channel for the relations of the task whose Relations tab is open.
-    let (relations_tx, mut relations_rx) = mpsc::channel::<TaskId>(32);
+    let (relations_tx, mut relations_rx) = mpsc::unbounded_channel::<TaskId>();
     let relations_client = client.clone();
     let (relations_done_tx, mut relations_done_rx) = mpsc::channel::<FetchResponse>(16);
     tokio::spawn(async move {
@@ -692,8 +692,8 @@ async fn run_action_worker(
 /// Asks for the data of the tab of the top page, when it is the Events or the Relations tab.
 fn fetch_tab_data(
     state: &mut AppState,
-    events_tx: &mpsc::Sender<TaskId>,
-    relations_tx: &mpsc::Sender<TaskId>,
+    events_tx: &mpsc::UnboundedSender<TaskId>,
+    relations_tx: &mpsc::UnboundedSender<TaskId>,
 ) {
     let Some(page) = state.page_stack.last_mut() else {
         return;
@@ -704,13 +704,13 @@ fn fetch_tab_data(
             if !matches!(page.events.load, EventsLoad::Loaded(_)) {
                 page.events.load = EventsLoad::Loading;
             }
-            let _ = events_tx.try_send(id.clone());
+            let _ = events_tx.send(id.clone());
         }
         PageTab::Relations => {
             if !matches!(page.relations.load, RelationsLoad::Loaded(_)) {
                 page.relations.load = RelationsLoad::Loading;
             }
-            let _ = relations_tx.try_send(id.clone());
+            let _ = relations_tx.send(id.clone());
         }
         PageTab::Overview => {}
     }
@@ -722,8 +722,8 @@ fn handle_effect(
     state: &mut AppState,
     refresh_tx: &mpsc::Sender<RefreshRequest>,
     task_tx: &watch::Sender<Option<TaskId>>,
-    events_tx: &mpsc::Sender<TaskId>,
-    relations_tx: &mpsc::Sender<TaskId>,
+    events_tx: &mpsc::UnboundedSender<TaskId>,
+    relations_tx: &mpsc::UnboundedSender<TaskId>,
     fetch_in_flight: &mut bool,
     refresh_queued: &mut bool,
     pending_search: &mut Option<String>,
@@ -755,10 +755,10 @@ fn handle_effect(
             let _ = task_tx.send(Some(id));
         }
         AppEffect::FetchEvents(id) => {
-            let _ = events_tx.try_send(id);
+            let _ = events_tx.send(id);
         }
         AppEffect::FetchRelations(id) => {
-            let _ = relations_tx.try_send(id);
+            let _ = relations_tx.send(id);
         }
         AppEffect::ReloadPage => {
             // A page that is the top page again shows what it showed before: read its task and

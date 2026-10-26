@@ -74,7 +74,7 @@ A section with no entry shows `none`. A task row shows `<prefix>  <status>  <imp
 
 The TUI reads the relations each time that you select the tab, and again each time the page reloads while the tab is open. The previous relations stay on screen until the new ones arrive, and the selected task stays selected when it is still in the tree. The reads are `GET /v1/tasks/{id}` for the task and for each task that it names (in parallel), and one `GET /v1/tasks?parent={ids}&archived=any` for each level of the tree of children.
 
-`j` and `k` select a task row that exists. The pane scrolls to keep the selected row in view. `Enter` opens the selected task on a new page. `Esc` or `Backspace` goes back to the previous page, with its tab and selection as they were. The TUI reads that page again (the task and the data of its tab), so it shows the current state. The pages form a stack with no fixed depth. Archived and read-only tasks have a `Relations` tab like any other task.
+`j` and `k` select a task row that exists. The pane scrolls to keep the selected row in view. `Enter` opens the selected task on a new page. `Esc` or `Backspace` goes back to the previous page, with its tab and selection as they were. The pages form a stack with no fixed depth. Archived and read-only tasks have a `Relations` tab like any other task.
 
 When `loomd` sends a change event for the task, the TUI reloads the page.
 
