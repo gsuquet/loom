@@ -25,6 +25,7 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 | Events, learnings | [docs/design/capture-and-learnings.md](docs/design/capture-and-learnings.md) |
 | Agents, gates, runtimes, factory | [docs/design/agents.md](docs/design/agents.md) |
 | TUI, gestures | [docs/design/user-workflow.md](docs/design/user-workflow.md) |
+| Colors, spacing, badges, panes, modals, toasts (TUI and web) | [docs/design/ui-style.md](docs/design/ui-style.md) |
 | Settled decisions | [docs/adr/](docs/adr/README.md) |
 | Versions and acceptance criteria | [docs/roadmap.md](docs/roadmap.md) |
 | Code, docs and git style | [docs/reference/style-guide.md](docs/reference/style-guide.md) |

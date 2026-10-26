@@ -32,6 +32,21 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// Returns `body` without its first heading when that heading is `label` (any level, any case),
+/// and without the blank lines around it. A section header that already says `label` then does
+/// not repeat it.
+#[must_use]
+pub fn without_leading_heading<'a>(body: &'a str, label: &str) -> &'a str {
+    let rest = body.trim_start_matches(['\n', '\r', ' ', '\t']);
+    let (first, after) = rest.split_once('\n').unwrap_or((rest, ""));
+    match heading(first.trim()) {
+        Some((_, text)) if text.eq_ignore_ascii_case(label) => {
+            after.trim_start_matches(['\n', '\r'])
+        }
+        _ => body,
+    }
+}
+
 /// An open code fence: its marker character and the length of its opening run.
 #[derive(Clone, Copy)]
 struct Fence {
@@ -204,6 +219,28 @@ fn closing(inner: &str, mark: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leading_heading_equal_to_the_label_is_removed() {
+        assert_eq!(without_leading_heading("## Notes\n", "Notes"), "");
+        assert_eq!(
+            without_leading_heading("\n## notes\n\nRepro on iOS.\n", "Notes"),
+            "Repro on iOS.\n"
+        );
+    }
+
+    #[test]
+    fn other_bodies_are_kept() {
+        assert_eq!(
+            without_leading_heading("## Symptoms\n- slow\n", "Notes"),
+            "## Symptoms\n- slow\n"
+        );
+        assert_eq!(
+            without_leading_heading("Notes are here\n", "Notes"),
+            "Notes are here\n"
+        );
+        assert_eq!(without_leading_heading("", "Notes"), "");
+    }
 
     fn render80(body: &str) -> Vec<Line<'static>> {
         render(body, 80)
