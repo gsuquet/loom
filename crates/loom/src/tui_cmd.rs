@@ -13,7 +13,9 @@ use loom::client::Client;
 use loom::conventions::{Exit, use_color};
 use loom::search::search_api_path;
 use loom::task::list_api_path;
-use loom::tui::actions::{ActionRequest, ActionResponse, Submission, execute_action, submit};
+use loom::tui::actions::{
+    ActionRequest, ActionResponse, Next, Submission, execute_action, submit, take_next,
+};
 use loom::tui::color::Theme;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, SseState};
@@ -29,6 +31,9 @@ use tokio::sync::{mpsc, watch};
 
 use crate::task_cmd::{cd_file_from_env, local_today};
 use crate::{load_config, print, repo_cmd};
+
+/// Longest wait for a running action when the TUI quits.
+const ACTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for task/search requests made by the TUI.
 const TUI_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -393,6 +398,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
             // Handle action worker responses
             Some(action_resp) = action_done_rx.recv() => {
                 action_in_flight = false;
+                let action_ok = action_resp.is_ok();
                 match action_resp {
                     Ok(outcome) => {
                         let target = outcome.next_undo_target(state.last_action.as_ref());
@@ -422,8 +428,13 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                         state.set_error(err);
                     }
                 }
-                if let Some(next) = state.queued_action.take() {
-                    submit_action(next, state, &action_tx, &mut action_in_flight);
+                let succeeded = action_ok;
+                match take_next(&mut state.queued_action, succeeded, state.last_action.as_ref()) {
+                    Next::Nothing => {}
+                    Next::Send(next) => {
+                        submit_action(next, state, &action_tx, &mut action_in_flight);
+                    }
+                    Next::Dropped(reason) => state.set_status(reason),
                 }
                 needs_redraw = true;
             }
@@ -432,6 +443,13 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
         if needs_redraw {
             terminal.draw(|f| render(f, state)).into_diagnostic()?;
         }
+    }
+
+    // An action that runs ends first, so that quitting does not cut a change to a task.
+    // The action that waits behind it does not run.
+    state.queued_action = None;
+    if action_in_flight {
+        let _ = tokio::time::timeout(ACTION_DRAIN_TIMEOUT, action_done_rx.recv()).await;
     }
 
     drop(guard);

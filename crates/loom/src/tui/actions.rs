@@ -146,6 +146,45 @@ pub fn submit(
     }
 }
 
+/// What to do with the kept action when the running one has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Next {
+    /// No action waits.
+    Nothing,
+    /// Send this action now.
+    Send(ActionRequest),
+    /// The kept action is dropped, for this reason.
+    Dropped(&'static str),
+}
+
+/// Takes the kept action out of `queued` and decides if it still runs.
+///
+/// A failure drops it: it was typed for a screen that the failed action may have changed.
+/// A kept undo runs only if `undo_target` is still its task, so that two quick presses of `u`
+/// do not undo an older change.
+pub fn take_next(
+    queued: &mut Option<ActionRequest>,
+    succeeded: bool,
+    undo_target: Option<&TaskId>,
+) -> Next {
+    let Some(request) = queued.take() else {
+        return Next::Nothing;
+    };
+    if !succeeded {
+        return Next::Dropped("the action before it failed");
+    }
+    match &request {
+        ActionRequest::Undo(id) if undo_target != Some(id) => Next::Dropped("nothing to undo"),
+        ActionRequest::Undo(_)
+        | ActionRequest::Accept { .. }
+        | ActionRequest::Snooze { .. }
+        | ActionRequest::Cancel(_)
+        | ActionRequest::Done(_)
+        | ActionRequest::Go(_)
+        | ActionRequest::Create { .. } => Next::Send(request),
+    }
+}
+
 /// Result of an action: the outcome, or the text of the error.
 pub type ActionResponse = Result<ActionOutcome, String>;
 
@@ -331,6 +370,57 @@ mod tests {
             Submission::Send(done("k3q7zm2a"))
         );
         assert_eq!(queued, None);
+    }
+
+    fn undo(text: &str) -> ActionRequest {
+        ActionRequest::Undo(id(text))
+    }
+
+    #[test]
+    fn nothing_is_sent_when_nothing_waits() {
+        assert_eq!(take_next(&mut None, true, None), Next::Nothing);
+        assert_eq!(take_next(&mut None, false, None), Next::Nothing);
+    }
+
+    #[test]
+    fn a_failure_drops_the_kept_action() {
+        let mut queued = Some(done("k3q7zm2a"));
+        assert!(matches!(
+            take_next(&mut queued, false, None),
+            Next::Dropped(_)
+        ));
+        assert_eq!(queued, None);
+    }
+
+    #[test]
+    fn a_success_sends_the_kept_action() {
+        let mut queued = Some(done("k3q7zm2a"));
+        assert_eq!(
+            take_next(&mut queued, true, None),
+            Next::Send(done("k3q7zm2a"))
+        );
+        assert_eq!(queued, None);
+    }
+
+    #[test]
+    fn a_kept_undo_runs_only_while_its_task_is_the_target() {
+        let target = id("k3q7zm2a");
+        let mut queued = Some(undo("k3q7zm2a"));
+        assert_eq!(
+            take_next(&mut queued, true, Some(&target)),
+            Next::Send(undo("k3q7zm2a"))
+        );
+        // The first undo cleared the target: a second press of `u` must not undo an older change.
+        let mut queued = Some(undo("k3q7zm2a"));
+        assert_eq!(
+            take_next(&mut queued, true, None),
+            Next::Dropped("nothing to undo")
+        );
+        let mut queued = Some(undo("k3q7zm2a"));
+        assert_eq!(
+            take_next(&mut queued, true, Some(&id("m9x2rt4b"))),
+            Next::Dropped("nothing to undo")
+        );
     }
 
     #[test]
