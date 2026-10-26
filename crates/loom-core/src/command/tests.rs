@@ -315,6 +315,10 @@ fn a_task_of_unknown_kind_accepts_no_command_and_reports_why() {
 
 #[test]
 fn available_actions_follow_the_status_and_the_pin() {
+    let (inbox_task, _) = task_with(Status::Inbox);
+    let inbox_actions = available_actions(&inbox_task);
+    assert!(inbox_actions.contains(&Action::Accept));
+
     let (task, _) = task_with(Status::Done);
     assert_eq!(
         available_actions(&task),
@@ -329,6 +333,7 @@ fn available_actions_follow_the_status_and_the_pin() {
     task.pinned = true;
     let actions = available_actions(&task);
     assert!(actions.contains(&Action::Unpin));
+    assert!(!actions.contains(&Action::Accept));
     assert!(!actions.contains(&Action::SetStatus(StatusName::Ready)));
     assert_eq!(actions.len(), 5 + 3);
     task.status = Status::Unknown("snoozed".to_owned());
@@ -517,4 +522,152 @@ fn a_hand_edit_is_the_changes_of_every_field_that_differs() {
         serde_json::to_value(&log[1].actor).unwrap(),
         serde_json::json!({ "type": "file" })
     );
+}
+
+#[test]
+fn accept_an_inbox_task_with_default_fields_moves_it_to_ready_and_can_be_undone() {
+    let (task, mut log) = task_with(Status::Inbox);
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: None,
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(
+        log.last().unwrap().event,
+        Event::StatusChanged(Change {
+            from: Status::Inbox,
+            to: Status::Ready,
+        })
+    );
+
+    let undone = undo_last(accepted, &mut log, 2);
+    assert_eq!(undone.status, Status::Inbox);
+    assert_eq!(undone.updated, at(2));
+}
+
+#[test]
+fn accept_an_inbox_task_with_kind_importance_and_due_updates_fields_and_undo_reverts_them() {
+    let (task, mut log) = task_with(Status::Inbox);
+    let due_date = "2026-10-25".parse().unwrap();
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: Some(Kind::Story),
+            importance: Some(Importance::P0),
+            due: Some(Some(due_date)),
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.kind, Kind::Story);
+    assert_eq!(accepted.importance, Importance::P0);
+    assert_eq!(accepted.due, Some(due_date));
+
+    // Undoing accept reverts both status back to Inbox and fields back to original values
+    let undone = undo_last(accepted, &mut log, 2);
+    assert_eq!(undone.status, Status::Inbox);
+    assert_eq!(undone.kind, Kind::Bug);
+    assert_eq!(undone.importance, Importance::P1);
+    assert_eq!(undone.due, None);
+    assert_eq!(undone.updated, at(2));
+}
+
+#[test]
+fn accept_with_kind_defaults_importance_when_omitted() {
+    let (task, mut log) = task_with(Status::Inbox);
+    assert_eq!(task.importance, Importance::P1); // Bug defaults to P1
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: Some(Kind::Chore), // Chore defaults to P3
+            importance: None,
+            due: None,
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.kind, Kind::Chore);
+    assert_eq!(accepted.importance, Importance::P3);
+}
+
+#[test]
+fn accept_keeps_manually_set_importance_when_kind_is_unchanged() {
+    let (mut task, mut log) = task_with(Status::Inbox);
+    // Bug task with importance manually set to P0
+    task.importance = Importance::P0;
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: Some(Kind::Bug),
+            importance: None,
+            due: None,
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.kind, Kind::Bug);
+    assert_eq!(accepted.importance, Importance::P0);
+}
+
+#[test]
+fn accept_can_clear_due_date_with_some_none() {
+    let mut new = new_task(Kind::Bug);
+    new.due = Some("2026-10-25".parse().unwrap());
+    let (task, mut log) = create(new, &mut || 42, &[], at(0), &origin()).unwrap();
+    assert!(task.due.is_some());
+
+    let accepted = run(
+        task,
+        &mut log,
+        Command::Accept {
+            kind: None,
+            importance: None,
+            due: Some(None),
+        },
+        1,
+    );
+    assert_eq!(accepted.status, Status::Ready);
+    assert_eq!(accepted.due, None);
+}
+
+#[test]
+fn accept_on_an_illegal_transition_is_refused() {
+    for non_inbox in [
+        Status::Ready,
+        Status::Active,
+        Status::Waiting {
+            on: None,
+            until: None,
+        },
+        Status::Done,
+        Status::Cancelled,
+    ] {
+        let (task, _) = task_with(non_inbox.clone());
+        let from_name = non_inbox.name().unwrap();
+        let refused = exec(
+            task,
+            Command::Accept {
+                kind: None,
+                importance: None,
+                due: None,
+            },
+            1,
+        );
+        assert_eq!(
+            refused,
+            Err(DomainError::IllegalTransition {
+                from: from_name,
+                to: StatusName::Ready,
+            })
+        );
+    }
 }

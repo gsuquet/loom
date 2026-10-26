@@ -194,6 +194,7 @@ const fn registers_on_use(command: Option<&Command>, interactive_tui: bool) -> b
         Command::ShellInit(_) | Command::UpgradeWatchdog(_) => false,
         Command::Search(_)
         | Command::Add(_)
+        | Command::Accept(_)
         | Command::Go(_)
         | Command::Focus(_)
         | Command::Log(_)
@@ -248,6 +249,7 @@ fn run(cli: &Cli) -> Result<Exit> {
         Command::Repo { command } => repo_cmd::run(command, &cli.global, layout()?),
         Command::Search(args) => search_cmd::run(args, &cli.global, &layout()?),
         Command::Add(args) => task_cmd::add(args, &cli.global, &layout()?),
+        Command::Accept(args) => task_cmd::accept(args, &layout()?),
         Command::Go(args) => task_cmd::go(args, &layout()?),
         Command::Focus(args) => task_cmd::focus(args, &cli.global, &layout()?),
         Command::Log(args) => task_cmd::log(args, &cli.global, &layout()?),
