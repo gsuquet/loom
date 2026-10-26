@@ -192,7 +192,7 @@ Creations, edits, actions, undos and event reads run on the task thread, one at 
 
 `loomd` commits each write to the git repository of its context store before the answer, one commit per request ([store repository](configuration.md#store-repository)). If a commit fails, the request does not fail.
 
-`GET /v1/tasks` takes these query parameters, all optional. `loomd` ignores an empty `context` or `status`. Any other parameter is an `invalid_request`:
+`GET /v1/tasks` takes these query parameters, all optional. `loomd` ignores an empty `context`, `status` or `parent`. Any other parameter is an `invalid_request`:
 
 | Parameter | Content |
 | --- | --- |
@@ -200,6 +200,7 @@ Creations, edits, actions, undos and event reads run on the task thread, one at 
 | `status` | Only the tasks with this status: `inbox`, `ready`, `active`, `waiting`, `done`, `cancelled`. Tasks with an invalid `task.md` or an unknown status are not in the list. |
 | `ranked` | `true`: the priority list, in its order, each task with its `rank`. `false` (default): every task, sorted by ID. |
 | `archived` | `true`: only the archived tasks (in `archive/<yyyy>/`). `false` (default): only the tasks of `tasks/`. The priority list never contains an archived task: `archived=true` with `ranked=true` gives an empty list. |
+| `parent` | Only the tasks whose `relations.parent` is this task. The value is a full task ID; a prefix or any other text is an `invalid_request`. `loomd` ignores an empty value. Tasks with an invalid `task.md` are not in the list. |
 
 The priority list holds the `ready` and `active` tasks, and the `waiting` tasks whose `until` is today or past. Tasks with the status `inbox`, `done`, `cancelled` or an unknown status, and invalid files, are never in it. The list has this order, and each rule breaks the ties of the previous rule:
 

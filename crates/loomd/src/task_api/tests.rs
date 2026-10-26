@@ -68,6 +68,7 @@ fn filter(context: Option<&str>, status: Option<&str>, ranked: Option<bool>) -> 
         status: status.map(str::to_owned),
         ranked,
         archived: None,
+        parent: None,
     }
 }
 
@@ -84,6 +85,7 @@ fn list_filters_are_checked_and_empty_values_ignored() {
             status: Some(StatusName::Waiting),
             ranked: true,
             archived: false,
+            parent: None,
         }
     );
     let archived = TaskListQuery {
@@ -157,6 +159,46 @@ fn the_list_filters_by_context_and_status_keeping_global_prefixes() {
         ..work
     };
     assert_eq!(ids(&done), ["k3r00000:k3r"]);
+}
+
+#[test]
+fn the_parent_filter_keeps_the_children_only() {
+    let mut child = task("k3r00000", "work", 100);
+    child.relations.parent = Some(id("k3q7zm2a"));
+    let mut other = task("k3s00000", "work", 100);
+    other.relations.parent = Some(id("m0000000"));
+    let rows = vec![
+        row(task("k3q7zm2a", "work", 100)),
+        row(child),
+        row(other),
+        invalid("k3t00000", "work"),
+    ];
+    let query = TaskListQuery {
+        parent: Some("k3q7zm2a".to_owned()),
+        ..TaskListQuery::default()
+    };
+    let filter = task_filter(query).unwrap();
+    assert_eq!(filter.parent, Some(id("k3q7zm2a")));
+    let ids: Vec<String> = task_list(&rows, &filter, date("2026-10-14"))
+        .tasks
+        .into_iter()
+        .map(|summary| summary.id.to_string())
+        .collect();
+    assert_eq!(ids, ["k3r00000"]);
+    // An empty value is ignored; a value that is not a task ID is refused.
+    let empty = TaskListQuery {
+        parent: Some(String::new()),
+        ..TaskListQuery::default()
+    };
+    assert_eq!(task_filter(empty).unwrap().parent, None);
+    let bad = TaskListQuery {
+        parent: Some("not an id".to_owned()),
+        ..TaskListQuery::default()
+    };
+    assert_eq!(
+        task_filter(bad).unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
 }
 
 #[test]

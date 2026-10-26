@@ -61,6 +61,8 @@ pub struct TaskListQuery {
     pub ranked: Option<bool>,
     /// `true`: the archived tasks instead of the others.
     pub archived: Option<bool>,
+    /// Only the tasks whose parent is this task (a full ID); ignored when empty.
+    pub parent: Option<String>,
 }
 
 /// Query parameters of `GET /v1/focus`.
@@ -99,6 +101,8 @@ pub struct TaskFilter {
     pub ranked: bool,
     /// The archived tasks only; otherwise the tasks of `tasks/` only.
     pub archived: bool,
+    /// Only the children of this task.
+    pub parent: Option<TaskId>,
 }
 
 /// The filter of `query`.
@@ -120,11 +124,20 @@ pub fn task_filter(query: TaskListQuery) -> Result<TaskFilter, ApiError> {
             })?,
         ),
     };
+    let parent = match query.parent.filter(|parent| !parent.is_empty()) {
+        None => None,
+        Some(parent) => Some(
+            parent
+                .parse::<TaskId>()
+                .map_err(|error| invalid_request(format!("invalid parent `{parent}`: {error}")))?,
+        ),
+    };
     Ok(TaskFilter {
         context,
         status,
         ranked: query.ranked.unwrap_or(false),
         archived: query.archived.unwrap_or(false),
+        parent,
     })
 }
 
@@ -147,6 +160,9 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
                 .is_none_or(|context| row.context == *context)
             && filter.status.is_none_or(|status| {
                 task_of(row).and_then(|task| task.status.name()) == Some(status)
+            })
+            && filter.parent.as_ref().is_none_or(|parent| {
+                task_of(row).is_some_and(|task| task.relations.parent.as_ref() == Some(parent))
             })
     });
     let mut kept: Vec<&IndexedTask> = kept.collect();
