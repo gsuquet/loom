@@ -13,6 +13,8 @@ use loom_api::{
 use loom_core::SkipReason;
 use thiserror::Error;
 
+use crate::cli::StatusArg;
+
 /// Date of today for the tests, honored by debug builds only, as by loomd.
 pub const TEST_TODAY_ENV: &str = "LOOM_TEST_TODAY";
 
@@ -638,10 +640,12 @@ pub enum SetKey {
     Repo,
     /// `pinned`: `yes` or `no`.
     Pinned,
+    /// `status`: a status other than `waiting`.
+    Status,
 }
 
 impl SetKey {
-    const ALL: [(&'static str, Self); 8] = [
+    const ALL: [(&'static str, Self); 9] = [
         ("title", Self::Title),
         ("kind", Self::Kind),
         ("format", Self::Format),
@@ -650,6 +654,7 @@ impl SetKey {
         ("parent", Self::Parent),
         ("repo", Self::Repo),
         ("pinned", Self::Pinned),
+        ("status", Self::Status),
     ];
 
     /// Name of the key.
@@ -702,6 +707,8 @@ pub struct SetPlan {
     pub repo: Option<Option<String>>,
     /// `pin` or `unpin`.
     pub pinned: Option<bool>,
+    /// The status to move to, as named in the path of the action.
+    pub status: Option<StatusArg>,
 }
 
 /// Why `loom set` cannot apply its arguments.
@@ -784,6 +791,16 @@ pub fn set_plan(assignments: &[Assignment], today: Date) -> Result<SetPlan, SetE
                 } else {
                     Some(value.clone())
                 });
+            }
+            SetKey::Status => {
+                let status = <StatusArg as clap::ValueEnum>::from_str(value, false)
+                    .map_err(|_| invalid(choice(&value_names::<StatusArg>())))?;
+                if status == StatusArg::Waiting {
+                    return Err(invalid(
+                        "use `loom snooze` to move a task to waiting".to_owned(),
+                    ));
+                }
+                plan.status = Some(status);
             }
             SetKey::Pinned => {
                 plan.pinned = Some(match value.as_str() {
@@ -1459,6 +1476,23 @@ mod tests {
         assert_eq!(cleared.repo, Some(None));
         assert_eq!(cleared.pinned, Some(false));
         assert_eq!(plan(&["repo="]).unwrap().repo, Some(None));
+        assert_eq!(
+            plan(&["status=done"]).unwrap().status,
+            Some(StatusArg::Done)
+        );
+    }
+
+    #[test]
+    fn set_sends_waiting_to_snooze() {
+        let Err(SetError::Invalid { key, reason }) = plan(&["status=waiting"]) else {
+            panic!("waiting must be refused");
+        };
+        assert_eq!(key, "status");
+        assert!(reason.contains("loom snooze"), "{reason}");
+        assert!(matches!(
+            plan(&["status=later"]),
+            Err(SetError::Invalid { .. })
+        ));
     }
 
     #[test]
