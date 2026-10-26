@@ -1,5 +1,6 @@
 //! Entrypoint and runtime loop of the interactive TUI (`loom` with no subcommand).
 
+use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, IsTerminal as _};
 use std::path::PathBuf;
@@ -7,10 +8,11 @@ use std::time::Duration;
 
 use clap::CommandFactory as _;
 use crossterm::event::{Event, KeyEventKind};
-use futures_util::StreamExt as _;
+use futures_util::{FutureExt as _, StreamExt as _};
 use loom::cli::{Cli, GlobalArgs};
 use loom::client::Client;
 use loom::conventions::{Exit, use_color};
+use loom::edit;
 use loom::search::search_api_path;
 use loom::task::list_api_path;
 use loom::tui::actions::{
@@ -19,7 +21,7 @@ use loom::tui::actions::{
 use loom::tui::color::Theme;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, SseState};
-use loom::tui::terminal::TerminalGuard;
+use loom::tui::terminal::{SuspendError, TerminalGuard, while_suspended};
 use loom_api::{
     ContextName, DEFAULT_SEARCH_LIMIT, EventCursor, SearchResults, TaskDetail, TaskId, TaskList,
 };
@@ -93,6 +95,9 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     let theme = Theme::from_config(&config.contexts, color_enabled);
     let contexts: Vec<ContextName> = config.contexts.keys().cloned().collect();
     let default_context = config.default_context.as_ref().map(|s| s.get_ref().clone());
+    let stores = env::home_dir()
+        .map(|home| config.store_paths(&layout.home, &home))
+        .unwrap_or_default();
     let mut state = AppState::new(theme, global.context.clone(), contexts, local_today())
         .with_default_context(default_context);
 
@@ -106,7 +111,7 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
         let client = repo_cmd::connect(&layout, true)
             .await?
             .with_timeout(TUI_REQUEST_TIMEOUT);
-        run_tui_loop(&client, &mut state).await
+        run_tui_loop(&client, &mut state, &stores).await
     })
 }
 
@@ -114,7 +119,11 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     clippy::too_many_lines,
     reason = "event loop handles input, background workers, SSE and timers in one select!"
 )]
-async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
+async fn run_tui_loop(
+    client: &Client,
+    state: &mut AppState,
+    stores: &BTreeMap<ContextName, PathBuf>,
+) -> Result<Exit> {
     let guard = TerminalGuard::enter().into_diagnostic()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).into_diagnostic()?;
@@ -212,7 +221,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
     let mut fetch_in_flight = true;
     let mut action_in_flight = false;
 
-    let mut event_stream = crossterm::event::EventStream::new();
+    // `None` while the editor runs: the stream must not read the keys of the editor.
+    let mut event_stream = Some(crossterm::event::EventStream::new());
     let mut pending_search: Option<String> = None;
     let mut search_timer = Box::pin(tokio::time::sleep(SEARCH_DEBOUNCE));
     // The toast (by generation) that the timer expires; a new toast restarts the timer.
@@ -233,12 +243,19 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
             }
 
             // Handle crossterm terminal events
-            Some(event_res) = event_stream.next() => {
+            Some(event_res) = next_terminal_event(&mut event_stream) => {
                 if let Ok(event) = event_res {
                     match event {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
                             state.set_local_date(local_today());
-                            let effect = state.handle_key(key);
+                            let mut effect = state.handle_key(key);
+                            if let AppEffect::EditBody(id) = effect {
+                                drop(event_stream.take());
+                                edit_in_editor(&id, client, stores, &guard, &mut terminal, &mut sigint, state)
+                                    .await?;
+                                event_stream = Some(crossterm::event::EventStream::new());
+                                effect = AppEffect::Refresh;
+                            }
                             handle_effect(
                                 effect,
                                 state,
@@ -479,6 +496,96 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
     Ok(exit)
 }
 
+/// The next event of the terminal; never ends while the stream is off.
+async fn next_terminal_event(
+    stream: &mut Option<crossterm::event::EventStream>,
+) -> Option<io::Result<Event>> {
+    match stream {
+        Some(stream) => stream.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Takes a signal that is already waiting, without waiting for one. Returns whether there was
+/// one.
+fn drain_signal(signal: &mut tokio::signal::unix::Signal) -> bool {
+    signal.recv().now_or_never().flatten().is_some()
+}
+
+/// `e` on the task page: gives the terminal to the editor on the task file, takes it back, and
+/// tells the result in the status bar. The steps are those of `loom edit` (`loom::edit`).
+///
+/// `Ctrl-C` goes to the editor: it is a key of the editor, and the editor decides what it does
+/// (a `SIGINT` to the whole process group also reaches loom). So the `SIGINT` that arrived
+/// while the editor ran is dropped when the editor ends. `SIGTERM` is a request to stop and is
+/// kept: the loop handles it as soon as the editor ends.
+///
+/// While the editor runs, change events wait in their channel, and the SSE worker waits behind
+/// them. The caller reloads the queues and the page when this returns, so no change is lost.
+///
+/// # Errors
+///
+/// The terminal cannot be taken back: the TUI must stop.
+async fn edit_in_editor(
+    id: &TaskId,
+    client: &Client,
+    stores: &BTreeMap<ContextName, PathBuf>,
+    guard: &TerminalGuard,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    sigint: &mut tokio::signal::unix::Signal,
+    state: &mut AppState,
+) -> Result<()> {
+    let session = match edit::begin(client, &id.to_string(), stores).await {
+        Ok(session) => session,
+        Err(error) => {
+            state.set_error(error.to_string());
+            return Ok(());
+        }
+    };
+    let editor_session = session.clone();
+    let work = async move {
+        tokio::task::spawn_blocking(move || {
+            edit::run_editor(
+                &editor_session,
+                env::var("VISUAL").ok().as_deref(),
+                env::var("EDITOR").ok().as_deref(),
+            )
+        })
+        .await
+    };
+    let ran = match while_suspended(|| guard.suspend(), || guard.resume(), work).await {
+        Ok(ran) => ran,
+        Err(SuspendError::Suspend(error)) => {
+            state.set_error(format!("cannot leave the terminal to the editor: {error}"));
+            return Ok(());
+        }
+        Err(SuspendError::Resume(error)) => {
+            return Err(miette::miette!("cannot take the terminal back: {error}"));
+        }
+    };
+    // One turn of the scheduler first, so that a signal that is on its way is counted.
+    tokio::task::yield_now().await;
+    drain_signal(sigint);
+    let _ = terminal.clear();
+    match ran {
+        Ok(Ok(())) => match edit::finish(client, &session).await {
+            // The save worked: a warning is information, not an error.
+            Ok(outcome) if !outcome.warnings.is_empty() => {
+                state.set_status(outcome.warnings.join("; "));
+            }
+            // Not recorded in time, or unchanged: information, with no check mark.
+            Ok(outcome) if outcome.unchanged || !outcome.recorded => {
+                state.set_status(outcome.text.lines().next().unwrap_or_default());
+            }
+            Ok(outcome) => state.set_success(outcome.text.lines().next().unwrap_or_default()),
+            Err(error) => state.set_error(error.to_string()),
+        },
+        Ok(Err(error)) => state.set_error(error.to_string()),
+        Err(error) => state.set_error(format!("the editor did not finish: {error}")),
+    }
+    Ok(())
+}
+
 /// Sends an action to the worker. While another action runs, keeps the request for after it.
 fn submit_action(
     request: ActionRequest,
@@ -632,5 +739,24 @@ async fn run_sse_worker(client: Client, sse_tx: mpsc::Sender<SseMessage>) {
         }
         tokio::time::sleep(reconnect_delay).await;
         reconnect_delay = (reconnect_delay * 2).min(SSE_MAX_RECONNECT_DELAY);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_signal_that_arrived_while_the_editor_ran_is_dropped() {
+        let mut signal = signal(SignalKind::user_defined1()).unwrap();
+        assert!(!drain_signal(&mut signal), "nothing waits yet");
+        let status = std::process::Command::new("kill")
+            .args(["-USR1", &std::process::id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(drain_signal(&mut signal), "the signal waits");
+        assert!(!drain_signal(&mut signal), "and is gone once taken");
     }
 }

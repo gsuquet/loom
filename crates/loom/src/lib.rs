@@ -7,6 +7,7 @@ pub mod cli_doc;
 pub mod client;
 pub mod conventions;
 pub mod doctor;
+pub mod edit;
 pub mod loomd_path;
 pub mod reindex;
 pub mod repo;

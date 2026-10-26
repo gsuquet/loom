@@ -1199,3 +1199,179 @@ async fn task_page_status_picker_moves_the_task_like_loom_set() {
     );
     assert_eq!(event_types(&client, &id).await.len(), before + 1);
 }
+
+/// An editor script in the sandbox: `body` runs with the file as `$1`.
+fn script(sandbox: &Sandbox, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = sandbox.dir.path().join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
+}
+
+#[tokio::test]
+async fn the_editor_steps_of_the_tui_record_a_save_and_keep_a_failure_unchanged() {
+    use loom::edit::{self, EditError};
+
+    let sandbox = Sandbox::new();
+    let added = sandbox.add(&["-c", "work", "Original"]);
+    let id = added.summary.id.to_string();
+    let client = Client::new(sandbox.socket());
+    let stores = BTreeMap::from([(
+        ContextName::from_str("work").unwrap(),
+        sandbox.loom_home().join("contexts/work"),
+    )]);
+
+    // A save is recorded: the outcome shows the new title.
+    let retitle = script(
+        &sandbox,
+        "retitle",
+        r#"t=$(mktemp) && sed 's/^title = .*/title = "Edited in the TUI"/' "$1" > "$t" && cat "$t" > "$1" && rm "$t""#,
+    );
+    let session = edit::begin(&client, &id, &stores).await.unwrap();
+    edit::run_editor(&session, Some(&retitle), None).unwrap();
+    let outcome = edit::finish(&client, &session).await.unwrap();
+    assert!(outcome.text.contains("Edited in the TUI"), "{outcome:?}");
+    assert!(outcome.warnings.is_empty(), "{outcome:?}");
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    assert_eq!(detail.summary.task.unwrap().title, "Edited in the TUI");
+
+    // An editor that fails leaves the file as it is and says so.
+    let session = edit::begin(&client, &id, &stores).await.unwrap();
+    let before = std::fs::read_to_string(&session.path).unwrap();
+    let error = edit::run_editor(&session, None, Some("false")).unwrap_err();
+    assert!(matches!(error, EditError::EditorFailed { .. }), "{error}");
+    assert_eq!(std::fs::read_to_string(&session.path).unwrap(), before);
+
+    // An invalid result is reported and the file is kept as saved.
+    let breaker = script(&sandbox, "breaker", r#"printf 'not a task file\n' > "$1""#);
+    let session = edit::begin(&client, &id, &stores).await.unwrap();
+    edit::run_editor(&session, Some(&breaker), None).unwrap();
+    let error = edit::finish(&client, &session).await.unwrap_err();
+    assert!(matches!(error, EditError::Invalid { .. }), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&session.path).unwrap(),
+        "not a task file\n"
+    );
+
+    // An editor that does not exist ends with an error, not a panic.
+    let error = edit::run_editor(&session, Some("/nonexistent/editor"), None).unwrap_err();
+    assert!(matches!(error, EditError::EditorFailed { .. }), "{error}");
+}
+
+mod suspension {
+    use std::cell::RefCell;
+    use std::io;
+
+    use loom::tui::terminal::{SuspendError, resume_with, suspend_with, while_suspended};
+
+    fn fail() -> io::Result<()> {
+        Err(io::Error::other("refused"))
+    }
+
+    #[tokio::test]
+    async fn the_terminal_is_given_away_before_the_work_and_taken_back_after_it() {
+        let steps = RefCell::new(Vec::new());
+        let output = while_suspended(
+            || {
+                steps.borrow_mut().push("suspend");
+                Ok(())
+            },
+            || {
+                steps.borrow_mut().push("resume");
+                Ok(())
+            },
+            async {
+                steps.borrow_mut().push("work");
+                7
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, 7);
+        assert_eq!(*steps.borrow(), ["suspend", "work", "resume"]);
+    }
+
+    #[tokio::test]
+    async fn the_terminal_is_taken_back_when_the_work_fails() {
+        let steps = RefCell::new(Vec::new());
+        let output: Result<(), &str> = while_suspended(
+            || Ok(()),
+            || {
+                steps.borrow_mut().push("resume");
+                Ok(())
+            },
+            async { Err("the editor failed") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, Err("the editor failed"));
+        assert_eq!(*steps.borrow(), ["resume"]);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_that_cannot_be_given_away_runs_no_work() {
+        let ran = RefCell::new(false);
+        let result = while_suspended(fail, || Ok(()), async {
+            *ran.borrow_mut() = true;
+        })
+        .await;
+        assert!(matches!(result, Err(SuspendError::Suspend(_))));
+        assert!(!*ran.borrow());
+    }
+
+    #[tokio::test]
+    async fn a_terminal_that_cannot_be_taken_back_is_an_error_for_the_caller() {
+        let result = while_suspended(|| Ok(()), fail, async {}).await;
+        assert!(matches!(result, Err(SuspendError::Resume(_))));
+    }
+
+    #[test]
+    fn a_failed_suspension_puts_the_screen_back() {
+        let steps = RefCell::new(Vec::new());
+        let result = suspend_with(
+            || {
+                steps.borrow_mut().push("leave screen");
+                Ok(())
+            },
+            fail,
+            || {
+                steps.borrow_mut().push("enter screen");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*steps.borrow(), ["leave screen", "enter screen"]);
+
+        // If the screen cannot be left, nothing else changes.
+        let steps = RefCell::new(Vec::new());
+        let result = suspend_with(
+            fail,
+            || {
+                steps.borrow_mut().push("raw off");
+                Ok(())
+            },
+            || Ok(()),
+        );
+        assert!(result.is_err());
+        assert!(steps.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_resume_leaves_raw_mode_again() {
+        let steps = RefCell::new(Vec::new());
+        let result = resume_with(
+            || {
+                steps.borrow_mut().push("raw on");
+                Ok(())
+            },
+            fail,
+            || {
+                steps.borrow_mut().push("raw off");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*steps.borrow(), ["raw on", "raw off"]);
+    }
+}

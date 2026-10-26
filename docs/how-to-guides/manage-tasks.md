@@ -96,6 +96,8 @@ loom edit k3q8
 
 `loom edit` uses `VISUAL`, then `EDITOR`. If the saved file is not valid, `loom` gives the reason and keeps the file as you saved it. To correct it, run `loom edit` again.
 
+In the TUI, press `e` on the task page to do the same. The TUI gives the terminal to the editor and takes it back when the editor ends.
+
 ## Wait on someone
 
 ```bash

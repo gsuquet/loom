@@ -34,6 +34,72 @@ pub fn write_restore_sequences<W: Write>(out: &mut W) -> io::Result<()> {
     out.flush()
 }
 
+/// Leaves the alternate screen, then raw mode. If raw mode cannot be left, the screen is
+/// entered again and the error returned, so that the terminal stays as it was.
+///
+/// # Errors
+///
+/// The first error of the steps.
+pub fn suspend_with(
+    leave_screen: impl FnOnce() -> io::Result<()>,
+    disable_raw: impl FnOnce() -> io::Result<()>,
+    enter_screen: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    leave_screen()?;
+    if let Err(error) = disable_raw() {
+        let _ = enter_screen();
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Enters raw mode, then the alternate screen. If the screen cannot be entered, raw mode is
+/// left again and the error returned, so that the terminal is in its normal state.
+///
+/// # Errors
+///
+/// The first error of the steps.
+pub fn resume_with(
+    enable_raw: impl FnOnce() -> io::Result<()>,
+    enter_screen: impl FnOnce() -> io::Result<()>,
+    disable_raw: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    enable_raw()?;
+    if let Err(error) = enter_screen() {
+        let _ = disable_raw();
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Why [`while_suspended`] failed.
+#[derive(Debug, thiserror::Error)]
+pub enum SuspendError {
+    /// The terminal could not be given away. The work did not run, and the terminal is as it was.
+    #[error("cannot leave the terminal: {0}")]
+    Suspend(io::Error),
+    /// The terminal could not be taken back. The caller must stop the TUI.
+    #[error("cannot take the terminal back: {0}")]
+    Resume(io::Error),
+}
+
+/// Runs `work` with the terminal given away: `suspend`, then `work`, then `resume`. `resume`
+/// runs whatever `work` returns.
+///
+/// # Errors
+///
+/// [`SuspendError`] when the terminal cannot be given away or taken back.
+pub async fn while_suspended<T>(
+    suspend: impl FnOnce() -> io::Result<()>,
+    resume: impl FnOnce() -> io::Result<()>,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, SuspendError> {
+    suspend().map_err(SuspendError::Suspend)?;
+    let output = work.await;
+    resume().map_err(SuspendError::Resume)?;
+    Ok(output)
+}
+
 type PanicHook = Arc<dyn Fn(&panic::PanicHookInfo<'_>) + Send + Sync>;
 
 /// Guard that restores the terminal on drop and installs a panic hook so a panic restores the
@@ -91,6 +157,40 @@ impl TerminalGuard {
             restore_fn,
             prev_hook: Some(prev_arc),
         }
+    }
+
+    /// Gives the terminal back for a program that needs it, such as the editor: leaves the
+    /// alternate screen and raw mode. If it fails half way, it puts the screen back, so that
+    /// the TUI can go on. Call [`Self::resume`] when the program ends.
+    ///
+    /// This does not touch the `restored` flag of the guard, on purpose: the flag says that the
+    /// guard has restored the terminal for good (panic hook and drop). A suspension is
+    /// temporary, and a panic or a drop while the editor runs must still restore the terminal
+    /// (the restore sequences are safe to write twice).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if the terminal cannot be restored.
+    pub fn suspend(&self) -> io::Result<()> {
+        suspend_with(
+            || write_restore_sequences(&mut io::stdout()),
+            disable_raw_mode,
+            || write_enter_sequences(&mut io::stdout()),
+        )
+    }
+
+    /// Takes the terminal back after [`Self::suspend`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if raw mode or the alternate screen cannot be enabled. The
+    /// terminal is then in its normal state.
+    pub fn resume(&self) -> io::Result<()> {
+        resume_with(
+            enable_raw_mode,
+            || write_enter_sequences(&mut io::stdout()),
+            disable_raw_mode,
+        )
     }
 
     /// Restores the terminal immediately (idempotent).
