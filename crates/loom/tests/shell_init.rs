@@ -459,5 +459,16 @@ exit 0
         assert_eq!(output.status.code(), Some(0), "{shell:?}: {output:?}");
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert_eq!(stdout.trim(), target_str, "{shell:?}: {stdout}");
+
+        // 6. `loom --help` is not the TUI: no LOOM_CD_FILE, no directory change
+        let script = format!("{EVAL_SNIPPET}cd \"$HOME\"\nSIMULATE_TUI_GO=1 loom --help\npwd\n");
+        let output = fixture.run(&script, true);
+        assert_eq!(output.status.code(), Some(0), "{shell:?}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            stdout.trim(),
+            fixture.home().display().to_string(),
+            "{shell:?}: {stdout}"
+        );
     });
 }

@@ -22,6 +22,10 @@ if command -v loom >/dev/null 2>&1; then
           ;;
         --)
           ;;
+        -h|--help|-V|--version)
+          is_tui=0
+          break
+          ;;
         -*)
           ;;
         go)
