@@ -1066,3 +1066,94 @@ async fn triage_keys_accept_undo_go_and_create_through_real_loomd() {
     .await;
     assert!(refused.is_err());
 }
+
+async fn event_types(client: &Client, id: &TaskId) -> Vec<String> {
+    let events: serde_json::Value = client.get(&format!("/v1/tasks/{id}/events")).await.unwrap();
+    events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["type"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn task_page_pickers_edit_one_field_per_event_and_match_loom_set() {
+    let sandbox = Sandbox::new();
+    let added = sandbox.add(&["-c", "work", "Edit me"]);
+    let by_cli = sandbox.add(&["-c", "work", "Edited by the CLI"]);
+    let id = added.summary.id.clone();
+    let client = Client::new(sandbox.socket());
+
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    let inbox: TaskList = client
+        .get(&list_api_path(None, Some("inbox"), false))
+        .await
+        .unwrap();
+    state.inbox = inbox.tasks;
+    state.active_tab = QueueTab::Inbox;
+    let position = state.inbox.iter().position(|t| t.id == id).unwrap();
+    state.set_selected(position);
+    press(&mut state, KeyCode::Enter);
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    state.page_stack[0].content = ObjectPageContent::Task(Box::new(detail));
+
+    let before = event_types(&client, &id).await.len();
+    let task = |detail: TaskDetail| detail.summary.task.unwrap();
+
+    // Importance: the picker starts on the current value (p3 for a chore).
+    press(&mut state, KeyCode::Char('i'));
+    press(&mut state, KeyCode::Char('k'));
+    let effect = press(&mut state, KeyCode::Enter);
+    let outcome = execute_action(&client, ActionRequest::from_effect(effect).unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(outcome.task_id.as_ref(), Some(&id));
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    assert_eq!(task(detail).importance, Importance::P2);
+    let types = event_types(&client, &id).await;
+    assert_eq!(types.len(), before + 1, "one event per picker: {types:?}");
+    assert_eq!(types.last().map(String::as_str), Some("edited"));
+
+    // `u` on the page undoes it.
+    state.record_action_success(id.clone());
+    let effect = press(&mut state, KeyCode::Char('u'));
+    execute_action(&client, ActionRequest::from_effect(effect).unwrap(), None)
+        .await
+        .unwrap();
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    assert_eq!(task(detail).importance, Importance::P3);
+
+    // Kind and due date.
+    press(&mut state, KeyCode::Char('t'));
+    press(&mut state, KeyCode::Char('j'));
+    let effect = press(&mut state, KeyCode::Enter);
+    execute_action(&client, ActionRequest::from_effect(effect).unwrap(), None)
+        .await
+        .unwrap();
+    press(&mut state, KeyCode::Char('d'));
+    for c in "2026-11-01".chars() {
+        press(&mut state, KeyCode::Char(c));
+    }
+    let effect = press(&mut state, KeyCode::Enter);
+    execute_action(&client, ActionRequest::from_effect(effect).unwrap(), None)
+        .await
+        .unwrap();
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    let edited = task(detail);
+    assert_eq!(edited.kind.name(), "bug");
+    assert_eq!(edited.due, Some(jiff::civil::date(2026, 11, 1)));
+
+    // The CLI equivalent, `loom set`, writes the same kind of event.
+    let output = sandbox.run(&["set", &by_cli.summary.id.to_string(), "due=2026-11-01"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        event_types(&client, &by_cli.summary.id).await.last(),
+        event_types(&client, &id).await.last()
+    );
+}
