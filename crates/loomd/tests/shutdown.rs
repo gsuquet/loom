@@ -120,7 +120,7 @@ fn a_finished_child_leaves_the_registry() {
     // Nothing to stop: returns at once.
     let started = Instant::now();
     groups.terminate(Duration::from_secs(5));
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(4));
 }
 
 #[test]

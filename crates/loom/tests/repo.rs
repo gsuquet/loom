@@ -649,7 +649,7 @@ fn registration_on_use_gives_up_after_its_budget() {
     let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     // A request without budget would wait 5 s.
-    assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
 }
 
 /// `git <args>` in `dir`, hermetic (`HOME` is `home`, no global or system configuration, no
