@@ -34,7 +34,7 @@ An older loom does not know the `context` field change. It skips the line as an 
 
 ## Consequences
 
-- No data is lost on a failure: at every moment at least one complete copy exists.
+- No data is lost on a failure, apart from the limit in 9a: at every moment at least one complete copy exists.
 - A hard crash can leave two copies. This is rare, visible and fixed with one removal.
 - An older loom reads the `context` field change as an invalid event line and skips it (forward compatibility, ADR-0013, decision 6).
 - A future central instance can implement the same two port operations (`receive`, `remove`) in its own way.
