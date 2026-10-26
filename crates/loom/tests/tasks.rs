@@ -1046,12 +1046,25 @@ fn set_context_moves_the_task_after_the_other_changes() {
     gesture(&sandbox, &["set", &id, &format!("parent={parent}")]);
 
     // A task with a parent does not move; the message says what to do.
-    let refused = sandbox.run(&sandbox.home(), None, &["set", &id, "context=home"]);
+    // It is refused before the other changes of the command are applied.
+    let refused = sandbox.run(
+        &sandbox.home(),
+        None,
+        &["set", &id, "title=Renamed", "context=home"],
+    );
     assert_eq!(refused.status.code(), Some(1));
     assert!(
-        stderr(&refused).contains("has the parent"),
+        stderr(&refused).contains("has a parent"),
         "{}",
         stderr(&refused)
+    );
+    assert_eq!(
+        gesture(&sandbox, &["show", &id])
+            .summary
+            .task
+            .unwrap()
+            .title,
+        "Child"
     );
     assert_eq!(
         gesture(&sandbox, &["show", &id]).summary.context.as_str(),

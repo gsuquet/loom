@@ -20,6 +20,18 @@ The task must keep its ID and its history (ADR-0013: IDs are random, the log is 
 7. **Commits.** The target store gets one commit of the task (`edited(<id>): context`). The source store gets one commit of the removal (`moved(<id>): moved to <context>`). The two commits are not atomic; a failed commit is retried as any other (the store is pending).
 8. **The focus does not follow.** The focus is per context and machine-local. A focused task that moves is not the focus of its old context any more.
 
+9. **Known limits.** (a) A hand edit of `task.md` made in the short time between the read and the copy is lost: the move writes the `task.md` it computed. The window is milliseconds and the file is under the per-task lock of loomd only. (b) The children of a task are counted from the index. A child whose file is invalid is not in the index, so it does not block the move of its parent; the child then names a parent of another context, which the reconciliation reports as for any other relation to a missing task. (c) A move to the context the task is in is refused with `400`, so a repeated move is not idempotent: the client compares the context first (`loom set` does).
+
+## Older versions
+
+An older loom does not know the `context` field change. It skips the line as an invalid event and shows it in the list of lines it does not replay. It replays the other events, so it computes the context of the first event (A), while `task.md` and the store say B. This is no hand edit for the reconciliation: it does not compare the context, and the file is valid since its context is the one of its store. The older loom shows the task in B, without a new event. This comes from reading the code of the reconciliation; no old binary was run against it.
+
+## Alternatives considered
+
+- **Rename the directory when both stores are on one volume.** It is atomic, but the stores are on one volume only by chance (a store is often its own repository, or a mounted volume), so a second path is needed for the general case, and it does not remove the need for the first. Rejected: two paths to test, and the fast one is rarely the case that fails.
+- **A write-ahead intent file** (`moving.json`, finished or rolled back at the next start). It would heal a crash with no manual step. Rejected for v0.3: it adds a third place to keep consistent, a recovery step at each start, and the case it covers (a crash in a window of milliseconds) is rare and already visible as a flagged duplicate. It stays possible later without a format change, since the copy and the removal are already separate steps.
+- **Delete and create again with a new ID.** Rejected: the ID and the history are the identity of the task (links from other tasks and from trackers).
+
 ## Consequences
 
 - No data is lost on a failure: at every moment at least one complete copy exists.

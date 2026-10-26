@@ -831,7 +831,11 @@ impl<P: StorePort> Tasks<P> {
                 from: from.clone(),
                 source: Box::new(source),
             })?;
-        if let Err(source) = from_store.remove(id) {
+        // A removal that failed after the task left `tasks/` is a removal that happened: a
+        // rollback then would delete the only copy.
+        if let Err(source) = from_store.remove(id)
+            && from_store.contains(id).unwrap_or(true)
+        {
             return Err(match to_store.remove(id) {
                 Ok(()) => TaskError::MoveFailed {
                     id: id.clone(),

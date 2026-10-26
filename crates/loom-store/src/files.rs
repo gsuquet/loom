@@ -12,7 +12,7 @@
 //!   directory found is the task.
 
 use std::collections::HashMap;
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
@@ -516,7 +516,10 @@ impl StorePort for FileStore {
             Err(failure) => return Err(io_error(&trash, failure)),
         }
         fs::rename(&source, &trash).map_err(|failure| io_error(&source, failure))?;
-        sync_parent(&source).map_err(|failure| io_error(&source, failure))?;
+        // The task is gone from `tasks/` now. A failed sync only means that the removal may not
+        // survive a power cut, and then the next start sees a duplicate ID, which is flagged.
+        // Failing here would make the caller roll back a copy that is the only one left.
+        let _ = sync_parent(&source);
         let _ = fs::remove_dir_all(&trash);
         Ok(())
     }
@@ -536,6 +539,8 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
             std::os::unix::fs::symlink(fs::read_link(entry.path())?, &target)?;
         } else {
             fs::copy(entry.path(), &target)?;
+            // The source is removed after this, so the copy must be on disk.
+            File::open(&target)?.sync_all()?;
         }
     }
     Ok(())

@@ -50,6 +50,8 @@ fn random(seed: u64) -> impl FnMut() -> u64 {
 struct Flaky {
     inner: FileStore,
     fail_remove: Arc<AtomicBool>,
+    /// Removes the task, then reports a failure, as a failed sync after the rename does.
+    fail_after_remove: Arc<AtomicBool>,
 }
 
 impl StorePort for Flaky {
@@ -91,7 +93,14 @@ impl StorePort for Flaky {
                 source: std::io::Error::other("injected failure"),
             });
         }
-        self.inner.remove(id)
+        self.inner.remove(id)?;
+        if self.fail_after_remove.load(Ordering::SeqCst) {
+            return Err(PortError::Io {
+                path: PathBuf::from("/injected"),
+                source: std::io::Error::other("injected failure after the removal"),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -99,6 +108,7 @@ struct Fixture {
     dir: TempDir,
     fail_a: Arc<AtomicBool>,
     fail_b: Arc<AtomicBool>,
+    late_a: Arc<AtomicBool>,
 }
 
 impl Fixture {
@@ -107,6 +117,7 @@ impl Fixture {
             dir: TempDir::new().unwrap(),
             fail_a: Arc::new(AtomicBool::new(false)),
             fail_b: Arc::new(AtomicBool::new(false)),
+            late_a: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -124,6 +135,11 @@ impl Fixture {
             .map(|(name, fail)| Flaky {
                 inner: FileStore::new(context(name), self.root(name)),
                 fail_remove: Arc::clone(fail),
+                fail_after_remove: if name == "a" {
+                    Arc::clone(&self.late_a)
+                } else {
+                    Arc::new(AtomicBool::new(false))
+                },
             })
             .collect();
         Tasks::new(
@@ -443,4 +459,18 @@ fn a_document_is_needed_to_receive() {
         to.receive(from, &id, &TaskWrite::default()),
         Err(PortError::MissingDocument)
     ));
+}
+
+#[test]
+fn a_removal_that_fails_after_the_task_left_is_not_rolled_back() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = create(&mut tasks, "Gone", Relations::default(), 1);
+    fixture.late_a.store(true, Ordering::SeqCst);
+
+    let moved = move_to(&mut tasks, &task.id, "b").unwrap();
+
+    assert_eq!(moved.context, context("b"));
+    assert!(!fixture.task_dir("a", &task.id).exists());
+    assert!(fixture.task_dir("b", &task.id).is_dir());
 }

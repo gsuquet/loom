@@ -145,6 +145,24 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
         let client = client(layout).await?;
         let mut detail = get(&client, &args.id).await?;
         let id = detail.summary.id.to_string();
+        // Before any change: a move that will be refused must not leave the other changes half applied.
+        if let Some(context) = &plan.context
+            && *context != detail.summary.context
+        {
+            let parent_after = match &plan.parent {
+                Some(change) => change.is_some(),
+                None => detail
+                    .summary
+                    .task
+                    .as_ref()
+                    .is_some_and(|task| task.relations.parent.is_some()),
+            };
+            if parent_after {
+                return Err(miette!(
+                    "the task has a parent and does not move: add `parent=none` to the same command"
+                ));
+            }
+        }
         let mut edit = plan.edit;
         if let Some(parent) = plan.parent {
             let parent = match parent {
