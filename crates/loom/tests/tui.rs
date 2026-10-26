@@ -1258,3 +1258,120 @@ async fn the_editor_steps_of_the_tui_record_a_save_and_keep_a_failure_unchanged(
     let error = edit::run_editor(&session, Some("/nonexistent/editor"), None).unwrap_err();
     assert!(matches!(error, EditError::EditorFailed { .. }), "{error}");
 }
+
+mod suspension {
+    use std::cell::RefCell;
+    use std::io;
+
+    use loom::tui::terminal::{SuspendError, resume_with, suspend_with, while_suspended};
+
+    fn fail() -> io::Result<()> {
+        Err(io::Error::other("refused"))
+    }
+
+    #[tokio::test]
+    async fn the_terminal_is_given_away_before_the_work_and_taken_back_after_it() {
+        let steps = RefCell::new(Vec::new());
+        let output = while_suspended(
+            || {
+                steps.borrow_mut().push("suspend");
+                Ok(())
+            },
+            || {
+                steps.borrow_mut().push("resume");
+                Ok(())
+            },
+            async {
+                steps.borrow_mut().push("work");
+                7
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, 7);
+        assert_eq!(*steps.borrow(), ["suspend", "work", "resume"]);
+    }
+
+    #[tokio::test]
+    async fn the_terminal_is_taken_back_when_the_work_fails() {
+        let steps = RefCell::new(Vec::new());
+        let output: Result<(), &str> = while_suspended(
+            || Ok(()),
+            || {
+                steps.borrow_mut().push("resume");
+                Ok(())
+            },
+            async { Err("the editor failed") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, Err("the editor failed"));
+        assert_eq!(*steps.borrow(), ["resume"]);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_that_cannot_be_given_away_runs_no_work() {
+        let ran = RefCell::new(false);
+        let result = while_suspended(fail, || Ok(()), async {
+            *ran.borrow_mut() = true;
+        })
+        .await;
+        assert!(matches!(result, Err(SuspendError::Suspend(_))));
+        assert!(!*ran.borrow());
+    }
+
+    #[tokio::test]
+    async fn a_terminal_that_cannot_be_taken_back_is_an_error_for_the_caller() {
+        let result = while_suspended(|| Ok(()), fail, async {}).await;
+        assert!(matches!(result, Err(SuspendError::Resume(_))));
+    }
+
+    #[test]
+    fn a_failed_suspension_puts_the_screen_back() {
+        let steps = RefCell::new(Vec::new());
+        let result = suspend_with(
+            || {
+                steps.borrow_mut().push("leave screen");
+                Ok(())
+            },
+            fail,
+            || {
+                steps.borrow_mut().push("enter screen");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*steps.borrow(), ["leave screen", "enter screen"]);
+
+        // If the screen cannot be left, nothing else changes.
+        let steps = RefCell::new(Vec::new());
+        let result = suspend_with(
+            fail,
+            || {
+                steps.borrow_mut().push("raw off");
+                Ok(())
+            },
+            || Ok(()),
+        );
+        assert!(result.is_err());
+        assert!(steps.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_resume_leaves_raw_mode_again() {
+        let steps = RefCell::new(Vec::new());
+        let result = resume_with(
+            || {
+                steps.borrow_mut().push("raw on");
+                Ok(())
+            },
+            fail,
+            || {
+                steps.borrow_mut().push("raw off");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*steps.borrow(), ["raw on", "raw off"]);
+    }
+}

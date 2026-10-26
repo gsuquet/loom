@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use clap::CommandFactory as _;
 use crossterm::event::{Event, KeyEventKind};
-use futures_util::StreamExt as _;
+use futures_util::{FutureExt as _, StreamExt as _};
 use loom::cli::{Cli, GlobalArgs};
 use loom::client::Client;
 use loom::conventions::{Exit, use_color};
@@ -21,7 +21,7 @@ use loom::tui::actions::{
 use loom::tui::color::Theme;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, SseState};
-use loom::tui::terminal::TerminalGuard;
+use loom::tui::terminal::{SuspendError, TerminalGuard, while_suspended};
 use loom_api::{
     ContextName, DEFAULT_SEARCH_LIMIT, EventCursor, SearchResults, TaskDetail, TaskId, TaskList,
 };
@@ -251,7 +251,8 @@ async fn run_tui_loop(
                             let mut effect = state.handle_key(key);
                             if let AppEffect::EditBody(id) = effect {
                                 drop(event_stream.take());
-                                edit_in_editor(&id, client, stores, &guard, &mut terminal, state).await;
+                                edit_in_editor(&id, client, stores, &guard, &mut terminal, &mut sigint, state)
+                                    .await?;
                                 event_stream = Some(crossterm::event::EventStream::new());
                                 effect = AppEffect::Refresh;
                             }
@@ -505,43 +506,65 @@ async fn next_terminal_event(
     }
 }
 
+/// Takes a signal that is already waiting, without waiting for one. Returns whether there was
+/// one.
+fn drain_signal(signal: &mut tokio::signal::unix::Signal) -> bool {
+    signal.recv().now_or_never().flatten().is_some()
+}
+
 /// `e` on the task page: gives the terminal to the editor on the task file, takes it back, and
 /// tells the result in the status bar. The steps are those of `loom edit` (`loom::edit`).
+///
+/// `Ctrl-C` goes to the editor: it is a key of the editor, and the editor decides what it does
+/// (a `SIGINT` to the whole process group also reaches loom). So the `SIGINT` that arrived
+/// while the editor ran is dropped when the editor ends. `SIGTERM` is a request to stop and is
+/// kept: the loop handles it as soon as the editor ends.
+///
+/// While the editor runs, change events wait in their channel, and the SSE worker waits behind
+/// them. The caller reloads the queues and the page when this returns, so no change is lost.
+///
+/// # Errors
+///
+/// The terminal cannot be taken back: the TUI must stop.
 async fn edit_in_editor(
     id: &TaskId,
     client: &Client,
     stores: &BTreeMap<ContextName, PathBuf>,
     guard: &TerminalGuard,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    sigint: &mut tokio::signal::unix::Signal,
     state: &mut AppState,
-) {
+) -> Result<()> {
     let session = match edit::begin(client, &id.to_string(), stores).await {
         Ok(session) => session,
         Err(error) => {
             state.set_error(error.to_string());
-            return;
+            return Ok(());
         }
     };
-    if let Err(error) = guard.suspend() {
-        state.set_error(format!("cannot leave the terminal to the editor: {error}"));
-        return;
-    }
     let editor_session = session.clone();
-    let ran = tokio::task::spawn_blocking(move || {
-        edit::run_editor(
-            &editor_session,
-            env::var("VISUAL").ok().as_deref(),
-            env::var("EDITOR").ok().as_deref(),
-        )
-    })
-    .await;
-    // The terminal comes back whatever the editor did.
-    let resumed = guard.resume();
+    let work = async move {
+        tokio::task::spawn_blocking(move || {
+            edit::run_editor(
+                &editor_session,
+                env::var("VISUAL").ok().as_deref(),
+                env::var("EDITOR").ok().as_deref(),
+            )
+        })
+        .await
+    };
+    let ran = match while_suspended(|| guard.suspend(), || guard.resume(), work).await {
+        Ok(ran) => ran,
+        Err(SuspendError::Suspend(error)) => {
+            state.set_error(format!("cannot leave the terminal to the editor: {error}"));
+            return Ok(());
+        }
+        Err(SuspendError::Resume(error)) => {
+            return Err(miette::miette!("cannot take the terminal back: {error}"));
+        }
+    };
+    drain_signal(sigint);
     let _ = terminal.clear();
-    if let Err(error) = resumed {
-        state.set_error(format!("cannot take the terminal back: {error}"));
-        return;
-    }
     match ran {
         Ok(Ok(())) => match edit::finish(client, &session).await {
             Ok(outcome) if outcome.warnings.is_empty() => {
@@ -553,6 +576,7 @@ async fn edit_in_editor(
         Ok(Err(error)) => state.set_error(error.to_string()),
         Err(error) => state.set_error(format!("the editor did not finish: {error}")),
     }
+    Ok(())
 }
 
 /// Sends an action to the worker. While another action runs, keeps the request for after it.
@@ -708,5 +732,24 @@ async fn run_sse_worker(client: Client, sse_tx: mpsc::Sender<SseMessage>) {
         }
         tokio::time::sleep(reconnect_delay).await;
         reconnect_delay = (reconnect_delay * 2).min(SSE_MAX_RECONNECT_DELAY);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_signal_that_arrived_while_the_editor_ran_is_dropped() {
+        let mut signal = signal(SignalKind::user_defined1()).unwrap();
+        assert!(!drain_signal(&mut signal), "nothing waits yet");
+        let status = std::process::Command::new("kill")
+            .args(["-USR1", &std::process::id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(drain_signal(&mut signal), "the signal waits");
+        assert!(!drain_signal(&mut signal), "and is gone once taken");
     }
 }

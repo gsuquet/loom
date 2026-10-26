@@ -160,6 +160,9 @@ The four pickers open on the `Overview` tab only. They show a status message whe
 
 `e` on the `Overview` tab opens `task.md` of the task in the editor, as `loom edit` does. The TUI leaves the alternate screen and raw mode, runs the editor, then takes the terminal back and reloads the task. The editor is `$VISUAL`, then `$EDITOR`, then `vi`; it can have arguments, such as `code --wait`.
 
+- `Ctrl-C` belongs to the editor. A `SIGINT` that reaches `loom` while the editor runs is dropped when the editor ends, so the exit status of the editor decides what happens. A `SIGTERM` is kept: the TUI stops when the editor ends.
+- Change events wait while the editor runs. When the editor ends, the TUI reloads the queues and the task, so no change is lost.
+- If the terminal cannot be given to the editor, the editor does not run and the status bar shows the error. If the terminal cannot be taken back, the TUI stops.
 - A task that is not loaded, or on another tab, does not open. An archived task is read-only and does not open. A task with an invalid file opens, so that the edit can fix it.
 - If the editor ends with an error, the file stays as it is and the status bar shows the error.
 - If the saved file is not a valid task, the status bar shows the error and the file stays as saved. `loomd` shows the task read-only until the file is valid.
