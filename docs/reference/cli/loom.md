@@ -485,7 +485,7 @@ Global options apply.
 
 ### `loom set`
 
-Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format` (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`), `repo` (a repository, or `none`) and `pinned` (`yes` or `no`)
+Change fields of a task with `key=value` pairs. The keys are `title`, `kind`, `format` (with `kind=content`), `importance`, `due` (a date, or `none`), `parent` (an ID, or `none`), `repo` (a repository, or `none`), `pinned` (`yes` or `no`) and `status` (any status except `waiting`, which `loom snooze` sets)
 
 ```text
 loom set [OPTIONS] <ID> <KEY=VALUE>...

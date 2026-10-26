@@ -184,6 +184,9 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
                 .await
                 .map_err(|error| api_error(&error))?;
         }
+        if let Some(status) = plan.status {
+            detail = action(&client, &id, status.as_str(), None).await?;
+        }
         if let Some(pinned) = plan.pinned {
             let name = if pinned { "pin" } else { "unpin" };
             detail = action(&client, &id, name, None).await?;
