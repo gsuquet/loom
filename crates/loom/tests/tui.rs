@@ -1493,3 +1493,67 @@ async fn task_page_relations_tab_reads_the_tree_of_loomd_and_follows_it() {
     press(&mut state, KeyCode::Esc);
     assert_eq!(state.page_stack.len(), 1);
 }
+
+#[tokio::test]
+async fn the_context_picker_moves_a_task_like_loom_set() {
+    let sandbox = Sandbox::new();
+    let by_tui = sandbox.add(&["-c", "work", "Moved by the TUI"]);
+    let by_cli = sandbox.add(&["-c", "work", "Moved by the CLI"]);
+    let id = by_tui.summary.id.clone();
+    let client = Client::new(sandbox.socket());
+
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![
+            ContextName::from_str("personal").unwrap(),
+            ContextName::from_str("work").unwrap(),
+        ],
+        jiff::civil::date(2026, 10, 22),
+    );
+    let inbox: TaskList = client
+        .get(&list_api_path(None, Some("inbox"), false))
+        .await
+        .unwrap();
+    state.inbox = inbox.tasks;
+    state.active_tab = QueueTab::Inbox;
+    let position = state.inbox.iter().position(|t| t.id == id).unwrap();
+    state.set_selected(position);
+    press(&mut state, KeyCode::Enter);
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    state.page_stack[0].content = ObjectPageContent::Task(Box::new(detail));
+
+    // The picker lists the other contexts only; `personal` is the first.
+    press(&mut state, KeyCode::Char('c'));
+    let effect = press(&mut state, KeyCode::Enter);
+    let outcome = execute_action(&client, ActionRequest::from_effect(effect).unwrap(), None)
+        .await
+        .unwrap();
+    // A move is not undone: it is not the target of `u`.
+    assert_eq!(outcome.task_id, None);
+    assert!(outcome.should_refresh);
+
+    let moved: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    assert_eq!(moved.summary.context.as_str(), "personal");
+    let output = sandbox.run(&["set", &by_cli.summary.id.to_string(), "context=personal"]);
+    assert!(output.status.success());
+
+    let last_event = |id: TaskId| {
+        let client = &client;
+        async move {
+            let events: serde_json::Value =
+                client.get(&format!("/v1/tasks/{id}/events")).await.unwrap();
+            let mut last = events["events"].as_array().unwrap().last().unwrap().clone();
+            // The ID, the time and the actor differ by nature; the rest is the same.
+            for key in ["id", "at", "actor", "machine_id", "v"] {
+                last.as_object_mut().unwrap().remove(key);
+            }
+            last
+        }
+    };
+    let tui_event = last_event(id.clone()).await;
+    let cli_event = last_event(by_cli.summary.id.clone()).await;
+    assert_eq!(tui_event, cli_event);
+    assert_eq!(tui_event["type"], "edited");
+    assert_eq!(tui_event["changes"][0]["field"], "context");
+}

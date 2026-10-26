@@ -105,6 +105,8 @@ pub enum PickOption {
     Importance(Importance),
     /// A status that the task can move to.
     Status(StatusName),
+    /// A context that the task can move to.
+    Context(ContextName),
 }
 
 /// State of the open field picker (`t`, `i`, `d` on the task page).
@@ -369,6 +371,8 @@ pub enum AppEffect {
     EditBody(TaskId),
     /// Move a task to a status other than `waiting`.
     SetTaskStatus { id: TaskId, status: StatusName },
+    /// Move a task to the store of another context.
+    MoveTask { id: TaskId, context: ContextName },
     /// Cancel a task.
     CancelTask(TaskId),
     /// Mark a task done.
@@ -1236,6 +1240,24 @@ impl AppState {
         AppEffect::EditBody(detail.summary.id.clone())
     }
 
+    /// The contexts that `task` can move to, or why it cannot move.
+    fn context_options(&self, task: &loom_core::Task) -> Result<Vec<PickOption>, &'static str> {
+        if task.relations.parent.is_some() {
+            return Err("the task has a parent and does not move: clear its parent first");
+        }
+        let options = self
+            .contexts
+            .iter()
+            .filter(|context| **context != task.context)
+            .cloned()
+            .map(PickOption::Context)
+            .collect::<Vec<_>>();
+        if options.is_empty() {
+            return Err("there is no other context");
+        }
+        Ok(options)
+    }
+
     fn open_picker(&mut self, field: PickField) -> AppEffect {
         if self
             .page_stack
@@ -1310,6 +1332,13 @@ impl AppState {
                 }
                 (options, None, String::new())
             }
+            PickField::Context => match self.context_options(task) {
+                Ok(options) => (options, None, String::new()),
+                Err(message) => {
+                    self.status_message = Some(message.into());
+                    return AppEffect::None;
+                }
+            },
             PickField::Due => (
                 Vec::new(),
                 None,
@@ -1344,7 +1373,10 @@ impl AppState {
             PickField::Status => {
                 let status = match m.options.get(m.selected) {
                     Some(PickOption::Status(status)) => *status,
-                    Some(PickOption::Kind(_) | PickOption::Importance(_)) | None => {
+                    Some(
+                        PickOption::Kind(_) | PickOption::Importance(_) | PickOption::Context(_),
+                    )
+                    | None => {
                         return AppEffect::None;
                     }
                 };
@@ -1364,11 +1396,23 @@ impl AppState {
                 }
                 return AppEffect::SetTaskStatus { id, status };
             }
+            PickField::Context => {
+                let context = match m.options.get(m.selected) {
+                    Some(PickOption::Context(context)) => context.clone(),
+                    Some(
+                        PickOption::Kind(_) | PickOption::Importance(_) | PickOption::Status(_),
+                    )
+                    | None => return AppEffect::None,
+                };
+                self.pick_modal = None;
+                self.modal = None;
+                return AppEffect::MoveTask { id, context };
+            }
             PickField::Kind | PickField::Importance => match m.options.get(m.selected) {
                 Some(option) if Some(option) == m.current.as_ref() => {}
                 Some(PickOption::Kind(kind)) => edit.0 = Some(kind.clone()),
                 Some(PickOption::Importance(importance)) => edit.1 = Some(*importance),
-                Some(PickOption::Status(_)) | None => {}
+                Some(PickOption::Status(_) | PickOption::Context(_)) | None => {}
             },
             PickField::Due => {
                 let text = m.due_input.trim();
@@ -2255,6 +2299,80 @@ mod tests {
             state.status_message.as_deref(),
             Some("the task is not loaded yet")
         );
+    }
+
+    fn contexts(names: &[&str]) -> Vec<ContextName> {
+        names
+            .iter()
+            .map(|name| ContextName::from_str(name).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn the_context_picker_lists_the_other_contexts_and_moves_the_task() {
+        let mut state = state_with_loaded_page(None);
+        state.contexts = contexts(&["home", "work", "zeta"]);
+        press(&mut state, KeyCode::Char('c'));
+        assert_eq!(state.modal, Some(ModalKind::Pick));
+        // The task is in `work`: the choices are the other contexts.
+        let picker = state.pick_modal.as_ref().unwrap();
+        assert_eq!(
+            picker.options,
+            vec![
+                PickOption::Context(ContextName::from_str("home").unwrap()),
+                PickOption::Context(ContextName::from_str("zeta").unwrap()),
+            ]
+        );
+        press(&mut state, KeyCode::Down);
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            AppEffect::MoveTask {
+                id: "k3q7zm2a".parse().unwrap(),
+                context: ContextName::from_str("zeta").unwrap(),
+            }
+        );
+        assert_eq!(state.modal, None);
+        assert_eq!(state.pick_modal, None);
+    }
+
+    #[test]
+    fn the_context_picker_refuses_what_cannot_move() {
+        // No other context.
+        let mut state = state_with_loaded_page(None);
+        state.contexts = contexts(&["work"]);
+        press(&mut state, KeyCode::Char('c'));
+        assert_eq!(state.modal, None);
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("there is no other context")
+        );
+        // A task with a parent.
+        let mut state = state_with_loaded_page(None);
+        state.contexts = contexts(&["home", "work"]);
+        if let ObjectPageContent::Task(detail) = &mut state.page_stack[0].content {
+            detail.summary.task.as_mut().unwrap().relations.parent =
+                Some("m9x2rt4b".parse().unwrap());
+        }
+        press(&mut state, KeyCode::Char('c'));
+        assert_eq!(state.modal, None);
+        assert!(
+            state
+                .status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("has a parent")),
+            "{:?}",
+            state.status_message
+        );
+        // A read-only task, and another tab.
+        let mut state = state_with_loaded_page(Some(&TaskReadOnly::Archived(2026)));
+        state.contexts = contexts(&["home", "work"]);
+        press(&mut state, KeyCode::Char('c'));
+        assert_eq!(state.modal, None);
+        let mut state = state_with_loaded_page(None);
+        state.contexts = contexts(&["home", "work"]);
+        state.page_stack[0].tab = PageTab::Events;
+        press(&mut state, KeyCode::Char('c'));
+        assert_eq!(state.modal, None);
     }
 
     #[test]

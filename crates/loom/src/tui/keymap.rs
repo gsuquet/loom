@@ -153,6 +153,8 @@ pub enum PickField {
     Due,
     /// The status of the task.
     Status,
+    /// The context of the task.
+    Context,
 }
 
 impl PickField {
@@ -164,6 +166,7 @@ impl PickField {
             Self::Importance => "importance",
             Self::Due => "due date",
             Self::Status => "status",
+            Self::Context => "context",
         }
     }
 }
@@ -584,6 +587,13 @@ pub static BINDINGS: &[KeyBinding] = &[
         command: KeyCommand::OpenPicker(PickField::Due),
         label: "d",
         description: "Change the due date",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('c'), KeyModifiers::NONE)],
+        command: KeyCommand::OpenPicker(PickField::Context),
+        label: "c",
+        description: "Move to another context",
     },
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),
