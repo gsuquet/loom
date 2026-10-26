@@ -20,10 +20,11 @@ use loom::tui::actions::{
 };
 use loom::tui::color::Theme;
 use loom::tui::render::render;
-use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, SseState};
+use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, PageTab, SseState};
 use loom::tui::terminal::{SuspendError, TerminalGuard, while_suspended};
 use loom_api::{
-    ContextName, DEFAULT_SEARCH_LIMIT, EventCursor, SearchResults, TaskDetail, TaskId, TaskList,
+    ContextName, DEFAULT_SEARCH_LIMIT, EventCursor, SearchResults, TaskDetail, TaskEvents, TaskId,
+    TaskList,
 };
 use miette::{IntoDiagnostic as _, Result};
 use ratatui::Terminal;
@@ -68,6 +69,10 @@ enum FetchResponse {
     SearchResults {
         query: String,
         results: Result<SearchResults, String>,
+    },
+    TaskEvents {
+        id: TaskId,
+        result: Box<Result<TaskEvents, String>>,
     },
 }
 
@@ -154,6 +159,28 @@ async fn run_tui_loop(
                     .map_err(|e| e.to_string());
                 let _ = task_done_tx
                     .send(FetchResponse::TaskDetail {
+                        id,
+                        result: Box::new(result),
+                    })
+                    .await;
+            }
+        }
+    });
+
+    // 2b. Watch channel for the event log of the task whose Events tab is open.
+    let (events_tx, mut events_rx) = watch::channel::<Option<TaskId>>(None);
+    let events_client = client.clone();
+    let (events_done_tx, mut events_done_rx) = mpsc::channel::<FetchResponse>(16);
+    tokio::spawn(async move {
+        while events_rx.changed().await.is_ok() {
+            let maybe_id = events_rx.borrow().clone();
+            if let Some(id) = maybe_id {
+                let result = events_client
+                    .get::<TaskEvents>(&format!("/v1/tasks/{id}/events"))
+                    .await
+                    .map_err(|e| e.to_string());
+                let _ = events_done_tx
+                    .send(FetchResponse::TaskEvents {
                         id,
                         result: Box::new(result),
                     })
@@ -261,6 +288,7 @@ async fn run_tui_loop(
                                 state,
                                 &refresh_tx,
                                 &task_tx,
+                                &events_tx,
                                 &mut fetch_in_flight,
                                 &mut refresh_queued,
                                 &mut pending_search,
@@ -296,6 +324,7 @@ async fn run_tui_loop(
                             state,
                             &refresh_tx,
                             &task_tx,
+                            &events_tx,
                             &mut fetch_in_flight,
                             &mut refresh_queued,
                             &mut pending_search,
@@ -356,6 +385,14 @@ async fn run_tui_loop(
                             state.set_error(err);
                         }
                     }
+                    needs_redraw = true;
+                }
+            }
+
+            // Handle event logs for the Events tab
+            Some(events_resp) = events_done_rx.recv() => {
+                if let FetchResponse::TaskEvents { id, result } = events_resp {
+                    state.apply_events(&id, *result);
                     needs_redraw = true;
                 }
             }
@@ -446,6 +483,7 @@ async fn run_tui_loop(
                                 state,
                                 &refresh_tx,
                                 &task_tx,
+                                &events_tx,
                                 &mut fetch_in_flight,
                                 &mut refresh_queued,
                                 &mut pending_search,
@@ -626,6 +664,7 @@ fn handle_effect(
     state: &mut AppState,
     refresh_tx: &mpsc::Sender<RefreshRequest>,
     task_tx: &watch::Sender<Option<TaskId>>,
+    events_tx: &watch::Sender<Option<TaskId>>,
     fetch_in_flight: &mut bool,
     refresh_queued: &mut bool,
     pending_search: &mut Option<String>,
@@ -636,6 +675,13 @@ fn handle_effect(
     match effect {
         AppEffect::None => {}
         AppEffect::Refresh => {
+            // A change of the task adds events: read the log again while its tab is open.
+            if let Some(page) = state.page_stack.last()
+                && page.tab == PageTab::Events
+            {
+                let ObjectTarget::Task(id) = &page.target;
+                let _ = events_tx.send(Some(id.clone()));
+            }
             if *fetch_in_flight {
                 *refresh_queued = true;
             } else {
@@ -652,6 +698,9 @@ fn handle_effect(
         }
         AppEffect::FetchTask(id) => {
             let _ = task_tx.send(Some(id));
+        }
+        AppEffect::FetchEvents(id) => {
+            let _ = events_tx.send(Some(id));
         }
         AppEffect::Search(query) => {
             *pending_search = Some(query);

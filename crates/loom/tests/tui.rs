@@ -1375,3 +1375,59 @@ mod suspension {
         assert_eq!(*steps.borrow(), ["raw on", "raw off"]);
     }
 }
+
+#[tokio::test]
+async fn task_page_events_tab_lists_the_log_of_loomd_and_filters_it() {
+    let sandbox = Sandbox::new();
+    let added = sandbox.add(&["-c", "work", "--ready", "Log me"]);
+    let id = added.summary.id.clone();
+    let client = Client::new(sandbox.socket());
+    execute_action(&client, ActionRequest::Go(id.clone()), None)
+        .await
+        .unwrap();
+
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    let list: TaskList = client.get(&list_api_path(None, None, false)).await.unwrap();
+    state.today = list.tasks;
+    state.active_tab = QueueTab::Today;
+    let position = state.today.iter().position(|t| t.id == id).unwrap();
+    state.set_selected(position);
+    press(&mut state, KeyCode::Enter);
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    state.page_stack[0].content = ObjectPageContent::Task(Box::new(detail));
+
+    // Relations, then Events: the second `]` asks for the log, as the runtime does.
+    press(&mut state, KeyCode::Char(']'));
+    let effect = press(&mut state, KeyCode::Char(']'));
+    assert_eq!(effect, AppEffect::FetchEvents(id.clone()));
+    let log: loom_api::TaskEvents = client.get(&format!("/v1/tasks/{id}/events")).await.unwrap();
+    state.apply_events(&id, Ok(log));
+
+    let draw = |state: &AppState| {
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal.draw(|f| render(f, state)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = draw(&state);
+    assert!(text.contains("created"), "{text}");
+    assert!(text.contains("status_changed"), "{text}");
+
+    // `f` keeps one type: the first one in the log.
+    press(&mut state, KeyCode::Char('f'));
+    let text = draw(&state);
+    assert!(text.contains("f type: created"), "{text}");
+    assert!(!text.contains("status_changed  "), "{text}");
+}

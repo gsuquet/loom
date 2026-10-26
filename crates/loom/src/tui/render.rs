@@ -12,6 +12,7 @@ use ratatui::widgets::{
 };
 
 use super::color::Theme;
+use super::events::{self, EventsLoad, EventsView};
 use super::keymap::{Layer, ModalKind, PickField, QueueTab, ViewKind, bindings_for_layer};
 use super::markdown;
 use super::state::{
@@ -72,15 +73,15 @@ fn pane(title: impl Into<Line<'static>>) -> Block<'static> {
 }
 
 /// Key hints: key in strong text, action muted, two spaces between hints.
-fn hint_line(hints: &[(&str, &str)], theme: &Theme) -> Line<'static> {
+fn hint_line<K: AsRef<str>, D: AsRef<str>>(hints: &[(K, D)], theme: &Theme) -> Line<'static> {
     let mut spans = Vec::new();
     for (idx, (key, desc)) in hints.iter().enumerate() {
         if idx > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled((*key).to_owned(), theme.strong_style()));
+        spans.push(Span::styled(key.as_ref().to_owned(), theme.strong_style()));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled((*desc).to_owned(), theme.dim_style()));
+        spans.push(Span::styled(desc.as_ref().to_owned(), theme.dim_style()));
     }
     Line::from(spans)
 }
@@ -436,17 +437,86 @@ fn render_task_page(
     frame.render_widget(Paragraph::new(page_tab_bar(page.tab)), chunks[0]);
     match page.tab {
         PageTab::Overview => render_task_overview(frame, chunks[2], detail, page.scroll, theme),
-        PageTab::Relations | PageTab::Events => {
+        PageTab::Events => render_events(frame, chunks[2], &page.events, page.scroll, theme),
+        PageTab::Relations => {
             let text = Paragraph::new(Line::styled(
-                format!(
-                    "The {} tab has no content in this version.",
-                    page.tab.name()
-                ),
+                "The Relations tab has no content in this version.",
                 theme.dim_style(),
             ));
             frame.render_widget(text, chunks[2]);
         }
     }
+}
+
+/// `text` cut to `width` characters, with `…` where it was cut.
+fn clip(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+/// The lines of the Events tab: one per event, oldest first.
+fn events_lines(view: &EventsView, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let log = match &view.load {
+        EventsLoad::NotLoaded | EventsLoad::Loading => {
+            return vec![Line::styled("Loading events...", theme.dim_style())];
+        }
+        EventsLoad::Failed(error) => {
+            return vec![Line::styled(
+                format!("Cannot load the events: {error}"),
+                theme.error_style(),
+            )];
+        }
+        EventsLoad::Loaded(log) => log,
+    };
+    let rows = events::rows(
+        log,
+        view.type_filter.as_deref(),
+        view.actor_filter.as_deref(),
+    );
+    if rows.is_empty() {
+        let text = if log.events.is_empty() {
+            "No events."
+        } else {
+            "No event matches the filters."
+        };
+        return vec![Line::styled(text, theme.dim_style())];
+    }
+    let actor_width = rows
+        .iter()
+        .map(|r| r.actor.chars().count())
+        .max()
+        .unwrap_or(0);
+    let kind_width = rows.iter().map(|r| r.kind.len()).max().unwrap_or(0);
+    // time, two gaps of two columns, then the summary gets what is left.
+    let summary_width = width.saturating_sub(16 + actor_width + kind_width + 6);
+    rows.iter()
+        .map(|row| {
+            Line::from(vec![
+                Span::styled(row.time.clone(), theme.dim_style()),
+                Span::raw("  "),
+                Span::raw(format!("{:<actor_width$}", row.actor)),
+                Span::raw("  "),
+                Span::styled(format!("{:<kind_width$}", row.kind), theme.strong_style()),
+                Span::raw("  "),
+                Span::raw(clip(&row.summary, summary_width)),
+            ])
+        })
+        .collect()
+}
+
+fn render_events(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    view: &EventsView,
+    scroll: usize,
+    theme: &Theme,
+) {
+    let lines = events_lines(view, usize::from(area.width), theme);
+    let shown = lines.into_iter().skip(scroll).collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(shown), area);
 }
 
 fn page_tab_bar(selected: PageTab) -> Line<'static> {
@@ -648,8 +718,33 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     };
 
     let mut spans = vec![Span::raw(" ")];
-    spans.extend(hint_line(&hints, &state.theme).spans);
+    match state.page_stack.last() {
+        Some(page) if page.tab == PageTab::Events => {
+            spans.extend(hint_line(&events_hints(&page.events), &state.theme).spans);
+        }
+        Some(_) | None => spans.extend(hint_line(&hints, &state.theme).spans),
+    }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The footer of the Events tab: the two filters with their values.
+fn events_hints(view: &EventsView) -> Vec<(String, String)> {
+    let value = |filter: Option<&String>| filter.map_or("all", String::as_str).to_owned();
+    vec![
+        ("Esc".to_owned(), "back".to_owned()),
+        ("[/]".to_owned(), "tab".to_owned()),
+        (
+            "f".to_owned(),
+            format!("type: {}", value(view.type_filter.as_ref())),
+        ),
+        (
+            "a".to_owned(),
+            format!("actor: {}", value(view.actor_filter.as_ref())),
+        ),
+        ("j/k".to_owned(), "scroll".to_owned()),
+        ("?".to_owned(), "help".to_owned()),
+        ("q".to_owned(), "quit".to_owned()),
+    ]
 }
 
 fn render_modal(frame: &mut Frame<'_>, area: Rect, state: &AppState, modal: ModalKind) {
@@ -1322,6 +1417,7 @@ mod tests {
             ))),
             scroll: 0,
             tab,
+            events: EventsView::default(),
         });
         let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
         terminal.draw(|f| render(f, &state)).unwrap();
@@ -1343,6 +1439,129 @@ mod tests {
         assert!(text.contains("• retry 3 times"), "{text}");
         assert!(!text.contains("**"), "{text}");
         assert!(lines[19].contains("[/]"), "{text}");
+    }
+
+    fn events_page_lines(width: u16, view: EventsView) -> Vec<String> {
+        let mut state = AppState::new(
+            test_theme(),
+            None,
+            Vec::new(),
+            jiff::civil::date(2026, 10, 22),
+        );
+        let id: loom_core::TaskId = "k3q7zm2a".parse().unwrap();
+        state.page_stack.push(ObjectPageState {
+            target: ObjectTarget::Task(id),
+            content: ObjectPageContent::Task(Box::new(detail("", None))),
+            scroll: 0,
+            tab: PageTab::Events,
+            events: view,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        buffer_text_lines(&terminal)
+    }
+
+    fn loaded_events() -> EventsView {
+        use loom_api::{Actor, Change, Event, EventRecord, MachineId, Timestamp};
+        let record = |actor, event, secs| {
+            let origin = loom_core::Origin {
+                actor,
+                machine_id: MachineId("desk".to_owned()),
+            };
+            EventRecord::new(
+                "aaaaaaaa".parse().unwrap(),
+                event,
+                Timestamp::from_unix_secs(secs).unwrap(),
+                &origin,
+            )
+        };
+        let log = loom_api::TaskEvents {
+            id: "k3q7zm2a".parse().unwrap(),
+            events: vec![
+                record(
+                    Actor::User,
+                    Event::NoteLogged {
+                        text: "called the client about the login timeout and the retry policy"
+                            .to_owned(),
+                    },
+                    1_791_792_000,
+                ),
+                record(
+                    Actor::Daemon,
+                    Event::StatusChanged(Change {
+                        from: Status::Inbox,
+                        to: Status::Ready,
+                    }),
+                    1_791_792_060,
+                ),
+            ],
+            skipped: Vec::new(),
+        };
+        EventsView {
+            load: crate::tui::events::EventsLoad::Loaded(Box::new(log)),
+            ..EventsView::default()
+        }
+    }
+
+    #[test]
+    fn events_tab_lists_the_log_at_80_columns() {
+        let lines = events_page_lines(80, loaded_events());
+        let text = lines.join("\n");
+        assert!(lines[4].contains("user"), "{text}");
+        assert!(lines[4].contains("note_logged"), "{text}");
+        assert!(lines[4].contains("called the client"), "{text}");
+        assert!(lines[5].contains("loomd"), "{text}");
+        assert!(lines[5].contains("status: inbox -> ready"), "{text}");
+        // The long note is cut at the edge of the pane, never wrapped.
+        assert!(lines[4].contains('…'), "{text}");
+        assert!(lines.iter().all(|l| l.chars().count() <= 80), "{text}");
+        assert!(lines[11].contains("f type: all"), "{text}");
+        assert!(lines[11].contains("a actor: all"), "{text}");
+    }
+
+    #[test]
+    fn events_tab_shows_the_whole_note_at_160_columns() {
+        let lines = events_page_lines(160, loaded_events());
+        let text = lines.join("\n");
+        assert!(lines[4].contains("retry policy"), "{text}");
+        assert!(!lines[4].contains('…'), "{text}");
+    }
+
+    #[test]
+    fn events_tab_shows_the_filters_and_what_they_leave() {
+        let mut view = loaded_events();
+        view.type_filter = Some("status_changed".to_owned());
+        let lines = events_page_lines(80, view.clone());
+        let text = lines.join("\n");
+        assert!(lines[4].contains("loomd"), "{text}");
+        assert!(!text.contains("note_logged"), "{text}");
+        assert!(lines[11].contains("f type: status_changed"), "{text}");
+
+        view.actor_filter = Some("user".to_owned());
+        let text = events_page_lines(80, view).join("\n");
+        assert!(text.contains("No event matches the filters."), "{text}");
+    }
+
+    #[test]
+    fn events_tab_tells_loading_and_failure() {
+        let loading = events_page_lines(
+            80,
+            EventsView {
+                load: crate::tui::events::EventsLoad::Loading,
+                ..EventsView::default()
+            },
+        )
+        .join("\n");
+        assert!(loading.contains("Loading events..."), "{loading}");
+        let failed = events_page_lines(
+            80,
+            EventsView {
+                load: crate::tui::events::EventsLoad::Failed("boom".to_owned()),
+                ..EventsView::default()
+            },
+        )
+        .join("\n");
+        assert!(failed.contains("Cannot load the events: boom"), "{failed}");
     }
 
     #[test]
@@ -1603,6 +1822,7 @@ mod tests {
             })),
             scroll: 0,
             tab: PageTab::Overview,
+            events: EventsView::default(),
         });
         state.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

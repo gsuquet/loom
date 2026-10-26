@@ -58,9 +58,24 @@ When you press `Enter` on a selected row in a queue, or on a search result, the 
 
 The task page opens on the `Overview` tab. `Overview` and the preview pane show the title of the task, then one line for each field (`Status`, `Importance`, `Kind`, `Context`, `Due`, `Waiting`, `Rank`, `Parent`, `ID`), then the `Notes` section. A field with no value is not shown. When the notes start with a `Notes` heading, the TUI does not show that heading again. When the notes are empty, the section shows `No notes.` The TUI renders the notes as Markdown. It supports headings, bullet and numbered lists, quotes, rules, fenced code, and the inline marks `**bold**`, `*italic*` and `` `code` ``. It shows any other Markdown as written.
 
-The `Relations` and `Events` tabs show the text `The <tab> tab has no content in this version.`
+The `Relations` tab shows the text `The Relations tab has no content in this version.`
 
 When `loomd` sends a change event for the task, the TUI reloads the page.
+
+### Events tab
+
+The `Events` tab shows the event log of the task, from [`GET /v1/tasks/{id}/events`](api.md#taskevents), with the oldest event first. The TUI reads the log the first time that you select the tab, and again each time the page reloads while the tab is open. Until the log arrives, the tab shows `Loading events...`. When the read fails, the tab shows `Cannot load the events: <reason>`. A task with no events shows `No events.`
+
+Each event is one line with four columns:
+
+| Column | Content |
+| --- | --- |
+| Time | `YYYY-MM-DD HH:MM`, in UTC. |
+| Actor | `user`, `file` (a hand edit), `loomd`, or `agent <name>`. |
+| Type | `created`, `edited`, `status_changed`, `note_logged` or `undone`. |
+| Summary | What the event changed, for example `status: ready -> active`. The TUI cuts a long summary at the edge of the pane and shows `…`. |
+
+The footer of the tab shows the two filters, `f type: <value>` and `a actor: <value>`. The value is `all` when the filter is off. The two filters work together. When no event passes them, the tab shows `No event matches the filters.` Archived and read-only tasks have an `Events` tab like any other task.
 
 ## Modals
 
@@ -147,6 +162,8 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `PgDn` | Scroll down one page. |
 | `PgUp` | Scroll up one page. |
 | `r` | Reload the task from `loomd`. |
+| `f` | On the `Events` tab, select the next event type in the log, then no type. |
+| `a` | On the `Events` tab, select the next actor in the log, then no actor. |
 | `e` | Open the task file in the editor (see [Edit the task file](#edit-the-task-file)). |
 | `t` | Open the kind picker. |
 | `i` | Open the importance picker. |

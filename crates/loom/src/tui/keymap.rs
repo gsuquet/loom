@@ -11,6 +11,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::events::EventsFilter;
+
 /// Which queue tab is displayed in the queue view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueueTab {
@@ -214,6 +216,8 @@ pub enum KeyCommand {
     OpenPicker(PickField),
     /// Edit the task file in the editor.
     EditBody,
+    /// Cycle a filter of the Events tab.
+    CycleEventsFilter(EventsFilter),
     Back,
     NextPageTab,
     PrevPageTab,
@@ -566,6 +570,20 @@ pub static BINDINGS: &[KeyBinding] = &[
         command: KeyCommand::Undo,
         label: "u",
         description: "Undo last task change",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('f'), KeyModifiers::NONE)],
+        command: KeyCommand::CycleEventsFilter(EventsFilter::Type),
+        label: "f",
+        description: "Filter the events by type",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('a'), KeyModifiers::NONE)],
+        command: KeyCommand::CycleEventsFilter(EventsFilter::Actor),
+        label: "a",
+        description: "Filter the events by actor",
     },
     // Modal: Help
     KeyBinding {

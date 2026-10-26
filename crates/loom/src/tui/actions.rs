@@ -113,6 +113,7 @@ impl ActionRequest {
             effect @ (AppEffect::None
             | AppEffect::Refresh
             | AppEffect::FetchTask(_)
+            | AppEffect::FetchEvents(_)
             | AppEffect::EditBody(_)
             | AppEffect::Search(_)) => Err(effect),
         }
