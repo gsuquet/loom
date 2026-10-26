@@ -104,7 +104,8 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
         .map(|home| config.store_paths(&layout.home, &home))
         .unwrap_or_default();
     let mut state = AppState::new(theme, global.context.clone(), contexts, local_today())
-        .with_default_context(default_context);
+        .with_default_context(default_context)
+        .with_time_zone(jiff::tz::TimeZone::system());
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

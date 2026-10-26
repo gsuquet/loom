@@ -2,7 +2,10 @@
 //!
 //! Pure functions; the state keeps the loaded log and the two filters.
 
+use jiff::tz::TimeZone;
 use loom_api::{Actor, Event, EventRecord, FieldChange, TaskEvents};
+
+use super::render::importance_label;
 
 /// Which filter of the Events tab a key cycles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +44,7 @@ pub enum EventsLoad {
 /// One line of the timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
-    /// `YYYY-MM-DD HH:MM`, in UTC.
+    /// `YYYY-MM-DD HH:MM`, in the time zone of the TUI.
     pub time: String,
     /// Who: `user`, `loomd`, `file`, `agent <name>`.
     pub actor: String,
@@ -86,9 +89,11 @@ fn change_text(change: &FieldChange) -> String {
             c.to.name()
                 .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
         ),
-        FieldChange::Importance(c) => {
-            format!("importance: {:?} -> {:?}", c.from, c.to).to_lowercase()
-        }
+        FieldChange::Importance(c) => format!(
+            "importance: {} -> {}",
+            importance_label(c.from),
+            importance_label(c.to)
+        ),
         FieldChange::Due(c) => format!(
             "due: {} -> {}",
             c.from.map_or_else(|| "none".to_owned(), |d| d.to_string()),
@@ -120,20 +125,37 @@ pub fn summary(event: &Event) -> String {
     }
 }
 
-fn row(record: &EventRecord) -> EventRow {
-    let time = record.at.to_string().replace('T', " ");
+/// `YYYY-MM-DD HH:MM` of `at` in `zone`. An instant that `jiff` cannot place shows as in the log
+/// (UTC).
+fn local_time(at: loom_api::Timestamp, zone: &TimeZone) -> String {
+    i64::try_from(at.unix_secs())
+        .ok()
+        .and_then(|secs| jiff::Timestamp::from_second(secs).ok())
+        .map_or_else(
+            || at.to_string().replace('T', " ").chars().take(16).collect(),
+            |instant| {
+                instant
+                    .to_zoned(zone.clone())
+                    .strftime("%Y-%m-%d %H:%M")
+                    .to_string()
+            },
+        )
+}
+
+fn row(record: &EventRecord, zone: &TimeZone) -> EventRow {
     EventRow {
-        time: time.chars().take(16).collect(),
+        time: local_time(record.at, zone),
         actor: actor_label(&record.actor),
         kind: type_name(&record.event),
         summary: summary(&record.event),
     }
 }
 
-/// The rows of the timeline, oldest first as in the log, that pass the filters.
+/// The rows of the timeline, newest first, that pass the filters.
 #[must_use]
 pub fn rows(
     log: &TaskEvents,
+    zone: &TimeZone,
     type_filter: Option<&str>,
     actor_filter: Option<&str>,
 ) -> Vec<EventRow> {
@@ -141,8 +163,35 @@ pub fn rows(
         .iter()
         .filter(|record| type_filter.is_none_or(|t| type_name(&record.event) == t))
         .filter(|record| actor_filter.is_none_or(|a| actor_label(&record.actor) == a))
-        .map(row)
+        .map(|record| row(record, zone))
+        .rev()
         .collect()
+}
+
+/// The note under the rows when the log has lines that this version does not replay.
+#[must_use]
+pub fn skipped_note(log: &TaskEvents) -> Option<String> {
+    match log.skipped.len() {
+        0 => None,
+        1 => Some("1 line not shown".to_owned()),
+        n => Some(format!("{n} lines not shown")),
+    }
+}
+
+/// The last useful scroll offset of the timeline: the last line at the top of the pane.
+#[must_use]
+pub fn scroll_max(view: &EventsView) -> usize {
+    let EventsLoad::Loaded(log) = &view.load else {
+        return 0;
+    };
+    let rows = rows(
+        log,
+        &TimeZone::UTC,
+        view.type_filter.as_deref(),
+        view.actor_filter.as_deref(),
+    )
+    .len();
+    (rows + usize::from(skipped_note(log).is_some())).saturating_sub(1)
 }
 
 /// The types of event that the log has, in order of first use.
@@ -227,23 +276,41 @@ mod tests {
 
     #[test]
     fn rows_show_time_actor_type_and_one_line() {
-        let rows = rows(&log(), None, None);
+        let rows = rows(&log(), &TimeZone::UTC, None, None);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].kind, "note_logged");
-        assert_eq!(rows[0].actor, "user");
-        assert_eq!(rows[0].summary, "first line");
-        assert_eq!(rows[0].time.len(), 16);
+        // Newest first.
+        assert_eq!(rows[2].kind, "note_logged");
+        assert_eq!(rows[2].actor, "user");
+        assert_eq!(rows[2].summary, "first line");
+        assert_eq!(rows[2].time.len(), 16);
         assert_eq!(rows[1].summary, "status: inbox -> ready");
         assert_eq!(rows[1].actor, "loomd");
+        assert!(rows[0].time > rows[2].time);
+    }
+
+    #[test]
+    fn times_are_shown_in_the_given_time_zone() {
+        let paris = TimeZone::get("Europe/Paris").unwrap();
+        let utc = rows(&log(), &TimeZone::UTC, None, None);
+        let local = rows(&log(), &paris, None, None);
+        // 1_791_792_000 is 2026-10-12 08:00 UTC; Paris is on summer time (UTC+2) until 25 October.
+        assert_eq!(utc[2].time, "2026-10-12 08:00");
+        assert_eq!(local[2].time, "2026-10-12 10:00");
     }
 
     #[test]
     fn filters_by_type_and_by_actor_together() {
         let log = log();
-        assert_eq!(rows(&log, Some("note_logged"), None).len(), 2);
-        assert_eq!(rows(&log, None, Some("loomd")).len(), 1);
-        assert_eq!(rows(&log, Some("note_logged"), Some("loomd")).len(), 0);
-        assert_eq!(rows(&log, Some("created"), None).len(), 0);
+        assert_eq!(
+            rows(&log, &TimeZone::UTC, Some("note_logged"), None).len(),
+            2
+        );
+        assert_eq!(rows(&log, &TimeZone::UTC, None, Some("loomd")).len(), 1);
+        assert_eq!(
+            rows(&log, &TimeZone::UTC, Some("note_logged"), Some("loomd")).len(),
+            0
+        );
+        assert_eq!(rows(&log, &TimeZone::UTC, Some("created"), None).len(), 0);
     }
 
     #[test]
@@ -251,6 +318,29 @@ mod tests {
         let log = log();
         assert_eq!(types_present(&log), ["note_logged", "status_changed"]);
         assert_eq!(actors_present(&log), ["user", "loomd"]);
+    }
+
+    #[test]
+    fn skipped_lines_are_counted_and_the_scroll_stops_at_the_last_line() {
+        let mut log = log();
+        assert_eq!(skipped_note(&log), None);
+        let view = |log: &TaskEvents| EventsView {
+            load: EventsLoad::Loaded(Box::new(log.clone())),
+            ..EventsView::default()
+        };
+        assert_eq!(scroll_max(&view(&log)), 2);
+        log.skipped = (1..=2)
+            .map(|line| loom_api::SkippedLine {
+                line,
+                raw: "{}".to_owned(),
+                reason: loom_core::SkipReason::UnknownType {
+                    name: "x".to_owned(),
+                },
+            })
+            .collect();
+        assert_eq!(skipped_note(&log).as_deref(), Some("2 lines not shown"));
+        assert_eq!(scroll_max(&view(&log)), 3);
+        assert_eq!(scroll_max(&EventsView::default()), 0);
     }
 
     #[test]

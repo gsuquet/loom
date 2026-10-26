@@ -64,16 +64,18 @@ When `loomd` sends a change event for the task, the TUI reloads the page.
 
 ### Events tab
 
-The `Events` tab shows the event log of the task, from [`GET /v1/tasks/{id}/events`](api.md#taskevents), with the oldest event first. The TUI reads the log the first time that you select the tab, and again each time the page reloads while the tab is open. Until the log arrives, the tab shows `Loading events...`. When the read fails, the tab shows `Cannot load the events: <reason>`. A task with no events shows `No events.`
+The `Events` tab shows the event log of the task, from [`GET /v1/tasks/{id}/events`](api.md#taskevents), with the newest event first. The TUI reads the log each time that you select the tab, and again each time the page reloads while the tab is open. The previous log stays on screen until the new one arrives. Until the log arrives, the tab shows `Loading events...`. When the read fails, the tab shows `Cannot load the events: <reason>`. A task with no events shows `No events.` When the log has lines that this version of `loom` does not replay, the tab ends with `<n> lines not shown`.
 
 Each event is one line with four columns:
 
 | Column | Content |
 | --- | --- |
-| Time | `YYYY-MM-DD HH:MM`, in UTC. |
+| Time | `YYYY-MM-DD HH:MM`, in the local time zone of the system. |
 | Actor | `user`, `file` (a hand edit), `loomd`, or `agent <name>`. |
 | Type | `created`, `edited`, `status_changed`, `note_logged` or `undone`. |
 | Summary | What the event changed, for example `status: ready -> active`. The TUI cuts a long summary at the edge of the pane and shows `…`. |
+
+The TUI cuts an actor name longer than 14 characters and shows `…`. The width of the columns comes from the whole log, so a filter does not move them.
 
 The footer of the tab shows the two filters, `f type: <value>` and `a actor: <value>`. The value is `all` when the filter is off. The two filters work together. When no event passes them, the tab shows `No event matches the filters.` Archived and read-only tasks have an `Events` tab like any other task.
 
@@ -157,11 +159,12 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `Esc`, `Backspace` | Go back to the previous page. On the first page, return to the queue view. |
 | `]`, `Right` | Select the next tab. The scroll position goes back to the top. |
 | `[`, `Left` | Select the previous tab. The scroll position goes back to the top. |
-| `j`, `Down` | Scroll down one line. |
+| `j`, `Down` | Scroll down one line. On the `Events` tab, the scroll stops at the last line. |
 | `k`, `Up` | Scroll up one line. |
 | `PgDn` | Scroll down one page. |
 | `PgUp` | Scroll up one page. |
 | `r` | Reload the task from `loomd`. |
+| `Home`, `End` | Scroll to the top, or to the last line (on the `Events` tab, the oldest event). |
 | `f` | On the `Events` tab, select the next event type in the log, then no type. |
 | `a` | On the `Events` tab, select the next actor in the log, then no actor. |
 | `e` | Open the task file in the editor (see [Edit the task file](#edit-the-task-file)). |

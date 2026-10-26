@@ -21,7 +21,7 @@ use super::state::{
 };
 use crate::task::{read_only_text, reason_text};
 
-const fn importance_label(importance: Importance) -> &'static str {
+pub(super) const fn importance_label(importance: Importance) -> &'static str {
     match importance {
         Importance::P0 => "p0",
         Importance::P1 => "p1",
@@ -397,7 +397,15 @@ fn render_object_page(frame: &mut Frame<'_>, area: Rect, state: &AppState, page:
 
     match &page.content {
         ObjectPageContent::Task(detail) => {
-            render_task_page(frame, area, block, detail, page, &state.theme);
+            render_task_page(
+                frame,
+                area,
+                block,
+                detail,
+                page,
+                &state.time_zone,
+                &state.theme,
+            );
         }
         ObjectPageContent::Loading(target) => match target {
             ObjectTarget::Task(id) => {
@@ -419,6 +427,7 @@ fn render_task_page(
     block: Block<'_>,
     detail: &TaskDetail,
     page: &ObjectPageState,
+    zone: &jiff::tz::TimeZone,
     theme: &Theme,
 ) {
     let inner = block.inner(area);
@@ -437,7 +446,9 @@ fn render_task_page(
     frame.render_widget(Paragraph::new(page_tab_bar(page.tab)), chunks[0]);
     match page.tab {
         PageTab::Overview => render_task_overview(frame, chunks[2], detail, page.scroll, theme),
-        PageTab::Events => render_events(frame, chunks[2], &page.events, page.scroll, theme),
+        PageTab::Events => {
+            render_events(frame, chunks[2], &page.events, page.scroll, zone, theme);
+        }
         PageTab::Relations => {
             let text = Paragraph::new(Line::styled(
                 "The Relations tab has no content in this version.",
@@ -457,8 +468,16 @@ fn clip(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
-/// The lines of the Events tab: one per event, oldest first.
-fn events_lines(view: &EventsView, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+/// The longest actor name shown in full; a longer one is cut with `…`.
+const ACTOR_WIDTH_MAX: usize = 14;
+
+/// The lines of the Events tab: one per event, newest first.
+fn events_lines(
+    view: &EventsView,
+    width: usize,
+    zone: &jiff::tz::TimeZone,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let log = match &view.load {
         EventsLoad::NotLoaded | EventsLoad::Loading => {
             return vec![Line::styled("Loading events...", theme.dim_style())];
@@ -473,38 +492,45 @@ fn events_lines(view: &EventsView, width: usize, theme: &Theme) -> Vec<Line<'sta
     };
     let rows = events::rows(
         log,
+        zone,
         view.type_filter.as_deref(),
         view.actor_filter.as_deref(),
     );
+    let mut lines = Vec::new();
+    // The widths come from the whole log, so a filter does not move the columns.
+    let all = events::rows(log, zone, None, None);
+    let actor_width = all
+        .iter()
+        .map(|r| r.actor.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(ACTOR_WIDTH_MAX);
+    let kind_width = all.iter().map(|r| r.kind.len()).max().unwrap_or(0);
+    // time, three gaps of two columns, then the summary gets what is left.
+    let summary_width = width.saturating_sub(16 + actor_width + kind_width + 6);
+    for row in &rows {
+        lines.push(Line::from(vec![
+            Span::styled(row.time.clone(), theme.dim_style()),
+            Span::raw("  "),
+            Span::raw(format!("{:<actor_width$}", clip(&row.actor, actor_width))),
+            Span::raw("  "),
+            Span::styled(format!("{:<kind_width$}", row.kind), theme.strong_style()),
+            Span::raw("  "),
+            Span::raw(clip(&row.summary, summary_width)),
+        ]));
+    }
     if rows.is_empty() {
         let text = if log.events.is_empty() {
             "No events."
         } else {
             "No event matches the filters."
         };
-        return vec![Line::styled(text, theme.dim_style())];
+        lines.push(Line::styled(text, theme.dim_style()));
     }
-    let actor_width = rows
-        .iter()
-        .map(|r| r.actor.chars().count())
-        .max()
-        .unwrap_or(0);
-    let kind_width = rows.iter().map(|r| r.kind.len()).max().unwrap_or(0);
-    // time, two gaps of two columns, then the summary gets what is left.
-    let summary_width = width.saturating_sub(16 + actor_width + kind_width + 6);
-    rows.iter()
-        .map(|row| {
-            Line::from(vec![
-                Span::styled(row.time.clone(), theme.dim_style()),
-                Span::raw("  "),
-                Span::raw(format!("{:<actor_width$}", row.actor)),
-                Span::raw("  "),
-                Span::styled(format!("{:<kind_width$}", row.kind), theme.strong_style()),
-                Span::raw("  "),
-                Span::raw(clip(&row.summary, summary_width)),
-            ])
-        })
-        .collect()
+    if let Some(note) = events::skipped_note(log) {
+        lines.push(Line::styled(note, theme.dim_style()));
+    }
+    lines
 }
 
 fn render_events(
@@ -512,9 +538,10 @@ fn render_events(
     area: Rect,
     view: &EventsView,
     scroll: usize,
+    zone: &jiff::tz::TimeZone,
     theme: &Theme,
 ) {
-    let lines = events_lines(view, usize::from(area.width), theme);
+    let lines = events_lines(view, usize::from(area.width), zone, theme);
     let shown = lines.into_iter().skip(scroll).collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(shown), area);
 }
@@ -1507,13 +1534,14 @@ mod tests {
     fn events_tab_lists_the_log_at_80_columns() {
         let lines = events_page_lines(80, loaded_events());
         let text = lines.join("\n");
-        assert!(lines[4].contains("user"), "{text}");
-        assert!(lines[4].contains("note_logged"), "{text}");
-        assert!(lines[4].contains("called the client"), "{text}");
-        assert!(lines[5].contains("loomd"), "{text}");
-        assert!(lines[5].contains("status: inbox -> ready"), "{text}");
+        // Newest first.
+        assert!(lines[4].contains("loomd"), "{text}");
+        assert!(lines[4].contains("status: inbox -> ready"), "{text}");
+        assert!(lines[5].contains("user"), "{text}");
+        assert!(lines[5].contains("note_logged"), "{text}");
+        assert!(lines[5].contains("called the client"), "{text}");
         // The long note is cut at the edge of the pane, never wrapped.
-        assert!(lines[4].contains('…'), "{text}");
+        assert!(lines[5].contains('…'), "{text}");
         assert!(lines.iter().all(|l| l.chars().count() <= 80), "{text}");
         assert!(lines[11].contains("f type: all"), "{text}");
         assert!(lines[11].contains("a actor: all"), "{text}");
@@ -1523,8 +1551,8 @@ mod tests {
     fn events_tab_shows_the_whole_note_at_160_columns() {
         let lines = events_page_lines(160, loaded_events());
         let text = lines.join("\n");
-        assert!(lines[4].contains("retry policy"), "{text}");
-        assert!(!lines[4].contains('…'), "{text}");
+        assert!(lines[5].contains("retry policy"), "{text}");
+        assert!(!lines[5].contains('…'), "{text}");
     }
 
     #[test]
@@ -1534,12 +1562,59 @@ mod tests {
         let lines = events_page_lines(80, view.clone());
         let text = lines.join("\n");
         assert!(lines[4].contains("loomd"), "{text}");
+        // The columns stay where they are when a filter hides rows.
+        let kind_at = |lines: &[String], row: usize| lines[row].find("status_changed");
+        assert_eq!(
+            kind_at(&lines, 4),
+            kind_at(&events_page_lines(80, loaded_events()), 4)
+        );
         assert!(!text.contains("note_logged"), "{text}");
         assert!(lines[11].contains("f type: status_changed"), "{text}");
 
         view.actor_filter = Some("user".to_owned());
         let text = events_page_lines(80, view).join("\n");
         assert!(text.contains("No event matches the filters."), "{text}");
+    }
+
+    #[test]
+    fn events_tab_cuts_a_long_actor_and_counts_skipped_lines() {
+        use loom_api::{Actor, Event, EventRecord, MachineId, Timestamp};
+        let origin = loom_core::Origin {
+            actor: Actor::Agent {
+                name: "a-very-long-agent-name".to_owned(),
+            },
+            machine_id: MachineId("desk".to_owned()),
+        };
+        let record = EventRecord::new(
+            "aaaaaaaa".parse().unwrap(),
+            Event::NoteLogged {
+                text: "short note".to_owned(),
+            },
+            Timestamp::from_unix_secs(1_791_792_000).unwrap(),
+            &origin,
+        );
+        let log = loom_api::TaskEvents {
+            id: "k3q7zm2a".parse().unwrap(),
+            events: vec![record],
+            skipped: vec![loom_api::SkippedLine {
+                line: 2,
+                raw: "{}".to_owned(),
+                reason: loom_core::SkipReason::UnknownType {
+                    name: "x".to_owned(),
+                },
+            }],
+        };
+        let view = EventsView {
+            load: crate::tui::events::EventsLoad::Loaded(Box::new(log)),
+            ..EventsView::default()
+        };
+        let lines = events_page_lines(80, view);
+        let text = lines.join("\n");
+        assert!(
+            lines[4].contains("agent a-very-…  note_logged  short note"),
+            "{text}"
+        );
+        assert!(lines[5].contains("1 line not shown"), "{text}");
     }
 
     #[test]

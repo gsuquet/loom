@@ -510,6 +510,20 @@ pub static BINDINGS: &[KeyBinding] = &[
     },
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Home, KeyModifiers::NONE)],
+        command: KeyCommand::MoveFirst,
+        label: "Home",
+        description: "Scroll to the top",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::End, KeyModifiers::NONE)],
+        command: KeyCommand::MoveLast,
+        label: "End",
+        description: "Scroll to the end of the events",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
         keys: &[(KeyCode::PageDown, KeyModifiers::NONE)],
         command: KeyCommand::PageDown,
         label: "PgDn",
