@@ -41,9 +41,10 @@ use loomd::api::{
     DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH,
     REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH,
     STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_GO_PATH,
-    TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH,
-    agent_socket, clock_error, home_value, invalid_request, method_not_allowed, not_found,
-    register_path, repo_filter, search_request, slug, status_at, timestamp,
+    TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH,
+    TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value, invalid_request,
+    method_not_allowed, not_found, register_path, repo_filter, search_request, slug, status_at,
+    timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
@@ -549,6 +550,7 @@ fn router(app: App) -> Router {
         .route(FOCUS_PATH, get(list_focus))
         .route(EVENTS_PATH, get(change_events))
         .route(TASKS_BACKUP_PATH, get(backup_report))
+        .route(TASKS_HEALTH_PATH, get(task_store_health))
         .route(TASKS_SYNC_PATH, post(sync_stores))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
@@ -920,6 +922,11 @@ pub fn local_today() -> loom_api::Date {
 /// The backup state of every context store held here.
 async fn backup_report(State(app): State<Arc<App>>) -> Response {
     respond(app.sync.report(None).await)
+}
+
+/// The problems of the task stores: invalid files, unreadable tasks, a stopped file watcher.
+async fn task_store_health(State(app): State<Arc<App>>) -> Response {
+    respond(app.tasks.health().await)
 }
 
 /// Syncs the context stores with their backup remotes, then answers with their state.

@@ -21,6 +21,20 @@ pub struct ReindexResult {
     pub failed: Vec<FailedTaskFile>,
 }
 
+/// Answer of `GET /v1/tasks/health`: the problems of the task stores that loomd knows about.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TaskStoreHealth {
+    /// The file watcher runs: hand edits are recorded as they happen. When it does not, they
+    /// are recorded at the next start of loomd.
+    pub watching: bool,
+    /// Tasks whose `task.md` cannot be read now: read-only until the file is fixed. Sorted by
+    /// context and ID.
+    pub invalid: Vec<InvalidTaskFile>,
+    /// Tasks, or stores, that the last reconciliation could not read (permissions, I/O). Sorted
+    /// by path.
+    pub failed: Vec<FailedTaskFile>,
+}
+
 /// A task directory, or the `tasks/` directory of a store, that could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FailedTaskFile {

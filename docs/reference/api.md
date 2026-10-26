@@ -37,6 +37,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
 | `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
 | `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
+| `GET` | `/v1/tasks/health` | `200` | [`TaskStoreHealth`](#taskstorehealth) |
 | `GET` | `/v1/events` | `200` | `text/event-stream` of [`ChangeEvent`](#changeevent) objects ([change events](#change-events)) |
 
 `loomd` computes `uptime_secs` when it handles the request. At the same time, it reads `<loom home>/state/update.json` for `update`. If `loomd` cannot read the state file, it logs the error and reports an empty state. `disk` is the last measure of the loom home while that measure is fresh, otherwise a new measure ([cache](#diskusage)).
@@ -343,6 +344,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `RegisterRequest` | [`schemas/register_request.json`](schemas/register_request.json) |
 | `ReindexResult` | [`schemas/reindex_result.json`](schemas/reindex_result.json) |
 | `BackupReport` | [`schemas/backup_report.json`](schemas/backup_report.json) |
+| `TaskStoreHealth` | [`schemas/task_store_health.json`](schemas/task_store_health.json) |
 | `BackupRequest` | [`schemas/backup_request.json`](schemas/backup_request.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
@@ -680,6 +682,8 @@ A task (`kind` `task`):
 | `score` | number | As for a repository. |
 | `matched_fields` | list of strings | Fields that hold at least one query word: `title`, `notes`, `link_keys`, in this order. |
 
+`GET /v1/tasks/health` answers with the problems of the task stores ([`TaskStoreHealth`](#taskstorehealth)). It lists the task files that `loomd` cannot read, as the last scan or change found them. A file that is fixed leaves the list when `loomd` reads it again.
+
 ### `BackupReport`
 
 | Field | Type | Meaning |
@@ -709,6 +713,19 @@ A task (`kind` `task`):
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `context` | string, optional | The context to sync; absent: every store held here with a `store.backup.remote`. Unknown fields are rejected. |
+
+### `TaskStoreHealth`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `watching` | boolean | `true` when `loomd` watches the task files. When `false`, a change made outside `loom` is not seen until the next reindex. |
+| `invalid` | array | The task files that cannot be read, sorted by context then ID. |
+| `invalid[].context` | string | The context of its store. |
+| `invalid[].id` | string | The task ID, the name of its directory. |
+| `invalid[].error` | string | Why the file is invalid, with the line when known. |
+| `failed` | array | The places that `loomd` could not scan or read. |
+| `failed[].path` | string | The task directory, or `tasks/` when the store could not be listed. |
+| `failed[].error` | string | What failed. |
 
 ### `ReindexResult`
 

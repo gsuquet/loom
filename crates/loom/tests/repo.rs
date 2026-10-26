@@ -747,6 +747,29 @@ fn doctor_remotes(sandbox: &Sandbox) -> PathBuf {
 }
 
 #[test]
+fn doctor_warns_about_a_task_file_that_cannot_be_read() {
+    let sandbox = Sandbox::new(CONFIG);
+    let tasks = sandbox.loom_home().join("contexts/work/tasks/dddddddd");
+    fs::create_dir_all(&tasks).unwrap();
+    fs::write(tasks.join("task.md"), "+++\nbroken\n+++\n").unwrap();
+    let home = sandbox.home();
+    // `repo scan` starts loomd, which indexes the task files.
+    let output = sandbox.loom_with(&home, &["repo", "scan"], &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    let output = sandbox.loom_with(&home, &["repo", "doctor"], &[]);
+    let text = stdout(&output);
+    assert!(
+        text.contains("warn  tasks: task dddddddd of work: "),
+        "{text}"
+    );
+    assert!(
+        text.contains("      fix: edit tasks/dddddddd/task.md in the store of work"),
+        "{text}"
+    );
+}
+
+#[test]
 fn doctor_reports_checks_and_fixes() {
     let config = format!("{CONFIG}\n[contexts.gone]\nmatch.paths = [\"~/missing\"]\n");
     let sandbox = Sandbox::new(&config);
@@ -795,6 +818,8 @@ fn doctor_reports_checks_and_fixes() {
     for line in [
         "ok    config: ",
         "ok    loomd: loomd ",
+        "ok    store paths: 3 context stores, each in its own directory\n",
+        "ok    tasks: loomd watches the task files and every file is valid\n",
         "warn  unassigned: 1 repository has no context: ",
         "      fix: add a context that matches them to ",
         "             match.paths = [\"~/src\"]\n",

@@ -8,7 +8,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use loom::backup::BACKUP_PATH;
+use loom::backup::{BACKUP_PATH, HEALTH_PATH};
 use loom::cli::{
     GlobalArgs, RepoCommand, RepoDoctorArgs, RepoForgetArgs, RepoListFormat, RepoLsArgs,
     RepoRegisterArgs, RepoScanArgs, RepoShowArgs, RepoSyncArgs, VERSION_INFO,
@@ -24,7 +24,7 @@ use loom::status::version_mismatch;
 use loom_api::{
     BackupReport, CheckStatus, ContextAssignment, ContextName, DaemonDiagnostics, DoctorCheck,
     DoctorReport, RegisterRequest, RemoteCheckResult, RepoList, RepoSummary, ScanResult,
-    SyncRequest, SyncResult,
+    SyncRequest, SyncResult, TaskStoreHealth,
 };
 use loom_config::config::Config;
 use loom_config::layout::{Layout, MAX_SOCKET_PATH_BYTES, check_socket_path};
@@ -626,6 +626,11 @@ async fn doctor(env: &Env<'_>, args: &RepoDoctorArgs) -> Result<()> {
             let roots = doctor::roots(config, home);
             checks.extend(doctor::roots_checks(&roots, Path::is_dir, config_path));
             checks.push(doctor::contexts_check(config, home, config_path));
+            checks.push(doctor::store_paths_check(
+                &config.store_paths(&env.layout.home, home),
+                Some(home),
+                config_path,
+            ));
         }
         (Some(_), None) => checks.push(check(
             "roots",
@@ -746,6 +751,7 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
     checks.extend(remote_checks(&client, &status.daemon.version).await);
     checks.extend(doctor::updates_checks(&repos));
     checks.extend(backup_checks(env, &client, &status.daemon.version).await);
+    checks.extend(task_checks(env, &client, &status.daemon.version).await);
     checks
 }
 
@@ -778,5 +784,19 @@ async fn backup_checks(env: &Env<'_>, client: &Client, version: &str) -> Vec<Doc
             Some("restart loomd with the version of this loom"),
         )],
         Err(error) => vec![check("backup", CheckStatus::Fail, error.to_string(), None)],
+    }
+}
+
+/// The `tasks` checks, from loomd's view of the task files.
+async fn task_checks(env: &Env<'_>, client: &Client, version: &str) -> Vec<DoctorCheck> {
+    match client.get::<TaskStoreHealth>(HEALTH_PATH).await {
+        Ok(health) => doctor::task_store_checks(&health, env.home.as_deref()),
+        Err(ClientError::Api { status: 404, .. }) => vec![check(
+            "tasks",
+            CheckStatus::Warn,
+            format!("loomd {version} cannot report the state of the task files"),
+            Some("restart loomd with the version of this loom"),
+        )],
+        Err(error) => vec![check("tasks", CheckStatus::Fail, error.to_string(), None)],
     }
 }

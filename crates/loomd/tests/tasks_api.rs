@@ -644,3 +644,68 @@ fn only_a_new_parent_is_checked_and_an_invalid_file_is_a_known_task() {
     );
     assert_eq!(error.code, ErrorCode::ReadOnly);
 }
+
+#[test]
+fn health_lists_an_invalid_file_until_it_is_fixed() {
+    let sandbox = Sandbox::new();
+    sandbox.write_task("work", "aaaaaaaa", &task_md("aaaaaaaa", "work", "ready"));
+    sandbox.write_task("work", "bbbbbbbb", "not a task file\n");
+    let _daemon = sandbox.start();
+    let socket = sandbox.socket();
+
+    let health: loom_api::TaskStoreHealth = ok(&call(&socket, "GET", "/v1/tasks/health", None));
+    assert!(health.watching);
+    assert_eq!(health.invalid.len(), 1, "{health:?}");
+    assert_eq!(health.invalid[0].context.as_str(), "work");
+    assert_eq!(health.invalid[0].id.as_str(), "bbbbbbbb");
+    assert!(
+        health.invalid[0].error.starts_with("line 1"),
+        "{}",
+        health.invalid[0].error
+    );
+    assert!(health.failed.is_empty(), "{health:?}");
+
+    // Fixed by hand: the watcher indexes it, and the problem is gone.
+    sandbox.write_task("work", "bbbbbbbb", &task_md("bbbbbbbb", "work", "ready"));
+    let mut remaining = health.invalid.len();
+    for _ in 0..100 {
+        let health: loom_api::TaskStoreHealth = ok(&call(&socket, "GET", "/v1/tasks/health", None));
+        remaining = health.invalid.len();
+        if remaining == 0 {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(remaining, 0, "the fixed file is still reported");
+}
+
+#[test]
+fn the_list_keeps_the_children_of_several_parents_in_both_locations() {
+    let sandbox = Sandbox::new();
+    sandbox.write_task("work", "pppppppp", &task_md("pppppppp", "work", "ready"));
+    sandbox.write_task("work", "qqqqqqqq", &task_md("qqqqqqqq", "work", "ready"));
+    sandbox.write_task(
+        "work",
+        "cccccccc",
+        &task_md_with_parent("cccccccc", "work", "chore", "pppppppp"),
+    );
+    sandbox.write_task(
+        "work",
+        "dddddddd",
+        &task_md_with_parent("dddddddd", "work", "chore", "qqqqqqqq"),
+    );
+    let _daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let ids = |path: &str| -> Vec<String> {
+        let list: TaskList = ok(&call(&socket, "GET", path, None));
+        list.tasks.iter().map(|t| t.id.to_string()).collect()
+    };
+    assert_eq!(ids("/v1/tasks?parent=pppppppp"), ["cccccccc"]);
+    assert_eq!(
+        ids("/v1/tasks?parent=pppppppp,qqqqqqqq&archived=any"),
+        ["cccccccc", "dddddddd"]
+    );
+    assert_eq!(ids("/v1/tasks?parent=zzzzzzzz").len(), 0);
+    let bad = call(&socket, "GET", "/v1/tasks?parent=not-an-id", None);
+    assert_eq!(problem(&bad, 400).code, ErrorCode::InvalidRequest);
+}

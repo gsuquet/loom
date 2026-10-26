@@ -9,7 +9,7 @@ use loom_api::{
     BackupOutcome, BackupReport, BackupStep, CheckStatus, ContextBackup, ContextName,
     DaemonDiagnostics, DiskUsage, DoctorCheck, DoctorReport, RemoteCheck, RemoteCheckOutcome,
     RemoteCheckResult, RemoteProblem, RemoteScheme, RepoSummary, ServicePlatform, SkipReason,
-    SshAgentSocket, UpdateOutcome, UpdateStep,
+    SshAgentSocket, TaskStoreHealth, UpdateOutcome, UpdateStep,
 };
 use loom_config::config::Config;
 use loom_repo::{ContextRules, classify_remote_failure, remote_endpoint};
@@ -217,6 +217,101 @@ pub fn contexts_check(config: &Config, home: &Path, config_path: &Path) -> Docto
         );
     }
     check("contexts", CheckStatus::Ok, detail)
+}
+
+/// The `store paths` check: two contexts must not share a store directory.
+///
+/// `stores` is [`Config::store_paths`]. A shared directory makes both contexts read and write
+/// the same task files, so it fails.
+#[must_use]
+pub fn store_paths_check(
+    stores: &BTreeMap<ContextName, PathBuf>,
+    home: Option<&Path>,
+    config_path: &Path,
+) -> DoctorCheck {
+    let mut by_path: BTreeMap<&Path, Vec<&ContextName>> = BTreeMap::new();
+    for (name, path) in stores {
+        by_path.entry(path.as_path()).or_default().push(name);
+    }
+    let shared: Vec<String> = by_path
+        .iter()
+        .filter(|(_, names)| names.len() > 1)
+        .map(|(path, names)| {
+            let names: Vec<&str> = names.iter().map(|name| name.as_str()).collect();
+            format!("{} ({})", tilde(path, home), names.join(", "))
+        })
+        .collect();
+    if shared.is_empty() {
+        let count = stores.len();
+        return check(
+            "store paths",
+            CheckStatus::Ok,
+            match count {
+                0 => "no context defined".to_owned(),
+                1 => "1 context store".to_owned(),
+                count => format!("{count} context stores, each in its own directory"),
+            },
+        );
+    }
+    with_fix(
+        check(
+            "store paths",
+            CheckStatus::Fail,
+            format!("contexts share one store directory: {}", shared.join("; ")),
+        ),
+        format!(
+            "give each context its own store.path in {}, then restart loomd",
+            config_path.display()
+        ),
+    )
+}
+
+/// The `tasks` check from loomd's task store: one warn per task file that cannot be read or
+/// per store that cannot be scanned, and a warn when the watcher is not running.
+#[must_use]
+pub fn task_store_checks(health: &TaskStoreHealth, home: Option<&Path>) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    if !health.watching {
+        checks.push(with_fix(
+            check(
+                "tasks",
+                CheckStatus::Warn,
+                "loomd does not watch the task files: edits made outside loom are not seen until `loom tasks reindex`",
+            ),
+            "restart loomd; if this stays, check the loomd log for the watcher error",
+        ));
+    }
+    for file in &health.invalid {
+        checks.push(with_fix(
+            check(
+                "tasks",
+                CheckStatus::Warn,
+                format!("task {} of {}: {}", file.id, file.context, file.error),
+            ),
+            format!(
+                "edit tasks/{}/task.md in the store of {} to fix the file; loomd reads it again on its own",
+                file.id, file.context
+            ),
+        ));
+    }
+    for failure in &health.failed {
+        checks.push(with_fix(
+            check(
+                "tasks",
+                CheckStatus::Warn,
+                format!("{}: {}", tilde(&failure.path, home), failure.error),
+            ),
+            "fix the cause (permissions, a missing directory), then `loom tasks reindex`",
+        ));
+    }
+    if checks.is_empty() {
+        checks.push(check(
+            "tasks",
+            CheckStatus::Ok,
+            "loomd watches the task files and every file is valid",
+        ));
+    }
+    checks
 }
 
 /// Repositories without a context: their count, an example, and the configuration that
@@ -983,12 +1078,13 @@ mod tests {
         RemoteScheme, RepoIdentity, RepoSummary, RepoUpdatePolicy, ServicePlatform, SkipReason,
         SshAgentSocket, Timestamp, UpdateOutcome, UpdateStep,
     };
+    use loom_api::{FailedTaskFile, InvalidTaskFile, TaskStoreHealth};
     use loom_config::config::parse_config;
 
     use super::{
         FREE_SPACE_WARN_BYTES, WAL_WARN_BYTES, agent_check, contexts_check, disk_checks,
-        home_check, remote_checks, render, roots, roots_checks, tilde, unassigned_check,
-        updates_checks, uses_ssh,
+        home_check, remote_checks, render, roots, roots_checks, store_paths_check,
+        task_store_checks, tilde, unassigned_check, updates_checks, uses_ssh,
     };
 
     const HOME: &str = "/home/me";
@@ -996,6 +1092,62 @@ mod tests {
 
     fn config(text: &str) -> loom_config::config::Config {
         parse_config(text, Path::new("config.toml")).unwrap()
+    }
+
+    fn health(watching: bool) -> TaskStoreHealth {
+        TaskStoreHealth {
+            watching,
+            ..TaskStoreHealth::default()
+        }
+    }
+
+    #[test]
+    fn a_clean_task_store_is_one_ok_check() {
+        let checks = task_store_checks(&health(true), None);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn each_problem_of_the_task_store_is_a_warn_with_a_fix() {
+        let mut health = health(false);
+        health.invalid.push(InvalidTaskFile {
+            context: "work".parse().unwrap(),
+            id: "k3q7zm2a".parse().unwrap(),
+            error: "line 3: bad status".to_owned(),
+        });
+        health.failed.push(FailedTaskFile {
+            path: PathBuf::from("/home/me/.loom/contexts/work/tasks"),
+            error: "permission denied".to_owned(),
+        });
+        let checks = task_store_checks(&health, Some(Path::new(HOME)));
+        assert_eq!(checks.len(), 3);
+        assert!(checks.iter().all(|c| c.status == CheckStatus::Warn));
+        assert!(checks.iter().all(|c| c.fix.is_some()));
+        assert!(checks[0].detail.contains("not watch"));
+        assert!(checks[1].detail.contains("k3q7zm2a of work"));
+        assert!(checks[2].detail.starts_with("~/.loom/contexts/work/tasks"));
+    }
+
+    #[test]
+    fn contexts_that_share_a_store_directory_fail() {
+        let config = config(
+            "[contexts.a]\nstore.path = \"~/.loom/contexts/b\"\n[contexts.b]\n[contexts.c]\n",
+        );
+        let stores = config.store_paths(Path::new("/home/me/.loom"), Path::new(HOME));
+        let check = store_paths_check(&stores, Some(Path::new(HOME)), Path::new(CONFIG));
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert!(check.detail.contains("~/.loom/contexts/b (a, b)"));
+        assert!(check.fix.is_some());
+
+        let config = config_default();
+        let stores = config.store_paths(Path::new("/home/me/.loom"), Path::new(HOME));
+        let check = store_paths_check(&stores, None, Path::new(CONFIG));
+        assert_eq!(check.status, CheckStatus::Ok);
+    }
+
+    fn config_default() -> loom_config::config::Config {
+        config("[contexts.a]\n[contexts.b]\nstore.path = \"~/b\"\n")
     }
 
     #[test]

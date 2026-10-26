@@ -8,6 +8,8 @@ use loom_api::BackupReport;
 pub const SYNC_PATH: &str = "/v1/tasks/sync";
 /// Path of the backup state endpoint.
 pub const BACKUP_PATH: &str = "/v1/tasks/backup";
+/// Path of the task store problems endpoint.
+pub const HEALTH_PATH: &str = "/v1/tasks/health";
 
 /// The text output of `loom sync`: one line per context synced, `<context>: <outcome>`, then
 /// the uncommitted changes.

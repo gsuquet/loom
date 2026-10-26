@@ -35,8 +35,8 @@ use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ChangeEvent, ContextName, Date, FocusList, GoResult, NewTask, ReindexResult, TaskDetail,
-    TaskEvents, TaskId, TaskList, Timestamp,
+    ChangeEvent, ContextName, Date, FailedTaskFile, FocusList, GoResult, NewTask, ReindexResult,
+    TaskDetail, TaskEvents, TaskId, TaskList, TaskStoreHealth, Timestamp,
 };
 use loom_config::schedules::Schedule;
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
@@ -57,7 +57,9 @@ use loomd::task_api::{
     task_list, task_problem,
 };
 use loomd::task_archive::{ARCHIVE_BATCH, archive_now};
-use loomd::task_index::{WatchedPath, failed_files, reindex_result, watched_path};
+use loomd::task_index::{
+    WatchedPath, failed_files, reindex_result, task_store_health, watched_path,
+};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -134,6 +136,10 @@ enum Command {
         schedules: Arc<Schedules>,
         today: Date,
     },
+    /// Whether the file watcher runs, and the tasks that the last reconciliation could not read.
+    Health {
+        reply: oneshot::Sender<(bool, Vec<FailedTaskFile>)>,
+    },
     /// The stores whose changes are not all committed, with the last failure.
     Pending {
         reply: oneshot::Sender<BTreeMap<ContextName, String>>,
@@ -195,6 +201,8 @@ pub fn start(
         tasks: Tasks::new(files, index),
         commits: StoreCommits::new(GitRunner::from_env(), stores.clone()),
         stores: stores.clone(),
+        watching: watcher.is_some(),
+        failures: BTreeMap::new(),
         origin: Origin {
             actor: Actor::File,
             machine_id: machine_id.clone(),
@@ -416,6 +424,24 @@ impl TaskHandle {
             .is_ok()
     }
 
+    /// The problems of the task stores: invalid files, tasks that could not be read, and whether
+    /// the file watcher runs.
+    pub async fn health(&self) -> Result<TaskStoreHealth, Failure> {
+        let (reply, answer) = oneshot::channel();
+        let stopped = || {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                unavailable("loomd is stopping"),
+            )
+        };
+        self.commands
+            .send(Command::Health { reply })
+            .map_err(|_| stopped())?;
+        let (watching, failed) = answer.await.map_err(|_| stopped())?;
+        self.read(move |rows| Ok(task_store_health(watching, failed, &rows)))
+            .await
+    }
+
     /// The stores whose changes are not all committed, with the last failure.
     pub async fn pending(&self) -> Result<BTreeMap<ContextName, String>, Failure> {
         let (reply, answer) = oneshot::channel();
@@ -597,6 +623,10 @@ struct Worker {
     commits: StoreCommits,
     /// Root of each context store, for the paths of the failures.
     stores: BTreeMap<ContextName, PathBuf>,
+    /// The file watcher runs.
+    watching: bool,
+    /// The tasks (or stores) that the last read of them could not handle, by context and task.
+    failures: BTreeMap<(ContextName, Option<TaskId>), TaskFailure>,
     /// Who hand edits are recorded as: the actor `file`, on this machine.
     origin: Origin,
     /// Who the changes of the API are recorded as: the actor `user`, on this machine.
@@ -693,6 +723,10 @@ impl Worker {
                 Command::RunSchedules { schedules, today } => {
                     self.run_schedules(&schedules, today);
                 }
+                Command::Health { reply } => {
+                    let failed: Vec<TaskFailure> = self.failures.values().cloned().collect();
+                    let _ = reply.send((self.watching, failed_files(&failed, &self.stores)));
+                }
                 Command::Pending { reply } => {
                     let _ = reply.send(
                         self.commits
@@ -716,6 +750,7 @@ impl Worker {
             Ok(mut reindexed) => {
                 // A task that failed both is listed once, with its first error.
                 reindexed.failed.splice(0..0, unreconciled);
+                self.failures = failures_by_task(&reindexed.failed);
                 let result = reindex_result(&reindexed, &self.stores);
                 for file in &result.invalid {
                     warn!(context = %file.context, id = %file.id, error = %file.error, "invalid task file");
@@ -939,6 +974,7 @@ impl Worker {
                 {
                     self.events.publish(ChangeEvent::Resync);
                 }
+                self.failures = failures_by_task(&report.failed);
                 report.failed
             }
             Err(error) => {
@@ -1009,6 +1045,7 @@ impl Worker {
             .reconcile(context, id, now, &self.origin, &mut self.random)
         {
             Ok(reconciled) => {
+                self.failures.remove(&(context.clone(), Some(id.clone())));
                 log_reconciled(id, &reconciled);
                 let location = self.location(id);
                 let result = match &reconciled {
@@ -1037,9 +1074,32 @@ impl Worker {
                 log_commit(context, Some(id), result);
                 self.changed(context, id);
             }
-            Err(error) => warn!(%context, %id, %error, "cannot reconcile a task"),
+            Err(error) => {
+                warn!(%context, %id, %error, "cannot reconcile a task");
+                self.failures.insert(
+                    (context.clone(), Some(id.clone())),
+                    TaskFailure {
+                        context: context.clone(),
+                        id: Some(id.clone()),
+                        error: error.to_string(),
+                    },
+                );
+            }
         }
     }
+}
+
+/// `failures`, one per context and task (the first error of a task stays).
+fn failures_by_task(
+    failures: &[TaskFailure],
+) -> BTreeMap<(ContextName, Option<TaskId>), TaskFailure> {
+    let mut by_task = BTreeMap::new();
+    for failure in failures {
+        by_task
+            .entry((failure.context.clone(), failure.id.clone()))
+            .or_insert_with(|| failure.clone());
+    }
+    by_task
 }
 
 /// The problem of a refused task operation; failures of the daemon are logged.

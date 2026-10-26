@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskStoreHealth",
+  "description": "Answer of `GET /v1/tasks/health`: the problems of the task stores that loomd knows about.",
+  "type": "object",
+  "properties": {
+    "failed": {
+      "description": "Tasks, or stores, that the last reconciliation could not read (permissions, I/O). Sorted\nby path.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FailedTaskFile"
+      }
+    },
+    "invalid": {
+      "description": "Tasks whose `task.md` cannot be read now: read-only until the file is fixed. Sorted by\ncontext and ID.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/InvalidTaskFile"
+      }
+    },
+    "watching": {
+      "description": "The file watcher runs: hand edits are recorded as they happen. When it does not, they\nare recorded at the next start of loomd.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "watching",
+    "invalid",
+    "failed"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "FailedTaskFile": {
+      "description": "A task directory, or the `tasks/` directory of a store, that could not be read.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "What failed.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The task directory, or `tasks/` when the store could not be listed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "error"
+      ]
+    },
+    "InvalidTaskFile": {
+      "description": "A task whose `task.md` cannot be read.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of its store.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "error": {
+          "description": "Why, with the line when known.",
+          "type": "string"
+        },
+        "id": {
+          "description": "ID, the name of its directory.",
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "context",
+        "id",
+        "error"
+      ]
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    }
+  }
+}
