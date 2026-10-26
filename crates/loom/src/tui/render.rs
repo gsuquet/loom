@@ -500,6 +500,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             ("[/]", "tab"),
             ("t/i/d/s", "edit"),
             ("u", "undo"),
+            ("j/k", "scroll"),
             (":", "palette"),
             ("?", "help"),
             ("q", "quit"),
@@ -1154,7 +1155,7 @@ mod tests {
             "│                                                                              │",
             "│                                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  t/i/d/s edit  u undo  : palette  ? help  q quit             ",
+            " Esc back  [/] tab  t/i/d/s edit  u undo  j/k scroll  : palette  ? help  q quit ",
         ];
         assert_eq!(task_page_lines(80, PageTab::Overview), expected);
     }
@@ -1177,7 +1178,7 @@ mod tests {
             "│                                                                                                                                                              │",
             "│                                                                                                                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  t/i/d/s edit  u undo  : palette  ? help  q quit                                                                                             ",
+            " Esc back  [/] tab  t/i/d/s edit  u undo  j/k scroll  : palette  ? help  q quit                                                                                 ",
         ];
         assert_eq!(task_page_lines(160, PageTab::Overview), expected);
     }
@@ -1200,7 +1201,7 @@ mod tests {
             "│• Mobile users time out                                                       │",
             "│• retry 3 times                                                               │",
             "└──────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  t/i/d/s edit  u undo  : palette  ? help  q quit             ",
+            " Esc back  [/] tab  t/i/d/s edit  u undo  j/k scroll  : palette  ? help  q quit ",
         ];
         let lines = task_page_lines_with(
             80,
