@@ -788,7 +788,8 @@ impl AppState {
             KeyCommand::TriageGo => self
                 .go_action_task()
                 .map_or(AppEffect::None, AppEffect::GoTask),
-            KeyCommand::Undo => self.last_action.take().map_or_else(
+            // The runtime clears `last_action` once the undo succeeds, so a refused undo keeps its target.
+            KeyCommand::Undo => self.last_action.clone().map_or_else(
                 || {
                     self.set_status("nothing to undo");
                     AppEffect::None
@@ -1109,17 +1110,8 @@ impl AppState {
                     let len = self.contexts.len() + 1; // 1 for 'all'
                     self.context_picker_selected = (self.context_picker_selected + 1).min(len - 1);
                 }
-                ModalKind::Accept => {
-                    if let Some(m) = &mut self.accept_modal {
-                        m.field = m.field.next();
-                    }
-                }
-                ModalKind::Snooze => {
-                    if let Some(m) = &mut self.snooze_modal {
-                        m.field = m.field.toggle();
-                    }
-                }
-                ModalKind::NewTask => {}
+                // Field modals bind their own keys, so they never reach here.
+                ModalKind::Accept | ModalKind::Snooze | ModalKind::NewTask => {}
             }
             return;
         }
@@ -1149,17 +1141,8 @@ impl AppState {
                 ModalKind::ContextPicker => {
                     self.context_picker_selected = self.context_picker_selected.saturating_sub(1);
                 }
-                ModalKind::Accept => {
-                    if let Some(m) = &mut self.accept_modal {
-                        m.field = m.field.prev();
-                    }
-                }
-                ModalKind::Snooze => {
-                    if let Some(m) = &mut self.snooze_modal {
-                        m.field = m.field.toggle();
-                    }
-                }
-                ModalKind::NewTask => {}
+                // Field modals bind their own keys, so they never reach here.
+                ModalKind::Accept | ModalKind::Snooze | ModalKind::NewTask => {}
             }
             return;
         }
@@ -1639,7 +1622,12 @@ mod tests {
 
         // Press 'u': must undo the accepted task (k3q7zm2a), not the currently selected one (m9x2rt4b)
         let undo_effect = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
-        assert_eq!(undo_effect, AppEffect::UndoTask(task_id));
+        assert_eq!(undo_effect, AppEffect::UndoTask(task_id.clone()));
+
+        // The target stays until the runtime reports that the undo succeeded
+        let retry = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(retry, AppEffect::UndoTask(task_id));
+        state.set_last_action(None);
 
         // Pressing 'u' a second time shows "nothing to undo" instead of acting on the selected task
         let second_undo = state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
