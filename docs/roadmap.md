@@ -83,18 +83,11 @@ Each task is a GitHub issue in the `v0.3` milestone, written with the [agent tas
 | 12 | [#79](https://github.com/gsuquet/loom/issues/79) | `loom search` over tasks (title, body, links), < 100 ms | Story | 5 | Agent |
 | 13 | [#80](https://github.com/gsuquet/loom/issues/80) | TUI skeleton: ratatui, API client, context colors, keymap, `?` help, `/` search | Story | 6 | Agent |
 | 14 | [#81](https://github.com/gsuquet/loom/issues/81) | TUI Today and Inbox, triage (`a`, `z`, `x`, `c`, `g`), group by parent | Story | 3, 13 | Agent |
-| 15 | [#82](https://github.com/gsuquet/loom/issues/82) | TUI task detail, page shell and Overview (split into 15 and 21 to 23; Files moved to v0.4, [#155](https://github.com/gsuquet/loom/issues/155)) | Story | 13, 19 | Agent |
+| 15 | [#82](https://github.com/gsuquet/loom/issues/82) | TUI task detail: Overview, Relations, Events, Files; field pickers; `$EDITOR` for the body | Story | 13 | Agent |
 | 16 | [#83](https://github.com/gsuquet/loom/issues/83) | Store safety suite: crash during a write, invalid hand edit, reindex equal to the files, version skew | Chore | 5, 11 | Agent |
-| 17 | – | Enter my tasks, a week of starting the day with `loom` | Chore | 14, 15, 21, 22 | Me |
+| 17 | – | Enter my tasks, a week of starting the day with `loom` | Chore | 14, 15 | Me |
 | 18 | [#84](https://github.com/gsuquet/loom/issues/84) | Disk usage of the loom home in `loom status` and `--json`, doctor checks (kept versions, WAL, free space) | Story | – | Agent |
 | 19 | [#94](https://github.com/gsuquet/loom/issues/94) | loomd change events over SSE (`GET /v1/events`), followed by the TUI ([ADR-0014](adr/0014-tui-architecture.md)) | Story | 6 | Agent |
 | 20 | [#113](https://github.com/gsuquet/loom/issues/113) | `loom service restart`: restart loomd (service manager or signal), config checked first, wait for the new loomd | Story | – | Agent |
-| 21 | [#152](https://github.com/gsuquet/loom/issues/152) | TUI task detail: field pickers (status, kind, importance, due, context) | Story | 15 | Agent |
-| 22 | [#153](https://github.com/gsuquet/loom/issues/153) | TUI task detail: body in `$EDITOR` | Story | 15 | Agent |
-| 23 | [#154](https://github.com/gsuquet/loom/issues/154) | TUI task detail: Relations and Events tabs | Story | 15 | Agent |
-| 24 | [#97](https://github.com/gsuquet/loom/issues/97) | Record notes-only hand edits of `task.md` | Story | 5 | Agent |
-| 25 | [#98](https://github.com/gsuquet/loom/issues/98) | Doctor checks for task stores | Story | 5 | Agent |
-
-Done on `main`: 1 to 14, 16, 18 to 20. Remaining: 15, 21 to 23 in order (22 and 23 in parallel after 15), 24 and 25 at any time, then 17.
 
 Parallel tracks: 18 and 20 from the start; after 2, {3} and {4, 5}; after 5, {11, 12, 16}; after 6, {7, 8}, {9, 10}, {19 -> 13, 14, 15}.
