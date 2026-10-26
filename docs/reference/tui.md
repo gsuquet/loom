@@ -147,7 +147,7 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `d` | Open the due date picker. |
 | `u` | Undo the last change that the TUI made. |
 
-The three pickers need a task that you can edit. On a read-only task, or on a page that is still loading, the footer shows `cannot edit task`.
+The three pickers open on the `Overview` tab only. They refuse a task that you cannot edit and show a status message: `task is read-only: <reason>`, `the task is not loaded yet`, or `cannot edit task` when the task detail has no `edit` action. A choice that does not change the task sends no call and closes the modal. A change to a `content` task keeps its format. `u` on an object page undoes only the last change of that page's task; otherwise it shows `nothing to undo`.
 
 ### Modals
 

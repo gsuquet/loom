@@ -102,6 +102,10 @@ pub struct PickModalState {
     /// The choices of `Kind` and `Importance`; empty for `Due`.
     pub options: Vec<PickOption>,
     pub selected: usize,
+    /// The value that the task has now, one of `options`; `None` for `Due`.
+    pub current: Option<PickOption>,
+    /// The due date that the task has now.
+    pub current_due: Option<Date>,
     /// The text of the `Due` field.
     pub due_input: String,
     pub error: Option<String>,
@@ -994,7 +998,23 @@ impl AppState {
     }
 
     /// Opens the picker of `field` for the task of the open page.
+    /// The task that `u` undoes: on a task page only that task's own last change.
+    fn undo_target(&self) -> Option<TaskId> {
+        match self.page_stack.last().map(|p| &p.target) {
+            Some(ObjectTarget::Task(id)) => self.last_action.clone().filter(|last| last == id),
+            None => self.last_action.clone(),
+        }
+    }
+
     fn open_picker(&mut self, field: PickField) -> AppEffect {
+        if self
+            .page_stack
+            .last()
+            .is_some_and(|p| p.tab != PageTab::Overview)
+        {
+            self.status_message = Some("go to the Overview tab to edit the task".into());
+            return AppEffect::None;
+        }
         let Some(ObjectPageContent::Task(detail)) = self.page_stack.last().map(|p| &p.content)
         else {
             self.status_message = Some("the task is not loaded yet".into());
@@ -1009,38 +1029,54 @@ impl AppState {
             self.status_message = Some("cannot edit task".into());
             return AppEffect::None;
         };
-        let (options, selected, due_input) = match field {
-            PickField::Kind => (
-                TRIAGE_KINDS.iter().cloned().map(PickOption::Kind).collect(),
-                TRIAGE_KINDS
+        let (options, current, due_input) = match field {
+            PickField::Kind => {
+                // The task's own kind replaces its entry, so a content format is kept.
+                let mut options: Vec<PickOption> = TRIAGE_KINDS
                     .iter()
-                    .position(|k| k.name() == task.kind.name())
-                    .unwrap_or(0),
-                String::new(),
-            ),
-            PickField::Importance => (
-                TRIAGE_IMPORTANCES
+                    .map(|k| {
+                        PickOption::Kind(if k.name() == task.kind.name() {
+                            task.kind.clone()
+                        } else {
+                            k.clone()
+                        })
+                    })
+                    .collect();
+                let current = PickOption::Kind(task.kind.clone());
+                if !options.contains(&current) {
+                    options.insert(0, current.clone());
+                }
+                (options, Some(current), String::new())
+            }
+            PickField::Importance => {
+                let options = TRIAGE_IMPORTANCES
                     .iter()
                     .copied()
                     .map(PickOption::Importance)
-                    .collect(),
-                TRIAGE_IMPORTANCES
-                    .iter()
-                    .position(|i| *i == task.importance)
-                    .unwrap_or(0),
-                String::new(),
-            ),
+                    .collect();
+                (
+                    options,
+                    Some(PickOption::Importance(task.importance)),
+                    String::new(),
+                )
+            }
             PickField::Due => (
                 Vec::new(),
-                0,
+                None,
                 task.due.map_or_else(String::new, |d| d.to_string()),
             ),
         };
+        let selected = current
+            .as_ref()
+            .and_then(|c| options.iter().position(|o| o == c))
+            .unwrap_or(0);
         self.pick_modal = Some(PickModalState {
             task_id: detail.summary.id.clone(),
             field,
             options,
             selected,
+            current,
+            current_due: task.due,
             due_input,
             error: None,
         });
@@ -1056,6 +1092,7 @@ impl AppState {
         let mut edit = (None, None, None);
         match m.field {
             PickField::Kind | PickField::Importance => match m.options.get(m.selected) {
+                Some(option) if Some(option) == m.current.as_ref() => {}
                 Some(PickOption::Kind(kind)) => edit.0 = Some(kind.clone()),
                 Some(PickOption::Importance(importance)) => edit.1 = Some(*importance),
                 None => {}
@@ -1063,9 +1100,13 @@ impl AppState {
             PickField::Due => {
                 let text = m.due_input.trim();
                 if text.is_empty() {
-                    edit.2 = Some(None);
+                    if m.current_due.is_some() {
+                        edit.2 = Some(None);
+                    }
                 } else if let Ok(date) = parse_date(text, self.local_date) {
-                    edit.2 = Some(Some(date));
+                    if m.current_due != Some(date) {
+                        edit.2 = Some(Some(date));
+                    }
                 } else {
                     m.error = Some(format!("invalid date {text:?}"));
                     return AppEffect::None;
@@ -1074,6 +1115,9 @@ impl AppState {
         }
         self.modal = None;
         self.pick_modal = None;
+        if edit == (None, None, None) {
+            return AppEffect::None;
+        }
         AppEffect::EditTask {
             id,
             kind: edit.0,
@@ -1141,7 +1185,7 @@ impl AppState {
                 .go_action_task()
                 .map_or(AppEffect::None, AppEffect::GoTask),
             // The runtime clears `last_action` once the undo succeeds, so a refused undo keeps its target.
-            KeyCommand::Undo => self.last_action.clone().map_or_else(
+            KeyCommand::Undo => self.undo_target().map_or_else(
                 || {
                     self.set_status("nothing to undo");
                     AppEffect::None
@@ -1764,6 +1808,68 @@ mod tests {
                 importance: None,
                 due: None,
             }
+        );
+    }
+
+    fn picker_effect(state: &mut AppState, key: char) -> AppEffect {
+        press(state, KeyCode::Char(key));
+        press(state, KeyCode::Enter)
+    }
+
+    #[test]
+    fn an_unchanged_choice_sends_nothing_and_closes_the_modal() {
+        for key in ['t', 'i', 'd'] {
+            let mut state = state_with_loaded_page(None);
+            assert_eq!(picker_effect(&mut state, key), AppEffect::None, "{key}");
+            assert_eq!(state.modal, None, "{key}");
+            assert_eq!(state.pick_modal, None, "{key}");
+        }
+    }
+
+    #[test]
+    fn the_kind_picker_keeps_the_format_of_a_content_task() {
+        let mut state = state_with_loaded_page(None);
+        let format = loom_core::ContentFormat::Article;
+        if let ObjectPageContent::Task(detail) = &mut state.page_stack[0].content {
+            let task = detail.summary.task.as_mut().unwrap();
+            task.kind = Kind::Content {
+                format: Some(format.clone()),
+            };
+        }
+        // Enter on the unchanged kind sends nothing, so the format stays.
+        assert_eq!(picker_effect(&mut state, 't'), AppEffect::None);
+        // Moving away and back also keeps the task's own entry.
+        press(&mut state, KeyCode::Char('t'));
+        let picker = state.pick_modal.as_ref().unwrap();
+        assert_eq!(
+            picker.options[picker.selected],
+            PickOption::Kind(Kind::Content {
+                format: Some(format)
+            })
+        );
+    }
+
+    #[test]
+    fn the_pickers_open_only_on_the_overview_tab() {
+        for key in ['t', 'i', 'd'] {
+            let mut state = state_with_loaded_page(None);
+            state.page_stack[0].tab = PageTab::Events;
+            press(&mut state, KeyCode::Char(key));
+            assert_eq!(state.modal, None, "{key}");
+            assert!(state.status_message.is_some(), "{key}");
+        }
+    }
+
+    #[test]
+    fn page_undo_never_undoes_another_task() {
+        let mut state = state_with_loaded_page(None);
+        state.last_action = Some("m4r8wn3b".parse().unwrap());
+        assert_eq!(press(&mut state, KeyCode::Char('u')), AppEffect::None);
+        assert_eq!(state.status_message.as_deref(), Some("nothing to undo"));
+        state.last_action = Some("k3q7zm2a".parse().unwrap());
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u')),
+            AppEffect::UndoTask("k3q7zm2a".parse().unwrap())
         );
     }
 
