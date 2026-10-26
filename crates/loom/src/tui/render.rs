@@ -498,9 +498,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         vec![
             ("Esc", "back"),
             ("[/]", "tab"),
-            ("t/i/d", "edit"),
+            ("t/i/d/s", "edit"),
             ("u", "undo"),
-            ("j/k", "scroll"),
             (":", "palette"),
             ("?", "help"),
             ("q", "quit"),
@@ -900,6 +899,7 @@ fn render_pick_modal(frame: &mut Frame<'_>, popup: Rect, state: &AppState) {
             let label = match option {
                 PickOption::Kind(kind) => kind.name().to_owned(),
                 PickOption::Importance(importance) => importance_label(*importance).to_owned(),
+                PickOption::Status(status) => status.to_string(),
             };
             let item = ListItem::new(format!(" {label}"));
             if idx == m.selected {
@@ -1154,7 +1154,7 @@ mod tests {
             "│                                                                              │",
             "│                                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  t/i/d edit  u undo  j/k scroll  : palette  ? help  q quit   ",
+            " Esc back  [/] tab  t/i/d/s edit  u undo  : palette  ? help  q quit             ",
         ];
         assert_eq!(task_page_lines(80, PageTab::Overview), expected);
     }
@@ -1177,7 +1177,7 @@ mod tests {
             "│                                                                                                                                                              │",
             "│                                                                                                                                                              │",
             "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  t/i/d edit  u undo  j/k scroll  : palette  ? help  q quit                                                                                   ",
+            " Esc back  [/] tab  t/i/d/s edit  u undo  : palette  ? help  q quit                                                                                             ",
         ];
         assert_eq!(task_page_lines(160, PageTab::Overview), expected);
     }
@@ -1200,7 +1200,7 @@ mod tests {
             "│• Mobile users time out                                                       │",
             "│• retry 3 times                                                               │",
             "└──────────────────────────────────────────────────────────────────────────────┘",
-            " Esc back  [/] tab  t/i/d edit  u undo  j/k scroll  : palette  ? help  q quit   ",
+            " Esc back  [/] tab  t/i/d/s edit  u undo  : palette  ? help  q quit             ",
         ];
         let lines = task_page_lines_with(
             80,
