@@ -153,6 +153,10 @@ pub enum Command {
     /// Without `--task`, the context is resolved as for `loom add`. If that context has no focus
     /// task, the command fails. Starts loomd if it is stopped.
     Log(LogArgs),
+    /// Accept a task from the inbox: set its status to ready, and change its fields.
+    ///
+    /// ID is a task ID or a unique prefix of one. Starts loomd if it is stopped.
+    Accept(AcceptArgs),
     /// Mark a task done.
     Done(TaskArgs),
     /// Cancel a task.
@@ -461,6 +465,29 @@ pub struct SnoozeArgs {
     pub json: bool,
 }
 
+/// Options of `loom accept`.
+#[derive(Debug, clap::Args)]
+pub struct AcceptArgs {
+    /// Task ID, or a unique prefix of one.
+    #[arg(value_name = "ID", value_parser = task_prefix)]
+    pub id: String,
+    /// Kind of the task. If changed without --importance, resets importance to the kind's default.
+    #[arg(long, value_enum)]
+    pub kind: Option<KindArg>,
+    /// Format of a `content` task.
+    #[arg(long, value_enum)]
+    pub format: Option<FormatArg>,
+    /// Importance of the task. If omitted when kind changes, resets to the kind's default; if omitted when kind is unchanged, keeps existing importance.
+    #[arg(long, value_enum)]
+    pub importance: Option<ImportanceArg>,
+    /// Due date: `YYYY-MM-DD`, `today`, `tomorrow`, `+<n>d`, `+<n>w` or `none`.
+    #[arg(long, value_name = "DATE")]
+    pub due: Option<String>,
+    /// Print the task as JSON (`TaskDetail` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Options of `loom edit`.
 #[derive(Debug, clap::Args)]
 pub struct EditArgs {
@@ -734,7 +761,10 @@ pub fn command_path(matches: &ArgMatches) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, ReleaseChannel, SearchType, ServiceCommand, command_path};
+    use super::{
+        Cli, Command, ImportanceArg, KindArg, ReleaseChannel, SearchType, ServiceCommand,
+        command_path,
+    };
     use clap::error::ErrorKind;
     use clap::{ColorChoice, CommandFactory, Parser};
     use loom_api::SearchKind;
@@ -862,6 +892,7 @@ mod tests {
                 | Command::Repo { .. }
                 | Command::Search(_)
                 | Command::Add(_)
+                | Command::Accept(_)
                 | Command::Ls(_)
                 | Command::Show(_)
                 | Command::Set(_)
@@ -1137,5 +1168,41 @@ mod tests {
         }
         let error = Cli::try_parse_from(["loom", "--color", "sometimes", "version"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn accept_parses() {
+        let cli = Cli::try_parse_from(["loom", "accept", "k3q7"]).unwrap();
+        let Some(Command::Accept(args)) = cli.command else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.id, "k3q7");
+        assert_eq!(args.kind, None);
+        assert_eq!(args.format, None);
+        assert_eq!(args.importance, None);
+        assert_eq!(args.due, None);
+        assert!(!args.json);
+
+        let cli = Cli::try_parse_from([
+            "loom",
+            "accept",
+            "k3q7",
+            "--kind",
+            "story",
+            "--importance",
+            "p1",
+            "--due",
+            "tomorrow",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Accept(args)) = cli.command else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.id, "k3q7");
+        assert_eq!(args.kind, Some(KindArg::Story));
+        assert_eq!(args.importance, Some(ImportanceArg::P1));
+        assert_eq!(args.due.as_deref(), Some("tomorrow"));
+        assert!(args.json);
     }
 }

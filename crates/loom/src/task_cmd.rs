@@ -8,15 +8,15 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use loom::cli::{
-    AddArgs, EditArgs, FocusArgs, GlobalArgs, GoArgs, LogArgs, LsArgs, SetArgs, ShowArgs,
-    SnoozeArgs, TaskArgs,
+    AcceptArgs, AddArgs, EditArgs, FocusArgs, GlobalArgs, GoArgs, LogArgs, LsArgs, SetArgs,
+    ShowArgs, SnoozeArgs, TaskArgs,
 };
 use loom::task::{
     AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
     changed_after_save, changed_meanwhile, context_with_parent, default_repo, editor,
     focus_api_path, holds_saved, kind_of, list_api_path, new_task, parse_date, render_change,
     render_detail, render_focus, render_go, render_list, resolve_context, set_plan, skipped_notice,
-    today, with_parent, with_repo,
+    today, with_parent, with_repo, write_cd_file,
 };
 use loom_api::{
     Actor, ContextName, Date, EventRecord, FocusList, GoResult, TaskActionRequest, TaskDetail,
@@ -34,7 +34,7 @@ use crate::{load_config, print};
 /// Path of the task list and of the creation endpoint.
 const TASKS_PATH: &str = "/v1/tasks";
 /// File where `loom go` writes the repository path for the shell wrapper (`loom shell-init`).
-const CD_FILE_ENV: &str = "LOOM_CD_FILE";
+pub const CD_FILE_ENV: &str = "LOOM_CD_FILE";
 /// Longest wait for loomd to record a `loom edit`: its watcher reads the file at once.
 const EDIT_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 /// Interval between two reads of the edited task.
@@ -192,6 +192,13 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
     })
 }
 
+/// The file named by [`CD_FILE_ENV`], if set and non-empty.
+pub fn cd_file_from_env() -> Option<PathBuf> {
+    env::var_os(CD_FILE_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 /// `loom go`.
 pub fn go(args: &GoArgs, layout: &Layout) -> Result<()> {
     block_on(async {
@@ -200,9 +207,8 @@ pub fn go(args: &GoArgs, layout: &Layout) -> Result<()> {
             .post(&format!("{TASKS_PATH}/{}/go", args.id), None::<&()>)
             .await
             .map_err(|error| api_error(&error))?;
-        if let Some(path) = &result.repo_path
-            && let Some(cd_file) = env::var_os(CD_FILE_ENV).filter(|value| !value.is_empty())
-            && let Err(error) = fs::write(&cd_file, format!("{}\n", path.display()))
+        if let Err(error) =
+            write_cd_file(cd_file_from_env().as_deref(), result.repo_path.as_deref())
         {
             debug!(%error, "cannot write the repository path to {CD_FILE_ENV}");
         }
@@ -226,6 +232,7 @@ pub fn log(args: &LogArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
         on: None,
         until: None,
         text: Some(args.text.join(" ")),
+        ..Default::default()
     };
     block_on(async {
         let client = client(layout).await?;
@@ -252,6 +259,39 @@ pub fn log(args: &LogArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
     })
 }
 
+/// `loom accept`.
+pub fn accept(args: &AcceptArgs, layout: &Layout) -> Result<()> {
+    if args.format.is_some() && args.kind != Some(KindArg::Content) {
+        return Err(miette!("--format applies to --kind content only"));
+    }
+    let due = args
+        .due
+        .as_deref()
+        .map(|text| {
+            if text.trim().is_empty() || text.eq_ignore_ascii_case("none") {
+                Ok(None)
+            } else {
+                parse_date(text, local_today()).map(Some).into_diagnostic()
+            }
+        })
+        .transpose()?;
+    let kind = args.kind.map(|kind| kind_of(kind, args.format));
+    let importance = args.importance.map(Into::into);
+    let request = TaskActionRequest {
+        on: None,
+        until: None,
+        text: None,
+        kind,
+        importance,
+        due,
+    };
+    block_on(async {
+        let client = client(layout).await?;
+        let detail = action(&client, &args.id, "accept", Some(&request)).await?;
+        output(&detail, args.json, || render_change(&detail))
+    })
+}
+
 /// `loom done` (`done`) and `loom cancel` (`cancelled`).
 pub fn status(args: &TaskArgs, name: &str, layout: &Layout) -> Result<()> {
     block_on(async {
@@ -268,6 +308,7 @@ pub fn snooze(args: &SnoozeArgs, layout: &Layout) -> Result<()> {
         on: args.on.clone(),
         until: Some(until),
         text: None,
+        ..Default::default()
     };
     block_on(async {
         let client = client(layout).await?;
@@ -505,7 +546,7 @@ fn output(value: &impl Serialize, json: bool, text: impl FnOnce() -> String) -> 
 }
 
 /// The local date, as loomd reads it: relative due dates match its priority list.
-fn local_today() -> Date {
+pub fn local_today() -> Date {
     today(
         env::var(TEST_TODAY_ENV).ok().as_deref(),
         cfg!(debug_assertions),

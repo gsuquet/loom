@@ -31,9 +31,9 @@ The TUI has three queues:
 
 | Key | Queue | Source in `loomd` | Content |
 | --- | --- | --- | --- |
-| `1` | `Today` | `GET /v1/tasks` | Open tasks that are `ready` or `active`, in rank order (`p0` to `p3`, then `due`, then `rank`, then `id`). Each row shows importance, status, context badge, kind, and title. |
+| `1` | `Today` | `GET /v1/tasks` | Open tasks that are `ready` or `active`, in priority order (pinned, overdue or due today, importance, due date, age, then `id`). Each row shows importance, status, context badge, kind, and title. `w` toggles priority reasons. `p` toggles grouping by parent task. |
 | `2` | `Inbox` | `GET /v1/tasks?status=inbox` | Open tasks with status `inbox`, in rank order. |
-| `3` | `Waiting` | `GET /v1/tasks?status=waiting` | Open tasks with status `waiting`, in rank order. |
+| `3` | `Waiting` | `GET /v1/tasks?status=waiting` | Open tasks with status `waiting`, in rank order. Shows undated tasks and dated tasks, with `until` dates and `waiting on` notes. |
 
 A queue view shows a list on the left and a preview pane on the right when two conditions hold:
 
@@ -41,6 +41,8 @@ A queue view shows a list on the left and a preview pane on the right when two c
 - The preview pane is enabled (`|` switches it on or off).
 
 When the terminal width is below `120` columns, or when you switch the preview pane off with `|`, the list uses the full width of the main area.
+
+A task that is read-only shows `[ro: <reason>]` in the list row and a banner `⚠ READ-ONLY: <reason>` in the preview pane. `loom` refuses edits to read-only tasks and displays an error message.
 
 ## Object pages
 
@@ -60,12 +62,15 @@ A modal sits on top of the active view and captures key presses until you close 
 | `:` | Command palette | Fuzzy-filters views (`queue: Today`, `queue: Inbox`, `queue: Waiting`), actions (`action: Search (/...)`, `action: Pick context filter (@)`, `action: Toggle preview pane (|)`, `action: Refresh from loomd (r)`, `action: Help (?)`, `action: Quit loom (q)`), and context switches (`context: all`, `context: <name>`). |
 | `/` | Search | Queries `GET /v1/search?q=<query>` as you type after a 150 ms pause. `Enter` opens the selected task page. |
 | `@` | Context picker | Lists `all` and every known context. `Enter` switches the active context filter and reloads the queues. |
+| `a` | Accept | Triages an `inbox` task to `ready`. Configures `Kind`, `Importance`, and optional `Due` date. |
+| `z` | Snooze | Moves a task to `waiting`. Configures `Until` date and optional `Waiting on` note. |
+| `+` | New task | Creates a new task with status `inbox`. Resolves context from the active context filter, or the selected task's context, or the configured default context. Configures `Title`. |
 
 ## Key bindings
 
 Key resolution uses three layers, from innermost to outermost:
 
-1. **Modal layer:** active when a modal (`?`, `:`, `/`, `@`) is open.
+1. **Modal layer:** active when a modal (`?`, `:`, `/`, `@`, `a`, `z`, `+`) is open.
 2. **View layer:** active for the current view (`Queue` or `Object page`).
 3. **Global layer:** active whenever no modal captures the key.
 
@@ -97,6 +102,26 @@ Key resolution uses three layers, from innermost to outermost:
 | `Enter` | Open the selected task. |
 | `\|` | Switch the preview pane on or off. |
 | `r` | Reload the queues from `loomd`. |
+| `a` | Open the accept modal (triages `inbox` task to `ready`). |
+| `z` | Open the snooze modal (moves task to `waiting`). |
+| `c` | Mark the task as done. |
+| `x` | Cancel the task. |
+| `g` | Focus the task and quit the TUI (`loom shell-init` changes directory to the task repository). |
+| `u` | Undo the last action performed (reverts the last change of the task). |
+| `+` | Create a new task in the active context (or from the selected task or default context). |
+| `w` | Toggle priority reasons (`--why`) in `Today` queue. |
+| `p` | Toggle grouping by parent task in `Today` queue. |
+
+The footer of a queue shows the keys of the actions for that queue. `?` shows all keys.
+
+The TUI sends one task action at a time to `loomd`. These rules apply:
+
+- If you start a second action while the first runs, the TUI keeps it and sends it when the first ends.
+- If a third action arrives, the footer shows `action in progress` and the TUI drops it.
+- If the first action fails, the TUI shows the error and drops the kept action.
+- A kept `u` runs only if the task that it names is still the undo target. A second quick `u` after a successful undo shows `nothing to undo`.
+- `u` stays ready until an undo succeeds.
+- When you quit, the TUI waits up to 5 seconds for the running action to end. It does not send the kept action.
 
 ### Object page
 
@@ -114,10 +139,13 @@ Key resolution uses three layers, from innermost to outermost:
 | Key | Action |
 | --- | --- |
 | `Esc` | Close the modal. |
-| `Enter` | Run or open the selected modal entry. |
-| `Down`, `Ctrl+n` | Select the next modal entry. |
-| `Up`, `Ctrl+p` | Select the previous modal entry. |
-| `Backspace` | Delete the last query character (in `:` and `/`). |
+| `Enter` | Confirm the modal or open/execute the selected entry. |
+| `Tab`, `Down` | Select the next field (in `Accept`, `Snooze`) or entry (in `Help`, `ContextPicker`). |
+| `Shift+Tab`, `Up` | Select the previous field (in `Accept`, `Snooze`) or entry (in `Help`, `ContextPicker`). |
+| `Ctrl+n` / `Ctrl+p` | Select next / previous command or result (in `Command palette`, `Search`). |
+| `Left`, `h` | Cycle to the previous option in option fields (in `Accept`). |
+| `Right`, `l` | Cycle to the next option in option fields (in `Accept`). |
+| `Backspace` | Delete the last character in text inputs. |
 
 ## Live updates
 

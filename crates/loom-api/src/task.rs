@@ -4,11 +4,11 @@
 use std::path::PathBuf;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use loom_core::{
-    Action, ContextName, Date, EventRecord, RankReason, ReadOnlyReason, SkippedLine, StatusName,
-    Task, TaskId, Timestamp,
+    Action, ContextName, Date, EventRecord, Importance, Kind, RankReason, ReadOnlyReason,
+    SkippedLine, StatusName, Task, TaskId, Timestamp,
 };
 
 /// Answer of `GET /v1/tasks`.
@@ -156,6 +156,8 @@ pub enum TaskActionName {
     Unpin,
     /// Log a note, with `text`.
     LogNote,
+    /// Accept an inbox task: move to ready, and optionally change kind, importance or due date.
+    Accept,
 }
 
 impl TaskActionName {
@@ -172,6 +174,7 @@ impl TaskActionName {
                 StatusName::Done => Self::Done,
                 StatusName::Cancelled => Self::Cancelled,
             }),
+            Action::Accept => Some(Self::Accept),
             Action::Pin => Some(Self::Pin),
             Action::Unpin => Some(Self::Unpin),
             Action::LogNote => Some(Self::LogNote),
@@ -193,6 +196,26 @@ pub struct TaskActionRequest {
     /// `log_note` only, required: the note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// `accept` only, optional: new kind. If changed without importance, resets importance to the kind's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<Kind>,
+    /// `accept` only, optional: new importance. If omitted when kind changes, resets to the new kind's default; if omitted when kind is unchanged, keeps existing importance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub importance: Option<Importance>,
+    /// `accept` only, optional: new due date. `Some(None)` (`null`) removes it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub due: Option<Option<Date>>,
+}
+
+/// Reads a field that is present, `null` included, as `Some`.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 /// `details` of an `ambiguous_prefix` error.
@@ -283,9 +306,24 @@ mod tests {
                 on: Some("Alice".to_owned()),
                 until: Some("2026-10-20".parse().unwrap()),
                 text: None,
+                ..Default::default()
             }
         );
         assert!(parse(json!({ "note": "x" })).is_err());
         assert!(parse(json!({ "until": "tomorrow" })).is_err());
+        assert_eq!(
+            parse(json!({ "due": null })).unwrap(),
+            TaskActionRequest {
+                due: Some(None),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            parse(json!({ "due": "2026-10-25" })).unwrap(),
+            TaskActionRequest {
+                due: Some(Some("2026-10-25".parse().unwrap())),
+                ..Default::default()
+            }
+        );
     }
 }

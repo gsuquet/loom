@@ -2,6 +2,7 @@
 
 use std::env;
 use std::io::{self, IsTerminal as _};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::CommandFactory as _;
@@ -12,6 +13,9 @@ use loom::client::Client;
 use loom::conventions::{Exit, use_color};
 use loom::search::search_api_path;
 use loom::task::list_api_path;
+use loom::tui::actions::{
+    ActionRequest, ActionResponse, Next, Submission, execute_action, submit, take_next,
+};
 use loom::tui::color::Theme;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, SseState};
@@ -25,7 +29,11 @@ use ratatui::backend::CrosstermBackend;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, watch};
 
+use crate::task_cmd::{cd_file_from_env, local_today};
 use crate::{load_config, print, repo_cmd};
+
+/// Longest wait for a running action when the TUI quits.
+const ACTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for task/search requests made by the TUI.
 const TUI_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -82,7 +90,9 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     );
     let theme = Theme::from_config(&config.contexts, color_enabled);
     let contexts: Vec<ContextName> = config.contexts.keys().cloned().collect();
-    let mut state = AppState::new(theme, global.context.clone(), contexts);
+    let default_context = config.default_context.as_ref().map(|s| s.get_ref().clone());
+    let mut state = AppState::new(theme, global.context.clone(), contexts, local_today())
+        .with_default_context(default_context);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -180,7 +190,16 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
         run_sse_worker(sse_client, sse_tx).await;
     });
 
-    // 5. Initial draw and trigger initial refresh.
+    // 5. Spawn action worker for task triage operations (accept, snooze, cancel, done, go, undo, create).
+    let (action_tx, action_rx) = mpsc::channel::<ActionRequest>(16);
+    let (action_done_tx, mut action_done_rx) = mpsc::channel::<ActionResponse>(16);
+    let action_client = client.clone();
+    let cd_file = cd_file_from_env();
+    tokio::spawn(async move {
+        run_action_worker(action_client, action_rx, action_done_tx, cd_file).await;
+    });
+
+    // 6. Initial draw and trigger initial refresh.
     terminal.draw(|f| render(f, state)).into_diagnostic()?;
 
     let mut refresh_queued = false;
@@ -189,6 +208,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
         open_id: None,
     });
     let mut fetch_in_flight = true;
+    let mut action_in_flight = false;
 
     let mut event_stream = crossterm::event::EventStream::new();
     let mut pending_search: Option<String> = None;
@@ -212,6 +232,7 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                 if let Ok(event) = event_res {
                     match event {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            state.set_local_date(local_today());
                             let effect = state.handle_key(key);
                             handle_effect(
                                 effect,
@@ -222,6 +243,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                                 &mut refresh_queued,
                                 &mut pending_search,
                                 &mut search_timer,
+                                &action_tx,
+                                &mut action_in_flight,
                             );
                             needs_redraw = true;
                         }
@@ -255,6 +278,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                             &mut refresh_queued,
                             &mut pending_search,
                             &mut search_timer,
+                            &action_tx,
+                            &mut action_in_flight,
                         );
                         needs_redraw = true;
                     }
@@ -313,7 +338,12 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                     && data.open.as_ref().is_none_or(|(_, r)| r.is_ok());
 
                 match data.today {
-                    Ok(list) => state.today = list.tasks,
+                    Ok(list) => {
+                        state.today = list.tasks;
+                        if state.group_by_parent() {
+                            state.sort_today_by_parent();
+                        }
+                    }
                     Err(err) => state.set_error(err),
                 }
                 match data.inbox {
@@ -364,6 +394,50 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
                 }
                 needs_redraw = true;
             }
+
+            // Handle action worker responses
+            Some(action_resp) = action_done_rx.recv() => {
+                action_in_flight = false;
+                let action_ok = action_resp.is_ok();
+                match action_resp {
+                    Ok(outcome) => {
+                        let target = outcome.next_undo_target(state.last_action.as_ref());
+                        state.set_last_action(target);
+                        if let Some(msg) = outcome.message {
+                            state.status_message = Some(msg);
+                        }
+                        if outcome.should_quit {
+                            state.should_quit = true;
+                        }
+                        if outcome.should_refresh {
+                            handle_effect(
+                                AppEffect::Refresh,
+                                state,
+                                &refresh_tx,
+                                &task_tx,
+                                &mut fetch_in_flight,
+                                &mut refresh_queued,
+                                &mut pending_search,
+                                &mut search_timer,
+                                &action_tx,
+                                &mut action_in_flight,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        state.set_error(err);
+                    }
+                }
+                let succeeded = action_ok;
+                match take_next(&mut state.queued_action, succeeded, state.last_action.as_ref()) {
+                    Next::Nothing => {}
+                    Next::Send(next) => {
+                        submit_action(next, state, &action_tx, &mut action_in_flight);
+                    }
+                    Next::Dropped(reason) => state.set_status(reason),
+                }
+                needs_redraw = true;
+            }
         }
 
         if needs_redraw {
@@ -371,20 +445,63 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
         }
     }
 
+    // An action that runs ends first, so that quitting does not cut a change to a task.
+    // The action that waits behind it does not run.
+    state.queued_action = None;
+    if action_in_flight {
+        let _ = tokio::time::timeout(ACTION_DRAIN_TIMEOUT, action_done_rx.recv()).await;
+    }
+
     drop(guard);
     Ok(exit)
+}
+
+/// Sends an action to the worker. While another action runs, keeps the request for after it.
+fn submit_action(
+    request: ActionRequest,
+    state: &mut AppState,
+    action_tx: &mpsc::Sender<ActionRequest>,
+    action_in_flight: &mut bool,
+) {
+    match submit(*action_in_flight, &mut state.queued_action, request) {
+        Submission::Send(request) => {
+            if action_tx.try_send(request).is_ok() {
+                *action_in_flight = true;
+            } else {
+                state.set_error("cannot reach the action worker");
+            }
+        }
+        Submission::Kept => {}
+        Submission::Dropped => state.set_status("action in progress"),
+    }
+}
+
+async fn run_action_worker(
+    client: Client,
+    mut requests: mpsc::Receiver<ActionRequest>,
+    responses: mpsc::Sender<ActionResponse>,
+    cd_file: Option<PathBuf>,
+) {
+    while let Some(request) = requests.recv().await {
+        let response = execute_action(&client, request, cd_file.as_deref()).await;
+        if responses.send(response).await.is_err() {
+            break;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn handle_effect(
     effect: AppEffect,
-    state: &AppState,
+    state: &mut AppState,
     refresh_tx: &mpsc::Sender<RefreshRequest>,
     task_tx: &watch::Sender<Option<TaskId>>,
     fetch_in_flight: &mut bool,
     refresh_queued: &mut bool,
     pending_search: &mut Option<String>,
     search_timer: &mut std::pin::Pin<Box<tokio::time::Sleep>>,
+    action_tx: &mpsc::Sender<ActionRequest>,
+    action_in_flight: &mut bool,
 ) {
     match effect {
         AppEffect::None => {}
@@ -409,6 +526,11 @@ fn handle_effect(
         AppEffect::Search(query) => {
             *pending_search = Some(query);
             *search_timer = Box::pin(tokio::time::sleep(SEARCH_DEBOUNCE));
+        }
+        effect => {
+            if let Ok(request) = ActionRequest::from_effect(effect) {
+                submit_action(request, state, action_tx, action_in_flight);
+            }
         }
     }
 }

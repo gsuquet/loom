@@ -22,11 +22,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use loom::client::Client;
 use loom::search::search_api_path;
 use loom::task::list_api_path;
+use loom::tui::actions::{ActionRequest, execute_action};
 use loom::tui::color::Theme;
 use loom::tui::keymap::QueueTab;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent};
-use loom_api::{ContextName, SearchResults, TaskDetail, TaskList};
+use loom_api::{
+    ContextName, Importance, Kind, RankReason, Relations, SearchResults, Status, Task, TaskDetail,
+    TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary,
+};
 use loom_config::repos::{ContextColor, ContextConfig};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -151,6 +155,13 @@ fn buffer_text_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
                 .collect::<String>()
         })
         .collect()
+}
+
+fn assert_buffer_lines(terminal: &Terminal<TestBackend>, expected: &[&str]) {
+    let actual = buffer_text_lines(terminal);
+    let trimmed_actual: Vec<&str> = actual.iter().map(|s| s.trim_end()).collect();
+    let trimmed_expected: Vec<&str> = expected.iter().map(|s| s.trim_end()).collect();
+    assert_eq!(trimmed_actual, trimmed_expected);
 }
 
 #[test]
@@ -316,6 +327,7 @@ async fn tui_driven_against_real_loomd_and_renders_snapshot() {
             ContextName::from_str("personal").unwrap(),
             ContextName::from_str("work").unwrap(),
         ],
+        jiff::civil::date(2026, 10, 22),
     );
 
     // 3. Fetch queues from real loomd
@@ -470,4 +482,586 @@ async fn tui_driven_against_real_loomd_and_renders_snapshot() {
     // 11. Press 'q' to quit
     state.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
     assert!(state.should_quit);
+}
+
+fn make_test_task(
+    id: &str,
+    status: Status,
+    rank: Option<TaskRank>,
+    parent: Option<TaskId>,
+    read_only: Option<TaskReadOnly>,
+) -> TaskSummary {
+    let task_id: TaskId = id.parse().unwrap();
+    let created = loom_core::Timestamp::EPOCH;
+    let relations = Relations {
+        parent,
+        ..Default::default()
+    };
+    TaskSummary {
+        id: task_id.clone(),
+        prefix: id.to_owned(),
+        context: ContextName::from_str("work").unwrap(),
+        task: Some(Task {
+            id: task_id,
+            title: format!("Task {id}"),
+            kind: Kind::Bug,
+            context: ContextName::from_str("work").unwrap(),
+            status,
+            importance: Importance::P1,
+            due: Some(jiff::civil::date(2026, 10, 25)),
+            pinned: false,
+            links: Vec::new(),
+            relations,
+            created,
+            updated: created,
+        }),
+        read_only,
+        rank,
+    }
+}
+
+fn make_today_test_state() -> AppState {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Today;
+    let parent_id: TaskId = "p8w2nc4d".parse().unwrap();
+    state.today = vec![
+        make_test_task(
+            "k3q7zm2a",
+            Status::Active,
+            Some(TaskRank {
+                position: 1,
+                reason: RankReason::First,
+            }),
+            Some(parent_id),
+            None,
+        ),
+        make_test_task(
+            "m9v4x1nb",
+            Status::Ready,
+            Some(TaskRank {
+                position: 2,
+                reason: RankReason::Urgent,
+            }),
+            None,
+            None,
+        ),
+    ];
+    state.today_selected = 0;
+    state
+}
+
+#[test]
+fn today_view_snapshots_at_80_columns() {
+    let mut state = make_today_test_state();
+
+    // 1. Render at 80 columns: preview is hidden (< 120 cols)
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let expected_80 = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a                                        │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb                                        │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
+
+    // Toggle why reasons with 'w'
+    state.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let expected_why = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a (first)                                │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb (overdue or due today)                 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_why);
+
+    // Toggle parent grouping with 'p': parent grouping enabled, selection stays on k3q7zm2a
+    state.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let expected_parent = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a [parent: p8w2nc4d] (first)             │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb (overdue or due today)                 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_parent);
+}
+
+#[test]
+fn today_view_snapshots_at_160_columns() {
+    let mut state = make_today_test_state();
+
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.today[0].clone(),
+        body: "Detailed investigation notes here.".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let expected_160 = [
+        " 1 Today 2 │ 2 Inbox 0 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Today · [all] ───────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 active  [work] bug  Task k3q7zm2a                                                ││ID: k3q7zm2a   Context: [work]                                        │",
+        "│  p1 ready   [work] bug  Task m9v4x1nb                                                ││Status: active   Importance: p1   Kind: bug                           │",
+        "│                                                                                      ││Rank: #1 (first)                                                      │",
+        "│                                                                                      ││Parent: p8w2nc4d                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task k3q7zm2a                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Detailed investigation notes here.                                    │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  g go  c done  z snooze  + new  : palette",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
+}
+
+#[test]
+fn inbox_view_snapshots_at_80_and_160_columns() {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Inbox;
+    state.inbox = vec![make_test_task("nb4x1k3q", Status::Inbox, None, None, None)];
+    state.inbox_selected = 0;
+
+    // 1. Render at 80 columns: preview hidden, triage hints in footer
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let expected_80 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task nb4x1k3q                                        │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
+
+    // 2. Render at 160 columns: preview side-by-side
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.inbox[0].clone(),
+        body: "Inbox triage notes".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let expected_160 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task nb4x1k3q                                                ││ID: nb4x1k3q   Context: [work]                                        │",
+        "│                                                                                      ││Status: inbox   Importance: p1   Kind: bug                            │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task nb4x1k3q                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Inbox triage notes                                                    │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
+}
+
+#[test]
+fn waiting_view_snapshots_at_80_and_160_columns() {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Waiting;
+    // Undated task (per #90, hidden from Today) + dated task
+    state.waiting = vec![
+        make_test_task(
+            "7zm2am9v",
+            Status::Waiting {
+                on: Some("alice".into()),
+                until: None,
+            },
+            None,
+            None,
+            None,
+        ),
+        make_test_task(
+            "4x1nbk3q",
+            Status::Waiting {
+                on: None,
+                until: Some(jiff::civil::date(2026, 10, 30)),
+            },
+            None,
+            None,
+            None,
+        ),
+    ];
+    state.waiting_selected = 0;
+
+    // 1. Render at 80 columns: shows undated and dated tags
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let expected_80 = [
+        " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 2   [all]   ○ offline",
+        "┌ Waiting · [all] ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 waiting [work] bug  Task 7zm2am9v (undated) [on: alice]                  │",
+        "│  p1 waiting [work] bug  Task 4x1nbk3q (until 2026-10-30)                     │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  g go  c done  x cancel  + new  : palette",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
+
+    // 2. Render at 160 columns: preview displays waiting on and until
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.waiting[0].clone(),
+        body: "Blocked waiting on review".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let expected_160 = [
+        " 1 Today 0 │ 2 Inbox 0 │ 3 Waiting 2   [all]   ○ offline",
+        "┌ Waiting · [all] ─────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 waiting [work] bug  Task 7zm2am9v (undated) [on: alice]                          ││ID: 7zm2am9v   Context: [work]                                        │",
+        "│  p1 waiting [work] bug  Task 4x1nbk3q (until 2026-10-30)                             ││Status: waiting   Importance: p1   Kind: bug                          │",
+        "│                                                                                      ││Until: undated   Waiting on: alice                                    │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task 7zm2am9v                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Blocked waiting on review                                             │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  g go  c done  x cancel  + new  : palette",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
+}
+
+#[test]
+fn read_only_task_snapshot() {
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    state.active_tab = QueueTab::Inbox;
+    state.inbox = vec![make_test_task(
+        "3q7zm2am",
+        Status::Inbox,
+        None,
+        None,
+        Some(TaskReadOnly::UnknownKind("magic".into())),
+    )];
+    state.inbox_selected = 0;
+
+    // 1. At 80 columns: list shows [ro: unknown kind magic]
+    let backend_80 = TestBackend::new(80, 24);
+    let mut terminal_80 = Terminal::new(backend_80).unwrap();
+    terminal_80.draw(|f| render(f, &state)).unwrap();
+    let expected_80 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task 3q7zm2am [ro: unknown kind magic]               │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
+    ];
+    assert_buffer_lines(&terminal_80, &expected_80);
+
+    // 2. At 160 columns: preview shows banner
+    let backend_160 = TestBackend::new(160, 24);
+    let mut terminal_160 = Terminal::new(backend_160).unwrap();
+    state.preview_detail = Some(TaskDetail {
+        summary: state.inbox[0].clone(),
+        body: "Read-only file content".into(),
+        actions: Vec::new(),
+    });
+    terminal_160.draw(|f| render(f, &state)).unwrap();
+    let expected_160 = [
+        " 1 Today 0 │ 2 Inbox 1 │ 3 Waiting 0   [all]   ○ offline",
+        "┌ Inbox · [all] ───────────────────────────────────────────────────────────────────────┐┌ Preview ─────────────────────────────────────────────────────────────┐",
+        "│▶ p1 inbox   [work] bug  Task 3q7zm2am [ro: unknown kind magic]                       ││⚠ READ-ONLY: unknown kind magic                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││ID: 3q7zm2am   Context: [work]                                        │",
+        "│                                                                                      ││Status: inbox   Importance: p1   Kind: bug                            │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││Title: Task 3q7zm2am                                                  │",
+        "│                                                                                      ││Due: 2026-10-25                                                       │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││── Notes ──────────────────────────────────────────                   │",
+        "│                                                                                      ││Read-only file content                                                │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "│                                                                                      ││                                                                      │",
+        "└──────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘",
+        " q quit  ? help  a accept  z snooze  x cancel  c done  + new",
+    ];
+    assert_buffer_lines(&terminal_160, &expected_160);
+}
+
+async fn task_status(client: &Client, id: &TaskId) -> Status {
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    detail.summary.task.unwrap().status
+}
+
+fn press(state: &mut AppState, code: KeyCode) -> AppEffect {
+    state.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+#[tokio::test]
+async fn triage_keys_accept_undo_go_and_create_through_real_loomd() {
+    let sandbox = Sandbox::new();
+    let added = sandbox.add(&["-c", "work", "Triage me"]);
+    let id = added.summary.id.clone();
+    let client = Client::new(sandbox.socket());
+    let cd_dir = tempfile::tempdir().unwrap();
+    let cd_file = cd_dir.path().join("cd");
+
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    let inbox: TaskList = client
+        .get(&list_api_path(None, Some("inbox"), false))
+        .await
+        .unwrap();
+    state.inbox = inbox.tasks;
+    state.active_tab = QueueTab::Inbox;
+
+    // `a` then Enter accepts the task; the outcome names the task for `u`.
+    press(&mut state, KeyCode::Char('a'));
+    let effect = press(&mut state, KeyCode::Enter);
+    let request = ActionRequest::from_effect(effect).unwrap();
+    let outcome = execute_action(&client, request, None).await.unwrap();
+    assert_eq!(outcome.task_id.as_ref(), Some(&id));
+    assert!(outcome.should_refresh && outcome.undone.is_none());
+    assert_eq!(task_status(&client, &id).await, Status::Ready);
+    state.record_action_success(id.clone());
+
+    // `u` undoes it; after the success the target is cleared.
+    let effect = press(&mut state, KeyCode::Char('u'));
+    let request = ActionRequest::from_effect(effect).unwrap();
+    let outcome = execute_action(&client, request, None).await.unwrap();
+    assert_eq!(outcome.undone.as_ref(), Some(&id));
+    assert_eq!(task_status(&client, &id).await, Status::Inbox);
+    state.set_last_action(outcome.next_undo_target(state.last_action.as_ref()));
+    assert_eq!(press(&mut state, KeyCode::Char('u')), AppEffect::None);
+
+    // `g` activates the task and quits; a task without repository writes no directory.
+    let effect = press(&mut state, KeyCode::Char('g'));
+    let request = ActionRequest::from_effect(effect).unwrap();
+    let outcome = execute_action(&client, request, Some(&cd_file))
+        .await
+        .unwrap();
+    assert!(outcome.should_quit);
+    assert_eq!(task_status(&client, &id).await, Status::Active);
+    assert!(!cd_file.exists());
+
+    // `+` creates an inbox task in the context of the selected task.
+    press(&mut state, KeyCode::Char('+'));
+    for c in "Written in the TUI".chars() {
+        press(&mut state, KeyCode::Char(c));
+    }
+    let effect = press(&mut state, KeyCode::Enter);
+    let request = ActionRequest::from_effect(effect).unwrap();
+    execute_action(&client, request, None).await.unwrap();
+    let inbox: TaskList = client
+        .get(&list_api_path(None, Some("inbox"), false))
+        .await
+        .unwrap();
+    let titles: Vec<_> = inbox
+        .tasks
+        .iter()
+        .filter_map(|t| t.task.as_ref().map(|t| t.title.clone()))
+        .collect();
+    assert!(
+        titles.contains(&"Written in the TUI".to_owned()),
+        "{titles:?}"
+    );
+
+    // A refused action returns the error text, without a change.
+    let refused = execute_action(
+        &client,
+        ActionRequest::Accept {
+            id: id.clone(),
+            kind: None,
+            importance: None,
+            due: None,
+        },
+        None,
+    )
+    .await;
+    assert!(refused.is_err());
 }

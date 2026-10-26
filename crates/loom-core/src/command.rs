@@ -86,6 +86,22 @@ pub enum Command {
         /// The changes that revert it.
         changes: Vec<FieldChange>,
     },
+    /// Accept an inbox task: move to ready, and optionally change kind, importance or due date.
+    Accept {
+        /// New kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<Kind>,
+        /// New importance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        importance: Option<Importance>,
+        /// New due date. `Some(None)` (`null`) removes it.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "present"
+        )]
+        due: Option<Option<Date>>,
+    },
 }
 
 /// Fields to change. `None` leaves a field as it is.
@@ -128,6 +144,8 @@ fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 pub enum Action {
     /// Move to this status.
     SetStatus(StatusName),
+    /// Accept a task from the inbox.
+    Accept,
     /// Edit fields.
     Edit,
     /// Pin.
@@ -220,6 +238,9 @@ pub fn available_actions(task: &Task) -> Vec<Action> {
         .filter(|to| is_legal_transition(from, *to))
         .map(Action::SetStatus)
         .collect();
+    if from == StatusName::Inbox {
+        actions.push(Action::Accept);
+    }
     actions.push(Action::Edit);
     actions.push(if task.pinned {
         Action::Unpin
@@ -278,6 +299,61 @@ pub fn apply(
                 return Err(DomainError::NothingToUndo);
             }
             Some(Event::Undone { of, changes })
+        }
+        Command::Accept {
+            kind,
+            importance,
+            due,
+        } => {
+            let from = task.status.name().ok_or_else(|| {
+                DomainError::ReadOnly(ReadOnlyReason::UnknownStatus("unknown".to_owned()))
+            })?;
+            if from != StatusName::Inbox {
+                return Err(DomainError::IllegalTransition {
+                    from,
+                    to: StatusName::Ready,
+                });
+            }
+            let status_change = set_status(&task, Status::Ready)?;
+            let mut changes = Vec::new();
+            if let Some(change) = status_change {
+                changes.push(FieldChange::Status(change));
+            }
+            let target_importance = match (importance, &kind) {
+                (Some(imp), _) => Some(imp),
+                (None, Some(k)) if *k != task.kind => Some(Importance::default_for(k)),
+                _ => None,
+            };
+            if let Some(kind) = kind
+                && kind != task.kind
+            {
+                known(&kind, &Status::Ready)?;
+                changes.push(FieldChange::Kind(Change {
+                    from: task.kind.clone(),
+                    to: kind,
+                }));
+            }
+            if let Some(importance) = target_importance
+                && importance != task.importance
+            {
+                changes.push(FieldChange::Importance(Change {
+                    from: task.importance,
+                    to: importance,
+                }));
+            }
+            if let Some(new_due) = due
+                && new_due != task.due
+            {
+                changes.push(FieldChange::Due(Change {
+                    from: task.due,
+                    to: new_due,
+                }));
+            }
+            match changes.as_slice() {
+                [] => None,
+                [FieldChange::Status(change)] => Some(Event::StatusChanged(change.clone())),
+                _ => Some(Event::Edited { changes }),
+            }
         }
     };
     let Some(event) = event else {
