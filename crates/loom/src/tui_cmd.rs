@@ -1,5 +1,6 @@
 //! Entrypoint and runtime loop of the interactive TUI (`loom` with no subcommand).
 
+use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, IsTerminal as _};
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use futures_util::StreamExt as _;
 use loom::cli::{Cli, GlobalArgs};
 use loom::client::Client;
 use loom::conventions::{Exit, use_color};
+use loom::edit;
 use loom::search::search_api_path;
 use loom::task::list_api_path;
 use loom::tui::actions::{
@@ -93,6 +95,9 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     let theme = Theme::from_config(&config.contexts, color_enabled);
     let contexts: Vec<ContextName> = config.contexts.keys().cloned().collect();
     let default_context = config.default_context.as_ref().map(|s| s.get_ref().clone());
+    let stores = env::home_dir()
+        .map(|home| config.store_paths(&layout.home, &home))
+        .unwrap_or_default();
     let mut state = AppState::new(theme, global.context.clone(), contexts, local_today())
         .with_default_context(default_context);
 
@@ -106,7 +111,7 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
         let client = repo_cmd::connect(&layout, true)
             .await?
             .with_timeout(TUI_REQUEST_TIMEOUT);
-        run_tui_loop(&client, &mut state).await
+        run_tui_loop(&client, &mut state, &stores).await
     })
 }
 
@@ -114,7 +119,11 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
     clippy::too_many_lines,
     reason = "event loop handles input, background workers, SSE and timers in one select!"
 )]
-async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
+async fn run_tui_loop(
+    client: &Client,
+    state: &mut AppState,
+    stores: &BTreeMap<ContextName, PathBuf>,
+) -> Result<Exit> {
     let guard = TerminalGuard::enter().into_diagnostic()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).into_diagnostic()?;
@@ -212,7 +221,8 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
     let mut fetch_in_flight = true;
     let mut action_in_flight = false;
 
-    let mut event_stream = crossterm::event::EventStream::new();
+    // `None` while the editor runs: the stream must not read the keys of the editor.
+    let mut event_stream = Some(crossterm::event::EventStream::new());
     let mut pending_search: Option<String> = None;
     let mut search_timer = Box::pin(tokio::time::sleep(SEARCH_DEBOUNCE));
     // The toast (by generation) that the timer expires; a new toast restarts the timer.
@@ -233,12 +243,18 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
             }
 
             // Handle crossterm terminal events
-            Some(event_res) = event_stream.next() => {
+            Some(event_res) = next_terminal_event(&mut event_stream) => {
                 if let Ok(event) = event_res {
                     match event {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
                             state.set_local_date(local_today());
-                            let effect = state.handle_key(key);
+                            let mut effect = state.handle_key(key);
+                            if let AppEffect::EditBody(id) = effect {
+                                drop(event_stream.take());
+                                edit_in_editor(&id, client, stores, &guard, &mut terminal, state).await;
+                                event_stream = Some(crossterm::event::EventStream::new());
+                                effect = AppEffect::Refresh;
+                            }
                             handle_effect(
                                 effect,
                                 state,
@@ -477,6 +493,66 @@ async fn run_tui_loop(client: &Client, state: &mut AppState) -> Result<Exit> {
 
     drop(guard);
     Ok(exit)
+}
+
+/// The next event of the terminal; never ends while the stream is off.
+async fn next_terminal_event(
+    stream: &mut Option<crossterm::event::EventStream>,
+) -> Option<io::Result<Event>> {
+    match stream {
+        Some(stream) => stream.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// `e` on the task page: gives the terminal to the editor on the task file, takes it back, and
+/// tells the result in the status bar. The steps are those of `loom edit` (`loom::edit`).
+async fn edit_in_editor(
+    id: &TaskId,
+    client: &Client,
+    stores: &BTreeMap<ContextName, PathBuf>,
+    guard: &TerminalGuard,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    state: &mut AppState,
+) {
+    let session = match edit::begin(client, &id.to_string(), stores).await {
+        Ok(session) => session,
+        Err(error) => {
+            state.set_error(error.to_string());
+            return;
+        }
+    };
+    if let Err(error) = guard.suspend() {
+        state.set_error(format!("cannot leave the terminal to the editor: {error}"));
+        return;
+    }
+    let editor_session = session.clone();
+    let ran = tokio::task::spawn_blocking(move || {
+        edit::run_editor(
+            &editor_session,
+            env::var("VISUAL").ok().as_deref(),
+            env::var("EDITOR").ok().as_deref(),
+        )
+    })
+    .await;
+    // The terminal comes back whatever the editor did.
+    let resumed = guard.resume();
+    let _ = terminal.clear();
+    if let Err(error) = resumed {
+        state.set_error(format!("cannot take the terminal back: {error}"));
+        return;
+    }
+    match ran {
+        Ok(Ok(())) => match edit::finish(client, &session).await {
+            Ok(outcome) if outcome.warnings.is_empty() => {
+                state.set_status(outcome.text.lines().next().unwrap_or_default());
+            }
+            Ok(outcome) => state.set_error(outcome.warnings.join("; ")),
+            Err(error) => state.set_error(error.to_string()),
+        },
+        Ok(Err(error)) => state.set_error(error.to_string()),
+        Err(error) => state.set_error(format!("the editor did not finish: {error}")),
+    }
 }
 
 /// Sends an action to the worker. While another action runs, keeps the request for after it.

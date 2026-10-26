@@ -212,6 +212,8 @@ pub enum KeyCommand {
     ToggleGroupByParent,
     // Object page actions
     OpenPicker(PickField),
+    /// Edit the task file in the editor.
+    EditBody,
     Back,
     NextPageTab,
     PrevPageTab,
@@ -522,6 +524,13 @@ pub static BINDINGS: &[KeyBinding] = &[
         command: KeyCommand::Refresh,
         label: "r",
         description: "Refresh object",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[(KeyCode::Char('e'), KeyModifiers::NONE)],
+        command: KeyCommand::EditBody,
+        label: "e",
+        description: "Edit the task file in the editor",
     },
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),

@@ -147,6 +147,7 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `PgDn` | Scroll down one page. |
 | `PgUp` | Scroll up one page. |
 | `r` | Reload the task from `loomd`. |
+| `e` | Open the task file in the editor (see [Edit the task file](#edit-the-task-file)). |
 | `t` | Open the kind picker. |
 | `i` | Open the importance picker. |
 | `d` | Open the due date picker. |
@@ -154,6 +155,15 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 | `u` | Undo the last change that the TUI made. |
 
 The four pickers open on the `Overview` tab only. They show a status message when they refuse: `task is read-only: <reason>`, `the task is not loaded yet`, or `cannot edit task` when the task detail has no `edit` action (the kind, importance and due date pickers) or no status move (the status picker, which then shows `the task cannot change status`). For the kind, importance and due date pickers, a choice that does not change the task sends no call and closes the modal, and a change to a `content` task keeps its format. `u` on an object page undoes only the last change of that page's task, a status move included; otherwise it shows `nothing to undo`.
+
+#### Edit the task file
+
+`e` on the `Overview` tab opens `task.md` of the task in the editor, as `loom edit` does. The TUI leaves the alternate screen and raw mode, runs the editor, then takes the terminal back and reloads the task. The editor is `$VISUAL`, then `$EDITOR`, then `vi`; it can have arguments, such as `code --wait`.
+
+- A task that is not loaded, or on another tab, does not open. An archived task is read-only and does not open. A task with an invalid file opens, so that the edit can fix it.
+- If the editor ends with an error, the file stays as it is and the status bar shows the error.
+- If the saved file is not a valid task, the status bar shows the error and the file stays as saved. `loomd` shows the task read-only until the file is valid.
+- If the saved file is valid, the status bar shows the task after `loomd` records the save. If the task changed while the editor was open, a warning names who changed it; `u` reverts the edit.
 
 ### Modals
 

@@ -1199,3 +1199,62 @@ async fn task_page_status_picker_moves_the_task_like_loom_set() {
     );
     assert_eq!(event_types(&client, &id).await.len(), before + 1);
 }
+
+/// An editor script in the sandbox: `body` runs with the file as `$1`.
+fn script(sandbox: &Sandbox, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = sandbox.dir.path().join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
+}
+
+#[tokio::test]
+async fn the_editor_steps_of_the_tui_record_a_save_and_keep_a_failure_unchanged() {
+    use loom::edit::{self, EditError};
+
+    let sandbox = Sandbox::new();
+    let added = sandbox.add(&["-c", "work", "Original"]);
+    let id = added.summary.id.to_string();
+    let client = Client::new(sandbox.socket());
+    let stores = BTreeMap::from([(
+        ContextName::from_str("work").unwrap(),
+        sandbox.loom_home().join("contexts/work"),
+    )]);
+
+    // A save is recorded: the outcome shows the new title.
+    let retitle = script(
+        &sandbox,
+        "retitle",
+        r#"t=$(mktemp) && sed 's/^title = .*/title = "Edited in the TUI"/' "$1" > "$t" && cat "$t" > "$1" && rm "$t""#,
+    );
+    let session = edit::begin(&client, &id, &stores).await.unwrap();
+    edit::run_editor(&session, Some(&retitle), None).unwrap();
+    let outcome = edit::finish(&client, &session).await.unwrap();
+    assert!(outcome.text.contains("Edited in the TUI"), "{outcome:?}");
+    assert!(outcome.warnings.is_empty(), "{outcome:?}");
+    let detail: TaskDetail = client.get(&format!("/v1/tasks/{id}")).await.unwrap();
+    assert_eq!(detail.summary.task.unwrap().title, "Edited in the TUI");
+
+    // An editor that fails leaves the file as it is and says so.
+    let session = edit::begin(&client, &id, &stores).await.unwrap();
+    let before = std::fs::read_to_string(&session.path).unwrap();
+    let error = edit::run_editor(&session, None, Some("false")).unwrap_err();
+    assert!(matches!(error, EditError::EditorFailed { .. }), "{error}");
+    assert_eq!(std::fs::read_to_string(&session.path).unwrap(), before);
+
+    // An invalid result is reported and the file is kept as saved.
+    let breaker = script(&sandbox, "breaker", r#"printf 'not a task file\n' > "$1""#);
+    let session = edit::begin(&client, &id, &stores).await.unwrap();
+    edit::run_editor(&session, Some(&breaker), None).unwrap();
+    let error = edit::finish(&client, &session).await.unwrap_err();
+    assert!(matches!(error, EditError::Invalid { .. }), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&session.path).unwrap(),
+        "not a task file\n"
+    );
+
+    // An editor that does not exist ends with an error, not a panic.
+    let error = edit::run_editor(&session, Some("/nonexistent/editor"), None).unwrap_err();
+    assert!(matches!(error, EditError::EditorFailed { .. }), "{error}");
+}

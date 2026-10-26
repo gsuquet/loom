@@ -93,6 +93,27 @@ impl TerminalGuard {
         }
     }
 
+    /// Gives the terminal back for a program that needs it, such as the editor: leaves the
+    /// alternate screen and raw mode. Call [`Self::resume`] when the program ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if the terminal cannot be restored.
+    pub fn suspend(&self) -> io::Result<()> {
+        write_restore_sequences(&mut io::stdout())?;
+        disable_raw_mode()
+    }
+
+    /// Takes the terminal back after [`Self::suspend`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if raw mode or the alternate screen cannot be enabled.
+    pub fn resume(&self) -> io::Result<()> {
+        enable_raw_mode()?;
+        write_enter_sequences(&mut io::stdout())
+    }
+
     /// Restores the terminal immediately (idempotent).
     pub fn restore(&self) {
         if !self.restored.swap(true, Ordering::SeqCst) {

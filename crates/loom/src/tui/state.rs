@@ -321,6 +321,8 @@ pub enum AppEffect {
         until: Date,
         on: Option<String>,
     },
+    /// Suspend the TUI and edit the task file in the editor.
+    EditBody(TaskId),
     /// Move a task to a status other than `waiting`.
     SetTaskStatus { id: TaskId, status: StatusName },
     /// Cancel a task.
@@ -750,6 +752,7 @@ impl AppState {
             | KeyCommand::PrevPageTab => self.apply_navigation_command(cmd),
 
             KeyCommand::OpenPicker(field) => self.open_picker(field),
+            KeyCommand::EditBody => self.edit_body(),
 
             KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
@@ -851,6 +854,7 @@ impl AppState {
             | KeyCommand::OpenHelp
             | KeyCommand::OpenContextPicker
             | KeyCommand::OpenPicker(_)
+            | KeyCommand::EditBody
             | KeyCommand::TriageAccept
             | KeyCommand::TriageSnooze
             | KeyCommand::TriageCancel
@@ -913,6 +917,7 @@ impl AppState {
             | KeyCommand::NextPageTab
             | KeyCommand::PrevPageTab
             | KeyCommand::OpenPicker(_)
+            | KeyCommand::EditBody
             | KeyCommand::TriageAccept
             | KeyCommand::TriageSnooze
             | KeyCommand::TriageCancel
@@ -1025,6 +1030,29 @@ impl AppState {
             Some(ObjectTarget::Task(id)) => self.last_action.clone().filter(|last| last == id),
             None => self.last_action.clone(),
         }
+    }
+
+    /// `e`: the task to edit in the editor. Like `loom edit`, it accepts a task that is read-only
+    /// because its file is invalid (the edit fixes it), and refuses an archived one.
+    fn edit_body(&mut self) -> AppEffect {
+        if self
+            .page_stack
+            .last()
+            .is_some_and(|p| p.tab != PageTab::Overview)
+        {
+            self.status_message = Some("go to the Overview tab to edit the task".into());
+            return AppEffect::None;
+        }
+        let Some(ObjectPageContent::Task(detail)) = self.page_stack.last().map(|p| &p.content)
+        else {
+            self.status_message = Some("the task is not loaded yet".into());
+            return AppEffect::None;
+        };
+        if let Some(ro @ loom_api::TaskReadOnly::Archived(_)) = &detail.summary.read_only {
+            self.status_message = Some(format!("task is read-only: {}", read_only_text(ro)));
+            return AppEffect::None;
+        }
+        AppEffect::EditBody(detail.summary.id.clone())
     }
 
     fn open_picker(&mut self, field: PickField) -> AppEffect {
@@ -1286,6 +1314,7 @@ impl AppState {
             | KeyCommand::NextPageTab
             | KeyCommand::PrevPageTab
             | KeyCommand::OpenPicker(_)
+            | KeyCommand::EditBody
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1385,6 +1414,7 @@ impl AppState {
             | KeyCommand::NextPageTab
             | KeyCommand::PrevPageTab
             | KeyCommand::OpenPicker(_)
+            | KeyCommand::EditBody
             | KeyCommand::OpenPalette
             | KeyCommand::OpenSearch
             | KeyCommand::OpenHelp
@@ -1958,6 +1988,48 @@ mod tests {
         assert_eq!(
             press(&mut state, KeyCode::Char('u')),
             AppEffect::UndoTask("k3q7zm2a".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn e_edits_the_task_of_the_page() {
+        let mut state = state_with_loaded_page(None);
+        assert_eq!(
+            press(&mut state, KeyCode::Char('e')),
+            AppEffect::EditBody("k3q7zm2a".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn e_edits_a_task_whose_file_is_invalid_but_not_an_archived_one() {
+        let mut state = state_with_loaded_page(Some(&TaskReadOnly::InvalidFile("line 3".into())));
+        assert!(matches!(
+            press(&mut state, KeyCode::Char('e')),
+            AppEffect::EditBody(_)
+        ));
+        let mut state = state_with_loaded_page(Some(&TaskReadOnly::Archived(2026)));
+        assert_eq!(press(&mut state, KeyCode::Char('e')), AppEffect::None);
+        assert!(
+            state
+                .status_message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("task is read-only")),
+            "{:?}",
+            state.status_message
+        );
+    }
+
+    #[test]
+    fn e_does_nothing_on_other_tabs_or_before_the_page_is_loaded() {
+        let mut state = state_with_loaded_page(None);
+        state.page_stack[0].tab = PageTab::Events;
+        assert_eq!(press(&mut state, KeyCode::Char('e')), AppEffect::None);
+        assert!(state.status_message.is_some());
+        let mut state = state_with_task_page();
+        assert_eq!(press(&mut state, KeyCode::Char('e')), AppEffect::None);
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("the task is not loaded yet")
         );
     }
 

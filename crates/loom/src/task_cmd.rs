@@ -2,25 +2,23 @@
 //! in `loom::task`.
 
 use std::env;
-use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use loom::cli::{
     AcceptArgs, AddArgs, EditArgs, FocusArgs, GlobalArgs, GoArgs, LogArgs, LsArgs, SetArgs,
     ShowArgs, SnoozeArgs, TaskArgs,
 };
+use loom::edit;
 use loom::task::{
     AddRequest, CONTEXT_ENV, ContextError, KindArg, ResolvedContext, TEST_TODAY_ENV,
-    changed_after_save, changed_meanwhile, context_with_parent, default_repo, editor,
-    focus_api_path, holds_saved, kind_of, list_api_path, new_task, parse_date, render_change,
-    render_detail, render_focus, render_go, render_list, resolve_context, set_plan, skipped_notice,
-    today, with_parent, with_repo, write_cd_file,
+    context_with_parent, default_repo, focus_api_path, kind_of, list_api_path, new_task,
+    parse_date, render_change, render_detail, render_focus, render_go, render_list,
+    resolve_context, set_plan, skipped_notice, today, with_parent, with_repo, write_cd_file,
 };
 use loom_api::{
-    Actor, ContextName, Date, EventRecord, FocusList, GoResult, TaskActionRequest, TaskDetail,
-    TaskEdit, TaskEvents, TaskList, TaskReadOnly,
+    ContextName, Date, FocusList, GoResult, TaskActionRequest, TaskDetail, TaskEdit, TaskEvents,
+    TaskList,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -35,10 +33,6 @@ use crate::{load_config, print};
 const TASKS_PATH: &str = "/v1/tasks";
 /// File where `loom go` writes the repository path for the shell wrapper (`loom shell-init`).
 pub const CD_FILE_ENV: &str = "LOOM_CD_FILE";
-/// Longest wait for loomd to record a `loom edit`: its watcher reads the file at once.
-const EDIT_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
-/// Interval between two reads of the edited task.
-const EDIT_POLL: Duration = Duration::from_millis(50);
 /// Longest wait for a task request: right after it starts, loomd waits up to 10 s for the tasks
 /// it indexes before it answers a read or resolves an ID, and the default timeout is 5 s.
 const TASK_TIMEOUT: Duration = Duration::from_secs(15);
@@ -340,125 +334,25 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
     let user_home = env::home_dir()
         .filter(|home| !home.as_os_str().is_empty())
         .ok_or_else(|| miette!("cannot find the user's home directory: HOME is unset or empty"))?;
+    let stores = config.store_paths(&layout.home, &user_home);
     let runtime = runtime()?;
     let client = runtime.block_on(client(layout))?;
-    let before = runtime.block_on(get(&client, &args.id))?;
-    let summary = &before.summary;
-    // A hand edit of an archived file would be recorded by loomd: the command keeps the archive
-    // read-only, as the API does.
-    if let Some(TaskReadOnly::Archived(year)) = summary.read_only {
-        return Err(miette!(
-            "task {} is archived (archive/{year}): an archived task is read-only. To reopen it, set its status in archive/{year}/{}/task.md, then move its directory back to tasks/.",
-            summary.prefix,
-            summary.id
-        ));
-    }
-    // The full ID from here: a task created while the editor is open may share the prefix.
-    let id = summary.id.to_string();
-    let logged = runtime.block_on(events(&client, &id))?.len();
-    let path: PathBuf = config
-        .store_paths(&layout.home, &user_home)
-        .get(&summary.context)
-        .ok_or_else(|| miette!("no store for context {} in config.toml", summary.context))?
-        .join("tasks")
-        .join(summary.id.as_str())
-        .join("task.md");
-    let read = |path: &PathBuf| {
-        fs::read_to_string(path)
-            .into_diagnostic()
-            .map_err(|error| miette!("cannot read {}: {error}", path.display()))
-    };
-    let original = read(&path)?;
-    let command = editor(
+    let session = runtime
+        .block_on(edit::begin(&client, &args.id, &stores))
+        .map_err(|error| miette!("{error}"))?;
+    edit::run_editor(
+        &session,
         env::var("VISUAL").ok().as_deref(),
         env::var("EDITOR").ok().as_deref(),
-    );
-    // Through the shell, so that an editor with arguments (`code --wait`) works; the path is
-    // passed as `$1`, never spliced into the command.
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(format!("{command} \"$1\""))
-        .arg("sh")
-        .arg(&path)
-        .status()
-        .into_diagnostic()
-        .map_err(|error| miette!("cannot run the editor `{command}`: {error}"))?;
-    if !status.success() {
-        return Err(miette!(
-            "the editor `{command}` exited with {status}: {} is left as it is now",
-            path.display()
-        ));
-    }
-    let saved = read(&path)?;
-    if saved == original {
-        return print(&format!("{} unchanged\n", summary.prefix));
-    }
-    let (saved_task, saved_notes) = match loom_core::parse_task_md(&saved) {
-        Ok(document) => (
-            document.task(loom_api::Timestamp::EPOCH),
-            document.body().to_owned(),
-        ),
-        Err(error) => {
-            return Err(miette!(
-                "{}: {error}\nThe file is kept as saved: loomd shows the task read-only until it is fixed (`loom edit {}` again).",
-                path.display(),
-                summary.prefix
-            ));
-        }
-    };
-    let deadline = Instant::now() + EDIT_RECORD_TIMEOUT;
-    loop {
-        let after = runtime.block_on(get(&client, &id))?;
-        if holds_saved(&after, &saved_task, &saved_notes) {
-            // Read once the save is indexed: its hand-edit event and what came before it.
-            let log = runtime.block_on(events(&client, &id))?;
-            // The log is append-only, in the order loomd writes it: the events after the first
-            // `logged` arrived while the editor was open. (A merge of logs from several
-            // machines that reorders them would break this.)
-            let appended = log.get(logged..).unwrap_or_default();
-            let others = changed_meanwhile(appended);
-            if !others.is_empty() {
-                warn!(
-                    "the task changed while it was open in the editor (by {}): your save replaced the file and loomd recorded it as an edit; `loom undo {}` reverts it",
-                    others.join(", "),
-                    summary.prefix
-                );
-            }
-            return print(&render_change(&after));
-        }
-        if Instant::now() >= deadline {
-            let log = runtime.block_on(events(&client, &id))?;
-            return print(&timed_out(
-                log.get(logged..).unwrap_or_default(),
-                &summary.prefix,
-                &after,
-            ));
-        }
-        std::thread::sleep(EDIT_POLL);
-    }
-}
-
-/// What `loom edit` prints when the index did not hold the save in time. A hand-edit event in
-/// `appended` means loomd recorded the save and the task changed again after it (a `loom done`
-/// elsewhere, a schedule, a sync); that is told, with the actors.
-fn timed_out(appended: &[EventRecord], prefix: &str, after: &TaskDetail) -> String {
-    if !appended.iter().any(|record| record.actor == Actor::File) {
-        return format!(
-            "{prefix} saved; loomd has not recorded it within {} s\n",
-            EDIT_RECORD_TIMEOUT.as_secs()
-        );
-    }
-    let after_save = changed_after_save(appended);
-    let by = if after_save.is_empty() {
-        String::new()
-    } else {
-        format!(" (by {})", after_save.join(", "))
-    };
-    warn!("the task changed again after the save{by}: `loom show {prefix}` shows it");
-    format!(
-        "{prefix} saved; the task changed again after the save\n{}",
-        render_change(after)
     )
+    .map_err(|error| miette!("{error}"))?;
+    let outcome = runtime
+        .block_on(edit::finish(&client, &session))
+        .map_err(|error| miette!("{error}"))?;
+    for warning in &outcome.warnings {
+        warn!("{warning}");
+    }
+    print(&outcome.text)
 }
 
 /// `GET /v1/tasks/{id}/events`: the event log of the task.
@@ -467,11 +361,6 @@ async fn event_log(client: &Client, id: &str) -> Result<TaskEvents> {
         .get(&format!("{TASKS_PATH}/{id}/events"))
         .await
         .map_err(|error| api_error(&error))
-}
-
-/// The events of the task, in log order.
-async fn events(client: &Client, id: &str) -> Result<Vec<EventRecord>> {
-    Ok(event_log(client, id).await?.events)
 }
 
 /// `POST /v1/tasks/{prefix}/actions/{name}`.
