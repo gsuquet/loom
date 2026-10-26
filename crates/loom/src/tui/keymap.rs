@@ -182,6 +182,8 @@ pub enum KeyCommand {
     ToggleGroupByParent,
     // Object page actions
     Back,
+    NextPageTab,
+    PrevPageTab,
     // Modal actions
     CloseModal,
     ConfirmModal,
@@ -421,10 +423,33 @@ pub static BINDINGS: &[KeyBinding] = &[
     // View: ObjectPage
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),
-        keys: &[(KeyCode::Esc, KeyModifiers::NONE)],
+        keys: &[
+            (KeyCode::Esc, KeyModifiers::NONE),
+            (KeyCode::Backspace, KeyModifiers::NONE),
+        ],
         command: KeyCommand::Back,
-        label: "Esc",
-        description: "Return to queue",
+        label: "Esc, Backspace",
+        description: "Go back to the previous page or the queue",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[
+            (KeyCode::Char(']'), KeyModifiers::NONE),
+            (KeyCode::Right, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::NextPageTab,
+        label: "], →",
+        description: "Next page tab",
+    },
+    KeyBinding {
+        layer: Layer::View(ViewKind::ObjectPage),
+        keys: &[
+            (KeyCode::Char('['), KeyModifiers::NONE),
+            (KeyCode::Left, KeyModifiers::NONE),
+        ],
+        command: KeyCommand::PrevPageTab,
+        label: "[, ←",
+        description: "Previous page tab",
     },
     KeyBinding {
         layer: Layer::View(ViewKind::ObjectPage),

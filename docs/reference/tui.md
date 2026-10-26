@@ -50,7 +50,13 @@ When you press `Enter` on a selected row in a queue, or on a search result, the 
 
 | Object | Content |
 | --- | --- |
-| Task | Header (`id`, context badge, status, importance), title, and description body. |
+| Task | A tab bar and the selected tab. The tabs are `Overview`, `Relations` and `Events`. |
+
+The task page opens on the `Overview` tab. `Overview` shows the `id`, the context badge, the status, the importance, the kind, the title, the due date, and the notes of the task. The TUI renders the notes as Markdown. It supports headings, bullet and numbered lists, quotes, rules, fenced code, and the inline marks `**bold**`, `*italic*` and `` `code` ``. It shows any other Markdown as written.
+
+The `Relations` and `Events` tabs show the text `The <tab> tab has no content in this version.`
+
+When `loomd` sends a change event for the task, the TUI reloads the page.
 
 ## Modals
 
@@ -127,7 +133,9 @@ The TUI sends one task action at a time to `loomd`. These rules apply:
 
 | Key | Action |
 | --- | --- |
-| `Esc` | Return to the queue view. |
+| `Esc`, `Backspace` | Go back to the previous page. On the first page, return to the queue view. |
+| `]`, `Right` | Select the next tab. The scroll position goes back to the top. |
+| `[`, `Left` | Select the previous tab. The scroll position goes back to the top. |
 | `j`, `Down` | Scroll down one line. |
 | `k`, `Up` | Scroll up one line. |
 | `PgDn` | Scroll down one page. |
