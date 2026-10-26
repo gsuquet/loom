@@ -439,10 +439,7 @@ fn render_task_overview(frame: &mut Frame<'_>, area: Rect, detail: &TaskDetail, 
     if !detail.body.is_empty() {
         lines.push(Line::raw(""));
         lines.push(Line::styled(
-            format!(
-                "── Notes {}",
-                "─".repeat(usize::from(area.width).saturating_sub(10).min(39))
-            ),
+            "── Notes ──────────────────────────────────────────",
             ratatui::style::Style::default(),
         ));
         lines.extend(markdown::render(&detail.body, usize::from(area.width)));
@@ -1091,7 +1088,7 @@ mod tests {
             "│                                                                              │",
             "│Title: Login timeout                                                          │",
             "│                                                                              │",
-            "│── Notes ───────────────────────────────────────                              │",
+            "│── Notes ──────────────────────────────────────────                           │",
             "│Symptoms                                                                      │",
             "│• Mobile users time out                                                       │",
             "│• retry 3 times                                                               │",
@@ -1114,7 +1111,7 @@ mod tests {
             "│                                                                                                                                                              │",
             "│Title: Login timeout                                                                                                                                          │",
             "│                                                                                                                                                              │",
-            "│── Notes ───────────────────────────────────────                                                                                                              │",
+            "│── Notes ──────────────────────────────────────────                                                                                                           │",
             "│Symptoms                                                                                                                                                      │",
             "│• Mobile users time out                                                                                                                                       │",
             "│• retry 3 times                                                                                                                                               │",
@@ -1139,7 +1136,7 @@ mod tests {
             "│                                                                              │",
             "│Title: Login timeout                                                          │",
             "│                                                                              │",
-            "│── Notes ───────────────────────────────────────                              │",
+            "│── Notes ──────────────────────────────────────────                           │",
             "│Symptoms                                                                      │",
             "│• Mobile users time out                                                       │",
             "│• retry 3 times                                                               │",

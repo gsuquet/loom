@@ -136,7 +136,7 @@ fn numbered(trimmed: &str) -> Option<(&str, &str)> {
 
 /// Splits `text` into spans for `**bold**`, `*italic*` and `` `code` ``, on top of `base`.
 ///
-/// `*` follows the CommonMark flanking rule: an opening mark has a non-space after it and a
+/// `*` follows the `CommonMark` flanking rule: an opening mark has a non-space after it and a
 /// closing mark has a non-space before it. A single `*` between word characters stays as
 /// written. A mark with no valid partner stays as written. `_` is never a mark.
 fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
