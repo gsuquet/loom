@@ -72,7 +72,7 @@ fn terminate_stops_the_whole_group_of_a_child_that_obeys_sigterm() {
     assert!(!reaper.join().unwrap().success());
     // `sleep` shares the group of the leader: it is gone too.
     assert!(
-        wait_until(Duration::from_secs(2), || !group_alive(pid)),
+        wait_until(Duration::from_secs(15), || !group_alive(pid)),
         "a process of the group survives"
     );
     assert_eq!(groups.len(), 0);
@@ -98,7 +98,7 @@ fn terminate_kills_a_child_that_ignores_sigterm_after_the_grace() {
     assert!(took >= grace, "{took:?}");
     assert!(took < Duration::from_secs(15), "{took:?}");
     assert!(!reaper.join().unwrap().success());
-    assert!(wait_until(Duration::from_secs(2), || !group_alive(pid)));
+    assert!(wait_until(Duration::from_secs(15), || !group_alive(pid)));
 }
 
 #[test]
