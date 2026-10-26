@@ -630,6 +630,8 @@ async fn doctor(env: &Env<'_>, args: &RepoDoctorArgs) -> Result<()> {
                 &config.store_paths(&env.layout.home, home),
                 Some(home),
                 config_path,
+                |path| std::fs::canonicalize(path).ok(),
+                cfg!(target_os = "macos"),
             ));
         }
         (Some(_), None) => checks.push(check(
@@ -789,8 +791,18 @@ async fn backup_checks(env: &Env<'_>, client: &Client, version: &str) -> Vec<Doc
 
 /// The `tasks` checks, from loomd's view of the task files.
 async fn task_checks(env: &Env<'_>, client: &Client, version: &str) -> Vec<DoctorCheck> {
-    match client.get::<TaskStoreHealth>(HEALTH_PATH).await {
-        Ok(health) => doctor::task_store_checks(&health, env.home.as_deref()),
+    let answer = client.get::<TaskStoreHealth>(HEALTH_PATH).await;
+    task_health_checks(answer, version, env.home.as_deref())
+}
+
+/// A loomd without the endpoint (404) gives one warn; any other error fails.
+fn task_health_checks(
+    answer: Result<TaskStoreHealth, ClientError>,
+    version: &str,
+    home: Option<&Path>,
+) -> Vec<DoctorCheck> {
+    match answer {
+        Ok(health) => doctor::task_store_checks(&health, home),
         Err(ClientError::Api { status: 404, .. }) => vec![check(
             "tasks",
             CheckStatus::Warn,
@@ -798,5 +810,49 @@ async fn task_checks(env: &Env<'_>, client: &Client, version: &str) -> Vec<Docto
             Some("restart loomd with the version of this loom"),
         )],
         Err(error) => vec![check("tasks", CheckStatus::Fail, error.to_string(), None)],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loom_api::{ApiError, CheckStatus, DoctorReport, ErrorCode, TaskStoreHealth};
+
+    use super::{ClientError, task_health_checks};
+
+    fn api(status: u16) -> ClientError {
+        ClientError::Api {
+            status,
+            error: ApiError::new(ErrorCode::NotFound, "x"),
+        }
+    }
+
+    fn report(answer: Result<TaskStoreHealth, ClientError>) -> DoctorReport {
+        DoctorReport {
+            checks: task_health_checks(answer, "0.2.0", None),
+        }
+    }
+
+    #[test]
+    fn an_old_loomd_warns_and_other_errors_fail() {
+        let old = report(Err(api(404)));
+        assert_eq!(old.checks.len(), 1);
+        assert_eq!(old.checks[0].status, CheckStatus::Warn);
+        assert!(!old.failed());
+
+        let unavailable = report(Err(api(503)));
+        assert_eq!(unavailable.checks[0].status, CheckStatus::Fail);
+        assert!(unavailable.failed());
+        assert!(report(Err(ClientError::Protocol("broken".to_owned()))).failed());
+    }
+
+    #[test]
+    fn problems_of_the_task_files_warn_without_failing() {
+        let health = TaskStoreHealth {
+            watching: false,
+            ..TaskStoreHealth::default()
+        };
+        let report = report(Ok(health));
+        assert_eq!(report.checks[0].status, CheckStatus::Warn);
+        assert!(!report.failed());
     }
 }

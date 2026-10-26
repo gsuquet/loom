@@ -27,6 +27,10 @@ pub struct TaskStoreHealth {
     /// The file watcher runs: hand edits are recorded as they happen. When it does not, they
     /// are recorded at the next start of loomd.
     pub watching: bool,
+    /// The directories that the file watcher could not watch, with the error. Not empty means
+    /// `watching` is `false` for the changes in these directories.
+    #[serde(default)]
+    pub unwatched: Vec<FailedTaskFile>,
     /// Tasks whose `task.md` cannot be read now: read-only until the file is fixed. Sorted by
     /// context and ID.
     pub invalid: Vec<InvalidTaskFile>,
@@ -51,6 +55,9 @@ pub struct InvalidTaskFile {
     pub context: ContextName,
     /// ID, the name of its directory.
     pub id: TaskId,
+    /// The directory of the task: `<store>/tasks/<id>`, or `<store>/archive/<yyyy>/<id>` for an
+    /// archived task.
+    pub path: PathBuf,
     /// Why, with the line when known.
     pub error: String,
 }

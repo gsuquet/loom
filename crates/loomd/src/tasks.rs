@@ -138,13 +138,21 @@ enum Command {
     },
     /// Whether the file watcher runs, and the tasks that the last reconciliation could not read.
     Health {
-        reply: oneshot::Sender<(bool, Vec<FailedTaskFile>)>,
+        reply: oneshot::Sender<HealthState>,
     },
     /// The stores whose changes are not all committed, with the last failure.
     Pending {
         reply: oneshot::Sender<BTreeMap<ContextName, String>>,
     },
     Stop,
+}
+
+/// What the task thread knows about the health of the stores.
+struct HealthState {
+    watching: bool,
+    unwatched: Vec<FailedTaskFile>,
+    failed: Vec<FailedTaskFile>,
+    stores: BTreeMap<ContextName, PathBuf>,
 }
 
 /// The running task thread and its file watcher.
@@ -191,7 +199,7 @@ pub fn start(
     // Set: the reconciliation on start is queued below, before any watcher event.
     let reconcile_queued = Arc::new(AtomicBool::new(true));
     // Before the reconciliation: an edit made while it runs is seen by one or the other.
-    let watcher = watch(stores, &commands, Arc::clone(&reconcile_queued));
+    let (watcher, unwatched) = watch(stores, &commands, Arc::clone(&reconcile_queued));
     let _ = commands.send(Command::ReconcileAll);
     // After the reconciliation on start: the closings recorded by it count.
     let _ = commands.send(Command::Archive);
@@ -202,6 +210,7 @@ pub fn start(
         commits: StoreCommits::new(GitRunner::from_env(), stores.clone()),
         stores: stores.clone(),
         watching: watcher.is_some(),
+        unwatched,
         failures: BTreeMap::new(),
         origin: Origin {
             actor: Actor::File,
@@ -249,12 +258,14 @@ pub fn start(
 }
 
 /// Watches `tasks/` and `archive/` of every store and sends the tasks whose files change. `None`, with a
-/// warning, when the watcher cannot start: hand edits are then picked up at the next start.
+/// warning, when the watcher cannot start: hand edits are then picked up at the next start. The
+/// directories that it could not watch (a missing directory, a permission, the inotify limit) are
+/// returned with the error.
 fn watch(
     stores: &BTreeMap<ContextName, PathBuf>,
     commands: &mpsc::Sender<Command>,
     reconcile_queued: Arc<AtomicBool>,
-) -> Option<RecommendedWatcher> {
+) -> (Option<RecommendedWatcher>, Vec<FailedTaskFile>) {
     // Events may name the canonical path (FSEvents resolves `/tmp` to `/private/tmp`): both
     // spellings of each root are matched.
     let mut roots: Vec<(ContextName, PathBuf)> = Vec::new();
@@ -298,18 +309,23 @@ fn watch(
         Ok(watcher) => watcher,
         Err(error) => {
             warn!(%error, "cannot watch the task stores: hand edits are picked up at the next start");
-            return None;
+            return (None, Vec::new());
         }
     };
+    let mut unwatched = Vec::new();
     for root in stores.values() {
         for dir in [loom_store::files::TASKS_DIR, loom_store::files::ARCHIVE_DIR] {
             let dir = root.join(dir);
             if let Err(error) = watcher.watch(&dir, RecursiveMode::Recursive) {
                 warn!(path = %dir.display(), %error, "cannot watch a task store");
+                unwatched.push(FailedTaskFile {
+                    path: dir,
+                    error: error.to_string(),
+                });
             }
         }
     }
-    Some(watcher)
+    (Some(watcher), unwatched)
 }
 
 /// Queues a reconciliation of every task, unless one is queued and not started yet: a burst of
@@ -437,9 +453,19 @@ impl TaskHandle {
         self.commands
             .send(Command::Health { reply })
             .map_err(|_| stopped())?;
-        let (watching, failed) = answer.await.map_err(|_| stopped())?;
-        self.read(move |rows| Ok(task_store_health(watching, failed, &rows)))
-            .await
+        let state = answer.await.map_err(|_| stopped())?;
+        // The read loads every row, as the other task endpoints do: the invalid ones are
+        // picked out of it.
+        self.read(move |rows| {
+            Ok(task_store_health(
+                state.watching,
+                state.unwatched,
+                state.failed,
+                &rows,
+                &state.stores,
+            ))
+        })
+        .await
     }
 
     /// The stores whose changes are not all committed, with the last failure.
@@ -625,6 +651,8 @@ struct Worker {
     stores: BTreeMap<ContextName, PathBuf>,
     /// The file watcher runs.
     watching: bool,
+    /// The directories that the watcher could not watch.
+    unwatched: Vec<FailedTaskFile>,
     /// The tasks (or stores) that the last read of them could not handle, by context and task.
     failures: BTreeMap<(ContextName, Option<TaskId>), TaskFailure>,
     /// Who hand edits are recorded as: the actor `file`, on this machine.
@@ -725,7 +753,12 @@ impl Worker {
                 }
                 Command::Health { reply } => {
                     let failed: Vec<TaskFailure> = self.failures.values().cloned().collect();
-                    let _ = reply.send((self.watching, failed_files(&failed, &self.stores)));
+                    let _ = reply.send(HealthState {
+                        watching: self.watching,
+                        unwatched: self.unwatched.clone(),
+                        failed: failed_files(&failed, &self.stores),
+                        stores: self.stores.clone(),
+                    });
                 }
                 Command::Pending { reply } => {
                     let _ = reply.send(
@@ -1293,7 +1326,34 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{Command, TaskHandle, queue_reconcile_all};
+    use super::{Command, TaskHandle, queue_reconcile_all, watch as watch_stores};
+
+    #[test]
+    fn a_directory_that_cannot_be_watched_is_listed_with_its_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        // No `archive/`: the watcher cannot watch it.
+        let stores = std::collections::BTreeMap::from([("work".parse().unwrap(), root.clone())]);
+        let (commands, _received) = mpsc::channel();
+        let (watcher, unwatched) = watch_stores(
+            &stores,
+            &commands,
+            std::sync::Arc::new(AtomicBool::new(false)),
+        );
+        assert!(watcher.is_some());
+        assert_eq!(unwatched.len(), 1);
+        assert_eq!(unwatched[0].path, root.join("archive"));
+        assert_ne!(unwatched[0].error, "");
+
+        std::fs::create_dir(root.join("archive")).unwrap();
+        let (_watcher, unwatched) = watch_stores(
+            &stores,
+            &commands,
+            std::sync::Arc::new(AtomicBool::new(false)),
+        );
+        assert_eq!(unwatched.len(), 0);
+    }
 
     #[test]
     fn a_burst_of_events_queues_one_reconciliation_until_it_starts() {

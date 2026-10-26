@@ -650,14 +650,26 @@ fn health_lists_an_invalid_file_until_it_is_fixed() {
     let sandbox = Sandbox::new();
     sandbox.write_task("work", "aaaaaaaa", &task_md("aaaaaaaa", "work", "ready"));
     sandbox.write_task("work", "bbbbbbbb", "not a task file\n");
+    // An archived task that cannot be read is listed with its place in `archive/`.
+    let archived = sandbox
+        .loom_home()
+        .join("contexts/work/archive/2025/cccccccc");
+    fs::create_dir_all(&archived).unwrap();
+    fs::write(archived.join("task.md"), "not a task file\n").unwrap();
     let _daemon = sandbox.start();
     let socket = sandbox.socket();
 
     let health: loom_api::TaskStoreHealth = ok(&call(&socket, "GET", "/v1/tasks/health", None));
     assert!(health.watching);
-    assert_eq!(health.invalid.len(), 1, "{health:?}");
+    assert_eq!(health.invalid.len(), 2, "{health:?}");
     assert_eq!(health.invalid[0].context.as_str(), "work");
     assert_eq!(health.invalid[0].id.as_str(), "bbbbbbbb");
+    assert_eq!(
+        health.invalid[0].path,
+        sandbox.loom_home().join("contexts/work/tasks/bbbbbbbb")
+    );
+    assert_eq!(health.invalid[1].path, archived);
+    assert!(health.unwatched.is_empty(), "{health:?}");
     assert!(
         health.invalid[0].error.starts_with("line 1"),
         "{}",
@@ -670,7 +682,8 @@ fn health_lists_an_invalid_file_until_it_is_fixed() {
     let mut remaining = health.invalid.len();
     for _ in 0..100 {
         let health: loom_api::TaskStoreHealth = ok(&call(&socket, "GET", "/v1/tasks/health", None));
-        remaining = health.invalid.len();
+        // Only the archived file is left.
+        remaining = health.invalid.len() - 1;
         if remaining == 0 {
             break;
         }

@@ -759,12 +759,29 @@ fn doctor_warns_about_a_task_file_that_cannot_be_read() {
 
     let output = sandbox.loom_with(&home, &["repo", "doctor"], &[]);
     let text = stdout(&output);
+    let task = sandbox.loom_home().join("contexts/work/tasks/dddddddd");
     assert!(
-        text.contains("warn  tasks: task dddddddd of work: "),
+        text.contains(&format!("warn  tasks: {}/task.md (work): ", task.display())),
         "{text}"
     );
     assert!(
-        text.contains("      fix: edit tasks/dddddddd/task.md in the store of work"),
+        text.contains(&format!(
+            "      fix: edit {}/task.md to fix the file",
+            task.display()
+        )),
+        "{text}"
+    );
+    // A warning does not fail the command: only the other checks of this sandbox (no SSH
+    // agent) can.
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.starts_with("fail  tasks") || line.starts_with("fail  store paths")),
+        "{text}"
+    );
+    assert_eq!(
+        output.status.code() == Some(1),
+        text.lines().any(|line| line.starts_with("fail  ")),
         "{text}"
     );
 }

@@ -18,6 +18,14 @@
         "$ref": "#/$defs/InvalidTaskFile"
       }
     },
+    "unwatched": {
+      "description": "The directories that the file watcher could not watch, with the error. Not empty means\n`watching` is `false` for the changes in these directories.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FailedTaskFile"
+      }
+    },
     "watching": {
       "description": "The file watcher runs: hand edits are recorded as they happen. When it does not, they\nare recorded at the next start of loomd.",
       "type": "boolean"
@@ -69,11 +77,16 @@
         "id": {
           "description": "ID, the name of its directory.",
           "$ref": "#/$defs/TaskId"
+        },
+        "path": {
+          "description": "The directory of the task: `<store>/tasks/<id>`, or `<store>/archive/<yyyy>/<id>` for an\narchived task.",
+          "type": "string"
         }
       },
       "required": [
         "context",
         "id",
+        "path",
         "error"
       ]
     },

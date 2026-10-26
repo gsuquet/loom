@@ -238,10 +238,15 @@ fn update_states(at: Timestamp) -> Vec<UpdateState> {
 #[test]
 fn a_task_store_health_sample_validates_against_its_schema() {
     let errors = violations(&TaskStoreHealth {
-        watching: true,
+        watching: false,
+        unwatched: vec![FailedTaskFile {
+            path: "/home/me/.loom/contexts/work/archive".into(),
+            error: "No such file or directory".to_owned(),
+        }],
         invalid: vec![InvalidTaskFile {
             context: "work".parse().unwrap(),
             id: "k3q7zm2a".parse().unwrap(),
+            path: "/home/me/.loom/contexts/work/tasks/k3q7zm2a".into(),
             error: "line 3: bad status".to_owned(),
         }],
         failed: vec![FailedTaskFile {

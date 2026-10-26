@@ -718,10 +718,14 @@ A task (`kind` `task`):
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `watching` | boolean | `true` when `loomd` watches the task files. When `false`, a change made outside `loom` is not seen until the next reindex. |
+| `watching` | boolean | `true` when `loomd` watches all the task directories. `false` when the watcher did not start or when `unwatched` is not empty: a change made outside `loom` is not seen until the next reindex. |
+| `unwatched` | array | The `tasks/` and `archive/` directories that the watcher could not watch (a missing directory, a permission, the system limit of watchers). |
+| `unwatched[].path` | string | The directory. |
+| `unwatched[].error` | string | What failed. |
 | `invalid` | array | The task files that cannot be read, sorted by context then ID. |
 | `invalid[].context` | string | The context of its store. |
 | `invalid[].id` | string | The task ID, the name of its directory. |
+| `invalid[].path` | string | The directory of the task: `<store>/tasks/<id>`, or `<store>/archive/<yyyy>/<id>` for an archived task. |
 | `invalid[].error` | string | Why the file is invalid, with the line when known. |
 | `failed` | array | The places that `loomd` could not scan or read. |
 | `failed[].path` | string | The task directory, or `tasks/` when the store could not be listed. |
@@ -743,6 +747,7 @@ Answer of [`POST /v1/tasks/reindex`](#tasks), and output of `loom reindex --json
 | --- | --- | --- |
 | `context` | string | Context of the store that holds the task. |
 | `id` | string | Task ID, the name of its directory. |
+| `path` | path | The directory of the task: `<store>/tasks/<id>`, or `<store>/archive/<yyyy>/<id>` for an archived task. |
 | `error` | string | Why the file cannot be read. It starts with `line <n>: ` when the line is known. Causes: not UTF-8, no `+++` frontmatter, invalid TOML, an absent or invalid key, an `id` that is not the directory name, a `context` that is not the store's, an ID that the stores of several contexts hold (`duplicate ID across contexts`, with their names). |
 
 `FailedTaskFile`:

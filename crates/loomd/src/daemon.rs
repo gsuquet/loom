@@ -550,6 +550,8 @@ fn router(app: App) -> Router {
         .route(FOCUS_PATH, get(list_focus))
         .route(EVENTS_PATH, get(change_events))
         .route(TASKS_BACKUP_PATH, get(backup_report))
+        // `/v1/tasks/health` cannot clash with `/v1/tasks/{id}`: a static route wins, and `health`
+        // is no task ID prefix (`l` is not in the ID alphabet).
         .route(TASKS_HEALTH_PATH, get(task_store_health))
         .route(TASKS_SYNC_PATH, post(sync_stores))
         .fallback(fallback_not_found)

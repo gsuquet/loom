@@ -61,6 +61,7 @@ mod tests {
             invalid: vec![InvalidTaskFile {
                 context: "work".parse().unwrap(),
                 id: "k3q7zm2a".parse().unwrap(),
+                path: "tasks/k3q7zm2a".into(),
                 error: "line 2: invalid TOML: expected `=`".to_owned(),
             }],
             failed: Vec::new(),
