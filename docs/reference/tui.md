@@ -31,7 +31,7 @@ The TUI has three queues:
 
 | Key | Queue | Source in `loomd` | Content |
 | --- | --- | --- | --- |
-| `1` | `Today` | `GET /v1/tasks` | Open tasks that are `ready` or `active`, in priority order (pinned, urgent, importance, due date, age, then `id`). Each row shows importance, status, context badge, kind, and title. `w` toggles priority reasons. `p` toggles grouping by parent task. |
+| `1` | `Today` | `GET /v1/tasks` | Open tasks that are `ready` or `active`, in priority order (pinned, overdue or due today, importance, due date, age, then `id`). Each row shows importance, status, context badge, kind, and title. `w` toggles priority reasons. `p` toggles grouping by parent task. |
 | `2` | `Inbox` | `GET /v1/tasks?status=inbox` | Open tasks with status `inbox`, in rank order. |
 | `3` | `Waiting` | `GET /v1/tasks?status=waiting` | Open tasks with status `waiting`, in rank order. Shows undated tasks and dated tasks, with `until` dates and `waiting on` notes. |
 
@@ -111,6 +111,10 @@ Key resolution uses three layers, from innermost to outermost:
 | `+` | Create a new task in the active context (or from the selected task or default context). |
 | `w` | Toggle priority reasons (`--why`) in `Today` queue. |
 | `p` | Toggle grouping by parent task in `Today` queue. |
+
+The footer of a queue shows the keys of the actions for that queue. `?` shows all keys.
+
+The TUI sends one task action at a time to `loomd`. If you start a second action while the first runs, the TUI keeps it and sends it when the first ends. If a third action arrives, the footer shows `action in progress` and the TUI drops it. An action that `loomd` refuses shows its error in the footer. `u` stays ready until an undo succeeds.
 
 ### Object page
 
