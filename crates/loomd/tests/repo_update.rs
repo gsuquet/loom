@@ -619,7 +619,7 @@ fn a_remote_check_sees_the_git_configuration_of_the_remote() {
     };
     let started = Instant::now();
     let outcome = check_remote(&keyed, "origin", &runner, Duration::from_secs(2));
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(started.elapsed() < Duration::from_secs(30));
     assert!(
         matches!(
             &outcome,

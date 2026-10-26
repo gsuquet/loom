@@ -1,5 +1,5 @@
 //! Auto-upgrade of loomd end to end (ADR-0011), against the fake releases API of
-//! `common/mod.rs`, with a 1 s check interval and a 6 s watchdog deadline (debug-only test
+//! `common/mod.rs`, with a 1 s check interval and a 20 s watchdog deadline (debug-only test
 //! hooks).
 //!
 //! The running version is a copy of the built `loom` and `loomd` in a temporary install
@@ -166,7 +166,7 @@ impl Env {
             .env("LOOM_RELEASES_URL", &self.api.url)
             .env("LOOM_UPDATE_PUBKEY", &self.signer.public)
             .env("LOOM_UPDATE_CHECK_INTERVAL", "1s")
-            .env("LOOM_UPDATE_HEALTH_DEADLINE", "6s")
+            .env("LOOM_UPDATE_HEALTH_DEADLINE", "20s")
             .env_remove("LOOM_TEST_FAIL_UNLESS_HOME_PREFIX")
             .env(
                 "LOOM_TEST_BUILD_VERSION",

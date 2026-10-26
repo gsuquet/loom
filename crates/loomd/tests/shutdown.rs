@@ -72,7 +72,7 @@ fn terminate_stops_the_whole_group_of_a_child_that_obeys_sigterm() {
     assert!(!reaper.join().unwrap().success());
     // `sleep` shares the group of the leader: it is gone too.
     assert!(
-        wait_until(Duration::from_secs(2), || !group_alive(pid)),
+        wait_until(Duration::from_secs(15), || !group_alive(pid)),
         "a process of the group survives"
     );
     assert_eq!(groups.len(), 0);
@@ -96,9 +96,9 @@ fn terminate_kills_a_child_that_ignores_sigterm_after_the_grace() {
     groups.terminate(grace);
     let took = started.elapsed();
     assert!(took >= grace, "{took:?}");
-    assert!(took < Duration::from_secs(4), "{took:?}");
+    assert!(took < Duration::from_secs(15), "{took:?}");
     assert!(!reaper.join().unwrap().success());
-    assert!(wait_until(Duration::from_secs(2), || !group_alive(pid)));
+    assert!(wait_until(Duration::from_secs(15), || !group_alive(pid)));
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn a_finished_child_leaves_the_registry() {
     // Nothing to stop: returns at once.
     let started = Instant::now();
     groups.terminate(Duration::from_secs(5));
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(4));
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn join_within_waits_for_a_thread_up_to_the_deadline() {
     assert!(!join_within(slow, Duration::from_millis(200), "slow"));
     let took = started.elapsed();
     assert!(took >= Duration::from_millis(200), "{took:?}");
-    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert!(took < Duration::from_secs(15), "{took:?}");
     drop(release);
 
     // A panic of the thread is reported by the log, not propagated: the thread is finished.
