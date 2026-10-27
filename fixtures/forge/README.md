@@ -1,6 +1,6 @@
 # Forge fixtures
 
-Recorded shapes of the GitHub and GitLab API responses that the v0.4 review work reads and sends, for tests that run against a local fake server. No test talks to a real forge.
+Composed requests and responses of the GitHub and GitLab APIs that the v0.4 review work reads and sends, for tests that run against a local fake server. No test talks to a real forge.
 
 Design: [Code review](../../docs/design/reviews.md), [ADR-0016](../../docs/adr/0016-mr-review-mirror.md).
 
@@ -12,7 +12,9 @@ The JSON files are composed, not captured from a real account, so they hold no r
 - GitHub GraphQL: the public schema ([octokit/graphql-schema](https://github.com/octokit/graphql-schema)). No GraphQL call could be made from the environment that wrote them, so the GraphQL error messages are taken from the GitHub docs and forum reports, not from a response.
 - GitLab REST: the API docs in `gitlab-org/gitlab` (`doc/api/merge_requests.md`, `discussions.md`, `draft_notes.md`, `merge_request_approvals.md`) and a live, unauthenticated `GET /projects/:id/merge_requests/:iid` on gitlab.com (`discussions` and `versions` need a token there).
 
-Each file keeps the fields loom reads and some it does not: a parser ignores unknown fields. Error message texts are examples. Code matches on the HTTP status and, for GraphQL, the error `type`, never on the message.
+Each file keeps the fields loom reads and some it does not: a parser ignores unknown fields. Error message texts are examples. Code matches on the HTTP status and, for GraphQL, the error `type` and the step that failed, never on the message. Both GraphQL errors here have the type `UNPROCESSABLE`: loom tells them apart by its pre-checks (a pending review is looked for before `addPullRequestReview`, anchors are checked against the forge's patch), so at that step either error means "state changed since the checks".
+
+`github/error-422-own-pull.json` is the REST shape, for the REST fallback of ADR-0016. The GraphQL publish refuses an own pull request before any call (pre-check 4).
 
 ## Scenario
 

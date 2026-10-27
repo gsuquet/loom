@@ -114,7 +114,7 @@ Data, git and forge side: [Code review](reviews.md).
 - **Gestures**: `]`/`[` hunks, `}`/`{` files, `v` mark file viewed, `c` comment on a line or `V` selection, with a Conventional Comments label and decoration picker, `s` suggestion block (GitHub/GitLab suggestion syntax), `r` reply, `R` resolve, `o` open the file at the line in `$EDITOR` (optional), `w` check the MR out in a worktree to run it.
 - **Agent findings**: typed (path, line range, side, label, decorations, body, optional suggestion, confidence), shown inline. `y` turns a finding into my draft comment, `n` dismisses it, `e` edits it. Accept and dismiss rates are the reviewer template's precision metric.
 - **Drafts until publish**: comments stay local; `P` publishes them as a single review with a verdict (approve, request changes, comment), through the forge's batch review APIs. Publishing is team-visible: autonomy policy applies.
-- **Re-review after a push**: "since last review" shows only the diff between the last reviewed SHA and the new head. Viewed marks reset only on files that changed. Draft comments are re-anchored, or flagged when their line disappeared.
+- **Re-review after a push**: "since last review" shows only the files whose diff changed since the last reviewed version (not `git diff <old head> <new head>`, which is wrong after a rebase; see [Code review](reviews.md#git-refs-and-diffs)). Viewed marks reset only on those files. Draft comments are re-anchored, or flagged when their line disappeared.
 - **Large MRs**: lazy rendering; generated and vendored files collapsed (patterns per repo in the repo card).
 - Candidate crates (to validate): `ratatui`, `syntect` (highlighting), `tui-markdown`, `tui-textarea`, `ratatui-image`.
 
