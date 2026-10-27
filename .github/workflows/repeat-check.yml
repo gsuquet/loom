@@ -1,0 +1,83 @@
+# Runs `mise run check` several times in a row on one runner, to find tests that fail only
+# sometimes (#57: 10 consecutive runs must pass on macOS). Manual only: it is slow.
+name: Repeat check
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Number of consecutive runs
+        type: number
+        default: 10
+      os:
+        description: Runner
+        type: choice
+        options: [macos-latest, ubuntu-latest]
+        default: macos-latest
+      fresh-build:
+        description: Rebuild the workspace crates before each run (dependencies stay built)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: repeat check (${{ inputs.os }}, ${{ inputs.runs }} runs)
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust cargo-deny typos gitleaks actionlint shellcheck minisign
+      # Reads the cache that the `check` job of ci.yml writes on main (the key is the job id),
+      # never writes it.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: check
+          save-if: false
+      # Every run is done, even after a failure, so that the summary counts all of them.
+      # A fresh build recompiles the workspace crates in parallel with the tests, as in the
+      # full-workspace runs where the flakes were seen, and the tests run freshly built binaries.
+      - env:
+          RUNS: ${{ inputs.runs }}
+          FRESH_BUILD: ${{ inputs.fresh-build }}
+        run: |
+          if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::runs must be a whole number of 1 or more, not $RUNS"
+            exit 1
+          fi
+          # A failure here stops the step: with no -p, `cargo clean` would remove the dependencies too.
+          names="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name')"
+          packages=()
+          while IFS= read -r name; do
+            packages+=(-p "$name")
+          done <<<"$names"
+          failed=0
+          {
+            echo "| Run | Result | Duration |"
+            echo "| --- | --- | --- |"
+          } >>"$GITHUB_STEP_SUMMARY"
+          for i in $(seq "$RUNS"); do
+            echo "::group::Run $i of $RUNS"
+            if [ "$FRESH_BUILD" = true ] && [ "$i" -gt 1 ]; then
+              cargo clean "${packages[@]}"
+            fi
+            start=$SECONDS
+            if mise run check; then
+              result=pass
+            else
+              result=FAIL
+              failed=$((failed + 1))
+              echo "::error::Run $i of $RUNS failed"
+            fi
+            echo "::endgroup::"
+            echo "| $i | $result | $((SECONDS - start)) s |" >>"$GITHUB_STEP_SUMMARY"
+          done
+          echo "**$((RUNS - failed)) of $RUNS runs passed.**" >>"$GITHUB_STEP_SUMMARY"
+          echo "$((RUNS - failed)) of $RUNS runs passed"
+          [ "$failed" -eq 0 ]
