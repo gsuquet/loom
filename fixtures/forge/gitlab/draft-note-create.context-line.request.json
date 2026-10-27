@@ -1,0 +1,13 @@
+{
+  "note": "question: should this log?",
+  "position": {
+    "base_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26",
+    "start_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26",
+    "head_sha": "84280c47b6aa128c645b1fbea54aded8b32e8463",
+    "old_path": "src/auth/jwt.rs",
+    "new_path": "src/auth/jwt.rs",
+    "position_type": "text",
+    "old_line": 13,
+    "new_line": 16
+  }
+}

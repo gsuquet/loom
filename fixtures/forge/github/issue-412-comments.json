@@ -1,0 +1,23 @@
+[
+  {
+    "url": "https://api.github.com/repos/acme/shop/issues/comments/7001",
+    "html_url": "https://github.com/acme/shop/pull/412#issuecomment-7001",
+    "issue_url": "https://api.github.com/repos/acme/shop/issues/412",
+    "id": 7001,
+    "node_id": "IC_kwDOAAATic4AABtZ",
+    "user": {
+      "login": "bob",
+      "id": 1002,
+      "node_id": "U_kgDO00001002",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1002?v=4",
+      "url": "https://api.github.com/users/bob",
+      "html_url": "https://github.com/bob",
+      "type": "User",
+      "site_admin": false
+    },
+    "created_at": "2026-10-21T16:00:00Z",
+    "updated_at": "2026-10-21T16:00:00Z",
+    "author_association": "MEMBER",
+    "body": "I will look at the login part."
+  }
+]

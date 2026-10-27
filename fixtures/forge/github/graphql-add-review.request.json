@@ -1,0 +1,25 @@
+{
+  "query": "mutation($input: AddPullRequestReviewInput!) { addPullRequestReview(input: $input) { pullRequestReview { id state } } }",
+  "variables": {
+    "input": {
+      "pullRequestId": "PR_kwDOAAATic4AA9-c",
+      "commitOID": "84280c47b6aa128c645b1fbea54aded8b32e8463",
+      "threads": [
+        {
+          "path": "src/auth/jwt.rs",
+          "line": 14,
+          "side": "RIGHT",
+          "body": "suggestion (non-blocking): name the error after the claim.\n\n```suggestion\n        return Err(Error::MissingSubject);\n```"
+        },
+        {
+          "path": "src/auth/jwt.rs",
+          "startLine": 9,
+          "startSide": "RIGHT",
+          "line": 11,
+          "side": "RIGHT",
+          "body": "praise: clear checks."
+        }
+      ]
+    }
+  }
+}

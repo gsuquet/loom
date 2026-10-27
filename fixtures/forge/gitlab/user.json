@@ -1,0 +1,14 @@
+{
+  "id": 13,
+  "username": "carol",
+  "name": "Carol Example",
+  "state": "active",
+  "locked": false,
+  "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/13/avatar.png",
+  "web_url": "https://gitlab.example.com/carol",
+  "created_at": "2020-01-01T00:00:00.000Z",
+  "bio": "",
+  "public_email": null,
+  "bot": false,
+  "is_admin": false
+}

@@ -98,3 +98,29 @@ Each task is a GitHub issue in the `v0.3` milestone, written with the [agent tas
 Done on `main`: 1 to 14, 16, 18 to 20. Remaining: 15, 21 to 23 in order (22 and 23 in parallel after 15), 24 and 25 at any time, then 17.
 
 Parallel tracks: 18 and 20 from the start; after 2, {3} and {4, 5}; after 5, {11, 12, 16}; after 6, {7, 8}, {9, 10}, {19 -> 13, 14, 15}.
+
+## v0.4 tasks
+
+Each task is a GitHub issue in the `v0.4` milestone, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md). Design: [Code review](design/reviews.md), [User workflow](design/user-workflow.md#code-review), [ADR-0016](adr/0016-mr-review-mirror.md). Forge fixtures: [`fixtures/forge/`](../fixtures/forge/README.md).
+
+| # | Issue | Task | Kind | Depends on | Owner |
+| --- | --- | --- | --- | --- | --- |
+| 1 | – | ADR-0016 (MR mirror, fetched refs, publish, forge credentials), `design/reviews.md`, forge API spike and fixtures | Research | – | Me + agent |
+| 2 | – | `loom-forge` (pure): MR, version, thread, anchor, draft and verdict model; GitHub and GitLab payload parsing from the fixtures; MR keys; context of an MR | Story | 1 | Agent |
+| 3 | – | Forge credentials: `[forges."<host>"]` and `[contexts.<ctx>.forges."<host>"]` `token_cmd` / `token_env`, resolution in loomd, redaction, `forge <host>` doctor check | Story | 1 | Agent |
+| 4 | – | Forge clients in `loom-forge` (`ureq`): GitHub REST and GraphQL, GitLab REST, pagination, ETags, rate limits, errors; fake server serving the fixtures | Story | 2 | Agent |
+| 5 | – | MR sync in loomd: poll MRs to review per context, Review tasks (create, reopen on a new head, close), mirror files (`mr.json`, `description.md`, `versions.json`, `threads.json`), `loom review sync` | Story | 3, 4 | Agent |
+| 6 | – | MR refs and diffs: remote of the target project, fetch into `refs/loom/mr/…`, merge base, `diffs/<sha>.patch`, "since last review" by per-file diff, `reviewed` ref, cleanup on archive, no-clone mode from forge patches | Story | 5 | Agent |
+| 7 | – | Review drafts (pure + API): `review.json`, comments, replies, resolves, verdict, viewed marks by blob, re-anchoring after a new version; loomd endpoints, `loom review ls\|show` | Story | 6 | Agent |
+| 8 | – | Publish: pre-checks (fresh head, anchors in the forge's hunks, foreign pending review, own MR), GitHub GraphQL pending review, GitLab draft notes, `bulk_publish`, approve, resume after a failure, `review` event, `loom review publish`; verified once on real test repositories | Story | 7 | Agent + me (test repos, tokens) |
+| 9 | – | `ui-style.md`: review components (file tree row, diff hunk, inline thread and finding, publish modal) and their Web mapping | Research | 1 | Agent |
+| 10 | – | TUI Review queue: list, preview (changed files, threads), `enter` opens the Review page | Story | 5, 9 | Agent |
+| 11 | – | TUI Review page: file tree, unified and side-by-side diff, highlighting, `]`/`[` `}`/`{`, `v` viewed, "since last review", inline threads, lazy rendering, collapsed generated files | Story | 6, 9, 10 | Agent |
+| 12 | – | TUI review gestures: `c`/`V` comment with the Conventional Comments picker, `s` suggestion, `r` reply, `R` resolve, `P` publish modal with verdict, `w` worktree, `o` editor | Story | 7, 8, 11 | Agent |
+| 13 | – | Repo forge metadata on the repo card: project ID, forge default branch, visibility, archived, web URL, open MRs | Story | 4 | Agent |
+| 14 | – | `loom pr`: push the branch, draft MR linked to the task (`delivery` link, `mr` event), existing MR linked | Story | 4 | Agent |
+| 15 | [#155](https://github.com/gsuquet/loom/issues/155) | TUI task detail: Files tab (moved from v0.3) | Story | – | Agent |
+| 16 | – | Review safety suite: force push, rebase, removed and renamed files, line gone, 409 and 422 from the forge, publish stopped at each step, revoked token | Chore | 8, 12 | Agent |
+| 17 | – | A week of reviews from loom, without the forge inbox | Chore | 12, 14 | Me |
+
+Parallel tracks once 1 is merged: {2, 4, 13, 14}, {3}, {9}. After 4 and 3: 5, then {6 -> 7 -> 8} and {10 -> 11}; 12 joins them. 15 at any time.

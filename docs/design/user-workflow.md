@@ -96,6 +96,8 @@ Projects are parent tasks: Relations shows the tree, and Today can group its lis
 
 ### Code review
 
+Data, git and forge side: [Code review](reviews.md).
+
 ```
 ┌ Review !412 auth refactor ─ [company-b] ─ head a1b2 · since last review: 3 files ┐
 │ ✓ src/auth/mod.rs   +12 -4 │ @@ -40,7 +40,9 @@ fn verify(token: &str)          │

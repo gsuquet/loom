@@ -1,0 +1,123 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_kwDOAAATic4AA9-c",
+        "headRefOid": "84280c47b6aa128c645b1fbea54aded8b32e8463",
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": "Y3Vyc29yOnYyOpK0"
+          },
+          "nodes": [
+            {
+              "id": "PRRT_kwDOAAATic5AAAAB",
+              "isResolved": false,
+              "isOutdated": true,
+              "path": "src/auth/jwt.rs",
+              "diffSide": "RIGHT",
+              "line": null,
+              "originalLine": 10,
+              "startLine": null,
+              "originalStartLine": null,
+              "startDiffSide": null,
+              "subjectType": "LINE",
+              "viewerCanReply": true,
+              "viewerCanResolve": true,
+              "comments": {
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": "Y3Vyc29yOnYyOpHO"
+                },
+                "nodes": [
+                  {
+                    "id": "PRRC_kwDOAAATic5AAAAC",
+                    "fullDatabaseId": "30001",
+                    "author": {
+                      "login": "bob"
+                    },
+                    "body": "question: why not a leeway for clock skew?",
+                    "createdAt": "2026-10-21T16:10:00Z",
+                    "commit": {
+                      "oid": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990"
+                    },
+                    "originalCommit": {
+                      "oid": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990"
+                    },
+                    "originalLine": 10,
+                    "replyTo": null,
+                    "state": "SUBMITTED",
+                    "url": "https://github.com/acme/shop/pull/412#discussion_r30001"
+                  },
+                  {
+                    "id": "PRRC_kwDOAAATic5AAAAD",
+                    "fullDatabaseId": "30002",
+                    "author": {
+                      "login": "alice"
+                    },
+                    "body": "Good point, I will add one.",
+                    "createdAt": "2026-10-21T17:00:00Z",
+                    "commit": {
+                      "oid": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990"
+                    },
+                    "originalCommit": {
+                      "oid": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990"
+                    },
+                    "originalLine": 10,
+                    "replyTo": {
+                      "id": "PRRC_kwDOAAATic5AAAAC"
+                    },
+                    "state": "SUBMITTED",
+                    "url": "https://github.com/acme/shop/pull/412#discussion_r30002"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_kwDOAAATic5AAAAE",
+              "isResolved": true,
+              "isOutdated": false,
+              "path": "src/api/login.rs",
+              "diffSide": "RIGHT",
+              "line": 6,
+              "originalLine": 6,
+              "startLine": null,
+              "originalStartLine": null,
+              "startDiffSide": null,
+              "subjectType": "LINE",
+              "viewerCanReply": true,
+              "viewerCanResolve": true,
+              "comments": {
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": "Y3Vyc29yOnYyOpHP"
+                },
+                "nodes": [
+                  {
+                    "id": "PRRC_kwDOAAATic5AAAAF",
+                    "fullDatabaseId": "30003",
+                    "author": {
+                      "login": "bob"
+                    },
+                    "body": "nitpick: log the expiry?",
+                    "createdAt": "2026-10-21T16:12:00Z",
+                    "commit": {
+                      "oid": "84280c47b6aa128c645b1fbea54aded8b32e8463"
+                    },
+                    "originalCommit": {
+                      "oid": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990"
+                    },
+                    "originalLine": 6,
+                    "replyTo": null,
+                    "state": "SUBMITTED",
+                    "url": "https://github.com/acme/shop/pull/412#discussion_r30003"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+[
+  {
+    "id": 6001,
+    "node_id": "PRR_kwDOAAATic4AABdx",
+    "user": {
+      "login": "bob",
+      "id": 1002,
+      "node_id": "U_kgDO00001002",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1002?v=4",
+      "url": "https://api.github.com/users/bob",
+      "html_url": "https://github.com/bob",
+      "type": "User",
+      "site_admin": false
+    },
+    "body": "",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/acme/shop/pull/412#pullrequestreview-6001",
+    "pull_request_url": "https://api.github.com/repos/acme/shop/pulls/412",
+    "submitted_at": "2026-10-21T16:10:00Z",
+    "commit_id": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990",
+    "author_association": "MEMBER"
+  }
+]

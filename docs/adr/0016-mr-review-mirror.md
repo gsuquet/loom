@@ -1,0 +1,46 @@
+# ADR-0016: MR review: mirror, fetched refs, publish and forge credentials
+
+- Status: proposed
+- Date: 2026-10-27
+
+## Context
+
+v0.4 makes loom the place where I review merge requests (GitLab) and pull requests (GitHub), "MRs" below: find the MRs that wait for me, read them with their threads, write comments locally, publish them as one review. The design gave the TUI view (user workflow), a mirror directory (storage: `mrs/<provider>-<key>/`) and one line on git ("checkout of MR refs" through the git CLI, ADR-0008). It did not say where the refs go, how a diff survives a force push, how drafts reach each forge, or where tokens come from.
+
+A spike on 2026-10-27 checked the APIs against the GitHub OpenAPI description and GraphQL schema, the GitLab API docs, and live read-only calls ([`fixtures/forge/`](../../fixtures/forge/README.md)). What it found that drives this decision:
+
+- Both forges keep the head of every MR under a fetchable ref: `refs/pull/<n>/head` (GitHub) and `refs/merge-requests/<iid>/head` (GitLab), forks included. After a force push, the old head is no longer under that ref.
+- Both forges anchor comments on file line numbers and a side, and refuse a line outside the diff hunks.
+- Both have a pending state visible only to its author: a GitHub pending review (one per user and MR) and GitLab draft notes, published together by `submitPullRequestReview` and `draft_notes/bulk_publish`. GitLab `bulk_publish` publishes every draft note of the user, those started in the web UI included.
+- GitHub REST `POST pulls/<n>/reviews` publishes comments and a verdict in one call, but cannot reply to an existing thread. GraphQL can: `addPullRequestReviewThreadReply` adds the reply to the pending review. Thread resolution exists only in GraphQL.
+- GitLab approval is separate from the review (`POST approve`, with `sha`: 409 when the head moved); "request changes" is a reviewer state set by `bulk_publish`.
+- A GitHub fine-grained token has one resource owner. A GitLab token needs `api` to write; `read_api` only reads.
+
+## Decision
+
+1. **Discovery by loomd, per context and forge host.** loomd polls the MRs where I am a requested reviewer (GitHub search `review-requested:@me`, GitLab `scope=reviews_for_me`) with the credential of each context. An MR belongs to the context its target project matches through `match.hosts` (repo rules, ADR-0012), otherwise to `default_context`, otherwise nowhere (doctor). A context never stores an MR of another context. Each MR is one Review task, reopened by a new head after my verdict, closed when the MR is merged or closed.
+2. **The MR mirror is daemon-owned, the review is mine.** `tasks/<id>/mrs/<provider>-<key>/`: `mr.json`, `description.md`, `versions.json`, `threads.json`, `diffs/<sha>.patch`, and `review.json` (drafts, verdict, viewed marks, last reviewed SHA, publish progress), written through loomd. `threads.json` is a snapshot rewritten on each pull, not the `threads.jsonl` of the storage design: a rewritten `jsonl` under `merge=union` would duplicate lines.
+3. **Refs are fetched into the indexed clone, in loom's namespace.** `git fetch --no-tags --no-write-fetch-head <remote> +refs/pull/<n>/head:refs/loom/mr/<remote>/<n>/head` (and the base branch to `…/base`), with the remote whose URL names the MR's target project. No branch, working tree or index is touched, so a dirty tree does not matter. `refs/loom/mr/<remote>/<n>/reviewed` keeps the last reviewed head alive through force pushes and `git gc`. The refs are deleted when the task is archived. Without a local clone, the MR still syncs and the view uses the forge's per-file patches, read-only on context (no expansion, no worktree).
+4. **Diffs are local and per version.** The diff of a version is `git diff -M <merge base> <head>`; the patch of every version I open is kept in `diffs/`. "Since last review" is the set of files whose diff changed between the two versions, not `git diff <old head> <new head>`, which is wrong after a rebase. A viewed mark is the blob ID of the file and survives a version where the file did not change.
+5. **Drafts stay local; publish goes through the forge's pending state, resumable.** `P` checks first: head fresh (an `approve` is only for the current head), every anchor inside a hunk of the forge's own patch, no pending review or draft note that loom did not create, not my own MR for a verdict. Then GitHub: `addPullRequestReview` (pending, with new threads), `addPullRequestReviewThreadReply`, `submitPullRequestReview`, `resolveReviewThread` (GraphQL). GitLab: `draft_notes` (comments, replies with `resolve_discussion`), `bulk_publish` with `reviewer_state`, `approve` with `sha`. Nothing is visible to others before the submit step. `review.json` records each step and forge ID, so a failure stops the publish and the next `P` resumes it. The publish is one `review` event.
+6. **Forge credentials are commands or variables, per host, overridable per context.** `[forges."<host>"] token_cmd | token_env`, and `[contexts.<ctx>.forges."<host>"]` first (another account on the same host). loomd runs `token_cmd` with `sh -c`, 10 s timeout, keeps the token in memory, resolves it again after a 401, and never logs it, writes it, or passes it to git or to an agent. git fetches and pushes with the user's own credentials (ADR-0008). `loom repo doctor` checks each context and host: token, `GET /user`, write scope.
+7. **One new library crate, `loom-forge`, no new HTTP stack.** Pure: the provider-neutral model (MR, version, thread, anchor, draft, verdict), parsing of both forges' payloads, MR key and context assignment, re-anchoring, the publish plan and its resume. I/O in one `client` module on `ureq` (already the HTTP client of the updater and of telemetry, blocking, run on loomd's blocking pool): GitHub REST and GraphQL, GitLab REST, pagination, ETags, rate limits. Thin typed clients for the endpoints loom uses (architecture), tested against a local fake server that serves `fixtures/forge/`.
+8. **Poll with conditional requests.** Every 5 minutes per host by default. GitHub: ETag on the MR (a 304 is free), threads only when the MR changed. GitLab: `updated_after`, then the changed MRs only. Rate limits wait for the reset; failures back off per host, and never touch the last snapshot.
+
+## Alternatives considered
+
+- **GitHub REST only** (`POST pulls/<n>/reviews` with `comments` and `event`). One atomic call, but replies would be posted one by one with `comments/<id>/replies`, each visible at once, and resolution would still need GraphQL. Rejected: "nothing leaves until `P`" would not hold for replies. The REST call stays the fallback if a GraphQL step turns out not to behave as the schema says (to verify in the first publish task).
+- **A loom-owned bare clone per project** (`~/.loom/cache/…`, blobless). It would work without a local clone and never touch the user's repositories. Rejected for v0.4: a second git path to test, disk for big monorepos, and I review in repos I have cloned. It stays possible later; the mirror does not depend on where the objects are.
+- **Diffs from the forge API only.** No git needed, the anchors would match the forge by construction. Rejected: no context expansion, no worktree to run the code, big files cut, and the reviewer agent (v0.7) needs the full contents. The API patch is kept as the anchor check and the no-clone mode.
+- **Check out MRs as local branches** (as `gh pr checkout` does). Rejected: it adds branches the user did not create, which automatic updates and the user's tools then see and touch.
+- **`gh` and `glab` as the transport** (`gh api`, `glab api`). No HTTP code in loom, and the CLIs handle login. Rejected: two more tools to install and keep current on every machine, a process per request, errors to parse from text, and no control over ETags and rate limits. `gh auth token` is still a good `token_cmd`.
+- **Store tokens in the OS keychain through loom.** Rejected: `token_cmd` already reaches the keychain, 1Password or `gh`, and loom stays without a secret store.
+
+## Consequences
+
+- A review needs the target project cloned locally for the full view; without a clone the view is reduced and says so.
+- Users' clones get refs under `refs/loom/`. They are visible to `git log --all` and to `git for-each-ref`, and are removed when the task is archived.
+- Client code (patches, threads) is in the context store and its backup, as the rest of the client's data.
+- A publish is a sequence of calls on both forges. A crash in the middle leaves a pending review or draft notes visible only to me; loom resumes it, and the doctor lists it if it cannot.
+- The publish on GitHub depends on GraphQL behaviour that the spike read from the schema but could not call; the first publish task verifies it against a real test repository before the TUI relies on it.
+- `storage.md` changes `threads.jsonl` to `threads.json` and gets the mirror files listed above; `architecture.md` gets the `loom-forge` crate when its first task lands.
