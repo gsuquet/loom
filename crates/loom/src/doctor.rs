@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use loom_api::{
     BackupOutcome, BackupReport, BackupStep, CheckStatus, ContextBackup, ContextName,
-    DaemonDiagnostics, DiskUsage, DoctorCheck, DoctorReport, RemoteCheck, RemoteCheckOutcome,
+    CredentialOrigin, DaemonDiagnostics, DiskUsage, DoctorCheck, DoctorReport, ForgeAccess,
+    ForgeCheck, ForgeCheckOutcome, ForgeCheckResult, ForgeKind, RemoteCheck, RemoteCheckOutcome,
     RemoteCheckResult, RemoteProblem, RemoteScheme, RepoSummary, ServicePlatform, SkipReason,
-    SshAgentSocket, TaskStoreHealth, UpdateOutcome, UpdateStep,
+    SshAgentSocket, TaskStoreHealth, TokenProblem, TokenSourceKind, UpdateOutcome, UpdateStep,
 };
 use loom_config::config::Config;
 use loom_repo::{ContextRules, classify_remote_failure, remote_endpoint};
@@ -594,6 +595,169 @@ fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck) -> String {
         ),
         RemoteProblem::Other => format!("run `{try_it}` in a terminal to see the whole error"),
     }
+}
+
+/// The how-to guide of the forge credentials.
+const CONNECT_A_FORGE: &str = "docs/how-to-guides/connect-a-forge.md";
+
+/// One check per context and forge host loomd checked (`forge <context> <host>`).
+///
+/// `ok` when the token can publish, `warn` when it can only read or its scopes are unknown,
+/// `fail` when it cannot be resolved or the forge refuses it. `which` finds a program in the
+/// user's `PATH`, for the absolute path to write in `token_cmd`.
+#[must_use]
+pub fn forge_checks(
+    result: &ForgeCheckResult,
+    which: impl Fn(&str) -> Option<PathBuf>,
+) -> Vec<DoctorCheck> {
+    if result.forges.is_empty() {
+        return vec![check(
+            "forge",
+            CheckStatus::Ok,
+            "no forge credential: loomd does not look for merge requests to review",
+        )];
+    }
+    result
+        .forges
+        .iter()
+        .map(|forge| forge_check(forge, &which))
+        .collect()
+}
+
+fn forge_check(forge: &ForgeCheck, which: &impl Fn(&str) -> Option<PathBuf>) -> DoctorCheck {
+    let name = format!("forge {} {}", forge.context, forge.host);
+    let table = match forge.origin {
+        CredentialOrigin::Context => {
+            format!("[contexts.{}.forges.\"{}\"]", forge.context, forge.host)
+        }
+        CredentialOrigin::Host => format!("[forges.\"{}\"]", forge.host),
+    };
+    let source = match &forge.source {
+        TokenSourceKind::Command => "token_cmd".to_owned(),
+        TokenSourceKind::Env { name } => format!("token_env `{name}`"),
+    };
+    match &forge.result {
+        ForgeCheckOutcome::Authenticated { login, access } => match access {
+            ForgeAccess::Write { .. } => {
+                check(name, CheckStatus::Ok, format!("{login}, can publish reviews"))
+            }
+            ForgeAccess::ReadOnly { scopes } => with_fix(
+                check(
+                    name,
+                    CheckStatus::Warn,
+                    format!(
+                        "{login}, cannot publish: the token can only read (scopes: {})",
+                        if scopes.is_empty() {
+                            "none".to_owned()
+                        } else {
+                            scopes.join(", ")
+                        }
+                    ),
+                ),
+                match forge.kind {
+                    ForgeKind::Github => format!(
+                        "give {source} of {table} a token with the `repo` scope (classic), or Pull requests read and write and Contents read (fine-grained); see {CONNECT_A_FORGE}"
+                    ),
+                    ForgeKind::Gitlab => format!(
+                        "give {source} of {table} a token with the `api` scope; see {CONNECT_A_FORGE}"
+                    ),
+                },
+            ),
+            ForgeAccess::Unknown { reason } => check(
+                name,
+                CheckStatus::Warn,
+                format!("{login}, scopes unknown: {reason}"),
+            ),
+        },
+        ForgeCheckOutcome::TokenUnresolved {
+            problem,
+            error,
+            program,
+        } => with_fix(
+            check(name, CheckStatus::Fail, format!("{source} of {table}: {error}")),
+            token_fix(*problem, program.as_deref(), &source, which),
+        ),
+        ForgeCheckOutcome::Rejected { status, error } => {
+            let check = check(
+                name,
+                CheckStatus::Fail,
+                if matches!(status, 401 | 403) {
+                    format!("{} refused the token: {status} {error}", forge.api)
+                } else {
+                    format!("{} answered {status} {error}", forge.api)
+                },
+            );
+            if *status == 401 {
+                with_fix(
+                    check,
+                    format!(
+                        "the token of {source} of {table} is revoked, expired or wrong: create a new one; see {CONNECT_A_FORGE}"
+                    ),
+                )
+            } else {
+                check
+            }
+        }
+        ForgeCheckOutcome::SsoRequired { url } => with_fix(
+            check(
+                name,
+                CheckStatus::Fail,
+                "the token is not authorized for the SAML single sign-on of the organization",
+            ),
+            url.as_ref().map_or_else(
+                || "authorize the token for the organization: Configure SSO in the token settings on GitHub".to_owned(),
+                |url| format!("open {url} to authorize the token"),
+            ),
+        ),
+        ForgeCheckOutcome::Unreachable { error } => with_fix(
+            check(name, CheckStatus::Fail, error.clone()),
+            format!(
+                "{} cannot be reached from loomd: check the network or the VPN, then run `loom repo doctor` again",
+                forge.api
+            ),
+        ),
+    }
+}
+
+/// How to fix a token loomd cannot resolve.
+fn token_fix(
+    problem: TokenProblem,
+    program: Option<&str>,
+    source: &str,
+    which: &impl Fn(&str) -> Option<PathBuf>,
+) -> String {
+    match problem {
+        TokenProblem::CommandNotFound => match program {
+            Some(program) if !program.contains('/') => which(program).map_or_else(
+                || format!(
+                    "install `{program}`, or write its absolute path in token_cmd (`command -v {program}` in a terminal gives it)"
+                ),
+                |path| format!(
+                    "loomd has a minimal PATH: write the absolute path in token_cmd, `{}`",
+                    path.display()
+                ),
+            ),
+            Some(program) => format!("`{program}` does not exist: fix the path in token_cmd"),
+            None => "fix the program of token_cmd".to_owned(),
+        },
+        TokenProblem::Timeout => "run token_cmd in a terminal: a command that waits for an unlock or a prompt (1Password) cannot run in loomd; unlock it first, or use a token that needs no prompt".to_owned(),
+        TokenProblem::CommandFailed => "run token_cmd in a terminal to see the whole error".to_owned(),
+        TokenProblem::Empty => format!("{source} gives no token: sign in first (such as `gh auth login`)"),
+        TokenProblem::EnvUnset => "set the variable in the environment of loomd, or use token_cmd: a service does not see the variables of your shell".to_owned(),
+    }
+}
+
+/// The first executable file named `program` in the directories of `path` (a `PATH` value).
+#[must_use]
+pub fn find_in_path(
+    program: &str,
+    path: &std::ffi::OsStr,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_file(candidate))
 }
 
 /// Why the last update of a repository did not complete: one group of the `updates` check.
@@ -1928,5 +2092,151 @@ mod tests {
         assert!(check.fix.is_some());
         // Unknown: `disk` carries the warning of the failed query.
         assert!(at(None).iter().all(|check| check.check != "disk-free"));
+    }
+
+    mod forge {
+        use std::path::{Path, PathBuf};
+
+        use loom_api::{
+            CheckStatus, CredentialOrigin, ForgeAccess, ForgeCheck, ForgeCheckOutcome,
+            ForgeCheckResult, ForgeKind, TokenProblem, TokenSourceKind,
+        };
+
+        use super::super::{find_in_path, forge_checks};
+
+        fn forge(kind: ForgeKind, result: ForgeCheckOutcome) -> ForgeCheck {
+            ForgeCheck {
+                context: "company-a".parse().unwrap(),
+                host: "github.com".to_owned(),
+                kind,
+                api: "https://api.github.com".to_owned(),
+                origin: CredentialOrigin::Context,
+                source: TokenSourceKind::Command,
+                result,
+            }
+        }
+
+        fn one(kind: ForgeKind, result: ForgeCheckOutcome) -> loom_api::DoctorCheck {
+            let which =
+                |program: &str| (program == "op").then(|| PathBuf::from("/opt/homebrew/bin/op"));
+            let mut checks = forge_checks(
+                &ForgeCheckResult {
+                    forges: vec![forge(kind, result)],
+                },
+                which,
+            );
+            assert_eq!(checks.len(), 1);
+            checks.remove(0)
+        }
+
+        #[test]
+        fn no_credential_is_ok() {
+            let checks = forge_checks(&ForgeCheckResult { forges: vec![] }, |_| None);
+            assert_eq!(checks[0].check, "forge");
+            assert_eq!(checks[0].status, CheckStatus::Ok);
+        }
+
+        #[test]
+        fn access_of_an_accepted_token() {
+            let write = one(
+                ForgeKind::Github,
+                ForgeCheckOutcome::Authenticated {
+                    login: "carol".to_owned(),
+                    access: ForgeAccess::Write {
+                        scopes: vec!["repo".to_owned()],
+                    },
+                },
+            );
+            assert_eq!(write.check, "forge company-a github.com");
+            assert_eq!(write.status, CheckStatus::Ok);
+            let read = one(
+                ForgeKind::Gitlab,
+                ForgeCheckOutcome::Authenticated {
+                    login: "carol".to_owned(),
+                    access: ForgeAccess::ReadOnly {
+                        scopes: vec!["read_api".to_owned()],
+                    },
+                },
+            );
+            assert_eq!(read.status, CheckStatus::Warn);
+            assert!(read.detail.contains("cannot publish"), "{}", read.detail);
+            assert!(read.fix.unwrap().contains("`api` scope"));
+            let unknown = one(
+                ForgeKind::Github,
+                ForgeCheckOutcome::Authenticated {
+                    login: "carol".to_owned(),
+                    access: ForgeAccess::Unknown {
+                        reason: "fine-grained".to_owned(),
+                    },
+                },
+            );
+            assert_eq!(unknown.status, CheckStatus::Warn);
+            assert!(unknown.detail.contains("scopes unknown"));
+        }
+
+        #[test]
+        fn a_missing_program_gets_the_absolute_path_of_the_shell() {
+            let unresolved = |program: &str| ForgeCheckOutcome::TokenUnresolved {
+                problem: TokenProblem::CommandNotFound,
+                error: format!("`{program}` is not found in the PATH of loomd"),
+                program: Some(program.to_owned()),
+            };
+            let found = one(ForgeKind::Github, unresolved("op"));
+            assert_eq!(found.status, CheckStatus::Fail);
+            assert!(
+                found
+                    .detail
+                    .starts_with("token_cmd of [contexts.company-a.forges.\"github.com\"]: ")
+            );
+            assert!(found.fix.unwrap().contains("`/opt/homebrew/bin/op`"));
+            let missing = one(ForgeKind::Github, unresolved("gh"));
+            assert!(missing.fix.unwrap().contains("command -v gh"));
+        }
+
+        #[test]
+        fn failures_have_a_fix() {
+            for result in [
+                ForgeCheckOutcome::TokenUnresolved {
+                    problem: TokenProblem::Timeout,
+                    error: "token_cmd did not end within 10s".to_owned(),
+                    program: None,
+                },
+                ForgeCheckOutcome::Rejected {
+                    status: 401,
+                    error: "Bad credentials".to_owned(),
+                },
+                ForgeCheckOutcome::SsoRequired {
+                    url: Some("https://github.com/orgs/acme/sso".to_owned()),
+                },
+                ForgeCheckOutcome::Unreachable {
+                    error: "connection refused".to_owned(),
+                },
+            ] {
+                let check = one(ForgeKind::Github, result);
+                assert_eq!(check.status, CheckStatus::Fail);
+                assert!(check.fix.is_some(), "{check:?}");
+            }
+            let sso = one(
+                ForgeKind::Github,
+                ForgeCheckOutcome::SsoRequired {
+                    url: Some("https://github.com/orgs/acme/sso".to_owned()),
+                },
+            );
+            assert!(
+                sso.fix
+                    .unwrap()
+                    .contains("https://github.com/orgs/acme/sso")
+            );
+        }
+
+        #[test]
+        fn programs_are_found_in_absolute_path_entries() {
+            let exists = |path: &Path| path == Path::new("/usr/local/bin/gh");
+            assert_eq!(
+                find_in_path("gh", "bin:/usr/bin:/usr/local/bin".as_ref(), exists),
+                Some(PathBuf::from("/usr/local/bin/gh"))
+            );
+            assert_eq!(find_in_path("gh", "/usr/bin".as_ref(), exists), None);
+        }
     }
 }

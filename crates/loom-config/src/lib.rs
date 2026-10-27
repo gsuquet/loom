@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod duration;
+pub mod forges;
 pub mod home;
 pub mod layout;
 pub mod machine;

@@ -623,7 +623,11 @@ fn record(span: &Span, result: &Result<String, Failure>) {
 
 /// Waits for `child` until `timeout`, then stops its process group: `SIGTERM` (git removes its
 /// lock files), then `SIGKILL` after `grace`.
-fn wait(mut child: Child, timeout: Duration, grace: Duration) -> Result<String, Failure> {
+pub(crate) fn wait(
+    mut child: Child,
+    timeout: Duration,
+    grace: Duration,
+) -> Result<String, Failure> {
     let stdout = child.stdout.take().map(reader);
     let stderr = child.stderr.take().map(reader);
     let deadline = Instant::now() + timeout;
@@ -685,7 +689,7 @@ fn reader(mut pipe: impl io::Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
 
 /// Sends `SIGTERM` to the process group of `child` (its id: it leads its own group), waits
 /// `grace`, then `SIGKILL`, through the `kill` command (no `unsafe`).
-fn stop_group(child: &mut Child, grace: Duration) {
+pub(crate) fn stop_group(child: &mut Child, grace: Duration) {
     let group = child.id();
     signal_group(group, "-TERM");
     let deadline = Instant::now() + grace;

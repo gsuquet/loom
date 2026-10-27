@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use loom_api::ForgeKind;
+use loom_config::forges::public_forge;
 use loom_config::repos::{ForgeConfig, ForgeHost};
 
 /// Forge of `host` (lowercase, SSH aliases resolved): its `[forges."<host>"] kind` when
@@ -13,11 +14,7 @@ pub fn detect_forge(host: &str, forges: &BTreeMap<ForgeHost, ForgeConfig>) -> Op
     if let Some((_, forge)) = forges.iter().find(|(name, _)| name.as_str() == host) {
         return Some(forge.kind);
     }
-    match host {
-        "github.com" => Some(ForgeKind::Github),
-        "gitlab.com" => Some(ForgeKind::Gitlab),
-        _ => None,
-    }
+    public_forge(host)
 }
 
 #[cfg(test)]
@@ -32,22 +29,16 @@ mod tests {
         let forges = BTreeMap::from([
             (
                 ForgeHost::try_from("gitlab.company-a.example".to_owned()).unwrap(),
-                ForgeConfig {
-                    kind: ForgeKind::Gitlab,
-                },
+                ForgeConfig::new(ForgeKind::Gitlab),
             ),
             (
                 ForgeHost::try_from("github.company-b.example".to_owned()).unwrap(),
-                ForgeConfig {
-                    kind: ForgeKind::Github,
-                },
+                ForgeConfig::new(ForgeKind::Github),
             ),
             // An override wins over the built-in kind.
             (
                 ForgeHost::try_from("gitlab.com".to_owned()).unwrap(),
-                ForgeConfig {
-                    kind: ForgeKind::Github,
-                },
+                ForgeConfig::new(ForgeKind::Github),
             ),
         ]);
         for (host, expected) in [

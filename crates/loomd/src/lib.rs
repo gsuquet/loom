@@ -10,6 +10,7 @@ pub mod cli;
 pub mod disk;
 pub mod events;
 pub mod exit;
+pub mod forge;
 pub mod hooks;
 pub mod recurring;
 pub mod repo_update;

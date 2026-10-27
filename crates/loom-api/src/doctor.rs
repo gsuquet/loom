@@ -4,8 +4,11 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use loom_core::ContextName;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::ForgeKind;
 
 /// What `SSH_AUTH_SOCK` points to in the environment of `loomd`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -191,6 +194,138 @@ pub struct RemoteCheck {
 pub struct RemoteCheckResult {
     /// The checks.
     pub remotes: Vec<RemoteCheck>,
+}
+
+/// The table that gives the credential of a context for a forge host.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialOrigin {
+    /// `[contexts.<ctx>.forges."<host>"]`.
+    Context,
+    /// `[forges."<host>"]`.
+    Host,
+}
+
+/// Where the token comes from. The command text is not given: it can contain a secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TokenSourceKind {
+    /// `token_cmd`.
+    Command,
+    /// `token_env`.
+    Env {
+        /// Name of the environment variable.
+        name: String,
+    },
+}
+
+/// Why `loomd` cannot get the token.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenProblem {
+    /// The shell cannot find the program of `token_cmd` (exit status 127).
+    CommandNotFound,
+    /// `token_cmd` exited with a status that is not zero, or cannot start.
+    CommandFailed,
+    /// `token_cmd` did not stop in time. Its process group was stopped.
+    Timeout,
+    /// `token_cmd` wrote no token, or the variable of `token_env` is empty.
+    Empty,
+    /// The variable of `token_env` is not set in the environment of `loomd`.
+    EnvUnset,
+}
+
+/// What the token can do on the forge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ForgeAccess {
+    /// The token can publish reviews.
+    Write {
+        /// The scopes of the token.
+        scopes: Vec<String>,
+    },
+    /// The token can read, but cannot publish reviews.
+    ReadOnly {
+        /// The scopes of the token.
+        scopes: Vec<String>,
+    },
+    /// The forge does not give the scopes of this token.
+    Unknown {
+        /// Why the scopes are unknown.
+        reason: String,
+    },
+}
+
+/// Result of the check of one credential. Never contains the token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ForgeCheckOutcome {
+    /// `loomd` cannot get the token.
+    TokenUnresolved {
+        /// What kind of problem.
+        problem: TokenProblem,
+        /// What went wrong.
+        error: String,
+        /// The program of `token_cmd` (its first word), for `command_not_found`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program: Option<String>,
+    },
+    /// The forge refused the token (`GET /user`).
+    Rejected {
+        /// HTTP status.
+        status: u16,
+        /// What the forge said.
+        error: String,
+    },
+    /// The organization uses SAML single sign-on, and the token is not authorized for it.
+    SsoRequired {
+        /// The URL that authorizes the token, from the `x-github-sso` header.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    /// The forge did not answer, or its answer cannot be read.
+    Unreachable {
+        /// What went wrong.
+        error: String,
+    },
+    /// The forge accepted the token.
+    Authenticated {
+        /// The user of the token.
+        login: String,
+        /// What the token can do.
+        access: ForgeAccess,
+    },
+}
+
+/// The check of the credential of one context for one forge host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ForgeCheck {
+    /// The context.
+    pub context: ContextName,
+    /// The forge host, such as `github.com`.
+    pub host: String,
+    /// The forge of the host.
+    pub kind: ForgeKind,
+    /// The API that `loomd` called, such as `https://api.github.com`.
+    pub api: String,
+    /// The table that gives the credential.
+    pub origin: CredentialOrigin,
+    /// Where the token comes from.
+    pub source: TokenSourceKind,
+    /// What happened.
+    pub result: ForgeCheckOutcome,
+}
+
+/// Answer of `POST /v1/diagnostics/forge-check`: one check per context and forge host that
+/// has a credential, sorted by context, then host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ForgeCheckResult {
+    /// The checks.
+    pub forges: Vec<ForgeCheck>,
 }
 
 /// One check of `loom repo doctor`.

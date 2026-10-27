@@ -8,12 +8,14 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use globset::Glob;
-use loom_api::{ContextName, ForgeKind, RepoUpdatePolicy, UNASSIGNED};
+use loom_api::{ContextName, RepoUpdatePolicy, UNASSIGNED};
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use toml::Spanned;
 
 use crate::duration::{format_duration, parse_duration};
+use crate::forges::ContextForge;
+pub use crate::forges::ForgeConfig;
 use crate::machine::MachineName;
 use crate::schedules::Schedule;
 
@@ -39,6 +41,9 @@ pub struct ContextConfig {
     /// `color`: ANSI color of the context in the TUI; `None` defaults to the palette.
     #[serde(default)]
     pub color: Option<ContextColor>,
+    /// `[contexts.<name>.forges."<host>"]`: the context's own forge credentials.
+    #[serde(default)]
+    pub forges: BTreeMap<ForgeHost, Spanned<ContextForge>>,
 }
 
 impl ContextConfig {
@@ -474,14 +479,6 @@ impl<'de> Deserialize<'de> for ForgeHost {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::try_from(String::deserialize(deserializer)?).map_err(D::Error::custom)
     }
-}
-
-/// `[forges."<host>"]`: the forge of a self-hosted host.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ForgeConfig {
-    /// `kind`: `github` or `gitlab`.
-    pub kind: ForgeKind,
 }
 
 /// A `[repos] exclude` glob pattern, such as `"archive"` or `"*-old"`.
