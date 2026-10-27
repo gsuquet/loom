@@ -1,25 +1,24 @@
-//! The GitHub REST client.
+//! The GitHub client: REST here, GraphQL in `graphql`.
 
 use loom_api::ForgeKind;
 
 use super::http::{Answer, Http, MAX_PAGES, next_link};
 use super::{
-    ApiBase, Conditional, Forge, ForgeError, GithubForge, ReviewRequests, Token, TokenUser,
+    ApiBase, Conditional, Forge, ForgeError, GithubForge, NewThread, ReviewRequests, ReviewThreads,
+    Token, TokenUser,
 };
 use crate::error::ParseError;
 use crate::github::{
-    Review, SearchPage, parse_files, parse_issue_comments, parse_pull, parse_reviews, parse_search,
-    parse_user,
+    PendingReview, Review, SearchPage, SubmittedReview, parse_files, parse_issue_comments,
+    parse_pull, parse_reviews, parse_search, parse_user,
 };
-use crate::model::{FileDiff, Mr, MrKey, Thread};
+use crate::model::{FileDiff, Mr, MrKey, Sha, Thread, VerdictKind};
 
 /// A GitHub client: one token on one host.
 #[derive(Debug)]
 pub struct GithubClient {
-    http: Http,
-    // The GraphQL endpoint comes with the GraphQL client (#181).
-    #[allow(dead_code, reason = "read by the GraphQL calls")]
-    graphql: Option<String>,
+    pub(super) http: Http,
+    pub(super) graphql: Option<String>,
 }
 
 impl GithubClient {
@@ -195,6 +194,45 @@ impl GithubForge for GithubClient {
             ),
             parse_issue_comments,
         )
+    }
+
+    fn review_threads(&self, key: &MrKey) -> Result<ReviewThreads, ForgeError> {
+        self.graphql_review_threads(key)
+    }
+
+    fn pending_reviews(&self, key: &MrKey) -> Result<Vec<PendingReview>, ForgeError> {
+        self.graphql_pending_reviews(key)
+    }
+
+    fn add_review(
+        &self,
+        pull_request_id: &str,
+        commit: &Sha,
+        threads: &[NewThread<'_>],
+    ) -> Result<String, ForgeError> {
+        self.graphql_add_review(pull_request_id, commit, threads)
+    }
+
+    fn add_reply(
+        &self,
+        review_id: &str,
+        thread_id: &str,
+        body: &str,
+    ) -> Result<String, ForgeError> {
+        self.graphql_add_reply(review_id, thread_id, body)
+    }
+
+    fn submit_review(
+        &self,
+        review_id: &str,
+        verdict: VerdictKind,
+        body: Option<&str>,
+    ) -> Result<SubmittedReview, ForgeError> {
+        self.graphql_submit_review(review_id, verdict, body)
+    }
+
+    fn resolve_thread(&self, thread_id: &str) -> Result<String, ForgeError> {
+        self.graphql_resolve_thread(thread_id)
     }
 }
 
