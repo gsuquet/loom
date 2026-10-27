@@ -1,0 +1,23 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviews": {
+          "nodes": [
+            {
+              "id": "PRR_kwDOAAATic4AABe1",
+              "state": "PENDING",
+              "author": {
+                "login": "carol"
+              },
+              "createdAt": "2026-10-22T09:00:00Z",
+              "comments": {
+                "totalCount": 2
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

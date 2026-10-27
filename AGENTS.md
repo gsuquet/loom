@@ -22,6 +22,7 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 | Store layout, ownership, IDs, multi-machine | [docs/design/storage.md](docs/design/storage.md) |
 | Repo index, contexts of repos, automatic updates | [docs/design/repos.md](docs/design/repos.md) |
 | Issue and MR sync | [docs/design/tracker-sync.md](docs/design/tracker-sync.md) |
+| MR review: discovery, mirror, refs, publish, forge credentials | [docs/design/reviews.md](docs/design/reviews.md) |
 | Events, learnings | [docs/design/capture-and-learnings.md](docs/design/capture-and-learnings.md) |
 | Agents, gates, runtimes, factory | [docs/design/agents.md](docs/design/agents.md) |
 | TUI, gestures | [docs/design/user-workflow.md](docs/design/user-workflow.md) |

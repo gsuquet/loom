@@ -1,0 +1,64 @@
+[
+  {
+    "id": "3f2a0b1c4d5e6f708192a3b4c5d6e7f809102132",
+    "individual_note": true,
+    "notes": [
+      {
+        "id": 504,
+        "type": null,
+        "body": "I will look at the login part.",
+        "author": {
+          "id": 12,
+          "username": "bob",
+          "name": "Bob Example",
+          "state": "active",
+          "locked": false,
+          "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/12/avatar.png",
+          "web_url": "https://gitlab.example.com/bob"
+        },
+        "created_at": "2026-10-21T16:00:00.000Z",
+        "updated_at": "2026-10-21T16:00:00.000Z",
+        "system": false,
+        "noteable_id": 3088,
+        "noteable_type": "MergeRequest",
+        "project_id": 77,
+        "noteable_iid": 88,
+        "resolvable": false,
+        "confidential": false,
+        "internal": false,
+        "imported": false
+      }
+    ]
+  },
+  {
+    "id": "9e8d7c6b5a49382716051f2e3d4c5b6a79881726",
+    "individual_note": true,
+    "notes": [
+      {
+        "id": 505,
+        "type": null,
+        "body": "added 1 commit\n\n<ul><li>84280c47 - Allow a clock leeway</li></ul>",
+        "author": {
+          "id": 11,
+          "username": "alice",
+          "name": "Alice Example",
+          "state": "active",
+          "locked": false,
+          "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/11/avatar.png",
+          "web_url": "https://gitlab.example.com/alice"
+        },
+        "created_at": "2026-10-23T11:06:00.000Z",
+        "updated_at": "2026-10-23T11:06:00.000Z",
+        "system": true,
+        "noteable_id": 3088,
+        "noteable_type": "MergeRequest",
+        "project_id": 77,
+        "noteable_iid": 88,
+        "resolvable": false,
+        "confidential": false,
+        "internal": false,
+        "imported": false
+      }
+    ]
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "data": {
+    "addPullRequestReview": null
+  },
+  "errors": [
+    {
+      "type": "UNPROCESSABLE",
+      "path": [
+        "addPullRequestReview"
+      ],
+      "locations": [
+        {
+          "line": 1,
+          "column": 58
+        }
+      ],
+      "message": "Pull request review thread line must be part of the diff and Pull request review thread diff hunk can't be blank"
+    }
+  ]
+}

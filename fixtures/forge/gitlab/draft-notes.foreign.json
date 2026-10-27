@@ -1,0 +1,23 @@
+[
+  {
+    "id": 880,
+    "author_id": 13,
+    "merge_request_id": 3088,
+    "resolve_discussion": false,
+    "discussion_id": null,
+    "note": "A comment started in the web UI.",
+    "commit_id": null,
+    "line_code": null,
+    "position": {
+      "base_sha": null,
+      "start_sha": null,
+      "head_sha": null,
+      "old_path": null,
+      "new_path": null,
+      "position_type": "text",
+      "old_line": null,
+      "new_line": null,
+      "line_range": null
+    }
+  }
+]

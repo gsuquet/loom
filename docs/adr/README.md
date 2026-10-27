@@ -19,3 +19,4 @@
 | [0013](0013-task-store.md) | Task store, kinds, priority, focus and backup |
 | [0014](0014-tui-architecture.md) | TUI architecture: queues, pages, modals, structured attach |
 | [0015](0015-move-a-task-between-contexts.md) | Move a task between context stores: copy, remove, roll back |
+| [0016](0016-mr-review-mirror.md) | MR review: mirror, fetched refs, publish and forge credentials |

@@ -1,0 +1,15 @@
+{
+  "login": "carol",
+  "id": 1003,
+  "node_id": "U_kgDO00001003",
+  "avatar_url": "https://avatars.githubusercontent.com/u/1003?v=4",
+  "url": "https://api.github.com/users/carol",
+  "html_url": "https://github.com/carol",
+  "type": "User",
+  "site_admin": false,
+  "name": "Carol Example",
+  "company": null,
+  "email": null,
+  "created_at": "2020-01-01T00:00:00Z",
+  "updated_at": "2026-10-01T00:00:00Z"
+}

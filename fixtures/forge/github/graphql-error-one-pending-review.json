@@ -1,0 +1,20 @@
+{
+  "data": {
+    "addPullRequestReview": null
+  },
+  "errors": [
+    {
+      "type": "UNPROCESSABLE",
+      "path": [
+        "addPullRequestReview"
+      ],
+      "locations": [
+        {
+          "line": 1,
+          "column": 58
+        }
+      ],
+      "message": "User can only have one pending review per pull request"
+    }
+  ]
+}

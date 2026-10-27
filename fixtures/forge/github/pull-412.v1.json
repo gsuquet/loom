@@ -1,0 +1,143 @@
+{
+  "url": "https://api.github.com/repos/acme/shop/pulls/412",
+  "id": 900412,
+  "node_id": "PR_kwDOAAATic4AA9-c",
+  "html_url": "https://github.com/acme/shop/pull/412",
+  "diff_url": "https://github.com/acme/shop/pull/412.diff",
+  "number": 412,
+  "state": "open",
+  "locked": false,
+  "title": "Auth refactor",
+  "user": {
+    "login": "alice",
+    "id": 1001,
+    "node_id": "U_kgDO00001001",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+    "url": "https://api.github.com/users/alice",
+    "html_url": "https://github.com/alice",
+    "type": "User",
+    "site_admin": false
+  },
+  "body": "Refactor the token checks.\n\nCloses #400.",
+  "created_at": "2026-10-21T10:05:00Z",
+  "updated_at": "2026-10-21T17:00:00Z",
+  "closed_at": null,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "assignee": null,
+  "assignees": [],
+  "requested_reviewers": [
+    {
+      "login": "carol",
+      "id": 1003,
+      "node_id": "U_kgDO00001003",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1003?v=4",
+      "url": "https://api.github.com/users/carol",
+      "html_url": "https://github.com/carol",
+      "type": "User",
+      "site_admin": false
+    }
+  ],
+  "requested_teams": [],
+  "labels": [
+    {
+      "id": 1,
+      "name": "security",
+      "color": "d73a4a"
+    }
+  ],
+  "milestone": null,
+  "draft": false,
+  "head": {
+    "label": "acme:auth-refactor",
+    "ref": "auth-refactor",
+    "sha": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990",
+    "user": {
+      "login": "acme",
+      "id": 2001,
+      "node_id": "U_kgDO00002001",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2001?v=4",
+      "url": "https://api.github.com/users/acme",
+      "html_url": "https://github.com/acme",
+      "type": "User",
+      "site_admin": false
+    },
+    "repo": {
+      "id": 5001,
+      "node_id": "R_kgDOAAATiQ",
+      "name": "shop",
+      "full_name": "acme/shop",
+      "private": true,
+      "owner": {
+        "login": "acme",
+        "id": 2001,
+        "node_id": "U_kgDO00002001",
+        "avatar_url": "https://avatars.githubusercontent.com/u/2001?v=4",
+        "url": "https://api.github.com/users/acme",
+        "html_url": "https://github.com/acme",
+        "type": "Organization",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/acme/shop",
+      "url": "https://api.github.com/repos/acme/shop",
+      "clone_url": "https://github.com/acme/shop.git",
+      "ssh_url": "git@github.com:acme/shop.git",
+      "default_branch": "main",
+      "archived": false,
+      "visibility": "private"
+    }
+  },
+  "base": {
+    "label": "acme:main",
+    "ref": "main",
+    "sha": "506ce3f338acb7125973db71a5c43fd062c4f046",
+    "user": {
+      "login": "acme",
+      "id": 2001,
+      "node_id": "U_kgDO00002001",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2001?v=4",
+      "url": "https://api.github.com/users/acme",
+      "html_url": "https://github.com/acme",
+      "type": "User",
+      "site_admin": false
+    },
+    "repo": {
+      "id": 5001,
+      "node_id": "R_kgDOAAATiQ",
+      "name": "shop",
+      "full_name": "acme/shop",
+      "private": true,
+      "owner": {
+        "login": "acme",
+        "id": 2001,
+        "node_id": "U_kgDO00002001",
+        "avatar_url": "https://avatars.githubusercontent.com/u/2001?v=4",
+        "url": "https://api.github.com/users/acme",
+        "html_url": "https://github.com/acme",
+        "type": "Organization",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/acme/shop",
+      "url": "https://api.github.com/repos/acme/shop",
+      "clone_url": "https://github.com/acme/shop.git",
+      "ssh_url": "git@github.com:acme/shop.git",
+      "default_branch": "main",
+      "archived": false,
+      "visibility": "private"
+    }
+  },
+  "author_association": "MEMBER",
+  "auto_merge": null,
+  "merged": false,
+  "mergeable": true,
+  "rebaseable": true,
+  "mergeable_state": "blocked",
+  "merged_by": null,
+  "comments": 1,
+  "review_comments": 3,
+  "maintainer_can_modify": false,
+  "commits": 1,
+  "additions": 6,
+  "deletions": 2,
+  "changed_files": 3
+}
