@@ -104,7 +104,7 @@ pub fn decide(
 /// log recorded them last; `None` when they did not change or their previous value is unknown.
 fn notes_change(indexed: Option<&ContentHash>, stored: &StoredTask) -> Option<Change<NotesHash>> {
     let document = stored.file.document.as_ref().ok()?;
-    let to = hash_of(&ContentHash::of(document.body().as_bytes()))?;
+    let to = hash_of(&notes_digest(document.body()))?;
     let from = indexed.and_then(hash_of).or_else(|| {
         stored
             .events
@@ -121,6 +121,17 @@ fn notes_change(indexed: Option<&ContentHash>, stored: &StoredTask) -> Option<Ch
             })
     })?;
     (from != to).then_some(Change { from, to })
+}
+
+/// The hash of `notes`, as loomd compares and records them.
+///
+/// It is the hash of the text with each `\r\n` turned into `\n` and without the line breaks at
+/// its end, so that an editor that changes the line endings or the last blank lines does not
+/// make an event.
+#[must_use]
+pub fn notes_digest(notes: &str) -> ContentHash {
+    let unix = notes.replace("\r\n", "\n");
+    ContentHash::of(unix.trim_end_matches('\n').as_bytes())
 }
 
 /// The hash as the ledger records it; `None` for an index row that holds something else than a

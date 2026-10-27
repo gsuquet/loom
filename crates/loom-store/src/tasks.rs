@@ -25,7 +25,7 @@ use tracing::{debug, debug_span, warn};
 use crate::port::{
     ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskLocation, TaskWrite,
 };
-use crate::reconcile::{HandEdit, Reconciliation, decide, duplicate_ids};
+use crate::reconcile::{HandEdit, Reconciliation, decide, duplicate_ids, notes_digest};
 use crate::{StoreError, open_writer};
 
 /// The records of the events of `edit`, appended after `log` and stamped by `origin`.
@@ -129,7 +129,7 @@ impl IndexedTask {
     #[must_use]
     pub fn notes_hash(&self) -> Option<ContentHash> {
         match &self.state {
-            IndexedState::Valid { body, .. } => Some(ContentHash::of(body.as_bytes())),
+            IndexedState::Valid { body, .. } => Some(notes_digest(body)),
             IndexedState::Invalid { .. } => None,
         }
     }

@@ -16,8 +16,8 @@ use loom_core::{
 };
 use loom_store::Reader;
 use loom_store::files::FileStore;
-use loom_store::port::{ContentHash, StorePort as _};
-use loom_store::reconcile::HandEdit;
+use loom_store::port::StorePort as _;
+use loom_store::reconcile::{HandEdit, notes_digest};
 use loom_store::tasks::{IndexedState, Reconciled, TaskIndex, Tasks};
 use tempfile::TempDir;
 
@@ -229,7 +229,7 @@ fn an_invalid_hand_edit_is_flagged_and_the_file_never_rewritten() {
 
 /// The hash of `notes` as the ledger records it.
 fn notes_hash(notes: &str) -> NotesHash {
-    NotesHash::from_hex(ContentHash::of(notes.as_bytes()).as_str().to_owned()).unwrap()
+    NotesHash::from_hex(notes_digest(notes).as_str().to_owned()).unwrap()
 }
 
 /// The notes of the task file `text`.
@@ -258,8 +258,14 @@ fn a_notes_only_edit_is_recorded_without_its_text() {
             }),
         })
     );
-    // Still searchable, and the ledger holds hashes, not the prose.
+    // The notes event is the last change: the task shows it as updated then.
     let reader = Reader::open(&fixture.db()).unwrap();
+    let indexed = reader.task(&task.id).unwrap().unwrap();
+    assert!(matches!(
+        &indexed.state,
+        IndexedState::Valid { task, .. } if task.updated == at(200)
+    ));
+    // Still searchable, and the ledger holds hashes, not the prose.
     assert_eq!(
         reader.search_tasks("monday", None, 5).unwrap(),
         std::slice::from_ref(&task.id)

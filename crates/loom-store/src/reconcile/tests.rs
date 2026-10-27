@@ -4,7 +4,7 @@ use loom_core::{
     Timestamp, create, parse_task_md, render_task_md,
 };
 
-use super::{HandEdit, Reconciliation, decide, duplicate_ids};
+use super::{HandEdit, Reconciliation, decide, duplicate_ids, notes_digest};
 use crate::port::{ContentHash, StoredTask, TaskFile, TaskLocation};
 
 fn new_task() -> (Task, Vec<EventRecord>) {
@@ -204,7 +204,7 @@ fn notes_of(text: &str) -> String {
 
 /// The hash of `notes` as the ledger records it.
 fn notes_hash(notes: &str) -> NotesHash {
-    NotesHash::from_hex(ContentHash::of(notes.as_bytes()).as_str().to_owned()).unwrap()
+    NotesHash::from_hex(notes_digest(notes).as_str().to_owned()).unwrap()
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn a_notes_only_hand_edit_is_recorded_when_the_previous_notes_are_known() {
         expected
     );
     // The same notes as indexed: only the file differs in what the ledger does not record.
-    let same = ContentHash::of(notes_of(&text).as_bytes());
+    let same = notes_digest(&notes_of(&text));
     assert_eq!(
         decide(Some((&stale, TaskLocation::Active)), Some(&same), &stored),
         Reconciliation::Index
@@ -287,4 +287,34 @@ fn the_notes_the_log_last_recorded_are_the_previous_notes_without_an_index_row()
     // The notes the log recorded last: nothing new.
     let same = stored(&task, &text_first, events, Vec::new());
     assert_eq!(decide(None, None, &same), Reconciliation::Index);
+}
+
+#[test]
+fn line_endings_and_blank_lines_at_the_end_of_the_notes_are_no_edit() {
+    let (task, events) = new_task();
+    let base = render_task_md(&TaskDocument::new(&task)) + "same words\n";
+    let before = notes_digest(&notes_of(&base));
+    let stale = ContentHash::of(b"what loomd wrote");
+    for variant in [
+        base.replace('\n', "\r\n"),
+        base.clone() + "\n\n",
+        base.trim_end().to_owned(),
+    ] {
+        let stored = stored(&task, &variant, events.clone(), Vec::new());
+        assert_eq!(
+            decide(Some((&stale, TaskLocation::Active)), Some(&before), &stored),
+            Reconciliation::Index,
+            "{variant:?}"
+        );
+    }
+    // A change of the words is still an edit.
+    let changed = stored(&task, &(base + "more\n"), events, Vec::new());
+    assert!(matches!(
+        decide(
+            Some((&stale, TaskLocation::Active)),
+            Some(&before),
+            &changed
+        ),
+        Reconciliation::Record(_)
+    ));
 }

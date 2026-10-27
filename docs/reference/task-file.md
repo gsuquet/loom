@@ -194,7 +194,7 @@ Append-only. One JSON object per line, LF line endings. CRLF is also accepted on
 
 In `created`, a task carries the frontmatter keys as JSON, plus `pinned` and `updated`. Dates and instants are strings, and `links` is an array of objects with `role`.
 
-The hash in `notes_changed` is the SHA-256 of the notes as the file holds them, with their line breaks and the blank line after the frontmatter. `loomd` records the event when a save of `task.md` changes the notes, with the actor `file`, after the `edited` event of the same save if there is one. A reader that does not know the type skips the line. `loom undo` skips the event.
+The hash in `notes_changed` is the SHA-256 of the notes with each `\r\n` turned into `\n` and without the line breaks at the end. Thus an editor that changes the line endings, or the blank lines at the end, does not make an event. The text is not copied into the log, but a short or guessable text can be found again from its hash: do not treat the hash as a secret store. `loomd` records the event when a save of `task.md` changes the notes, with the actor `file`, after the `edited` event of the same save if there is one. A reader that does not know the type skips the line and reports it, as for any line that it does not replay. The event is the last change of the task: its time is the `updated` time that `loom show` prints. It does not change the date when the task closes, or the archive date. `loom undo` skips the event.
 
 A status object is `{"status":"<status>"}`, with `waiting_on` and `waiting_until` when the status is `waiting`.
 
