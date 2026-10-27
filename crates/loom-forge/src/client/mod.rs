@@ -5,6 +5,7 @@
 //! tested without a server.
 
 mod github;
+mod graphql;
 mod http;
 
 use std::fmt;
@@ -13,10 +14,12 @@ use std::time::Duration;
 use loom_api::{ForgeKind, Timestamp};
 use thiserror::Error;
 
-use crate::github::{Review, SearchPage};
-use crate::model::{FileDiff, ForgeUser, Mr, MrKey, Thread};
+use crate::error::GraphqlError;
+use crate::github::{PendingReview, Review, SearchPage, SubmittedReview};
+use crate::model::{Anchor, FileDiff, ForgeUser, Mr, MrKey, Sha, Thread, VerdictKind};
 
 pub use github::GithubClient;
+pub use graphql::ReviewThreads;
 
 /// The API endpoints of a forge host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,13 +188,73 @@ pub enum ForgeError {
     /// No answer, or an answer that cannot be read.
     #[error("no usable answer from the forge: {0}")]
     Transport(String),
+    /// A GraphQL answer with `errors` (HTTP 200): the step failed. Code matches on the `type`
+    /// of the errors and on the step, never on the messages. The messages are redacted.
+    #[error("GitHub refused the {step} step: {}", list(errors))]
+    Graphql {
+        /// The call that failed.
+        step: GraphqlStep,
+        /// The errors, as GitHub gives them.
+        errors: Vec<GraphqlError>,
+    },
     /// A success answer whose body is not the expected payload. The text of the
-    /// [`ParseError`], redacted.
+    /// [`ParseError`](crate::ParseError), redacted.
     #[error("{0}")]
     Parse(String),
     /// A success answer that loom does not follow, such as a next page on another host.
     #[error("unexpected answer from the forge: {0}")]
     Unexpected(String),
+}
+
+fn list(errors: &[GraphqlError]) -> String {
+    errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A GitHub GraphQL call, named in [`ForgeError::Graphql`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphqlStep {
+    /// The review threads of a pull request.
+    ReviewThreads,
+    /// The comments of one review thread.
+    ThreadComments,
+    /// The pending reviews of the viewer.
+    PendingReviews,
+    /// `addPullRequestReview`: the pending review with the new threads.
+    AddReview,
+    /// `addPullRequestReviewThreadReply`.
+    AddReply,
+    /// `submitPullRequestReview`.
+    SubmitReview,
+    /// `resolveReviewThread`.
+    ResolveThread,
+}
+
+impl fmt::Display for GraphqlStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ReviewThreads => "reviewThreads",
+            Self::ThreadComments => "review thread comments",
+            Self::PendingReviews => "pending reviews",
+            Self::AddReview => "addPullRequestReview",
+            Self::AddReply => "addPullRequestReviewThreadReply",
+            Self::SubmitReview => "submitPullRequestReview",
+            Self::ResolveThread => "resolveReviewThread",
+        })
+    }
+}
+
+/// A new thread of a pending review: the lines and the body as published (label,
+/// decorations and suggestion included).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewThread<'a> {
+    /// The lines. A range has both ends on the side of the anchor.
+    pub anchor: &'a Anchor,
+    /// The body, in Markdown.
+    pub body: &'a str,
 }
 
 /// The answer to a conditional request (`If-None-Match`).
@@ -275,6 +338,67 @@ pub trait GithubForge: Forge {
     ///
     /// [`ForgeError`].
     fn issue_comments(&self, key: &MrKey) -> Result<Vec<Thread>, ForgeError>;
+
+    /// The review threads of the pull request (GraphQL), every page of threads and of
+    /// comments read.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::Graphql`] with [`GraphqlStep::ReviewThreads`] or
+    /// [`GraphqlStep::ThreadComments`].
+    fn review_threads(&self, key: &MrKey) -> Result<ReviewThreads, ForgeError>;
+
+    /// The pending reviews of the viewer on the pull request (GraphQL). At most one: GitHub
+    /// allows one pending review per user and pull request.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn pending_reviews(&self, key: &MrKey) -> Result<Vec<PendingReview>, ForgeError>;
+
+    /// Publish step 1: a pending review on `commit` with the new `threads`. Returns the ID of
+    /// the review. Nothing is visible to others yet.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::Graphql`] with [`GraphqlStep::AddReview`] when the state
+    /// of the pull request changed since the checks (another pending review, a line outside
+    /// the diff).
+    fn add_review(
+        &self,
+        pull_request_id: &str,
+        commit: &Sha,
+        threads: &[NewThread<'_>],
+    ) -> Result<String, ForgeError>;
+
+    /// Publish step 2: a reply to the thread `thread_id`, in the pending review `review_id`.
+    /// Returns the ID of the comment.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn add_reply(&self, review_id: &str, thread_id: &str, body: &str)
+    -> Result<String, ForgeError>;
+
+    /// Publish steps 3 and 4: the submission of the pending review with the verdict and the
+    /// summary. The review becomes visible.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn submit_review(
+        &self,
+        review_id: &str,
+        verdict: VerdictKind,
+        body: Option<&str>,
+    ) -> Result<SubmittedReview, ForgeError>;
+
+    /// Publish step 5: the resolution of the thread `thread_id`. Returns its ID.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn resolve_thread(&self, thread_id: &str) -> Result<String, ForgeError>;
 }
 
 #[cfg(test)]

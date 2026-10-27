@@ -46,6 +46,7 @@ Host `github.com`, API `https://api.github.com`, repository `acme/shop`, pull re
 | `GET /repos/acme/shop/pulls/412/reviews?per_page=100` | 200 | `link` | `pull-412-reviews.json` |
 | `GET /repos/acme/shop/issues/412/comments?per_page=100` | 200 | `link` | `issue-412-comments.json` |
 | `POST /graphql`, `reviewThreads` of the pull request | 200 | | `graphql-review-threads.json` |
+| `POST /graphql`, the next comments of one thread (`node(id:)`, for a thread with more than one page) | 200 | | composed in `crates/loom-forge/tests/github_graphql.rs` |
 | `POST /graphql`, pending reviews of the viewer | 200 | | `graphql-pending-reviews.json`, `.empty.json` |
 | `POST /graphql`, `addPullRequestReview` (no `event`: pending) | 200 | | `graphql-add-review.request.json`, `.response.json` |
 | `POST /graphql`, `addPullRequestReviewThreadReply` | 200 | | `graphql-add-reply.request.json`, `.response.json` |

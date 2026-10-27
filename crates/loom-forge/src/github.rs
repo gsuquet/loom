@@ -566,16 +566,50 @@ pub fn parse_review_threads(body: &[u8]) -> Result<ReviewThreadsPage, ParseError
     })
 }
 
-fn review_thread(thread: ReviewThread, head: &Sha) -> Option<Thread> {
-    let original_sha = thread
-        .comments
-        .nodes
-        .first()
-        .and_then(|comment| comment.original_commit.as_ref())
-        .map(|commit| commit.oid.clone());
-    let comments: Vec<Comment> = thread
-        .comments
-        .nodes
+/// A page of the comments of one review thread (GraphQL `node(id:)` on a
+/// `PullRequestReviewThread`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadCommentsPage {
+    /// The submitted comments of this page, in the order of GitHub. Comments of my pending
+    /// review are left out.
+    pub comments: Vec<Comment>,
+    /// The cursor of the next page; `None` on the last page.
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ThreadNodeData {
+    node: Option<ThreadNode>,
+}
+
+#[derive(Deserialize)]
+struct ThreadNode {
+    comments: Connection<ThreadComment>,
+}
+
+/// GraphQL `node(id:) { ... on PullRequestReviewThread { comments } }`, with the comment
+/// fields of `parse_review_threads`.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not such a response, has GraphQL errors, or has no thread.
+pub fn parse_thread_comments(body: &[u8]) -> Result<ThreadCommentsPage, ParseError> {
+    const PAYLOAD: &str = "GitHub review thread comments";
+    let data: ThreadNodeData = graphql(PAYLOAD, body)?;
+    let comments = data
+        .node
+        .ok_or_else(|| invalid(PAYLOAD, "no review thread"))?
+        .comments;
+    let page = comments.page_info;
+    Ok(ThreadCommentsPage {
+        comments: submitted(comments.nodes),
+        next_cursor: page.end_cursor.filter(|_| page.has_next_page),
+    })
+}
+
+/// The submitted comments of a thread: comments of my pending review are visible to me only.
+fn submitted(comments: Vec<ThreadComment>) -> Vec<Comment> {
+    comments
         .into_iter()
         .filter(|comment| comment.state == CommentState::Submitted)
         .map(|comment| Comment {
@@ -586,7 +620,17 @@ fn review_thread(thread: ReviewThread, head: &Sha) -> Option<Thread> {
             body: comment.body,
             created_at: comment.created_at.0,
         })
-        .collect();
+        .collect()
+}
+
+fn review_thread(thread: ReviewThread, head: &Sha) -> Option<Thread> {
+    let original_sha = thread
+        .comments
+        .nodes
+        .first()
+        .and_then(|comment| comment.original_commit.as_ref())
+        .map(|commit| commit.oid.clone());
+    let comments = submitted(thread.comments.nodes);
     if comments.is_empty() {
         return None;
     }
