@@ -1,6 +1,6 @@
 # ADR-0016: MR review: mirror, fetched refs, publish and forge credentials
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-27
 
 ## Context
