@@ -23,8 +23,8 @@ use loom::repo::{
 use loom::status::version_mismatch;
 use loom_api::{
     BackupReport, CheckStatus, ContextAssignment, ContextName, DaemonDiagnostics, DoctorCheck,
-    DoctorReport, RegisterRequest, RemoteCheckResult, RepoList, RepoSummary, ScanResult,
-    SyncRequest, SyncResult, TaskStoreHealth,
+    DoctorReport, ForgeCheckResult, RegisterRequest, RemoteCheckResult, RepoList, RepoSummary,
+    ScanResult, SyncRequest, SyncResult, TaskStoreHealth,
 };
 use loom_config::config::Config;
 use loom_config::layout::{Layout, MAX_SOCKET_PATH_BYTES, check_socket_path};
@@ -53,6 +53,10 @@ const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
 /// Longest wait for the remote checks: they run at once in loomd, each stopped after 20 s
 /// (then 5 s for its processes to exit).
 const REMOTE_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+/// Path of loomd's forge check.
+const FORGE_CHECK_PATH: &str = "/v1/diagnostics/forge-check";
+/// Longest wait for loomd's forge check: a token command (10 s) and two calls of 20 s.
+const FORGE_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest wait for a scan: it walks every root.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Longest wait for a state read on demand: its budget, plus a scan it may wait for.
@@ -755,6 +759,7 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
         )),
     }
     checks.extend(remote_checks(&client, &status.daemon.version).await);
+    checks.extend(forge_checks(&client, &status.daemon.version).await);
     checks.extend(doctor::updates_checks(&repos));
     checks.extend(backup_checks(env, &client, &status.daemon.version).await);
     checks.extend(task_checks(env, &client, &status.daemon.version).await);
@@ -776,6 +781,29 @@ async fn remote_checks(client: &Client, version: &str) -> Vec<DoctorCheck> {
             Some("restart loomd with the version of this loom"),
         )],
         Err(error) => vec![check("remote", CheckStatus::Fail, error.to_string(), None)],
+    }
+}
+
+/// One check per context and forge host, with the token resolved by loomd.
+async fn forge_checks(client: &Client, version: &str) -> Vec<DoctorCheck> {
+    match client
+        .with_timeout(FORGE_CHECK_TIMEOUT)
+        .post::<ForgeCheckResult>(FORGE_CHECK_PATH, None::<&()>)
+        .await
+    {
+        Ok(result) => doctor::forge_checks(&result, |program| {
+            let path = env::var_os("PATH")?;
+            doctor::find_in_path(program, &path, |candidate| {
+                fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file())
+            })
+        }),
+        Err(ClientError::Api { status: 404, .. }) => vec![check(
+            "forge",
+            CheckStatus::Warn,
+            format!("loomd {version} cannot check the forge credentials"),
+            Some("restart loomd with the version of this loom"),
+        )],
+        Err(error) => vec![check("forge", CheckStatus::Fail, error.to_string(), None)],
     }
 }
 

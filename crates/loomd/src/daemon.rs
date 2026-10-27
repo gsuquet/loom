@@ -24,8 +24,9 @@ use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use futures_util::StreamExt as _;
 use loom_api::{
-    ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, RegisterRequest, RepoList,
-    SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp, UpdateState,
+    ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, ForgeCheckResult,
+    RegisterRequest, RepoList, SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp,
+    UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -38,17 +39,20 @@ use loom_core::MachineId;
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH,
-    REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery, SEARCH_PATH,
-    STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_GO_PATH,
-    TASK_MOVE_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH,
-    TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value, invalid_request,
-    method_not_allowed, not_found, register_path, repo_filter, search_request, slug, status_at,
-    timestamp,
+    DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, FORGE_CHECK_PATH, REMOTE_CHECK_PATH, REPO_PATH,
+    REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery,
+    SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH,
+    TASK_GO_PATH, TASK_MOVE_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH,
+    TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value,
+    internal, invalid_request, method_not_allowed, not_found, register_path, repo_filter,
+    search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
 use loomd::exit::Shutdown;
+use loomd::forge::check::{ForgeTarget, check_forge, forge_targets};
+use loomd::forge::client::HttpForge;
+use loomd::forge::token::TokenResolver;
 use loomd::hooks;
 use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, SHUTDOWN_GRACE};
 use loomd::task_api::{
@@ -61,7 +65,7 @@ use semver::Version;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{Span, debug, info, warn};
 
 use crate::disk_usage::DiskCache;
 use crate::repos::{self, Failure, RepoHandle};
@@ -133,6 +137,11 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     })?;
     let machine = load_machine(&layout.machine)?;
     let stores = config.stores(&layout.home, &user_home, &machine);
+    // Contexts not held here do not poll from this machine.
+    let forges = Forges {
+        targets: forge_targets(&config, |context| stores.held.contains_key(context)),
+        resolver: Arc::new(TokenResolver::default()),
+    };
     if !stores.not_held.is_empty() {
         info!(
             machine = %machine,
@@ -200,6 +209,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         disk: DiskCache::default(),
         events,
         heartbeat: events_heartbeat(),
+        forges,
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     stop_threads(
@@ -303,6 +313,14 @@ struct App {
     events: Arc<Bus>,
     /// Interval of the heartbeat of an idle event stream.
     heartbeat: Duration,
+    /// The forge credentials of the held contexts.
+    forges: Forges,
+}
+
+/// The forge credentials of the held contexts, and their tokens in memory.
+struct Forges {
+    targets: Vec<ForgeTarget>,
+    resolver: Arc<TokenResolver>,
 }
 
 /// Reads the configuration, and whether the file is missing: a missing file gives the
@@ -540,6 +558,7 @@ fn router(app: App) -> Router {
         .route(SEARCH_PATH, get(search))
         .route(DIAGNOSTICS_PATH, get(diagnostics))
         .route(REMOTE_CHECK_PATH, post(remote_check))
+        .route(FORGE_CHECK_PATH, post(forge_check))
         .route(TASKS_REINDEX_PATH, post(reindex_tasks))
         .route(TASKS_PATH, get(list_tasks).post(create_task))
         .route(TASK_PATH, get(get_task).patch(edit_task))
@@ -968,6 +987,40 @@ async fn sync_stores(
 /// `git ls-remote` of each remote endpoint of the index, in loomd's environment.
 async fn remote_check(State(app): State<Arc<App>>) -> Response {
     respond(app.repos.remote_check().await)
+}
+
+/// The check of each forge credential of the held contexts, all at once, on the blocking pool.
+async fn forge_check(State(app): State<Arc<App>>) -> Response {
+    let user_agent = format!("loomd/{}", VERSION_INFO.version);
+    let checks: Vec<_> = app
+        .forges
+        .targets
+        .iter()
+        .cloned()
+        .map(|target| {
+            let resolver = Arc::clone(&app.forges.resolver);
+            let user_agent = user_agent.clone();
+            let parent = Span::current();
+            tokio::task::spawn_blocking(move || {
+                let _entered = parent.entered();
+                let client = HttpForge::new(target.kind, target.api.clone(), &user_agent);
+                check_forge(&target, &resolver, &client)
+            })
+        })
+        .collect();
+    let mut forges = Vec::with_capacity(checks.len());
+    for check in checks {
+        match check.await {
+            Ok(check) => forges.push(check),
+            Err(error) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    internal(format!("forge check failed: {error}")),
+                );
+            }
+        }
+    }
+    Json(ForgeCheckResult { forges }).into_response()
 }
 
 async fn register_repo(

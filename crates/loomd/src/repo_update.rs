@@ -623,7 +623,11 @@ fn record(span: &Span, result: &Result<String, Failure>) {
 
 /// Waits for `child` until `timeout`, then stops its process group: `SIGTERM` (git removes its
 /// lock files), then `SIGKILL` after `grace`.
-fn wait(mut child: Child, timeout: Duration, grace: Duration) -> Result<String, Failure> {
+pub(crate) fn wait(
+    mut child: Child,
+    timeout: Duration,
+    grace: Duration,
+) -> Result<String, Failure> {
     let stdout = child.stdout.take().map(reader);
     let stderr = child.stderr.take().map(reader);
     let deadline = Instant::now() + timeout;

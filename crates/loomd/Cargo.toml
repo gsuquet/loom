@@ -39,8 +39,13 @@ serde.workspace = true
 # its kind and status, so serde cannot reject unknown keys), and error details are JSON.
 serde_json.workspace = true
 # `sync`: the updater thread asks the server to stop after an upgrade (oneshot channel).
+# Errors of the forge token resolver (already in the tree through the library crates).
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
+# `GET /user` of the forge credential check, with the TLS configuration of loom-update (already
+# the HTTP client of the updater and of telemetry, ADR-0016).
+ureq.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

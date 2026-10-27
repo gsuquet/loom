@@ -373,7 +373,8 @@ struct Invalid {
 
 /// Checks across keys: contexts named by `default_context` and `[repos."<path>"] context`
 /// exist, no `match.paths`, `match.hosts`, `store.path` or `store.backup.remote` entry is in
-/// two contexts, no repository path is given twice, no schedule ID twice in a context.
+/// two contexts, no repository path is given twice, no schedule ID twice in a context, the
+/// forge of every `[contexts.<ctx>.forges."<host>"]` host is known.
 fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let check_defined = |name: &Spanned<ContextName>, key: &str| {
         if name.get_ref().is_unassigned() {
@@ -422,6 +423,7 @@ fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let mut stores = BTreeMap::new();
     let mut remotes = BTreeMap::new();
     for (name, context) in &config.contexts {
+        validate_forges(config, name, context)?;
         // The ID is the dedup key of the schedule's tasks in the context.
         let mut ids = BTreeMap::new();
         for schedule in &context.schedules {
@@ -469,6 +471,27 @@ fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
             {
                 return Err(tie(text, "match.hosts", host, name, first, other));
             }
+        }
+    }
+    Ok(())
+}
+
+/// The kind of a host decides its API: a `[contexts.<ctx>.forges."<host>"]` table cannot give
+/// it, so its host is a public forge or has a `[forges."<host>"]` table.
+fn validate_forges(
+    config: &Config,
+    name: &ContextName,
+    context: &ContextConfig,
+) -> Result<(), Invalid> {
+    for (host, forge) in &context.forges {
+        if config.forge_kind(host.as_str()).is_none() {
+            return Err(Invalid {
+                span: forge.span(),
+                message: format!(
+                    "[contexts.{name}.forges.\"{host}\"]: the forge of `{host}` is unknown: add a [forges.\"{host}\"] table with its kind",
+                    host = host.as_str()
+                ),
+            });
         }
     }
     Ok(())

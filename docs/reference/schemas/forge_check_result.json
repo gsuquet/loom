@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ForgeCheckResult",
+  "description": "Answer of `POST /v1/diagnostics/forge-check`: one check per context and forge host that\nhas a credential, sorted by context, then host.",
+  "type": "object",
+  "properties": {
+    "forges": {
+      "description": "The checks.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ForgeCheck"
+      }
+    }
+  },
+  "required": [
+    "forges"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "CredentialOrigin": {
+      "description": "The table that gives the credential of a context for a forge host.",
+      "oneOf": [
+        {
+          "description": "`[contexts.<ctx>.forges.\"<host>\"]`.",
+          "type": "string",
+          "const": "context"
+        },
+        {
+          "description": "`[forges.\"<host>\"]`.",
+          "type": "string",
+          "const": "host"
+        }
+      ]
+    },
+    "ForgeAccess": {
+      "description": "What the token can do on the forge.",
+      "oneOf": [
+        {
+          "description": "The token can publish reviews.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "write"
+            },
+            "scopes": {
+              "description": "The scopes of the token.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "scopes"
+          ]
+        },
+        {
+          "description": "The token can read, but cannot publish reviews.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "read_only"
+            },
+            "scopes": {
+              "description": "The scopes of the token.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "scopes"
+          ]
+        },
+        {
+          "description": "The forge does not give the scopes of this token.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unknown"
+            },
+            "reason": {
+              "description": "Why the scopes are unknown.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "ForgeCheck": {
+      "description": "The check of the credential of one context for one forge host.",
+      "type": "object",
+      "properties": {
+        "api": {
+          "description": "The API that `loomd` called, such as `https://api.github.com`.",
+          "type": "string"
+        },
+        "context": {
+          "description": "The context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "host": {
+          "description": "The forge host, such as `github.com`.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "The forge of the host.",
+          "$ref": "#/$defs/ForgeKind"
+        },
+        "origin": {
+          "description": "The table that gives the credential.",
+          "$ref": "#/$defs/CredentialOrigin"
+        },
+        "result": {
+          "description": "What happened.",
+          "$ref": "#/$defs/ForgeCheckOutcome"
+        },
+        "source": {
+          "description": "Where the token comes from.",
+          "$ref": "#/$defs/TokenSourceKind"
+        }
+      },
+      "required": [
+        "context",
+        "host",
+        "kind",
+        "api",
+        "origin",
+        "source",
+        "result"
+      ]
+    },
+    "ForgeCheckOutcome": {
+      "description": "Result of the check of one credential. Never contains the token.",
+      "oneOf": [
+        {
+          "description": "`loomd` cannot get the token.",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "What went wrong.",
+              "type": "string"
+            },
+            "problem": {
+              "description": "What kind of problem.",
+              "$ref": "#/$defs/TokenProblem"
+            },
+            "program": {
+              "description": "The program of `token_cmd` (its first word), for `command_not_found`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string",
+              "const": "token_unresolved"
+            }
+          },
+          "required": [
+            "state",
+            "problem",
+            "error"
+          ]
+        },
+        {
+          "description": "The forge refused the token (`GET /user`).",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "What the forge said.",
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "const": "rejected"
+            },
+            "status": {
+              "description": "HTTP status.",
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "required": [
+            "state",
+            "status",
+            "error"
+          ]
+        },
+        {
+          "description": "The organization uses SAML single sign-on, and the token is not authorized for it.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "sso_required"
+            },
+            "url": {
+              "description": "The URL that authorizes the token, from the `x-github-sso` header.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "The forge did not answer, or its answer cannot be read.",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "What went wrong.",
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "const": "unreachable"
+            }
+          },
+          "required": [
+            "state",
+            "error"
+          ]
+        },
+        {
+          "description": "The forge accepted the token.",
+          "type": "object",
+          "properties": {
+            "access": {
+              "description": "What the token can do.",
+              "$ref": "#/$defs/ForgeAccess"
+            },
+            "login": {
+              "description": "The user of the token.",
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "const": "authenticated"
+            }
+          },
+          "required": [
+            "state",
+            "login",
+            "access"
+          ]
+        }
+      ]
+    },
+    "ForgeKind": {
+      "description": "Forge that hosts a remote (`[forges.\"<host>\"] kind`).",
+      "oneOf": [
+        {
+          "description": "GitHub or GitHub Enterprise.",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "GitLab, hosted or self-managed.",
+          "type": "string",
+          "const": "gitlab"
+        }
+      ]
+    },
+    "TokenProblem": {
+      "description": "Why `loomd` cannot get the token.",
+      "oneOf": [
+        {
+          "description": "The shell cannot find the program of `token_cmd` (exit status 127).",
+          "type": "string",
+          "const": "command_not_found"
+        },
+        {
+          "description": "`token_cmd` exited with a status that is not zero, or cannot start.",
+          "type": "string",
+          "const": "command_failed"
+        },
+        {
+          "description": "`token_cmd` did not stop in time. Its process group was stopped.",
+          "type": "string",
+          "const": "timeout"
+        },
+        {
+          "description": "`token_cmd` wrote no token, or the variable of `token_env` is empty.",
+          "type": "string",
+          "const": "empty"
+        },
+        {
+          "description": "The variable of `token_env` is not set in the environment of `loomd`.",
+          "type": "string",
+          "const": "env_unset"
+        }
+      ]
+    },
+    "TokenSourceKind": {
+      "description": "Where the token comes from. The command text is not given: it can contain a secret.",
+      "oneOf": [
+        {
+          "description": "`token_cmd`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "command"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "`token_env`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "env"
+            },
+            "name": {
+              "description": "Name of the environment variable.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        }
+      ]
+    }
+  }
+}

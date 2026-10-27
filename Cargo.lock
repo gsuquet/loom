@@ -2412,8 +2412,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tracing",
+ "ureq",
 ]
 
 [[package]]
