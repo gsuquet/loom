@@ -17,6 +17,8 @@ clap.workspace = true
 jiff = { workspace = true, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 loom-api.workspace = true
 loom-config.workspace = true
+# Forge API bases and the token type (shared with the MR clients).
+loom-forge.workspace = true
 # Origin of the events loomd records (actor, machine) and its random source.
 loom-core.workspace = true
 # Repository discovery, identity, contexts and scan changes (ADR-0012).

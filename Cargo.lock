@@ -2318,14 +2318,18 @@ dependencies = [
 name = "loom-forge"
 version = "0.4.0"
 dependencies = [
+ "axum",
  "jiff",
  "loom-api",
  "loom-config",
  "loom-repo",
+ "loom-update",
  "schemars",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+ "ureq",
 ]
 
 [[package]]
@@ -2414,6 +2418,7 @@ dependencies = [
  "loom-api",
  "loom-config",
  "loom-core",
+ "loom-forge",
  "loom-repo",
  "loom-store",
  "loom-telemetry",

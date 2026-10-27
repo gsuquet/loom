@@ -40,11 +40,11 @@ Host `github.com`, API `https://api.github.com`, repository `acme/shop`, pull re
 | Request | Status | Response headers that matter | File |
 | --- | --- | --- | --- |
 | `GET /user` | 200 | `x-oauth-scopes` (classic tokens only), `x-ratelimit-*` | `user.json` |
-| `GET /search/issues?q=is:pr+is:open+archived:false+review-requested:@me` | 200 | `link` (`rel="next"`) | `search-review-requested.json`, `.empty.json` |
+| `GET /search/issues?q=is:pr+is:open+archived:false+review-requested:@me&per_page=100` | 200 | `link` (`rel="next"`) | `search-review-requested.json`, `.empty.json` |
 | `GET /repos/acme/shop/pulls/412` | 200, 304 with `If-None-Match` | `etag` | `pull-412.v1.json`, `pull-412.v2.json` |
 | `GET /repos/acme/shop/pulls/412/files?per_page=100` | 200 | `link` | `pull-412-files.v2.json` |
-| `GET /repos/acme/shop/pulls/412/reviews` | 200 | `link` | `pull-412-reviews.json` |
-| `GET /repos/acme/shop/issues/412/comments` | 200 | `link` | `issue-412-comments.json` |
+| `GET /repos/acme/shop/pulls/412/reviews?per_page=100` | 200 | `link` | `pull-412-reviews.json` |
+| `GET /repos/acme/shop/issues/412/comments?per_page=100` | 200 | `link` | `issue-412-comments.json` |
 | `POST /graphql`, `reviewThreads` of the pull request | 200 | | `graphql-review-threads.json` |
 | `POST /graphql`, pending reviews of the viewer | 200 | | `graphql-pending-reviews.json`, `.empty.json` |
 | `POST /graphql`, `addPullRequestReview` (no `event`: pending) | 200 | | `graphql-add-review.request.json`, `.response.json` |
