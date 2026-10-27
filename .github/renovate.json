@@ -28,6 +28,18 @@
       "groupName": "cargo minor and patch"
     },
     {
+      "description": "OpenTelemetry crates only build at matching versions: one PR for the family.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["opentelemetry", "opentelemetry-*", "opentelemetry_*", "tracing-opentelemetry"],
+      "groupName": "opentelemetry"
+    },
+    {
+      "description": "gitoxide crates only build at matching versions: one PR for the family.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["gix", "gix-*"],
+      "groupName": "gitoxide"
+    },
+    {
       "description": "Rust toolchain in .mise/config.toml: its own PR, a new release can add clippy lints.",
       "matchManagers": ["mise"],
       "matchDepNames": ["rust"],
