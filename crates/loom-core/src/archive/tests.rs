@@ -163,3 +163,24 @@ fn without_a_closing_event_a_task_is_never_archived() {
         None
     );
 }
+
+#[test]
+fn a_notes_edit_after_the_closing_neither_delays_nor_moves_the_archive() {
+    let (task, mut log) = done_at(0);
+    let hash = |c: char| crate::NotesHash::from_hex(c.to_string().repeat(64)).unwrap();
+    log.push(EventRecord::new(
+        "n0000001".parse().unwrap(),
+        crate::Event::NotesChanged(crate::Change {
+            from: hash('a'),
+            to: hash('b'),
+        }),
+        at(3 * DAY),
+        &Origin {
+            actor: Actor::File,
+            machine_id: MachineId("laptop".to_owned()),
+        },
+    ));
+    assert_eq!(closed_at(&task, &log), Some(at(0)));
+    assert_eq!(archive_year(&task, &log, at(8 * DAY), WEEK), Some(2026));
+    assert_eq!(archive_year(&task, &log, at(6 * DAY), WEEK), None);
+}

@@ -90,7 +90,7 @@ Each event is one line with four columns:
 | --- | --- |
 | Time | `YYYY-MM-DD HH:MM`, in the local time zone of the system. |
 | Actor | `user`, `file` (a hand edit), `loomd`, or `agent <name>`. |
-| Type | `created`, `edited`, `status_changed`, `note_logged` or `undone`. |
+| Type | `created`, `edited`, `status_changed`, `note_logged`, `notes_changed` or `undone`. |
 | Summary | What the event changed, for example `status: ready -> active`. The TUI cuts a long summary at the edge of the pane and shows `…`. |
 
 The TUI cuts an actor name longer than 14 characters and shows `…`. The width of the columns comes from the whole log, so a filter does not move them.

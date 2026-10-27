@@ -14,9 +14,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use loom_core::{
-    Actor, Command, ContextName, DomainError, Event, EventId, EventLog, EventRecord, FieldChange,
-    Importance, Link, NewTask, Origin, ParentLink, RandomSource, Status, Task, TaskDocument,
-    TaskId, Timestamp, apply, archive_year, check_parent, create, move_task, undo,
+    Actor, Command, ContextName, DomainError, EventId, EventLog, EventRecord, Importance, Link,
+    NewTask, Origin, ParentLink, RandomSource, Status, Task, TaskDocument, TaskId, Timestamp,
+    apply, archive_year, check_parent, create, move_task, undo,
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use thiserror::Error;
@@ -25,8 +25,26 @@ use tracing::{debug, debug_span, warn};
 use crate::port::{
     ContentHash, InvalidTask, PortError, StorePort, StoredTask, TaskLocation, TaskWrite,
 };
-use crate::reconcile::{Reconciliation, decide, duplicate_ids};
+use crate::reconcile::{HandEdit, Reconciliation, decide, duplicate_ids, notes_digest};
 use crate::{StoreError, open_writer};
+
+/// The records of the events of `edit`, appended after `log` and stamped by `origin`.
+fn hand_edit_records(
+    edit: &HandEdit,
+    log: &[EventRecord],
+    now: Timestamp,
+    origin: &Origin,
+    random: &mut impl RandomSource,
+) -> Result<Vec<EventRecord>, DomainError> {
+    let mut taken: Vec<EventId> = log.iter().map(|event| event.id.clone()).collect();
+    let mut records = Vec::new();
+    for event in edit.events() {
+        let id = EventId::generate(random, &taken)?;
+        taken.push(id.clone());
+        records.push(EventRecord::new(id, event, now, origin));
+    }
+    Ok(records)
+}
 
 /// A task as indexed: the task and its notes, or why its file is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +122,15 @@ impl IndexedTask {
                 error: error.to_string(),
                 text: first.file.text.clone(),
             },
+        }
+    }
+
+    /// The hash of the notes as indexed; `None` for an invalid file.
+    #[must_use]
+    pub fn notes_hash(&self) -> Option<ContentHash> {
+        match &self.state {
+            IndexedState::Valid { body, .. } => Some(notes_digest(body)),
+            IndexedState::Invalid { .. } => None,
         }
     }
 
@@ -608,6 +635,7 @@ impl<P: StorePort> Tasks<P> {
         let indexed = self.index.get(id)?;
         let last = indexed.as_ref().map(|row| (row.hash.clone(), row.location));
         let last = last.as_ref().map(|(hash, location)| (hash, *location));
+        let notes = indexed.as_ref().and_then(IndexedTask::notes_hash);
         let task = store.update(id, |mut stored| {
             if let TaskLocation::Archived(year) = stored.location {
                 return Err(TaskError::Archived {
@@ -616,22 +644,15 @@ impl<P: StorePort> Tasks<P> {
                 });
             }
             let mut prepended_events = Vec::new();
-            if let Reconciliation::Record(changes) = decide(last, &stored) {
-                let taken: Vec<EventId> = stored
-                    .events
-                    .events
-                    .iter()
-                    .map(|event| event.id.clone())
-                    .collect();
-                let event_id = EventId::generate(random, &taken).map_err(DomainError::from)?;
-                let event = Event::Edited { changes };
+            if let Reconciliation::Record(edit) = decide(last, notes.as_ref(), &stored) {
                 let file_origin = Origin {
                     actor: Actor::File,
                     machine_id: origin.machine_id.clone(),
                 };
-                let record = EventRecord::new(event_id, event, now, &file_origin);
-                stored.events.events.push(record.clone());
-                prepended_events.push(record);
+                let records =
+                    hand_edit_records(&edit, &stored.events.events, now, &file_origin, random)?;
+                stored.events.events.extend(records.iter().cloned());
+                prepended_events.extend(records);
             }
             let current = stored
                 .task()
@@ -791,18 +812,17 @@ impl<P: StorePort> Tasks<P> {
         }
         let indexed = self.index.get(id)?;
         let last = indexed.as_ref().map(|row| (&row.hash, row.location));
+        let notes = indexed.as_ref().and_then(IndexedTask::notes_hash);
         let mut events = stored.events.events.clone();
         let mut written = Vec::new();
-        if let Reconciliation::Record(changes) = decide(last, &stored) {
-            let taken: Vec<EventId> = events.iter().map(|event| event.id.clone()).collect();
-            let event_id = EventId::generate(random, &taken).map_err(DomainError::from)?;
+        if let Reconciliation::Record(edit) = decide(last, notes.as_ref(), &stored) {
             let file_origin = Origin {
                 actor: Actor::File,
                 machine_id: origin.machine_id.clone(),
             };
-            let record = EventRecord::new(event_id, Event::Edited { changes }, now, &file_origin);
-            events.push(record.clone());
-            written.push(record);
+            let records = hand_edit_records(&edit, &events, now, &file_origin, random)?;
+            events.extend(records.iter().cloned());
+            written.extend(records);
         }
         let current = stored
             .task()
@@ -977,32 +997,32 @@ impl<P: StorePort> Tasks<P> {
             .filter(|row| row.context == *context)
             .map(|row| (row.hash.clone(), row.location));
         let last = last.as_ref().map(|(hash, location)| (hash, *location));
-        let result = store.update(id, |mut stored| match decide(last, &stored) {
-            Reconciliation::Unchanged => Ok((TaskWrite::default(), (Reconciled::Unchanged, None))),
-            Reconciliation::Index => {
-                Ok((TaskWrite::default(), (Reconciled::Indexed, Some(stored))))
-            }
-            Reconciliation::Withhold => {
-                Ok((TaskWrite::default(), (Reconciled::Withheld, Some(stored))))
-            }
-            Reconciliation::Record(changes) => {
-                let taken: Vec<EventId> = stored
-                    .events
-                    .events
-                    .iter()
-                    .map(|event| event.id.clone())
-                    .collect();
-                let event_id = EventId::generate(random, &taken).map_err(DomainError::from)?;
-                let event = Event::Edited {
-                    changes: changes.clone(),
-                };
-                let record = EventRecord::new(event_id, event, now, origin);
-                stored.events.events.push(record.clone());
-                let write = TaskWrite {
-                    document: None,
-                    events: vec![record],
-                };
-                Ok::<_, TaskError>((write, (Reconciled::Edited(changes), Some(stored))))
+        let notes = indexed
+            .as_ref()
+            .filter(|row| row.context == *context)
+            .and_then(IndexedTask::notes_hash);
+        let result = store.update(id, |mut stored| {
+            match decide(last, notes.as_ref(), &stored) {
+                Reconciliation::Unchanged => {
+                    Ok((TaskWrite::default(), (Reconciled::Unchanged, None)))
+                }
+                Reconciliation::Index => {
+                    Ok((TaskWrite::default(), (Reconciled::Indexed, Some(stored))))
+                }
+                Reconciliation::Withhold => {
+                    Ok((TaskWrite::default(), (Reconciled::Withheld, Some(stored))))
+                }
+                Reconciliation::Record(edit) => {
+                    let records =
+                        hand_edit_records(&edit, &stored.events.events, now, origin, random)
+                            .map_err(TaskError::from)?;
+                    stored.events.events.extend(records.iter().cloned());
+                    let write = TaskWrite {
+                        document: None,
+                        events: records,
+                    };
+                    Ok::<_, TaskError>((write, (Reconciled::Edited(edit), Some(stored))))
+                }
             }
         });
         match result {
@@ -1172,8 +1192,8 @@ pub enum Reconciled {
     /// The file was indexed without an event, although it may hold a hand edit: the log has a
     /// line written by a newer loom, so the edit cannot be told apart from that line's change.
     Withheld,
-    /// A hand edit of these fields was recorded, and the file indexed.
-    Edited(Vec<FieldChange>),
+    /// This hand edit was recorded, and the file indexed.
+    Edited(HandEdit),
     /// The ID is in the stores of these contexts: its row was flagged invalid and no file was
     /// written (see [`IndexedTask::duplicate`]).
     Duplicate(Vec<ContextName>),

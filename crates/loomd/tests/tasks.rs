@@ -321,6 +321,48 @@ fn a_hand_edit_of_the_title_is_indexed_and_recorded_as_an_event() {
 }
 
 #[test]
+fn a_hand_edit_of_the_notes_is_recorded_as_hashes_never_as_text() {
+    let sandbox = Sandbox::new();
+    let id = create_task(&sandbox, "Notes");
+    let daemon = sandbox.start();
+    sandbox.reindex();
+    assert_eq!(events(&sandbox, &id).len(), 1);
+
+    let path = sandbox.task_dir("work", id.as_str()).join("task.md");
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("Called the client: secret answer.\n");
+    fs::write(&path, &text).unwrap();
+    wait_for(
+        &sandbox,
+        &id,
+        TIMEOUT,
+        |row| matches!(&row.state, IndexedState::Valid { body, .. } if body.contains("secret answer")),
+    );
+    let log = events(&sandbox, &id);
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[1]["type"], "notes_changed");
+    assert_eq!(log[1]["actor"], json!({ "type": "file" }));
+    let hash = |value: &Value| value.as_str().unwrap().to_owned();
+    let (from, to) = (hash(&log[1]["from"]), hash(&log[1]["to"]));
+    assert!(from.len() == 64 && to.len() == 64 && from != to, "{log:?}");
+    let raw =
+        fs::read_to_string(sandbox.task_dir("work", id.as_str()).join("events.jsonl")).unwrap();
+    assert!(!raw.contains("secret answer"), "{raw}");
+    daemon.stop();
+
+    // Edited while loomd is stopped: recorded at the next start, from the notes it indexed.
+    text.push_str("Second line.\n");
+    fs::write(&path, &text).unwrap();
+    let daemon = sandbox.start();
+    sandbox.reindex();
+    let log = events(&sandbox, &id);
+    assert_eq!(log.len(), 3, "{log:?}");
+    assert_eq!(log[2]["type"], "notes_changed");
+    assert_eq!(log[2]["from"], log[1]["to"]);
+    daemon.stop();
+}
+
+#[test]
 fn an_invalid_hand_edit_is_flagged_read_only_and_never_rewritten() {
     let sandbox = Sandbox::new();
     let id = create_task(&sandbox, "Fragile");

@@ -109,6 +109,24 @@
         "to"
       ]
     },
+    "Change10": {
+      "description": "A value before and after a change.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Value before.",
+          "$ref": "#/$defs/NotesHash"
+        },
+        "to": {
+          "description": "Value after.",
+          "$ref": "#/$defs/NotesHash"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
     "Change2": {
       "description": "A value before and after a change.",
       "type": "object",
@@ -372,6 +390,20 @@
           "required": [
             "type",
             "text"
+          ]
+        },
+        {
+          "description": "The notes of the task changed, by a hand edit or in an editor. The event holds the hash of\nthe notes before and after, never their text.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "notes_changed"
+            }
+          },
+          "$ref": "#/$defs/Change10",
+          "required": [
+            "type"
           ]
         },
         {
@@ -664,6 +696,11 @@
     "MachineId": {
       "description": "Name of the machine an event was recorded on, from `~/.loom/machine.toml`.",
       "type": "string"
+    },
+    "NotesHash": {
+      "description": "SHA-256 of the notes of a task, in lowercase hex.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "Relations": {
       "description": "Relations of a task to other tasks.",

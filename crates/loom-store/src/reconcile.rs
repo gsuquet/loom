@@ -6,7 +6,10 @@
 
 use std::collections::BTreeMap;
 
-use loom_core::{ContextName, FieldChange, SkipReason, TaskId, hand_edit_changes, replay};
+use loom_core::{
+    Change, ContextName, Event, FieldChange, NotesHash, SkipReason, TaskId, hand_edit_changes,
+    replay,
+};
 
 use crate::port::{ContentHash, StoredTask, TaskLocation};
 
@@ -23,15 +26,43 @@ pub enum Reconciliation {
     /// loom: that line may hold a change this version cannot read, so a difference between the
     /// log and the file is not known to be a hand edit.
     Withhold,
-    /// Record these changes as an `edited` event of the actor `file`, then index the file.
-    Record(Vec<FieldChange>),
+    /// Record this hand edit as events of the actor `file`, then index the file.
+    Record(HandEdit),
+}
+
+/// What a hand edit changed: fields, notes, or both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandEdit {
+    /// The fields that differ from the log, as one `edited` event; empty when only the notes
+    /// changed.
+    pub changes: Vec<FieldChange>,
+    /// The notes before and after, as a `notes_changed` event; `None` when they did not change
+    /// or when the notes before are unknown.
+    pub notes: Option<Change<NotesHash>>,
+}
+
+impl HandEdit {
+    /// The events to append, in order: the field changes, then the notes.
+    #[must_use]
+    pub fn events(&self) -> Vec<Event> {
+        let fields = (!self.changes.is_empty()).then(|| Event::Edited {
+            changes: self.changes.clone(),
+        });
+        let notes = self.notes.clone().map(Event::NotesChanged);
+        fields.into_iter().chain(notes).collect()
+    }
 }
 
 /// What to do with `stored`, whose `task.md` had the hash and location `indexed` when loomd
-/// last indexed it (`None` when it is not indexed).
+/// last indexed it (`None` when it is not indexed), and whose notes had the hash `notes`.
+///
+/// The notes before a hand edit are the ones loomd indexed. Without an index row, they are the
+/// ones the log recorded last; if it recorded none, they are unknown and a change of the notes
+/// is not recorded, rather than guessed.
 #[must_use]
 pub fn decide(
     indexed: Option<(&ContentHash, TaskLocation)>,
+    notes: Option<&ContentHash>,
     stored: &StoredTask,
 ) -> Reconciliation {
     if let Some((hash, location)) = indexed
@@ -61,11 +92,52 @@ pub fn decide(
         return Reconciliation::Index;
     };
     let changes = hand_edit_changes(&logged, &file);
-    if changes.is_empty() {
+    let notes = notes_change(notes, stored);
+    if changes.is_empty() && notes.is_none() {
         Reconciliation::Index
     } else {
-        Reconciliation::Record(changes)
+        Reconciliation::Record(HandEdit { changes, notes })
     }
+}
+
+/// The change of the notes of `stored` since `indexed` (the hash loomd indexed), or since the
+/// log recorded them last; `None` when they did not change or their previous value is unknown.
+fn notes_change(indexed: Option<&ContentHash>, stored: &StoredTask) -> Option<Change<NotesHash>> {
+    let document = stored.file.document.as_ref().ok()?;
+    let to = hash_of(&notes_digest(document.body()))?;
+    let from = indexed.and_then(hash_of).or_else(|| {
+        stored
+            .events
+            .events
+            .iter()
+            .rev()
+            .find_map(|record| match &record.event {
+                Event::NotesChanged(change) => Some(change.to.clone()),
+                Event::Created { .. }
+                | Event::Edited { .. }
+                | Event::StatusChanged(_)
+                | Event::NoteLogged { .. }
+                | Event::Undone { .. } => None,
+            })
+    })?;
+    (from != to).then_some(Change { from, to })
+}
+
+/// The hash of `notes`, as loomd compares and records them.
+///
+/// It is the hash of the text with each `\r\n` turned into `\n` and without the line breaks at
+/// its end, so that an editor that changes the line endings or the last blank lines does not
+/// make an event.
+#[must_use]
+pub fn notes_digest(notes: &str) -> ContentHash {
+    let unix = notes.replace("\r\n", "\n");
+    ContentHash::of(unix.trim_end_matches('\n').as_bytes())
+}
+
+/// The hash as the ledger records it; `None` for an index row that holds something else than a
+/// SHA-256 in hex.
+fn hash_of(hash: &ContentHash) -> Option<NotesHash> {
+    NotesHash::from_hex(hash.as_str().to_owned()).ok()
 }
 
 /// The task IDs held by more than one context store, each with its contexts in the order of

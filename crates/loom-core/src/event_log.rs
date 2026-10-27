@@ -10,11 +10,12 @@ use serde_json::Value as Json;
 use crate::event::{EVENT_SCHEMA_VERSION, EventRecord};
 
 /// Event types this version replays, as written in `type`.
-const EVENT_TYPES: [&str; 5] = [
+const EVENT_TYPES: [&str; 6] = [
     "created",
     "edited",
     "status_changed",
     "note_logged",
+    "notes_changed",
     "undone",
 ];
 
@@ -128,7 +129,7 @@ fn parse_line(line: &str) -> Result<EventRecord, SkipReason> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Actor, Change, Event, FieldChange, MachineId, Origin};
+    use crate::event::{Actor, Change, Event, FieldChange, MachineId, NotesHash, Origin};
     use crate::id::EventId;
     use crate::task::{Importance, Status, Task};
     use crate::timestamp::Timestamp;
@@ -189,6 +190,13 @@ mod tests {
                 },
             ),
             record(
+                "e0000005",
+                Event::NotesChanged(Change {
+                    from: NotesHash::from_hex("a".repeat(64)).unwrap(),
+                    to: NotesHash::from_hex("b".repeat(64)).unwrap(),
+                }),
+            ),
+            record(
                 "e0000004",
                 Event::Undone {
                     of: "e0000002".parse().unwrap(),
@@ -221,6 +229,20 @@ mod tests {
                 skipped: vec![]
             }
         );
+    }
+
+    #[test]
+    fn a_notes_event_holds_hashes_only_and_a_bad_hash_is_skipped() {
+        let text = render_event(&records()[4]).unwrap();
+        assert!(text.contains(r#""type":"notes_changed""#), "{text}");
+        assert!(
+            text.contains(&format!(r#""from":"{}""#, "a".repeat(64))),
+            "{text}"
+        );
+        let bad = r#"{"v":1,"id":"e0000007","at":"2026-10-12T09:14:00Z","actor":{"type":"file"},"machine_id":"m","type":"notes_changed","from":"nothex","to":"nothex"}"#;
+        let log = parse_events(bad);
+        assert_eq!(log.events.len(), 0);
+        assert!(matches!(log.skipped[0].reason, SkipReason::Invalid { .. }));
     }
 
     #[test]

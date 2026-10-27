@@ -820,7 +820,7 @@ Answer of `GET /v1/tasks/{id}/events`.
 | Field | Type | Content |
 | --- | --- | --- |
 | `id` | string | Task ID. |
-| `events` | list of `EventRecord` | The events, in log order: `v`, `id`, `at`, `actor` (tagged by `type`: `user`, `file`, `daemon`, `agent` with `name`), `machine_id`, and the event tagged by `type`: `created` (`task`), `edited` (`changes`; `field` is one of `title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`, `context`), `status_changed` (`from`, `to`), `note_logged` (`text`), `undone` (`of`, `changes`). Each change has `field`, `from` and `to`. |
+| `events` | list of `EventRecord` | The events, in log order: `v`, `id`, `at`, `actor` (tagged by `type`: `user`, `file`, `daemon`, `agent` with `name`), `machine_id`, and the event tagged by `type`: `created` (`task`), `edited` (`changes`; `field` is one of `title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`, `context`), `status_changed` (`from`, `to`), `note_logged` (`text`), `notes_changed` (`from`, `to`: the SHA-256 of the notes, in hex), `undone` (`of`, `changes`). Each change has `field`, `from` and `to`. |
 | `skipped` | list of objects | Lines not replayed (newer schema version, unknown type, invalid): `line`, `raw`, `reason`. |
 
 ### `NewTask`
