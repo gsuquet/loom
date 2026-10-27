@@ -28,6 +28,8 @@ pub const SEARCH_PATH: &str = "/v1/search";
 pub const DIAGNOSTICS_PATH: &str = "/v1/diagnostics";
 /// Path of the remote check: `git ls-remote` of each remote endpoint of the index.
 pub const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
+/// Path of the forge check: the token and `GET /user` of each forge credential of each context.
+pub const FORGE_CHECK_PATH: &str = "/v1/diagnostics/forge-check";
 /// Path of the tasks reindex: the tasks index rebuilt from the files of every context store.
 pub const TASKS_REINDEX_PATH: &str = "/v1/tasks/reindex";
 /// Path of the change events, a Server-Sent Events stream.

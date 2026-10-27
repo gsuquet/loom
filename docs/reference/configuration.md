@@ -62,6 +62,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | `[repos] roots`, `max_depth`, `exclude`, `fetch_interval`, `fetch_concurrency` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[forges."<host>"] kind` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[forges."<host>"] token_cmd`, `token_env`, `poll_interval`, `review_requests`; `[contexts.<name>.forges."<host>"] token_cmd`, `token_env` | | | See [forges](#forges). |
 | `[daemon] service` | boolean | `true` | `false`: `loom service install` refuses with exit code 1 and a message that names this key and the file. `loom service uninstall` and `loom service status` still work. Does not stop or remove an installed service. |
 | `[telemetry] enabled` | boolean | `false` | Export traces. See [`[telemetry]`](#telemetry). |
 | `[telemetry] otlp_endpoint` | string | none | OTLP/HTTP traces endpoint. See [`[telemetry]`](#telemetry). |
@@ -140,7 +141,7 @@ kind = "gitlab"
 | `[repos."<path>"] context` | string | none | Names a defined context. |
 | `[repos."<path>"] update` | string: `"ff"`, `"fetch"`, `"off"` | none | Update policy of this repository, over its context's, and over the `fetch` default of an `unassigned` repository. |
 | `[forges."<host>"]` | table | none | `<host>`: a lowercase host name (ASCII letters, digits, `-`, `.`), without port or path. |
-| `[forges."<host>"] kind` | string: `"github"`, `"gitlab"` | required | Forge of the host. |
+| `[forges."<host>"] kind` | string: `"github"`, `"gitlab"` | required | Forge of the host. The other keys of the table are in [forges](#forges). |
 
 The check compares the paths as written, after it removes `.` components and repeated or final `/`. `~` stays unexpanded for this check.
 
@@ -151,6 +152,45 @@ Error: invalid configuration /home/me/.loom/config.toml:5:16: match.paths `~/wor
 ```
 
 Errors in an array element (`roots`, `exclude`, `match.paths`, `match.hosts`) are located at the start of the array.
+
+### Forges
+
+A forge credential lets `loomd` call the API of a forge host for a context. `loomd` reads the credentials when it starts. `loom repo doctor` checks each credential (the [`forge <context> <host>`](cli/conventions.md#loom-repo-doctor) checks). [Connect a forge](../how-to-guides/connect-a-forge.md) shows how to create the token.
+
+```toml
+[forges."github.com"]
+kind = "github"
+token_cmd = "gh auth token --hostname github.com"
+
+[forges."gitlab.company-a.example"]
+kind = "gitlab"
+token_env = "GITLAB_TOKEN"
+poll_interval = "10m"
+
+[contexts.company-a.forges."github.com"]
+token_cmd = "op read op://company-a/github/token"
+```
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `[forges."<host>"] token_cmd` | string: shell command | none | Not empty. `loomd` runs it with `sh -c`, with no input, and stops it after 10 s. Its standard output, trimmed, is the token. Not with `token_env`. |
+| `[forges."<host>"] token_env` | string: variable name | none | ASCII letters, digits and `_`, not starting with a digit. The variable of the environment of `loomd` that holds the token. Not with `token_cmd`. |
+| `[forges."<host>"] poll_interval` | string: duration | `"5m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. `loomd` validates it; no version of `loomd` uses it yet. |
+| `[forges."<host>"] review_requests` | string: `"teams"`, `"direct"` | `"teams"` | GitHub review requests that count: to me and my teams (`teams`), or to me only (`direct`). `loomd` validates it; no version of `loomd` uses it yet. |
+| `[contexts.<name>.forges."<host>"]` | table | none | `<host>`: the rules of `[forges."<host>"]`. The host is `github.com`, `gitlab.com`, or has a `[forges."<host>"]` table: a host with no known forge is an error. |
+| `[contexts.<name>.forges."<host>"] token_cmd`, `token_env` | string | none | The rules of `[forges."<host>"]`. Exactly one of them. |
+
+The credential of a context for a host is its `[contexts.<name>.forges."<host>"]` table, otherwise the `token_cmd` or `token_env` of `[forges."<host>"]`. Use a context table for another account on the same host. A context without a credential for a host does not use that host. A `[forges."<host>"]` table without `token_cmd` and `token_env` gives the kind of the host only.
+
+`loomd` keeps a token in memory and never writes it. It does not log the token, put it in a trace, or give it to git or to an agent. git uses your own credentials. After a `401`, `loomd` gets the token again. `loomd` sends the token only to the API of its host: `https://api.github.com` for `github.com`, `https://<host>/api/v3` for another GitHub host (GitHub Enterprise Server), `https://<host>/api/v4` for GitLab. The token does not follow a redirect to another host.
+
+As a service, `loomd` has a minimal `PATH` and does not see the variables of your shell. Write the absolute path of the program in `token_cmd` (`command -v gh` gives it), and prefer `token_cmd` to `token_env`.
+
+Both keys in one table:
+
+```text
+Error: invalid configuration /home/me/.loom/config.toml:1:1: token_cmd and token_env are both set: give only one source for the token
+```
 
 ### Schedules
 

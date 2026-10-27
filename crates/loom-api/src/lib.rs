@@ -33,8 +33,9 @@ pub use backup::{
 pub use context::ContextAssignment;
 pub use disk::{ContextDiskUsage, DiskUsage};
 pub use doctor::{
-    CheckStatus, DaemonDiagnostics, DoctorCheck, DoctorReport, RemoteCheck, RemoteCheckOutcome,
-    RemoteCheckResult, RemoteProblem, RemoteScheme, SshAgentSocket,
+    CheckStatus, CredentialOrigin, DaemonDiagnostics, DoctorCheck, DoctorReport, ForgeAccess,
+    ForgeCheck, ForgeCheckOutcome, ForgeCheckResult, RemoteCheck, RemoteCheckOutcome,
+    RemoteCheckResult, RemoteProblem, RemoteScheme, SshAgentSocket, TokenProblem, TokenSourceKind,
 };
 pub use error::{ApiError, ErrorCode};
 // Moved to loom-core, which loom-api builds on; re-exported so that clients keep their paths.

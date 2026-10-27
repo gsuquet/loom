@@ -27,6 +27,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `GET` | `/v1/search` | `200` | [`SearchResults`](#searchresults) |
 | `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
 | `POST` | `/v1/diagnostics/remote-check` | `200` | [`RemoteCheckResult`](#remotecheckresult) |
+| `POST` | `/v1/diagnostics/forge-check` | `200` | [`ForgeCheckResult`](#forgecheckresult) |
 | `POST` | `/v1/tasks/reindex` | `200` | [`ReindexResult`](#reindexresult) |
 | `GET` | `/v1/tasks` | `200` | [`TaskList`](#tasklist) |
 | `POST` | `/v1/tasks` | `200` | [`TaskDetail`](#taskdetail) of the new task; takes a [`NewTask`](#newtask) |
@@ -127,6 +128,19 @@ If an update of a repository is in progress, `loomd` updates the repository agai
 | git command | `git -C <repository> ls-remote --exit-code <primary remote> HEAD`, with the [git environment](#updates) of the updates: the user's git configuration (`core.sshCommand`, `includeIf`, credential helpers), `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode` unless an SSH command is configured. The check writes nothing to the repository. |
 | Timing | Every endpoint at once, each stopped after 20 s (process group `SIGTERM`, then `SIGKILL` 5 s later). |
 | Result | `reachable` when git exits with `0`, or with `2` (no `HEAD` on the remote, such as an empty repository); otherwise `failed` with the kind of failure read from git's error output. |
+
+#### Forge check
+
+`POST /v1/diagnostics/forge-check` (no body) checks the forge credential of each context held on this machine, for each forge host ([forges](configuration.md#forges)). It answers with a [`ForgeCheckResult`](#forgecheckresult) (the `forge` checks of `loom repo doctor`).
+
+| Property | Value |
+| --- | --- |
+| Credentials | `[contexts.<ctx>.forges."<host>"]` of the context, otherwise `[forges."<host>"]`. A context without a credential for a host is not checked for it. |
+| Token | `token_cmd` runs through `sh -c` in the environment of `loomd`, with no input, stopped after 10 s (process group `SIGTERM`, then `SIGKILL` 1 s later). Its standard output, trimmed, is the token. `token_env` reads the variable from the environment of `loomd`, trimmed. `loomd` keeps the token in memory, per source: checks of the same source run its command once. `loomd` gets the token again after a `401`. |
+| Forge calls | `GET <api>/user` with `Authorization: Bearer <token>`. On a `401`, `loomd` gets the token again and calls once more. GitLab: then `GET <api>/personal_access_tokens/self` for the scopes. Each call stops after 20 s. The header follows a redirect only to the same host over HTTPS. |
+| API | `https://api.github.com` for `github.com`, `https://<host>/api/v3` for another GitHub host (GitHub Enterprise Server), `https://<host>/api/v4` for GitLab. |
+| Timing | Every credential at once. |
+| Secrets | The answer, the logs and the traces never contain the token. The answer and the traces contain the program of `token_cmd` (its first word), not its other text. When `token_cmd` fails, `error` contains the end of its standard error. |
 
 ### Search
 
@@ -319,6 +333,7 @@ curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/
 curl --unix-socket ~/.loom/run/loomd.sock -X POST 'http://loomd/v1/repos/scan?dry_run=true'
 curl --unix-socket ~/.loom/run/loomd.sock http://loomd/v1/diagnostics
 curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/diagnostics/remote-check
+curl --unix-socket ~/.loom/run/loomd.sock -X POST http://loomd/v1/diagnostics/forge-check
 curl --unix-socket ~/.loom/run/loomd.sock 'http://loomd/v1/tasks?ranked=true&context=work'
 curl --unix-socket ~/.loom/run/loomd.sock -X POST -H 'content-type: application/json' \
   -d '{"title": "Review the API", "kind": "review", "context": "work", "status": "inbox"}' \
@@ -343,6 +358,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `DaemonDiagnostics` | [`schemas/daemon_diagnostics.json`](schemas/daemon_diagnostics.json) |
 | `DoctorReport` | [`schemas/doctor_report.json`](schemas/doctor_report.json) (`loom repo doctor --json`, no endpoint) |
 | `ErrorCode` | [`schemas/error_code.json`](schemas/error_code.json) |
+| `ForgeCheckResult` | [`schemas/forge_check_result.json`](schemas/forge_check_result.json) |
 | `IllegalTransition` | [`schemas/illegal_transition.json`](schemas/illegal_transition.json) (`details` of `illegal_transition`) |
 | `LastUpdate` | [`schemas/last_update.json`](schemas/last_update.json) (in `RepoSummary` and `SyncResult`) |
 | `NewTask` | [`schemas/new_task.json`](schemas/new_task.json) |
@@ -979,6 +995,69 @@ Answer of [`POST /v1/diagnostics/remote-check`](#remote-check).
         "problem": "https_auth",
         "error": "exit status: 128",
         "stderr_tail": "fatal: could not read Username for 'https://gitlab.example': terminal prompts disabled\n"
+      }
+    }
+  ]
+}
+```
+
+### `ForgeCheckResult`
+
+Answer of [`POST /v1/diagnostics/forge-check`](#forge-check).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `forges` | list of `ForgeCheck` | One per context and forge host with a credential, sorted by context, then host. Empty when no context has a credential. |
+
+`ForgeCheck`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string | The context. |
+| `host` | string | The forge host, such as `github.com`. |
+| `kind` | string | `github` or `gitlab`. |
+| `api` | string | The API base `loomd` called. |
+| `origin` | string | `context` (`[contexts.<ctx>.forges."<host>"]`) or `host` (`[forges."<host>"]`). |
+| `source` | object | Tagged by `kind`: `command` (`token_cmd`), or `env` with `name` (`token_env`). |
+| `result` | object | Tagged by `state`, see below. |
+
+`result`:
+
+| `state` | Fields | When |
+| --- | --- | --- |
+| `authenticated` | `login`; `access`, tagged by `kind`: `write` or `read_only` with `scopes`, `unknown` with `reason` | `GET /user` accepted the token. GitHub: `write` when `x-oauth-scopes` holds `repo`, `read_only` otherwise, `unknown` without the header (fine-grained token). GitLab: `write` when the token has the `api` scope, `read_only` otherwise, `unknown` when `GET /personal_access_tokens/self` fails (not a personal access token). |
+| `token_unresolved` | `problem`, `error`, `program` (for `command_not_found` only) | `problem`: `command_not_found` (exit status 127 of `sh`), `command_failed` (another non-zero status, or `sh` cannot start), `timeout`, `empty` (no output, or an empty variable), `env_unset`. |
+| `rejected` | `status`, `error` | The forge answered `GET /user` with an error status. `error` is the `message` (or `error`) of its body. |
+| `sso_required` | `url` (absent when the header has none) | GitHub answered `GET /user` with `403` and an `x-github-sso` header: the token is not authorized for the SAML single sign-on of an organization. GitHub applies single sign-on to the resources of the organization, so `GET /user` can accept a token that the organization refuses. |
+| `unreachable` | `error` | No answer, or an answer that cannot be read. |
+
+```json
+{
+  "forges": [
+    {
+      "context": "personal",
+      "host": "github.com",
+      "kind": "github",
+      "api": "https://api.github.com",
+      "origin": "host",
+      "source": { "kind": "command" },
+      "result": {
+        "state": "authenticated",
+        "login": "carol",
+        "access": { "kind": "write", "scopes": ["read:org", "repo"] }
+      }
+    },
+    {
+      "context": "company-a",
+      "host": "gitlab.company-a.example",
+      "kind": "gitlab",
+      "api": "https://gitlab.company-a.example/api/v4",
+      "origin": "host",
+      "source": { "kind": "env", "name": "GITLAB_TOKEN" },
+      "result": {
+        "state": "token_unresolved",
+        "problem": "env_unset",
+        "error": "the environment variable `GITLAB_TOKEN` is not set for loomd (a service does not see the variables of your shell: use token_cmd)"
       }
     }
   ]
