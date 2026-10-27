@@ -3,6 +3,7 @@
 //!
 //! The state reducer only names an [`AppEffect`]; this module turns it into API calls.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
@@ -251,7 +252,7 @@ const fn changed(id: TaskId, message: String) -> ActionOutcome {
 }
 
 /// Sends `request` to `loomd`. `go` writes the repository path to `cd_file`, if any. Going to a
-/// repository without `cd_file` keeps the TUI open, as it cannot change the directory.
+/// repository needs `cd_file`.
 ///
 /// # Errors
 ///
@@ -369,25 +370,38 @@ async fn go_task(client: &Client, id: &TaskId, cd_file: Option<&Path>) -> Action
 }
 
 /// Marks the repository at `path` used, writes its path to `cd_file` and quits.
+///
+/// `path` is the root of an indexed repository. It must still be one: loomd registers the
+/// repository that holds a path, so a deleted checkout inside another repository would register
+/// and go to that one.
 async fn go_repo(client: &Client, path: PathBuf, cd_file: Option<&Path>) -> ActionResponse {
-    let Some(cd_file) = cd_file.filter(|file| !file.as_os_str().is_empty()) else {
-        return Ok(ActionOutcome {
-            task_id: None,
-            undone: None,
-            should_refresh: false,
-            should_quit: false,
-            message: Some(format!(
-                "{}: load `loom shell-init` to change to it",
-                path.display()
-            )),
-        });
+    let Some(cd_file) = cd_file else {
+        return Err(format!(
+            "{}: load `loom shell-init` to change to it",
+            path.display()
+        ));
     };
-    let request = RegisterRequest { path, on_use: true };
+    let gone = || {
+        format!(
+            "{} is no longer a git repository: run `loom repo scan`",
+            path.display()
+        )
+    };
+    if fs::symlink_metadata(path.join(".git")).is_err() {
+        return Err(gone());
+    }
+    let request = RegisterRequest {
+        path: path.clone(),
+        on_use: true,
+    };
     let repo: RepoSummary = client
         .post("/v1/repos/register", Some(&request))
         .await
         .map_err(|error| error.to_string())?;
-    write_cd_file(Some(cd_file), Some(&repo.identity.path))
+    if repo.identity.path != path {
+        return Err(gone());
+    }
+    write_cd_file(Some(cd_file), Some(&path))
         .map_err(|error| format!("cannot write the repository path: {error}"))?;
     Ok(QUIT)
 }

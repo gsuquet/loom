@@ -28,8 +28,8 @@ use loom::tui::keymap::QueueTab;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent};
 use loom_api::{
-    ContextName, Importance, Kind, RankReason, Relations, RepoSummary, SearchResult, SearchResults,
-    Status, Task, TaskDetail, TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary,
+    ContextName, Importance, Kind, RankReason, Relations, RepoList, RepoSummary, SearchResult,
+    SearchResults, Status, Task, TaskDetail, TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary,
 };
 use loom_config::repos::{ContextColor, ContextConfig};
 use ratatui::Terminal;
@@ -1582,6 +1582,7 @@ fn git_init(home: &std::path::Path, dir: &std::path::Path) {
     let output = Command::new("git")
         .current_dir(dir)
         .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("GIT_DIR")
@@ -1620,7 +1621,8 @@ async fn enter_on_a_repo_result_marks_it_used_and_changes_to_it_on_quit() {
         None,
         vec![ContextName::from_str("work").unwrap()],
         jiff::civil::date(2026, 10, 22),
-    );
+    )
+    .with_shell_cd(true);
     press(&mut state, KeyCode::Char('/'));
     let search_path = search_api_path(&["checkout".to_owned()], None, None, 10);
     let results: SearchResults = client.get(&search_path).await.unwrap();
@@ -1629,20 +1631,15 @@ async fn enter_on_a_repo_result_marks_it_used_and_changes_to_it_on_quit() {
         panic!("no repository result: {:?}", state.search_results);
     };
 
-    // Without the shell integration, the TUI stays open and names the path.
     let effect = press(&mut state, KeyCode::Enter);
     let request = ActionRequest::from_effect(effect).unwrap();
     assert_eq!(request, ActionRequest::GoRepo(found.path.clone()));
-    let outcome = execute_action(&client, request.clone(), None)
+
+    // Without a cd file, nothing is marked used.
+    let error = execute_action(&client, request.clone(), None)
         .await
-        .unwrap();
-    assert!(!outcome.should_quit);
-    let message = outcome.message.unwrap();
-    assert!(message.contains("loom shell-init"), "{message}");
-    assert!(
-        message.contains(&found.path.display().to_string()),
-        "{message}"
-    );
+        .unwrap_err();
+    assert!(error.contains("loom shell-init"), "{error}");
 
     let before: RepoSummary = client
         .get(&format!("/v1/repos/{}", found.slug))
@@ -1665,9 +1662,16 @@ async fn enter_on_a_repo_result_marks_it_used_and_changes_to_it_on_quit() {
         .unwrap();
     assert!(repo.last_used.is_some());
 
-    // A path that is no longer a repository is an error, and the shell gets no path.
+    // A deleted checkout inside another repository is an error: the parent is not registered
+    // and the shell gets no path.
     fs::remove_file(&cd_file).unwrap();
-    let gone = ActionRequest::GoRepo(sandbox.home().join("gone"));
-    assert!(execute_action(&client, gone, Some(&cd_file)).await.is_err());
+    git_init(&sandbox.home(), &sandbox.home());
+    fs::remove_dir_all(&repo_dir).unwrap();
+    let error = execute_action(&client, ActionRequest::GoRepo(found.path), Some(&cd_file))
+        .await
+        .unwrap_err();
+    assert!(error.contains("no longer a git repository"), "{error}");
     assert!(!cd_file.exists());
+    let repos: RepoList = client.get("/v1/repos").await.unwrap();
+    assert_eq!(repos.repos.len(), 1, "{:?}", repos.repos);
 }

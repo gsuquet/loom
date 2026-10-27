@@ -111,7 +111,8 @@ pub fn run(global: &GlobalArgs) -> Result<Exit> {
         .unwrap_or_default();
     let mut state = AppState::new(theme, global.context.clone(), contexts, local_today())
         .with_default_context(default_context)
-        .with_time_zone(jiff::tz::TimeZone::system());
+        .with_time_zone(jiff::tz::TimeZone::system())
+        .with_shell_cd(cd_file_from_env().is_some());
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

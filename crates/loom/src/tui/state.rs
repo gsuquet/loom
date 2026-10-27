@@ -475,6 +475,8 @@ pub struct AppState {
     pub status_generation: u64,
     /// Visible error state from a failed network request or daemon error.
     pub last_error: Option<String>,
+    /// Whether the shell function of `loom shell-init` changes directory when the TUI quits.
+    pub shell_cd: bool,
     /// SSE connection state.
     pub sse_state: SseState,
     /// Flag requesting the event loop to exit cleanly.
@@ -546,6 +548,7 @@ impl AppState {
             status_tone: ToastTone::Info,
             status_generation: 0,
             last_error: None,
+            shell_cd: false,
             sse_state: SseState::Disconnected,
             should_quit: false,
         }
@@ -577,6 +580,13 @@ impl AppState {
     #[must_use]
     pub fn with_time_zone(mut self, time_zone: jiff::tz::TimeZone) -> Self {
         self.time_zone = time_zone;
+        self
+    }
+
+    /// Sets whether the shell changes directory when the TUI quits (`LOOM_CD_FILE` is set).
+    #[must_use]
+    pub const fn with_shell_cd(mut self, shell_cd: bool) -> Self {
+        self.shell_cd = shell_cd;
         self
     }
 
@@ -1818,6 +1828,15 @@ impl AppState {
                     relations: RelationsView::default(),
                 });
                 AppEffect::FetchTask(task.id.clone())
+            }
+            // Quitting cannot change the directory without the shell function: stay open.
+            SearchResult::Repo(repo) if !self.shell_cd => {
+                let hint = format!(
+                    "{}: load `loom shell-init` to change to it",
+                    repo.path.display()
+                );
+                self.set_status(hint);
+                AppEffect::None
             }
             SearchResult::Repo(repo) => AppEffect::GoRepo(repo.path.clone()),
         }
@@ -3085,23 +3104,45 @@ mod tests {
         assert_eq!(state.search_query, "a");
     }
 
-    #[test]
-    fn enter_on_a_repo_result_goes_to_its_path() {
-        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
-        state.modal = Some(ModalKind::Search);
-        state.search_results = vec![SearchResult::Repo(loom_api::RepoMatch {
+    fn repo_result() -> SearchResult {
+        SearchResult::Repo(loom_api::RepoMatch {
             slug: "work/checkout".to_owned(),
             name: "checkout".to_owned(),
             context: "work".to_owned(),
             path: "/src/work/checkout".into(),
             score: 1.0,
             matched_fields: Vec::new(),
-        })];
+        })
+    }
+
+    #[test]
+    fn enter_on_a_repo_result_goes_to_its_path() {
+        let mut state =
+            AppState::new(test_theme(), None, Vec::new(), test_date()).with_shell_cd(true);
+        state.modal = Some(ModalKind::Search);
+        state.search_results = vec![repo_result()];
 
         let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(effect, AppEffect::GoRepo("/src/work/checkout".into()));
         assert_eq!(state.modal, None);
         assert_eq!(state.page_stack.len(), 0);
+    }
+
+    #[test]
+    fn enter_on_a_repo_result_without_the_shell_function_shows_a_hint() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.modal = Some(ModalKind::Search);
+        state.search_results = vec![repo_result()];
+
+        let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(effect, AppEffect::None);
+        assert_eq!(state.modal, None);
+        assert!(!state.should_quit);
+        assert_eq!(state.status_tone, ToastTone::Info);
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("/src/work/checkout: load `loom shell-init` to change to it")
+        );
     }
 
     #[test]

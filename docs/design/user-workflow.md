@@ -57,7 +57,7 @@ Three kinds of screens ([ADR-0014](../adr/0014-tui-architecture.md)):
 
 Object pages: Task (below), Review (below; `enter` on a Review task opens it), Run, Journal.
 
-Keys are layered: global (`1`–`9`, `:`, `/`, `?`, `q`), then the current view, then an open modal; `?` lists the current layer. In queues: `@` picks the context filter (all or one), `+` creates a task in the selected context, `g` sets the focus and quits so that the shell function from `loom shell-init` changes directory to the task's repo. In `/` search, `enter` on a repo has no object page to open: it marks the repo used and quits the same way, into the repo's checkout; without the shell integration the TUI stays open and shows the path.
+Keys are layered: global (`1`–`9`, `:`, `/`, `?`, `q`), then the current view, then an open modal; `?` lists the current layer. In queues: `@` picks the context filter (all or one), `+` creates a task in the selected context, `g` sets the focus and quits so that the shell function from `loom shell-init` changes directory to the task's repo. In `/` search, `enter` on a repo has no object page to open: it marks the repo used and quits the same way, into the repo's checkout; without the shell integration the TUI stays open and shows the path, and a checkout that is gone is an error, never its parent repo.
 
 The TUI follows loomd's change events (SSE) instead of polling. Colors are the terminal's 16 ANSI colors, so the TUI follows the terminal theme; context colors are chosen among them.
 
