@@ -189,21 +189,32 @@ fn two_pages_are_joined_through_link() {
 }
 
 #[test]
-fn search_pages_are_joined() {
+fn search_pages_are_joined_and_a_result_that_moved_is_kept_once() {
     let forge = FakeForge::start();
     let page_2 = format!("{SEARCH}&page=2");
+    let first = common::fake_forge::fixture("github/search-review-requested.json");
+    // Page 2 has #413, and #412 again: it moved while the pages were read.
+    let second = edit(&first, |search| {
+        let items = search["items"].as_array_mut().unwrap();
+        let mut other = items[0].clone();
+        other["number"] = 413.into();
+        other["html_url"] = "https://github.com/acme/shop/pull/413".into();
+        items.push(other);
+        search["total_count"] = 2.into();
+    });
     forge
         .route(
             Route::get(SEARCH)
-                .fixture("github/search-review-requested.json")
+                .body(first)
                 .header("link", &format!(r#"<{{base}}{page_2}>; rel="next""#)),
         )
-        .route(Route::get(&page_2).fixture("github/search-review-requested.json"));
+        .route(Route::get(&page_2).body(second));
     let search = client(&forge)
         .review_requests(ReviewRequests::Teams)
         .unwrap();
-    assert_eq!(search.items.len(), 2);
-    assert_eq!(search.total_count, 1);
+    let numbers: Vec<_> = search.items.iter().map(|item| item.key.number()).collect();
+    assert_eq!(numbers, [412, 413]);
+    assert_eq!(search.total_count, 2);
 }
 
 #[test]
@@ -380,6 +391,16 @@ fn an_error_on_a_later_page_fails_the_list() {
         matches!(error, ForgeError::Status { status: 502, .. }),
         "{error:?}"
     );
+}
+
+#[test]
+fn a_success_body_that_echoes_the_token_is_a_redacted_parse_error() {
+    let forge = FakeForge::start();
+    forge.route(Route::get("/user").body(format!(r#"{{"login":"carol","id":"{TOKEN}"}}"#)));
+    let error = client(&forge).user().unwrap_err();
+    assert!(matches!(error, ForgeError::Parse(_)), "{error:?}");
+    let shown = format!("{error} {error:?}");
+    assert!(!shown.contains(TOKEN), "{shown}");
 }
 
 #[test]

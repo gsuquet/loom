@@ -28,7 +28,13 @@ impl GithubClient {
     #[must_use]
     pub fn new(base: &ApiBase, token: Token, user_agent: &str) -> Self {
         Self {
-            http: Http::new(ForgeKind::Github, &base.rest, token, user_agent),
+            http: Http::new(
+                ForgeKind::Github,
+                &base.rest,
+                base.graphql.as_deref(),
+                token,
+                user_agent,
+            ),
             graphql: base.graphql.clone(),
         }
     }
@@ -59,13 +65,14 @@ impl GithubClient {
             if !(200..300).contains(&answer.status) {
                 return Err(self.http.error(&answer));
             }
-            join(parse(&answer.body)?);
+            join(parse(&answer.body).map_err(|error| self.http.parse_error(&error))?);
             let Some(next) = answer.headers.get("link").and_then(next_link) else {
                 return Ok(());
             };
-            if !self.http.on_base(&next) {
+            if !self.http.allowed(&next) {
                 return Err(ForgeError::Unexpected(format!(
-                    "the next page is not on the API host: {next}"
+                    "the next page is not on the API host: {}",
+                    self.http.redact(&next)
                 )));
             }
             url = next;
@@ -110,7 +117,7 @@ impl Forge for GithubClient {
     fn user(&self) -> Result<TokenUser, ForgeError> {
         let answer = self.get("/user")?;
         Ok(TokenUser {
-            user: parse_user(&answer.body)?,
+            user: parse_user(&answer.body).map_err(|error| self.http.parse_error(&error))?,
             scopes_header: answer.headers.get("x-oauth-scopes").map(str::to_owned),
         })
     }
@@ -126,7 +133,12 @@ impl GithubForge for GithubClient {
         self.pages(&search_query(requests), parse_search, |page| {
             all.total_count = page.total_count;
             all.incomplete_results |= page.incomplete_results;
-            all.items.extend(page.items);
+            // Results can move between pages while they are read: each MR once.
+            for item in page.items {
+                if !all.items.iter().any(|seen| seen.key == item.key) {
+                    all.items.push(item);
+                }
+            }
         })?;
         Ok(all)
     }
@@ -147,7 +159,7 @@ impl GithubForge for GithubClient {
             return Err(self.http.error(&answer));
         }
         Ok(Conditional::Modified {
-            value: parse_pull(&answer.body)?,
+            value: parse_pull(&answer.body).map_err(|error| self.http.parse_error(&error))?,
             etag: answer.headers.get("etag").map(str::to_owned),
         })
     }

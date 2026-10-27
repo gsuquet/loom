@@ -38,6 +38,7 @@ pub struct Route {
     method: String,
     path: String,
     when: Vec<(String, String)>,
+    body_contains: Vec<String>,
     times: Option<usize>,
     status: u16,
     headers: Vec<(String, String)>,
@@ -51,6 +52,7 @@ impl Route {
             method: method.to_owned(),
             path: path.to_owned(),
             when: Vec::new(),
+            body_contains: Vec::new(),
             times: None,
             status: 200,
             headers: Vec::new(),
@@ -68,8 +70,10 @@ impl Route {
         Self::new("POST", path)
     }
 
-    /// Answers with this status.
-    pub const fn status(mut self, status: u16) -> Self {
+    /// Answers with this status. Checked here, on the test thread, so that a bad route fails
+    /// the test instead of the server.
+    pub fn status(mut self, status: u16) -> Self {
+        StatusCode::from_u16(status).unwrap();
         self.status = status;
         self
     }
@@ -88,6 +92,8 @@ impl Route {
 
     /// Answers with this header too. `{base}` in the value is the base URL of the server.
     pub fn header(mut self, name: &str, value: &str) -> Self {
+        HeaderName::from_bytes(name.as_bytes()).unwrap();
+        HeaderValue::from_str(&value.replace(BASE, "http://127.0.0.1:1")).unwrap();
         self.headers.push((name.to_owned(), value.to_owned()));
         self
     }
@@ -96,6 +102,13 @@ impl Route {
     pub fn when(mut self, name: &str, value: &str) -> Self {
         self.when
             .push((name.to_ascii_lowercase(), value.to_owned()));
+        self
+    }
+
+    /// Matches only the requests whose body contains `text`, such as the name of a GraphQL
+    /// field: every GraphQL call is `POST /graphql`.
+    pub fn when_body(mut self, text: &str) -> Self {
+        self.body_contains.push(text.to_owned());
         self
     }
 
@@ -230,6 +243,10 @@ async fn answer(State(shared): State<Arc<Mutex<Shared>>>, request: Request) -> R
                 .when
                 .iter()
                 .all(|(name, value)| recorded.header(name) == Some(value.as_str()))
+            && route
+                .body_contains
+                .iter()
+                .all(|text| String::from_utf8_lossy(&recorded.body).contains(text.as_str()))
     });
     let Some(route) = found else {
         let mut response = Response::new(Body::from(format!(

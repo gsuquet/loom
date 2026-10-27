@@ -9,6 +9,7 @@ use ureq::Agent;
 use ureq::config::RedirectAuthHeaders;
 
 use super::{ForgeError, RateLimitWait, Token, sso_url};
+use crate::error::ParseError;
 
 /// Longest wait for one forge call.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -54,12 +55,14 @@ pub struct Answer {
     pub body: Vec<u8>,
 }
 
-/// The transport of one forge host: one token, one API base. The token is sent to that base
-/// only: redirects keep it only on the same host, and a next page on another base is refused.
+/// The transport of one forge host: one token, one REST base and an optional GraphQL
+/// endpoint. [`Http::send`] refuses any other URL, so the token goes there only; redirects keep
+/// it only on the same host.
 pub struct Http {
     agent: Agent,
     kind: ForgeKind,
     base: String,
+    graphql: Option<String>,
     token: Token,
 }
 
@@ -68,6 +71,7 @@ impl std::fmt::Debug for Http {
         f.debug_struct("Http")
             .field("kind", &self.kind)
             .field("base", &self.base)
+            .field("graphql", &self.graphql)
             .field("token", &self.token)
             .finish_non_exhaustive()
     }
@@ -75,14 +79,22 @@ impl std::fmt::Debug for Http {
 
 /// A request body and its content type.
 pub struct Body<'a> {
+    /// The `Content-Type` header.
     pub content_type: &'static str,
+    /// The bytes sent.
     pub bytes: &'a [u8],
 }
 
 impl Http {
-    /// A transport for the API at `base` (no trailing `/`). An `https` base is called over
-    /// HTTPS only, redirects included.
-    pub fn new(kind: ForgeKind, base: &str, token: Token, user_agent: &str) -> Self {
+    /// A transport for the REST API at `base` (no trailing `/`) and the GraphQL endpoint
+    /// `graphql`. An `https` base is called over HTTPS only, redirects included.
+    pub fn new(
+        kind: ForgeKind,
+        base: &str,
+        graphql: Option<&str>,
+        token: Token,
+        user_agent: &str,
+    ) -> Self {
         let base = base.trim_end_matches('/').to_owned();
         let agent: Agent = Agent::config_builder()
             .tls_config(tls_config())
@@ -97,6 +109,7 @@ impl Http {
             agent,
             kind,
             base,
+            graphql: graphql.map(str::to_owned),
             token,
         }
     }
@@ -106,14 +119,28 @@ impl Http {
         format!("{}{path_and_query}", self.base)
     }
 
-    /// True when `url` is on the base of this transport, so the token may go there.
-    pub fn on_base(&self, url: &str) -> bool {
-        url.strip_prefix(&self.base)
-            .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('?'))
+    /// True when `url` is under the REST base or is the GraphQL endpoint of this transport,
+    /// so the token may go there.
+    pub fn allowed(&self, url: &str) -> bool {
+        self.graphql.as_deref() == Some(url)
+            || url
+                .strip_prefix(&self.base)
+                .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('?'))
+    }
+
+    /// `text` with the token redacted.
+    pub fn redact(&self, text: &str) -> String {
+        self.token.redact(text)
+    }
+
+    /// A [`ParseError`] as a [`ForgeError::Parse`], redacted: a body can echo the token.
+    pub fn parse_error(&self, error: &ParseError) -> ForgeError {
+        ForgeError::Parse(self.token.redact(&error.to_string()))
     }
 
     /// `method url` with the token and the headers of the forge, `extra` headers, and `body`.
-    /// Any status is an [`Answer`]; only a failed transport is an error.
+    /// Any status is an [`Answer`]; a failed transport is an error, and so is a URL that is not
+    /// [allowed](Self::allowed), before anything is sent.
     pub fn send(
         &self,
         method: &str,
@@ -121,6 +148,12 @@ impl Http {
         extra: &[(&str, &str)],
         body: Option<Body<'_>>,
     ) -> Result<Answer, ForgeError> {
+        if !self.allowed(url) {
+            return Err(ForgeError::Unexpected(format!(
+                "{} is not on the API of this forge host",
+                self.token.redact(url)
+            )));
+        }
         let request = ureq::http::Request::builder()
             .method(method)
             .uri(url)
@@ -209,7 +242,7 @@ pub fn classify(status: u16, headers: &Headers, body: &[u8]) -> ForgeError {
             if let Some(sso) = headers.get("x-github-sso") {
                 return ForgeError::SsoRequired { url: sso_url(sso) };
             }
-            if headers.get("x-ratelimit-remaining") == Some("0")
+            if headers.get("x-ratelimit-remaining").map(str::trim) == Some("0")
                 || headers.get("retry-after").is_some()
             {
                 return ForgeError::RateLimited {
@@ -245,20 +278,30 @@ pub fn rate_limit_wait(headers: &Headers) -> RateLimitWait {
 }
 
 /// The URL of the `rel="next"` page of a `link` header. Pure.
+///
+/// Each link is `<url>; param; param`, links are separated by `,`. A URL can hold a `,`, so
+/// the URL is read up to its `>` before the parameters are split.
 pub fn next_link(link: &str) -> Option<String> {
-    link.split(',').find_map(|part| {
-        let mut pieces = part.split(';');
-        let url = pieces.next()?.trim();
-        let url = url.strip_prefix('<')?.strip_suffix('>')?;
-        pieces
-            .any(|param| {
-                param
-                    .trim()
-                    .strip_prefix("rel=")
-                    .is_some_and(|rel| rel.trim_matches('"').split(' ').any(|rel| rel == "next"))
-            })
-            .then(|| url.to_owned())
-    })
+    let mut rest = link;
+    loop {
+        let start = rest.find('<')?;
+        let after = &rest[start + 1..];
+        let end = after.find('>')?;
+        let url = &after[..end];
+        let tail = &after[end + 1..];
+        let params_end = tail.find('<').unwrap_or(tail.len());
+        let params = &tail[..params_end];
+        let next = params.split([';', ',']).any(|param| {
+            param
+                .trim()
+                .strip_prefix("rel=")
+                .is_some_and(|rel| rel.trim_matches('"').split(' ').any(|rel| rel == "next"))
+        });
+        if next {
+            return Some(url.to_owned());
+        }
+        rest = &tail[params_end..];
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -365,6 +408,11 @@ mod tests {
             ForgeError::RateLimited { wait: RateLimitWait::After(wait), .. }
                 if wait == Duration::from_secs(30)
         ));
+        let spaced = Headers::from([("x-ratelimit-remaining", " 0 ")]);
+        assert!(matches!(
+            classify(403, &spaced, RATE),
+            ForgeError::RateLimited { .. }
+        ));
         assert!(matches!(
             classify(429, &Headers::default(), b""),
             ForgeError::RateLimited {
@@ -452,6 +500,11 @@ mod tests {
         assert_eq!(next_link(last), None);
         assert_eq!(next_link(""), None);
         assert_eq!(next_link("garbage; rel=\"next\""), None);
+        // A comma in the URL.
+        assert_eq!(
+            next_link(r#"<https://h/x?labels=a,b&page=1>; rel="prev", <https://h/x?labels=a,b&page=3>; rel="next""#).as_deref(),
+            Some("https://h/x?labels=a,b&page=3")
+        );
         // Several relations in one parameter.
         assert_eq!(
             next_link(r#"<https://h/x?page=3>; rel="last next""#).as_deref(),

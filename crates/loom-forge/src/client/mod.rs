@@ -13,7 +13,6 @@ use std::time::Duration;
 use loom_api::{ForgeKind, Timestamp};
 use thiserror::Error;
 
-use crate::error::ParseError;
 use crate::github::{Review, SearchPage};
 use crate::model::{FileDiff, ForgeUser, Mr, MrKey, Thread};
 
@@ -186,9 +185,10 @@ pub enum ForgeError {
     /// No answer, or an answer that cannot be read.
     #[error("no usable answer from the forge: {0}")]
     Transport(String),
-    /// A success answer whose body is not the expected payload.
-    #[error(transparent)]
-    Parse(#[from] ParseError),
+    /// A success answer whose body is not the expected payload. The text of the
+    /// [`ParseError`], redacted.
+    #[error("{0}")]
+    Parse(String),
     /// A success answer that loom does not follow, such as a next page on another host.
     #[error("unexpected answer from the forge: {0}")]
     Unexpected(String),
@@ -302,6 +302,10 @@ mod tests {
         let gitlab = api_base(ForgeKind::Gitlab, "gitlab.company-a.example");
         assert_eq!(gitlab.rest, "https://gitlab.company-a.example/api/v4");
         assert_eq!(gitlab.graphql, None);
+        assert_eq!(
+            api_base(ForgeKind::Gitlab, "gitlab.com").rest,
+            "https://gitlab.com/api/v4"
+        );
     }
 
     #[test]
