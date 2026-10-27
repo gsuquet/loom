@@ -313,6 +313,22 @@ fn discussion_positions() {
         discussion
     };
     all.push(unchanged);
+    // A range from a removed line to an added line, in a renamed file.
+    let mut mixed = all[0].clone();
+    mixed["id"] = "mixed".into();
+    mixed["notes"][0]["position"] = serde_json::json!({
+        "base_sha": M2, "start_sha": M2, "head_sha": V2,
+        "old_path": "src/auth/token.rs", "new_path": "src/auth/jwt.rs",
+        "position_type": "text", "old_line": null, "new_line": 11,
+        "line_range": {
+            "start": {"line_code": "x_10_", "type": "old", "old_line": 10, "new_line": null},
+            "end": {"line_code": "x__11", "type": "new", "old_line": null, "new_line": 11}
+        }
+    });
+    all.push(mixed);
+    // A resolvable general thread.
+    all[2]["notes"][0]["resolvable"] = true.into();
+    all[2]["notes"][0]["resolved"] = true.into();
     let threads = parse_discussions(&serde_json::to_vec(&all).unwrap(), &sha(V2)).unwrap();
     let ThreadSubject::Lines { anchor } = &threads[0].subject else {
         panic!("{:?}", threads[0])
@@ -329,12 +345,25 @@ fn discussion_positions() {
         }
     );
     // The system note of page 2 is dropped.
-    assert_eq!(threads.len(), 4);
+    assert_eq!(threads.len(), 5);
+    assert!(threads[2].subject == ThreadSubject::General && threads[2].resolved);
     let ThreadSubject::Lines { anchor } = &threads[3].subject else {
         panic!("{:?}", threads[3])
     };
     assert_eq!((anchor.side, anchor.start_line), (Side::New, 8));
     assert!(!threads[3].outdated);
+    let ThreadSubject::Lines { anchor } = &threads[4].subject else {
+        panic!("{:?}", threads[4])
+    };
+    assert_eq!(
+        (
+            anchor.path.as_str(),
+            anchor.side,
+            anchor.start_line,
+            anchor.end_line
+        ),
+        ("src/auth/jwt.rs", Side::New, 11, 11)
+    );
 
     let bad = edit(&serde_json::to_vec(&discussions()).unwrap(), |all| {
         all[0]["notes"][0]["created_at"] = serde_json::Value::Null;
@@ -401,6 +430,8 @@ fn error_bodies() {
     let error = parse_error(fixture!("error-403-insufficient-scope.json")).unwrap();
     assert_eq!(error.message, "insufficient_scope");
     assert_eq!(error.details.len(), 1);
+    let error = parse_error(br#"{"message": ["405 Method Not Allowed"]}"#).unwrap();
+    assert_eq!(error.message, "405 Method Not Allowed");
     assert!(matches!(
         parse_error(b"{}"),
         Err(ParseError::Invalid { .. })

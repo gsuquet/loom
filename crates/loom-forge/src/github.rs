@@ -487,7 +487,9 @@ struct ReviewThread {
     original_line: Option<u32>,
     start_line: Option<u32>,
     original_start_line: Option<u32>,
-    subject_type: SubjectType,
+    start_diff_side: Option<DiffSide>,
+    /// Missing on older GitHub Enterprise Server versions: a line thread then.
+    subject_type: Option<SubjectType>,
     comments: Connection<ThreadComment>,
 }
 
@@ -547,10 +549,11 @@ pub fn parse_review_threads(body: &[u8]) -> Result<ReviewThreadsPage, ParseError
     let mut threads = Vec::new();
     let mut threads_with_more_comments = Vec::new();
     for thread in pull.review_threads.nodes {
-        if thread.comments.page_info.has_next_page {
-            threads_with_more_comments.push(thread.id.clone());
-        }
+        let more_comments = thread.comments.page_info.has_next_page;
         if let Some(thread) = review_thread(thread, &pull.head_ref_oid) {
+            if more_comments {
+                threads_with_more_comments.push(thread.id.clone());
+            }
             threads.push(thread);
         }
     }
@@ -591,13 +594,19 @@ fn review_thread(thread: ReviewThread, head: &Sha) -> Option<Thread> {
         (
             thread.original_line,
             thread.original_start_line,
-            original_sha.clone(),
+            original_sha,
         )
     } else {
         (thread.line, thread.start_line, Some(head.clone()))
     };
-    let file_sha = sha.clone().or(original_sha).unwrap_or_else(|| head.clone());
-    let subject = match (thread.subject_type, end, sha) {
+    let file_sha = sha.clone().unwrap_or_else(|| head.clone());
+    // A range that starts on the other side is kept on its last line.
+    let start = start.filter(|_| {
+        thread
+            .start_diff_side
+            .is_none_or(|side| side == thread.diff_side)
+    });
+    let subject = match (thread.subject_type.unwrap_or(SubjectType::Line), end, sha) {
         (SubjectType::Line, Some(end), Some(sha)) => ThreadSubject::Lines {
             anchor: Anchor {
                 path: thread.path,
@@ -605,7 +614,7 @@ fn review_thread(thread: ReviewThread, head: &Sha) -> Option<Thread> {
                     DiffSide::Left => Side::Old,
                     DiffSide::Right => Side::New,
                 },
-                start_line: start.unwrap_or(end).min(end),
+                start_line: crate::model::range_start(start, end),
                 end_line: end,
                 sha,
             },

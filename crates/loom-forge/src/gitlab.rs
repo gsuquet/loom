@@ -334,25 +334,27 @@ fn subject(position: Position) -> Option<ThreadSubject> {
             Side::New => point.new_line,
             Side::Old => point.old_line,
         };
-        let path = match side {
-            Side::New => position.new_path.clone(),
-            Side::Old => position.old_path.clone(),
-        };
+        // The path in the head on both sides, as on GitHub.
+        let path = position
+            .new_path
+            .clone()
+            .or_else(|| position.old_path.clone());
         let end = line(&LinePoint {
             old_line: position.old_line,
             new_line: position.new_line,
         });
         if let (Some(end), Some(path)) = (end, path) {
+            // A range that starts on the other side has no start line on this side: it is
+            // kept on its last line.
             let start = position
                 .line_range
                 .as_ref()
-                .and_then(|range| line(&range.start))
-                .unwrap_or(end);
+                .and_then(|range| line(&range.start));
             return Some(ThreadSubject::Lines {
                 anchor: Anchor {
                     path,
                     side,
-                    start_line: start.min(end),
+                    start_line: crate::model::range_start(start, end),
                     end_line: end,
                     sha,
                 },
@@ -390,7 +392,10 @@ struct Note {
 /// System notes ("added 1 commit") are dropped, and a discussion with only system notes is
 /// dropped. A discussion on lines is outdated when its position is not on `head`, the current
 /// head SHA: GitLab moves the position of a discussion to the new version when its lines are
-/// still in the diff. A discussion is resolved when all its resolvable notes are resolved.
+/// still in the diff. Two limits of that rule: until GitLab has moved the positions after a
+/// push (a background job), every discussion on lines reads as outdated; a discussion on one
+/// commit of the MR (commit view) is always outdated. A discussion is resolved when all its
+/// resolvable notes are resolved; a general discussion can be resolvable too.
 ///
 /// # Errors
 ///
@@ -594,6 +599,19 @@ pub fn parse_error(body: &[u8]) -> Result<ErrorBody, ParseError> {
             message: error,
             details: error_description.into_iter().collect(),
         }),
+        (Some(serde_json::Value::Array(items)), None) if !items.is_empty() => {
+            let details: Vec<String> = items
+                .into_iter()
+                .map(|item| match item {
+                    serde_json::Value::String(text) => text,
+                    other => other.to_string(),
+                })
+                .collect();
+            Ok(ErrorBody {
+                message: details.first().cloned().unwrap_or_default(),
+                details,
+            })
+        }
         (Some(_) | None, None) => Err(invalid(PAYLOAD, "no message and no error")),
     }
 }

@@ -39,7 +39,9 @@ tasks/<id>/mrs/<provider>-<key>/       # key with every byte but [A-Za-z0-9_-] a
 - `threads.json` is a snapshot, not a log: a `jsonl` file under `merge=union` (multi-machine storage) would duplicate every rewritten line. The thread history is the forge's; what I did is in `events.jsonl` (`review` events).
 - A thread: forge ID, file-level or line anchor (path, side, start and end line, head SHA), outdated, resolved, comments (author, body, time, forge IDs). General comments are threads without anchor. GitLab system notes are dropped.
   - The anchor is the thread's position in the newest version it applies to: the current version when the thread is not outdated (GitHub `line`, GitLab moves `position` to the new version when it can), otherwise the version it was written on (GitHub `originalLine` and `originalCommit`, GitLab `position`). Both forges then give the same anchor for the same thread.
-  - GitLab has no `outdated` flag: a discussion is outdated when its `position.head_sha` is not the current head.
+  - The path is the path in the head on both sides. A range that starts on the other side, or after its end, is kept on its last line, where both forges show the thread.
+  - GitLab has no `outdated` flag: a discussion is outdated when its `position.head_sha` is not the current head. Until GitLab has moved the positions after a push (a background job), every line discussion reads as outdated; a discussion on one commit (commit view) always does. GitHub `isOutdated` (the hunk changed) and GitLab tracing (the line changed) can disagree on edge cases.
+  - MR keys ignore the ASCII case of the project, as both forges do; the mirror directory name is lowercase and at most 200 bytes.
 - The store is backed up (storage): patches and threads hold client code and are pushed to the context's backup remote. That remote must be allowed by the client, as for every file of the store.
 
 ## Git: refs and diffs

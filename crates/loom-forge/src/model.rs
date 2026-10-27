@@ -16,12 +16,23 @@ pub use crate::key::{MrKey, MrKeyError};
 pub struct ShaError(pub String);
 
 /// The full SHA of a commit: 40 (SHA-1) or 64 (SHA-256) lowercase hexadecimal digits.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-#[schemars(with = "String")]
 pub struct Sha(String);
+
+impl JsonSchema for Sha {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Sha".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "The full SHA of a commit: 40 or 64 lowercase hexadecimal digits.",
+            "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+        })
+    }
+}
 
 impl Sha {
     /// The SHA as text.
@@ -216,7 +227,7 @@ pub enum Side {
 /// positions in the diff.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Anchor {
-    /// The path of the file, in the head when `side` is `new`, in the base when it is `old`.
+    /// The path of the file in the head, on both sides (a renamed file has its new path).
     pub path: String,
     /// The side of the lines.
     pub side: Side,
@@ -226,6 +237,13 @@ pub struct Anchor {
     pub end_line: u32,
     /// The head SHA of the version that the line numbers apply to.
     pub sha: Sha,
+}
+
+/// The first line of a range that ends on `end`: `start` when it is on the same side and not
+/// after `end`, otherwise `end` (a range across both sides is kept on its last line, where both
+/// forges show the thread).
+pub(crate) fn range_start(start: Option<u32>, end: u32) -> u32 {
+    start.filter(|start| *start <= end).unwrap_or(end)
 }
 
 /// What a thread is on.
@@ -275,7 +293,8 @@ pub struct Thread {
     pub subject: ThreadSubject,
     /// True when the lines of the thread are not in the current diff.
     pub outdated: bool,
-    /// True when the thread is resolved. Always false for a general comment.
+    /// True when the thread is resolved. A general comment is resolved only on GitLab, when
+    /// it is a resolvable thread.
     pub resolved: bool,
     /// The comments, oldest first. Never empty.
     pub comments: Vec<Comment>,

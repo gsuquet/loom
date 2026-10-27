@@ -28,6 +28,9 @@ pub enum MrKeyError {
     /// A GitLab project is in a group: at least two segments.
     #[error("`{0}` is not a GitLab project: expected `<group>/<project>`")]
     GitlabProject(String),
+    /// The directory name of the key would be longer than [`MAX_DIR_NAME`] bytes.
+    #[error("`{0}` is too long: its directory name is more than {MAX_DIR_NAME} bytes")]
+    TooLong(String),
     /// The directory name does not start with `github-` or `gitlab-`, or is not encoded as
     /// [`MrKey::dir_name`] encodes it.
     #[error("`{0}` is not the directory name of an MR")]
@@ -38,7 +41,11 @@ pub enum MrKeyError {
 ///
 /// The text form is `<project>#<number>` for GitHub and `<project>!<number>` for GitLab. The
 /// separator gives the forge.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Both forges ignore the case of project paths, so two keys that differ only in the ASCII case
+/// of the project are equal and have one directory name. The text form keeps the spelling it
+/// was made with.
+#[derive(Debug, Clone)]
 pub struct MrKey {
     forge: ForgeKind,
     project: String,
@@ -65,11 +72,15 @@ impl MrKey {
             }
             ForgeKind::Github | ForgeKind::Gitlab => {}
         }
-        Ok(Self {
+        let key = Self {
             forge,
             project: project.to_owned(),
             number,
-        })
+        };
+        if key.dir_name().len() > MAX_DIR_NAME {
+            return Err(MrKeyError::TooLong(key.to_string()));
+        }
+        Ok(key)
     }
 
     /// Parses `acme/shop#412` (GitHub) or `company-a/checkout!88` (GitLab).
@@ -109,15 +120,17 @@ impl MrKey {
         self.number
     }
 
-    /// The name of the mirror directory: `<forge>-<key>`, with every character other than an
-    /// ASCII letter, digit, `-` or `_` encoded as `%XX`, such as `github-acme%2Fshop%23412`.
+    /// The name of the mirror directory: `<forge>-<key>` in ASCII lowercase, with every
+    /// character other than an ASCII letter, digit, `-` or `_` encoded as `%XX`, such as
+    /// `github-acme%2Fshop%23412`.
     ///
     /// The name has no `/`, no `.` and no `%` other than an encoded byte, so it is one path
-    /// component and never `.` or `..`.
+    /// component and never `.` or `..`. It is at most [`MAX_DIR_NAME`] bytes, and the same on a
+    /// file system that ignores case.
     #[must_use]
     pub fn dir_name(&self) -> String {
         let mut name = format!("{}-", self.forge);
-        for byte in self.to_string().bytes() {
+        for byte in self.to_string().to_ascii_lowercase().bytes() {
             if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
                 name.push(char::from(byte));
             } else {
@@ -149,6 +162,28 @@ impl MrKey {
             return Err(error());
         }
         Ok(key)
+    }
+}
+
+/// The longest directory name of a key, in bytes: below the 255-byte limit of a path component,
+/// with room for a suffix.
+pub const MAX_DIR_NAME: usize = 200;
+
+impl PartialEq for MrKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.forge == other.forge
+            && self.number == other.number
+            && self.project.eq_ignore_ascii_case(&other.project)
+    }
+}
+
+impl Eq for MrKey {}
+
+impl std::hash::Hash for MrKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.forge.hash(state);
+        self.number.hash(state);
+        self.project.to_ascii_lowercase().hash(state);
     }
 }
 
@@ -191,7 +226,7 @@ impl JsonSchema for MrKey {
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "type": "string",
-            "description": "The key of an MR: `<project>#<number>` for GitHub, `<project>!<number>` for GitLab.",
+            "description": "The key of an MR: `<project>#<number>` for GitHub (`<owner>/<repository>`), `<project>!<number>` for GitLab. Segments `.` and `..` are refused.",
             "pattern": r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+[#!][1-9][0-9]*$",
         })
     }
@@ -307,6 +342,10 @@ mod tests {
                 MrKeyError::Project("acme/shop!1".to_owned()),
             ),
             ("acme/shöp#1", MrKeyError::Project("acme/shöp".to_owned())),
+            (
+                &format!("g/{}x!1", "a.".repeat(60)),
+                MrKeyError::TooLong(format!("g/{}x!1", "a.".repeat(60))),
+            ),
         ] {
             assert_eq!(MrKey::parse(text), Err(expected), "{text}");
         }
@@ -328,6 +367,19 @@ mod tests {
         ] {
             assert!(MrKey::from_dir_name(name).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn keys_ignore_the_case_of_the_project() {
+        let canonical = MrKey::parse("Acme/Shop#412").unwrap();
+        let typed = MrKey::parse("acme/shop#412").unwrap();
+        assert_eq!(canonical, typed);
+        assert_eq!(canonical.to_string(), "Acme/Shop#412");
+        assert_eq!(canonical.dir_name(), typed.dir_name());
+        assert_eq!(canonical.dir_name(), "github-acme%2Fshop%23412");
+        assert!(MrKey::from_dir_name("github-Acme%2Fshop%23412").is_err());
+        assert_ne!(typed, MrKey::parse("acme/shop#413").unwrap());
+        assert_ne!(typed, MrKey::parse("acme/shop!412").unwrap());
     }
 
     #[test]
@@ -401,6 +453,7 @@ mod tests {
                 "{name}"
             );
             assert!(!name.contains(".."), "{name}");
+            assert!(name.len() <= super::MAX_DIR_NAME, "{name}");
         }
     }
 

@@ -309,11 +309,25 @@ fn review_threads_pages_ranges_files_and_pending_comments() {
         pending["id"] = "PRRT_pending".into();
         pending["comments"]["nodes"][0]["state"] = "PENDING".into();
         nodes.as_array_mut().unwrap().push(pending);
+        // A range from the left side to the right side, from an old GitHub Enterprise Server
+        // without `subjectType`.
+        let mut mixed = nodes[1].clone();
+        mixed["id"] = "PRRT_mixed".into();
+        mixed["diffSide"] = "RIGHT".into();
+        mixed["startDiffSide"] = "LEFT".into();
+        mixed["startLine"] = 3.into();
+        mixed.as_object_mut().unwrap().remove("subjectType");
+        nodes.as_array_mut().unwrap().push(mixed);
+        // A start after the end.
+        let mut reversed = nodes[1].clone();
+        reversed["id"] = "PRRT_reversed".into();
+        reversed["startLine"] = 50.into();
+        nodes.as_array_mut().unwrap().push(reversed);
     });
     let page = parse_review_threads(&body).unwrap();
     assert_eq!(page.next_cursor.as_deref(), Some("Y3Vyc29yOnYyOpK0"));
     assert_eq!(page.threads_with_more_comments, ["PRRT_kwDOAAATic5AAAAB"]);
-    assert_eq!(page.threads.len(), 2);
+    assert_eq!(page.threads.len(), 4);
     assert_eq!(
         page.threads[0].subject,
         ThreadSubject::File {
@@ -328,6 +342,18 @@ fn review_threads_pages_ranges_files_and_pending_comments() {
         (anchor.side, anchor.start_line, anchor.end_line),
         (Side::Old, 4, 6)
     );
+    // Kept on their last line.
+    for thread in &page.threads[2..] {
+        let ThreadSubject::Lines { anchor } = &thread.subject else {
+            panic!("{thread:?}")
+        };
+        assert_eq!(
+            (anchor.start_line, anchor.end_line),
+            (6, 6),
+            "{}",
+            thread.id
+        );
+    }
 }
 
 #[test]

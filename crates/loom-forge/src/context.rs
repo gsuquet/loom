@@ -56,7 +56,8 @@ pub struct MrContexts<'a> {
     pub finder: &'a ContextName,
 }
 
-/// The context of the MR of project `path` on `host`, first match wins:
+/// The context of the MR of project `path` on `host` (a host name without port, as in
+/// `match.hosts`), first match wins:
 ///
 /// 1. the context of the indexed clone, when the clone has one by a repository override,
 ///    `match.hosts` or `match.paths`; a clone in `default_context` or unassigned does not count;
