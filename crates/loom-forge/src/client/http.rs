@@ -509,7 +509,8 @@ mod tests {
 
     #[test]
     fn messages_and_details_of_error_bodies() {
-        let ForgeError::Unprocessable { message, details } = classify(ForgeKind::Github,
+        let ForgeError::Unprocessable { message, details } = classify(
+            ForgeKind::Github,
             422,
             &Headers::default(),
             br#"{"message":"Unprocessable Entity","errors":["Review Can not approve your own pull request",{"message":"other"},{"code":"x"}]}"#,

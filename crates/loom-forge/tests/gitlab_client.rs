@@ -599,3 +599,51 @@ fn the_token_is_in_no_debug_output_and_no_error() {
         assert!(shown.contains(REDACTED), "{shown}");
     }
 }
+
+#[test]
+fn a_401_on_approve_reads_the_approvals_to_tell_why() {
+    let unauthorized = r#"{"message":"401 Unauthorized"}"#;
+    // Approved already (a resumed publish): a success.
+    let forge = FakeForge::start();
+    forge
+        .route(Route::post(APPROVE).status(401).body(unauthorized))
+        .route(Route::get(APPROVALS).fixture("gitlab/approve.response.json"));
+    let approvals = client(&forge).approve(MR_88, &sha(V2)).unwrap();
+    assert!(approvals.user_has_approved);
+    assert_eq!(
+        forge.lines(),
+        [format!("POST {APPROVE}"), format!("GET {APPROVALS}")]
+    );
+    // Not approved: GitLab refuses the approval itself, the token is good.
+    let forge = FakeForge::start();
+    let not_approved = edit(
+        &common::fake_forge::fixture("gitlab/approve.response.json"),
+        |body| body["user_has_approved"] = false.into(),
+    );
+    forge
+        .route(Route::post(APPROVE).status(401).body(unauthorized))
+        .route(Route::get(APPROVALS).body(not_approved));
+    let error = client(&forge).approve(MR_88, &sha(V2)).unwrap_err();
+    assert!(
+        matches!(error, ForgeError::ApprovalRefused { .. }),
+        "{error:?}"
+    );
+    // A token that is not valid fails the approvals too.
+    let forge = FakeForge::start();
+    forge
+        .route(
+            Route::post(APPROVE)
+                .status(401)
+                .fixture("gitlab/error-401.json"),
+        )
+        .route(
+            Route::get(APPROVALS)
+                .status(401)
+                .fixture("gitlab/error-401.json"),
+        );
+    let error = client(&forge).approve(MR_88, &sha(V2)).unwrap_err();
+    assert!(
+        matches!(error, ForgeError::Unauthorized { .. }),
+        "{error:?}"
+    );
+}

@@ -193,6 +193,14 @@ pub enum ForgeError {
         /// The message of the forge, for humans.
         message: String,
     },
+    /// 401 (GitLab) on an approval with a valid token: GitLab refuses the approval, for
+    /// example to the author without self-approval or when the project asks for a password.
+    /// The token is good: do not resolve it again.
+    #[error("the forge refused the approval: {message}")]
+    ApprovalRefused {
+        /// The message of the forge, for humans.
+        message: String,
+    },
     /// 409 (GitLab): the request is not valid for the current state, such as an approval
     /// with a `sha` that is not the head of the merge request.
     #[error("the forge refused the request as in conflict (409): {message}")]
@@ -526,7 +534,10 @@ pub trait GitlabForge: Forge {
     ///
     /// # Errors
     ///
-    /// [`ForgeError`]; [`ForgeError::Conflict`] when `sha` is not the head any more.
+    /// [`ForgeError`]; [`ForgeError::Conflict`] when `sha` is not the head any more;
+    /// [`ForgeError::ApprovalRefused`] when GitLab refuses the approval with a valid token. An
+    /// approval that GitLab refuses because I approved already is a success: a resumed publish
+    /// sends it again.
     fn approve(&self, mr: GitlabMr, sha: &Sha) -> Result<Approvals, ForgeError>;
 
     /// The approvals of the merge request.

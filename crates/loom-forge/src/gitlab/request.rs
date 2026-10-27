@@ -55,9 +55,11 @@ pub enum LineKind {
 pub struct DiffLine {
     /// What the line is.
     pub kind: LineKind,
-    /// The line in the old file (see the type for an added line), from 1.
+    /// The line in the old file (see the type for an added line), from 1; 0 for an added line
+    /// before the first line of the old file, such as in a new file (`@@ -0,0 +1,n @@`).
     pub old: u32,
-    /// The line in the new file (see the type for a removed line), from 1.
+    /// The line in the new file (see the type for a removed line), from 1; 0 for a removed
+    /// line before the first line of the new file, such as in a deleted file.
     pub new: u32,
 }
 
@@ -167,7 +169,8 @@ impl DraftNoteBody {
     /// A comment on lines `start` to `end` of one hunk of a file, in the version of `refs`.
     /// `old_path` and `new_path` are the paths of the file in the base and in the head (the
     /// same path when the file is not renamed). One line when `start` equals `end`; otherwise a
-    /// `line_range` with the line code of each end, and the position on `end`.
+    /// `line_range` with the line code of each end, and the position on `end`. `start` comes
+    /// before `end`, in the same hunk: GitLab refuses another range with 400.
     #[must_use]
     pub fn on_lines(
         note: &str,
@@ -332,6 +335,11 @@ mod tests {
         assert_eq!(
             line_code("", 1, 2),
             "da39a3ee5e6b4b0d3255bfef95601890afd80709_1_2"
+        );
+        // The first line of a new file: no old line before it.
+        assert_eq!(
+            line_code(JWT, 0, 1),
+            "d6731b5918e52205f2871b9c60cea4aed6807584_0_1"
         );
     }
 

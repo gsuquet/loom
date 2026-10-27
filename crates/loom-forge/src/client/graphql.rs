@@ -236,6 +236,10 @@ impl GithubClient {
             | ForgeError::Forbidden { .. }
             | ForgeError::NotFound { .. }
             | ForgeError::Unprocessable { .. }
+            | ForgeError::BadRequest { .. }
+            | ForgeError::InsufficientScope { .. }
+            | ForgeError::ApprovalRefused { .. }
+            | ForgeError::Conflict { .. }
             | ForgeError::Status { .. }
             | ForgeError::Transport(_)
             | ForgeError::Unexpected(_)) => error,

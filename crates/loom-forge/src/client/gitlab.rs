@@ -284,8 +284,22 @@ impl GitlabForge for GitlabClient {
             "POST",
             &self.mr_path(mr, "/approve", false),
             &ApproveBody::new(sha.clone()),
-        )?;
-        self.parse(&answer.body, parse_approvals)
+        );
+        match answer {
+            Ok(answer) => self.parse(&answer.body, parse_approvals),
+            // GitLab answers 401 when it refuses the approval itself: already approved, an
+            // author without self-approval, an approval password. The approvals tell these
+            // apart from a token that is not valid, which fails them with 401 too.
+            Err(ForgeError::Unauthorized { message }) => {
+                let approvals = self.approvals(mr)?;
+                if approvals.user_has_approved {
+                    Ok(approvals)
+                } else {
+                    Err(ForgeError::ApprovalRefused { message })
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn approvals(&self, mr: GitlabMr) -> Result<Approvals, ForgeError> {
