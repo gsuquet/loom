@@ -32,3 +32,4 @@ pub fn edit(body: &[u8], change: impl FnOnce(&mut serde_json::Value)) -> Vec<u8>
     change(&mut value);
     serde_json::to_vec(&value).unwrap()
 }
+pub mod fake_forge;

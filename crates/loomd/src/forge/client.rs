@@ -1,5 +1,6 @@
 //! The forge calls of the credential check, behind [`ForgeApi`]: `GET /user` and, on GitLab,
-//! `GET /personal_access_tokens/self`. The MR clients implement the same trait later.
+//! `GET /personal_access_tokens/self`. The MR clients of `loom_forge::client` take its place
+//! when loomd polls the forges.
 
 use std::time::Duration;
 

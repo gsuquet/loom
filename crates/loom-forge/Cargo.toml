@@ -19,8 +19,15 @@ serde.workspace = true
 # The forge payloads.
 serde_json.workspace = true
 thiserror.workspace = true
+# The TLS setup of every HTTPS client of loom (`loom_update::tls`).
+loom-update.workspace = true
+# Blocking HTTP client of the forge APIs, as in the updater and the telemetry exporter.
+ureq.workspace = true
 
 [dev-dependencies]
+# The fake forge server of the client tests.
+axum.workspace = true
+tokio.workspace = true
 # `match.hosts` rules of the context table tests.
 loom-config.workspace = true
 

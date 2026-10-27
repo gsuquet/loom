@@ -1,9 +1,10 @@
 //! MR review (ADR-0016): the provider-neutral model of an MR, the parsers of the GitHub and
 //! GitLab payloads, MR keys and the context of an MR.
 //!
-//! Every module is pure (no I/O, no clock, no async runtime). The HTTP clients come in a later
-//! `client` module.
+//! Every module is pure (no I/O, no clock, no async runtime), except [`client`], the HTTP
+//! clients of the forges.
 
+pub mod client;
 mod context;
 mod error;
 pub mod github;
