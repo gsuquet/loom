@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>gsuquet/renovate:renovate-default"],
+  "description": "Weekly dependency updates for loom. Renovate owns version updates: no dependabot.yml.",
+  "schedule": ["* 0-5 * * 1"],
+  "rebaseWhen": "conflicted",
+  "platformCommit": "enabled",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["* 0-5 * * 1"]
+  },
+  "vulnerabilityAlerts": {
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "description": "Crates at 1.0 or later: one PR for every minor and patch update.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "!/^0\\./",
+      "groupName": "cargo minor and patch"
+    },
+    {
+      "description": "Crates below 1.0: a minor update can break, so only patch updates join the group.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["patch"],
+      "matchCurrentVersion": "/^0\\./",
+      "groupName": "cargo minor and patch"
+    },
+    {
+      "description": "OpenTelemetry crates only build at matching versions: one PR for the family.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["opentelemetry", "opentelemetry-*", "opentelemetry_*", "tracing-opentelemetry"],
+      "groupName": "opentelemetry"
+    },
+    {
+      "description": "gitoxide crates only build at matching versions: one PR for the family.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["gix", "gix-*"],
+      "groupName": "gitoxide"
+    },
+    {
+      "description": "Rust toolchain in .mise/config.toml: its own PR, a new release can add clippy lints.",
+      "matchManagers": ["mise"],
+      "matchDepNames": ["rust"],
+      "groupName": "Rust toolchain"
+    },
+    {
+      "description": "Other tools pinned in .mise/config.toml: one PR for minor and patch updates.",
+      "matchManagers": ["mise"],
+      "matchDepNames": ["!rust"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "mise tools"
+    }
+  ]
+}
