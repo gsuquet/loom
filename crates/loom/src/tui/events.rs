@@ -62,6 +62,7 @@ pub const fn type_name(event: &Event) -> &'static str {
         Event::Edited { .. } => "edited",
         Event::StatusChanged(_) => "status_changed",
         Event::NoteLogged { .. } => "note_logged",
+        Event::NotesChanged(_) => "notes_changed",
         Event::Undone { .. } => "undone",
     }
 }
@@ -122,6 +123,7 @@ pub fn summary(event: &Event) -> String {
         Event::Edited { changes } => changes_text(changes),
         Event::StatusChanged(change) => change_text(&FieldChange::Status(change.clone())),
         Event::NoteLogged { text } => text.lines().next().unwrap_or_default().to_owned(),
+        Event::NotesChanged(_) => "the notes changed".to_owned(),
         Event::Undone { changes, .. } => format!("undone: {}", changes_text(changes)),
     }
 }
@@ -304,6 +306,24 @@ mod tests {
         };
         let rows = rows(&log, &TimeZone::UTC, None, None);
         assert_eq!(rows[0].summary, "context: personal -> acme");
+    }
+
+    #[test]
+    fn a_notes_event_shows_that_the_notes_changed_without_their_text() {
+        let hash = |c: char| loom_api::NotesHash::from_hex(c.to_string().repeat(64)).unwrap();
+        let notes = Event::NotesChanged(Change {
+            from: hash('a'),
+            to: hash('b'),
+        });
+        let log = TaskEvents {
+            id: "k3q7zm2a".parse().unwrap(),
+            events: vec![record(Actor::File, notes, 1_791_792_000)],
+            skipped: Vec::new(),
+        };
+        let rows = rows(&log, &TimeZone::UTC, None, None);
+        assert_eq!(rows[0].kind, "notes_changed");
+        assert_eq!(rows[0].actor, "file");
+        assert_eq!(rows[0].summary, "the notes changed");
     }
 
     #[test]

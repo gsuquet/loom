@@ -11,12 +11,13 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 use loom_core::{
-    Actor, Change, ContextName, Event, FieldChange, Kind, MachineId, NewTask, Origin, Relations,
-    Status, Task, TaskId, Timestamp,
+    Actor, Change, ContextName, Event, FieldChange, Kind, MachineId, NewTask, NotesHash, Origin,
+    Relations, Status, Task, TaskId, Timestamp,
 };
 use loom_store::Reader;
 use loom_store::files::FileStore;
-use loom_store::port::StorePort as _;
+use loom_store::port::{ContentHash, StorePort as _};
+use loom_store::reconcile::HandEdit;
 use loom_store::tasks::{IndexedState, Reconciled, TaskIndex, Tasks};
 use tempfile::TempDir;
 
@@ -134,7 +135,10 @@ fn a_hand_edit_of_the_title_is_indexed_and_recorded_once() {
     });
     assert_eq!(
         reconcile(&mut tasks, &task.id, 200),
-        Reconciled::Edited(vec![title.clone()])
+        Reconciled::Edited(HandEdit {
+            changes: vec![title.clone()],
+            notes: None,
+        })
     );
     // The file is kept byte for byte, comment included.
     assert_eq!(fs::read_to_string(fixture.file(&task.id)).unwrap(), edited);
@@ -212,7 +216,7 @@ fn an_invalid_hand_edit_is_flagged_and_the_file_never_rewritten() {
     fixture.edit(&task.id, "title = \n", "title = \"Sturdy\"\n");
     assert!(matches!(
         reconcile(&mut tasks, &task.id, 300),
-        Reconciled::Edited(changes) if changes.len() == 1
+        Reconciled::Edited(edit) if edit.changes.len() == 1
     ));
     let indexed = Reader::open(&fixture.db())
         .unwrap()
@@ -223,25 +227,149 @@ fn an_invalid_hand_edit_is_flagged_and_the_file_never_rewritten() {
     assert!(!indexed.read_only());
 }
 
+/// The hash of `notes` as the ledger records it.
+fn notes_hash(notes: &str) -> NotesHash {
+    NotesHash::from_hex(ContentHash::of(notes.as_bytes()).as_str().to_owned()).unwrap()
+}
+
+/// The notes of the task file `text`.
+fn notes_of(text: &str) -> String {
+    loom_core::parse_task_md(text).unwrap().body().to_owned()
+}
+
 #[test]
-fn a_notes_only_edit_is_indexed_without_an_event() {
+fn a_notes_only_edit_is_recorded_without_its_text() {
     let fixture = Fixture::new();
     let mut tasks = fixture.tasks();
     let task = Fixture::create(&mut tasks, "Notes");
     let path = fixture.file(&task.id);
     let mut text = fs::read_to_string(&path).unwrap();
+    let before = notes_of(&text);
     text.push_str("Called the client: answer Monday.\n");
     fs::write(&path, &text).unwrap();
-    assert_eq!(reconcile(&mut tasks, &task.id, 200), Reconciled::Indexed);
+    let after = notes_of(&text);
+    assert_eq!(
+        reconcile(&mut tasks, &task.id, 200),
+        Reconciled::Edited(HandEdit {
+            changes: Vec::new(),
+            notes: Some(Change {
+                from: notes_hash(&before),
+                to: notes_hash(&after),
+            }),
+        })
+    );
+    // Still searchable, and the ledger holds hashes, not the prose.
     let reader = Reader::open(&fixture.db()).unwrap();
     assert_eq!(
         reader.search_tasks("monday", None, 5).unwrap(),
         std::slice::from_ref(&task.id)
     );
+    let raw = fs::read_to_string(fixture.file(&task.id).with_file_name("events.jsonl")).unwrap();
+    assert!(!raw.contains("Monday"), "{raw}");
     let log = tasks.stores()[&context("work")]
         .read_events(&task.id)
         .unwrap();
-    assert_eq!(log.events.len(), 1);
+    assert_eq!(log.events.len(), 2);
+    assert_eq!(log.events[1].actor, Actor::File);
+    assert!(matches!(log.events[1].event, Event::NotesChanged(_)));
+    // The same file again: nothing more.
+    assert_eq!(reconcile(&mut tasks, &task.id, 300), Reconciled::Unchanged);
+    // Another edit chains from the notes before it.
+    text.push_str("Second line.\n");
+    fs::write(&path, &text).unwrap();
+    let Reconciled::Edited(edit) = reconcile(&mut tasks, &task.id, 400) else {
+        panic!("the second edit is recorded");
+    };
+    assert_eq!(edit.notes.unwrap().from, notes_hash(&after));
+}
+
+#[test]
+fn a_field_and_notes_edit_records_both_and_undo_skips_the_notes() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = Fixture::create(&mut tasks, "Before");
+    fixture.edit(&task.id, "title = \"Before\"", "title = \"After\"");
+    let path = fixture.file(&task.id);
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("More notes.\n");
+    fs::write(&path, &text).unwrap();
+    let Reconciled::Edited(edit) = reconcile(&mut tasks, &task.id, 200) else {
+        panic!("recorded");
+    };
+    assert_eq!(edit.changes.len(), 1);
+    assert!(edit.notes.is_some());
+    let log = tasks.stores()[&context("work")]
+        .read_events(&task.id)
+        .unwrap();
+    let types: Vec<&str> = log
+        .events
+        .iter()
+        .map(|record| match record.event {
+            Event::Created { .. } => "created",
+            Event::Edited { .. } => "edited",
+            Event::NotesChanged(_) => "notes_changed",
+            Event::StatusChanged(_) | Event::NoteLogged { .. } | Event::Undone { .. } => "other",
+        })
+        .collect();
+    assert_eq!(types, ["created", "edited", "notes_changed"]);
+    // `u` reverts the title, not the notes event that follows it.
+    let undone = tasks
+        .undo(&task.id, at(300), &origin(Actor::User), &mut random(8))
+        .unwrap();
+    assert_eq!(undone.title, "Before");
+}
+
+#[test]
+fn notes_edited_while_the_index_was_deleted_chain_from_the_log() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = Fixture::create(&mut tasks, "Notes");
+    let path = fixture.file(&task.id);
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("first\n");
+    fs::write(&path, &text).unwrap();
+    reconcile(&mut tasks, &task.id, 200);
+    drop(tasks);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(format!("{}{suffix}", fixture.db().display()));
+    }
+    let first = notes_of(&text);
+    text.push_str("second\n");
+    fs::write(&path, &text).unwrap();
+    let mut tasks = fixture.tasks();
+    let Reconciled::Edited(edit) = reconcile(&mut tasks, &task.id, 300) else {
+        panic!("recorded from the log");
+    };
+    assert_eq!(edit.notes.unwrap().from, notes_hash(&first));
+}
+
+#[test]
+fn a_command_records_a_notes_edit_before_its_own_event() {
+    let fixture = Fixture::new();
+    let mut tasks = fixture.tasks();
+    let task = Fixture::create(&mut tasks, "Notes");
+    let path = fixture.file(&task.id);
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("typed in an editor\n");
+    fs::write(&path, &text).unwrap();
+    tasks
+        .apply(
+            &task.id,
+            loom_core::Command::LogNote {
+                text: "a note".to_owned(),
+            },
+            at(300),
+            &origin(Actor::User),
+            &mut random(5),
+        )
+        .unwrap();
+    let log = tasks.stores()[&context("work")]
+        .read_events(&task.id)
+        .unwrap();
+    assert!(matches!(log.events[1].event, Event::NotesChanged(_)));
+    assert_eq!(log.events[1].actor, Actor::File);
+    assert!(matches!(log.events[2].event, Event::NoteLogged { .. }));
+    assert_eq!(log.events[2].actor, Actor::User);
 }
 
 #[test]
@@ -268,10 +396,13 @@ fn reconciling_every_store_catches_edits_made_while_loomd_was_stopped() {
     let mut expected = vec![
         (
             edited.id,
-            Reconciled::Edited(vec![FieldChange::Status(Change {
-                from: Status::Ready,
-                to: Status::Done,
-            })]),
+            Reconciled::Edited(HandEdit {
+                changes: vec![FieldChange::Status(Change {
+                    from: Status::Ready,
+                    to: Status::Done,
+                })],
+                notes: None,
+            }),
         ),
         (untouched.id, Reconciled::Indexed),
     ];
@@ -370,7 +501,7 @@ fn a_damaged_log_line_does_not_stop_the_recording_of_hand_edits() {
 
     assert!(matches!(
         reconcile(&mut tasks, &task.id, 200),
-        Reconciled::Edited(changes) if changes.len() == 1
+        Reconciled::Edited(edit) if edit.changes.len() == 1
     ));
     let log = tasks.stores()[&context("work")]
         .read_events(&task.id)

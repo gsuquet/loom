@@ -25,7 +25,8 @@ pub use command::{
 };
 pub use context::{CONTEXT_NAME_MAX_LEN, ContextName, ContextNameError, UNASSIGNED};
 pub use event::{
-    Actor, Change, EVENT_SCHEMA_VERSION, Event, EventRecord, FieldChange, MachineId, Origin,
+    Actor, Change, EVENT_SCHEMA_VERSION, Event, EventRecord, FieldChange, MachineId, NotesHash,
+    NotesHashError, Origin,
 };
 pub use event_log::{
     EventEncodeError, EventLog, SkipReason, SkippedLine, parse_events, render_event,

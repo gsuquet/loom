@@ -42,6 +42,7 @@ use loom_config::schedules::Schedule;
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
 use loom_store::files::FileStore;
 use loom_store::port::TaskLocation;
+use loom_store::reconcile::HandEdit;
 use loom_store::tasks::{IndexedTask, Reconciled, TaskError, TaskFailure, TaskIndex, Tasks};
 use loom_store::{Reader, StoreError};
 use loomd::api::{internal, timestamp, unavailable};
@@ -1036,9 +1037,9 @@ impl Worker {
                 let mut edited = 0;
                 for (id, reconciled) in &report.results {
                     log_reconciled(id, reconciled);
-                    if let Reconciled::Edited(changes) = reconciled {
+                    if let Reconciled::Edited(edit) = reconciled {
                         edited += 1;
-                        self.commit_edit(id, changes);
+                        self.commit_edit(id, edit);
                     }
                 }
                 // New, notes-only and removed tasks, and the changes of failed commits.
@@ -1150,12 +1151,11 @@ impl Worker {
                         self.commits
                             .commit_task(context, id, location, &hand_edit_message(id))
                     }
-                    Reconciled::Edited(changes) => {
-                        let event = Event::Edited {
-                            changes: changes.clone(),
-                        };
+                    Reconciled::Edited(edit) => {
+                        let events = edit.events();
+                        let events: Vec<&Event> = events.iter().collect();
                         let message =
-                            commit_message(id, &[&event]).unwrap_or_else(|| hand_edit_message(id));
+                            commit_message(id, &events).unwrap_or_else(|| hand_edit_message(id));
                         self.commits.commit_task(context, id, location, &message)
                     }
                     // Its directory may never have been committed: every change is taken.
@@ -1211,9 +1211,9 @@ impl Worker {
         });
     }
 
-    /// Commits the hand edit of `changes` recorded on task `id`, found by a reconciliation of
-    /// every task: its context is the one its index row names.
-    fn commit_edit(&mut self, id: &TaskId, changes: &[loom_core::FieldChange]) {
+    /// Commits the hand edit `edit` recorded on task `id`, found by a reconciliation of every
+    /// task: its context is the one its index row names.
+    fn commit_edit(&mut self, id: &TaskId, edit: &HandEdit) {
         let (context, location) = match self.tasks.index().get(id) {
             Ok(Some(row)) => (row.context, row.location),
             // Left to the commit of every change that ends the reconciliation.
@@ -1223,10 +1223,9 @@ impl Worker {
                 return;
             }
         };
-        let event = Event::Edited {
-            changes: changes.to_vec(),
-        };
-        let message = commit_message(id, &[&event]).unwrap_or_else(|| hand_edit_message(id));
+        let events = edit.events();
+        let events: Vec<&Event> = events.iter().collect();
+        let message = commit_message(id, &events).unwrap_or_else(|| hand_edit_message(id));
         let result = self.commits.commit_task(&context, id, location, &message);
         log_commit(&context, Some(id), result);
     }
@@ -1355,9 +1354,13 @@ fn log_reconciled(id: &TaskId, reconciled: &Reconciled) {
             %id,
             "task indexed without an `edited` event: its events.jsonl has a line written by a newer loom, upgrade loom to record hand edits"
         ),
-        Reconciled::Edited(changes) => {
-            let fields: Vec<&str> = changes.iter().map(loom_core::FieldChange::field).collect();
-            info!(%id, ?fields, "hand edit recorded");
+        Reconciled::Edited(edit) => {
+            let fields: Vec<&str> = edit
+                .changes
+                .iter()
+                .map(loom_core::FieldChange::field)
+                .collect();
+            info!(%id, ?fields, notes = edit.notes.is_some(), "hand edit recorded");
         }
         Reconciled::Duplicate(contexts) => warn!(
             %id,

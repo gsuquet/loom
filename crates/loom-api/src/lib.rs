@@ -45,8 +45,8 @@ pub use loom_core::{
 pub use events::{ChangeEvent, EventCursor, EventCursorError};
 pub use loom_core::{
     Action, Actor, Change, ContentFormat, Date, Event, EventId, EventRecord, ExternalRef,
-    FieldChange, Importance, Kind, Link, MachineId, NewTask, RankReason, Relations, SkippedLine,
-    Status, StatusName, Task, TaskEdit,
+    FieldChange, Importance, Kind, Link, MachineId, NewTask, NotesHash, RankReason, Relations,
+    SkippedLine, Status, StatusName, Task, TaskEdit,
 };
 pub use repo::{
     ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,

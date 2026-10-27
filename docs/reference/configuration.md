@@ -456,8 +456,9 @@ Each store is a git repository. `loomd` creates it at its first commit: when the
 | Change | Staged | Commit message |
 | --- | --- | --- |
 | A task created, edited, changed by an action (status, pin, note) or undone through the [API](api.md#tasks) | `tasks/<id>/` | `<event type>(<id>): <summary>` of its first event, such as `created(k3q7zm2a): Ship it`, `status_changed(k3q7zm2a): ready -> active`, `note_logged(k3q7zm2a): Asked Alice`, `undone(k3q7zm2a): event e0000003`; `(+<n> events)` when it recorded more. A request that records no event commits nothing. |
-| A hand edit recorded as an `edited` event | `tasks/<id>/`. For an archived task: `archive/<yyyy>/<id>/` and the removal of `tasks/<id>/` | `edited(<id>): <fields>`, such as `edited(k3q7zm2a): title, due` |
-| A hand edit that records no event (notes, a new or invalid file, a move to the archive) | The same paths as an `edited` event | `edited(<id>): changed by hand` |
+| A hand edit recorded as an `edited` event | `tasks/<id>/`. For an archived task: `archive/<yyyy>/<id>/` and the removal of `tasks/<id>/` | `edited(<id>): <fields>`, such as `edited(k3q7zm2a): title, due`; `(+1 events)` when the same save also changed the notes |
+| A hand edit of the notes only | The same paths as an `edited` event | `notes_changed(<id>): notes` |
+| A hand edit that records no event (a new or invalid file, a move to the archive, notes with no known previous value) | The same paths as an `edited` event | `edited(<id>): changed by hand` |
 | A closed task moved to the archive by `loomd` | `archive/<yyyy>/<id>/` and the removal of `tasks/<id>/` | `archived(<id>): moved to archive/<yyyy>` |
 | A task directory removed | the whole store | `removed(<id>): task directory removed` |
 | The end of a reconciliation of every task (start, lost watcher events, `loom reindex`) | the whole store | `sync(<context>): uncommitted changes` |

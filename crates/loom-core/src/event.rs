@@ -1,6 +1,8 @@
 //! Events: what happened to a task, appended to its ledger and never rewritten.
 
-use schemars::JsonSchema;
+use std::borrow::Cow;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::Date;
@@ -97,6 +99,9 @@ pub enum Event {
         /// The note.
         text: String,
     },
+    /// The notes of the task changed, by a hand edit or in an editor. The event holds the hash of
+    /// the notes before and after, never their text.
+    NotesChanged(Change<NotesHash>),
     /// A previous change was reverted.
     Undone {
         /// ID of the reverted event.
@@ -114,8 +119,75 @@ impl Event {
         match self {
             Self::Edited { changes } | Self::Undone { changes, .. } => Some(changes.clone()),
             Self::StatusChanged(change) => Some(vec![FieldChange::Status(change.clone())]),
-            Self::Created { .. } | Self::NoteLogged { .. } => None,
+            Self::Created { .. } | Self::NoteLogged { .. } | Self::NotesChanged(_) => None,
         }
+    }
+}
+
+/// Length of the SHA-256 of notes, in lowercase hex characters.
+const NOTES_HASH_LEN: usize = 64;
+
+/// The SHA-256 of the notes of a task (the text after the frontmatter), in lowercase hex.
+///
+/// A [`Event::NotesChanged`] holds the hash of the notes before and after a change: the ledger
+/// tells that the prose changed and when, but does not keep it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct NotesHash(String);
+
+impl JsonSchema for NotesHash {
+    fn schema_name() -> Cow<'static, str> {
+        "NotesHash".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "SHA-256 of the notes of a task, in lowercase hex.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+        })
+    }
+}
+
+/// A text that is not the lowercase hex of a SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` is not a SHA-256 in lowercase hex (64 characters)")]
+pub struct NotesHashError(String);
+
+impl NotesHash {
+    /// The hash `hex`, checked.
+    ///
+    /// # Errors
+    ///
+    /// [`NotesHashError`] unless `hex` is 64 lowercase hex characters.
+    pub fn from_hex(hex: String) -> Result<Self, NotesHashError> {
+        if hex.len() == NOTES_HASH_LEN
+            && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            Ok(Self(hex))
+        } else {
+            Err(NotesHashError(hex))
+        }
+    }
+
+    /// The hash in hex.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for NotesHash {
+    type Error = NotesHashError;
+
+    fn try_from(hex: String) -> Result<Self, Self::Error> {
+        Self::from_hex(hex)
+    }
+}
+
+impl From<NotesHash> for String {
+    fn from(hash: NotesHash) -> Self {
+        hash.0
     }
 }
 

@@ -512,7 +512,7 @@ pub fn replay(events: &[EventRecord]) -> Result<Task, ReplayError> {
             Event::StatusChanged(change) => {
                 replay_change(&mut task, FieldChange::Status(change.clone()))?;
             }
-            Event::NoteLogged { .. } => {}
+            Event::NoteLogged { .. } | Event::NotesChanged(_) => {}
         }
         task.updated = record.at;
     }

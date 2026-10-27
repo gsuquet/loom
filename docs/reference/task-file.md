@@ -189,9 +189,12 @@ Append-only. One JSON object per line, LF line endings. CRLF is also accepted on
 | `edited` | `changes`: array of field changes | Fields other than the status changed. |
 | `status_changed` | `from`, `to`: status objects | The status changed. |
 | `note_logged` | `text`: string | A note was logged. |
+| `notes_changed` | `from`, `to`: SHA-256 of the notes, 64 lowercase hex characters | The notes of the task changed (the text after the frontmatter of `task.md`). The event holds the hashes, never the text. Not undone. |
 | `undone` | `of`: event ID; `changes`: array of field changes | A previous change was reverted. |
 
 In `created`, a task carries the frontmatter keys as JSON, plus `pinned` and `updated`. Dates and instants are strings, and `links` is an array of objects with `role`.
+
+The hash in `notes_changed` is the SHA-256 of the notes as the file holds them, with their line breaks and the blank line after the frontmatter. `loomd` records the event when a save of `task.md` changes the notes, with the actor `file`, after the `edited` event of the same save if there is one. A reader that does not know the type skips the line. `loom undo` skips the event.
 
 A status object is `{"status":"<status>"}`, with `waiting_on` and `waiting_until` when the status is `waiting`.
 

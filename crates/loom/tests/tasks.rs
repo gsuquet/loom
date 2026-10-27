@@ -876,7 +876,7 @@ fn edit_of_the_notes_only_or_of_the_spacing_only_is_shown_at_once() {
         .id
         .to_string();
 
-    // Notes only: no event, the index holds the new notes.
+    // Notes only: loomd records a `notes_changed` event, and the index holds the new notes.
     let notes = editor(&sandbox, "notes", r#"printf 'Asked Alice.\n' >> "$1""#);
     let output = sandbox.run_env(&sandbox.home(), None, &[("EDITOR", &notes)], &["edit", &id]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));

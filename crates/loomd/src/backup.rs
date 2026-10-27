@@ -289,6 +289,7 @@ fn describe(event: &Event) -> (&'static str, String) {
             format!("{} -> {}", status(&change.from), status(&change.to)),
         ),
         Event::NoteLogged { text } => ("note_logged", text.clone()),
+        Event::NotesChanged(_) => ("notes_changed", "notes".to_owned()),
         Event::Undone { of, .. } => ("undone", format!("event {of}")),
     }
 }

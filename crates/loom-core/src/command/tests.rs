@@ -750,3 +750,25 @@ fn a_move_is_not_undone_but_moved_back() {
         DomainError::UndoMove("company-a".parse().unwrap())
     );
 }
+
+#[test]
+fn a_notes_event_changes_no_field_and_is_skipped_by_undo() {
+    let (task, mut log) = task_with(Status::Ready);
+    let task = run(task, &mut log, set(StatusName::Active), 1);
+    let notes = Event::NotesChanged(crate::Change {
+        from: crate::NotesHash::from_hex("a".repeat(64)).unwrap(),
+        to: crate::NotesHash::from_hex("b".repeat(64)).unwrap(),
+    });
+    assert_eq!(notes.changes(), None);
+    log.push(EventRecord::new(
+        "n0000001".parse().unwrap(),
+        notes,
+        at(2),
+        &origin(),
+    ));
+    // The replay ignores the event, and `u` reverts the change before it.
+    assert_eq!(replay(&log).unwrap().status, Status::Active);
+    let command = undo(&task, &log).unwrap();
+    assert!(matches!(&command, Command::Undo { of, .. } if *of == log[1].id));
+    assert_eq!(run(task, &mut log, command, 3).status, Status::Ready);
+}
