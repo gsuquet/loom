@@ -7,12 +7,13 @@
 )]
 
 use std::fs::{self, File};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{FocusList, RankReason, Status, TaskDetail, TaskList};
+use loom_api::{FocusList, PromptSegment, RankReason, Status, TaskDetail, TaskList};
 use tempfile::TempDir;
 
 mod isolation;
@@ -1090,4 +1091,135 @@ fn set_context_moves_the_task_after_the_other_changes() {
         let output = sandbox.run(&sandbox.home(), None, &["set", &id, bad]);
         assert_eq!(output.status.code(), Some(1), "{bad}");
     }
+}
+
+/// `loom prompt <args>` in `cwd`, with a budget that a loaded machine keeps: exit code 0 and
+/// nothing on stderr, whatever happens. Its stdout.
+fn prompt(sandbox: &Sandbox, cwd: &Path, context: Option<&str>, args: &[&str]) -> String {
+    let mut full = vec!["prompt"];
+    full.extend_from_slice(args);
+    let output = sandbox.run_env(
+        cwd,
+        context,
+        &[("LOOM_TEST_PROMPT_BUDGET_MS", "5000")],
+        &full,
+    );
+    assert_eq!(output.status.code(), Some(0), "{args:?}");
+    assert_eq!(stderr(&output), "", "{args:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn the_prompt_shows_the_context_and_its_focus() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.home().join("perso").join("api");
+    fs::create_dir_all(&repo).unwrap();
+    git(&sandbox.home(), &repo, &["init", "-q"]);
+    git(
+        &sandbox.home(),
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@gitlab.example.com:company-a/api.git",
+        ],
+    );
+    // Registers the repository, as the shell integration would.
+    let task = sandbox.add_in(
+        &repo,
+        None,
+        &["Fix the login timeout of the mobile app, at last"],
+    );
+    assert_eq!(context_of(&task), "work");
+    let prefix = task.summary.prefix.clone();
+
+    // No focus yet: the context alone, from the repository, the path, then the default.
+    assert_eq!(prompt(&sandbox, &repo, None, &[]), "work\n");
+    let notes = sandbox.home().join("perso").join("notes");
+    fs::create_dir_all(&notes).unwrap();
+    assert_eq!(prompt(&sandbox, &notes, None, &[]), "home\n");
+    assert_eq!(prompt(&sandbox, &sandbox.home(), None, &[]), "personal\n");
+
+    sandbox.ok(&["go", &task.summary.id.to_string()]);
+    assert_eq!(
+        prompt(&sandbox, &repo, None, &[]),
+        format!("work {prefix} Fix the login timeout of the…\n")
+    );
+    assert_eq!(
+        prompt(&sandbox, &repo, None, &["--max-title", "0"]),
+        format!("work {prefix}\n")
+    );
+    // `-c` and `LOOM_CONTEXT` win over the directory.
+    assert_eq!(
+        prompt(&sandbox, &notes, Some("work"), &["--max-title", "9"]),
+        format!("work {prefix} Fix the…\n")
+    );
+    assert_eq!(prompt(&sandbox, &repo, None, &["-c", "home"]), "home\n");
+
+    let json: PromptSegment =
+        serde_json::from_str(&prompt(&sandbox, &repo, None, &["--json"])).unwrap();
+    assert_eq!(json.context.unwrap().as_str(), "work");
+    assert_eq!(json.focus.unwrap().task.id, task.summary.id);
+}
+
+#[test]
+fn without_loomd_the_prompt_never_fails_and_never_starts_it() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.home().join("perso").join("api");
+    fs::create_dir_all(&repo).unwrap();
+    git(&sandbox.home(), &repo, &["init", "-q"]);
+
+    // Outside a repository, the directory rules still give the context.
+    assert_eq!(prompt(&sandbox, &sandbox.home(), None, &[]), "personal\n");
+    assert_eq!(
+        prompt(&sandbox, &sandbox.home(), None, &["-c", "work"]),
+        "work\n"
+    );
+    // A repository can give another context than its path: nothing.
+    assert_eq!(prompt(&sandbox, &repo, None, &[]), "");
+    assert_eq!(prompt(&sandbox, &repo, None, &["--json"]), "{}\n");
+    // An invalid `LOOM_CONTEXT` gives nothing, not an error.
+    assert_eq!(
+        prompt(&sandbox, &sandbox.home(), Some("Not A Name"), &[]),
+        ""
+    );
+    // With the default budget too.
+    let output = sandbox.run(&sandbox.home(), None, &["prompt"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stderr(&output), "");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "personal\n");
+
+    assert!(
+        !sandbox.loom_home().join("run/loomd.lock").exists()
+            || File::open(sandbox.loom_home().join("run/loomd.lock"))
+                .unwrap()
+                .try_lock()
+                .is_ok(),
+        "loom prompt started loomd"
+    );
+}
+
+#[test]
+fn a_loomd_that_never_answers_delays_the_prompt_by_the_budget_only() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.home().join("perso").join("api");
+    fs::create_dir_all(&repo).unwrap();
+    git(&sandbox.home(), &repo, &["init", "-q"]);
+    // Accepts every connection and never answers.
+    let run = sandbox.loom_home().join("run");
+    fs::create_dir_all(&run).unwrap();
+    let listener = UnixListener::bind(run.join("loomd.sock")).unwrap();
+    let held = thread::spawn(move || listener.incoming().take(4).collect::<Vec<_>>());
+
+    for (cwd, expected) in [(sandbox.home(), "personal\n"), (repo, "")] {
+        let started = Instant::now();
+        let output = sandbox.run(&cwd, None, &["prompt"]);
+        let elapsed = started.elapsed();
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(stderr(&output), "");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+    }
+    drop(held);
 }

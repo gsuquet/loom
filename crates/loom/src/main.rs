@@ -1,6 +1,7 @@
 //! `loom`: the CLI, later the TUI.
 
 mod on_use;
+mod prompt_cmd;
 mod reindex_cmd;
 mod repo_cmd;
 mod restart_cmd;
@@ -52,6 +53,11 @@ fn main() -> ExitCode {
     let cli = Cli::from_arg_matches(&matches)
         .map_err(|error| error.format(&mut Cli::command()))
         .unwrap_or_else(|error| error.exit());
+    if let Some(Command::Prompt(args)) = &cli.command {
+        // Before telemetry: run before each prompt, it logs nothing and exports no trace.
+        prompt_cmd::run(args, &cli.global);
+        return ExitCode::SUCCESS;
+    }
     let interactive_tui =
         cli.command.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
     let (config, config_problem) = telemetry_config();
@@ -191,7 +197,8 @@ const fn registers_on_use(command: Option<&Command>, interactive_tui: bool) -> b
             RepoCommand::Ls(_) | RepoCommand::Doctor(_) => true,
         },
         // Run by every new shell: no delay for it, and the hook it installs registers.
-        Command::ShellInit(_) | Command::UpgradeWatchdog(_) => false,
+        // `loom prompt` runs before each prompt: the same hook registers.
+        Command::ShellInit(_) | Command::Prompt(_) | Command::UpgradeWatchdog(_) => false,
         Command::Search(_)
         | Command::Add(_)
         | Command::Accept(_)
@@ -252,6 +259,10 @@ fn run(cli: &Cli) -> Result<Exit> {
         Command::Accept(args) => task_cmd::accept(args, &layout()?),
         Command::Go(args) => task_cmd::go(args, &layout()?),
         Command::Focus(args) => task_cmd::focus(args, &cli.global, &layout()?),
+        Command::Prompt(args) => {
+            prompt_cmd::run(args, &cli.global);
+            Ok(())
+        }
         Command::Log(args) => task_cmd::log(args, &cli.global, &layout()?),
         Command::Ls(args) => task_cmd::ls(args, &cli.global, &layout()?),
         Command::Show(args) => task_cmd::show(args, &layout()?),

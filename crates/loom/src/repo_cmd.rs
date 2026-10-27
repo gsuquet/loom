@@ -210,7 +210,11 @@ fn cwd_rule(env: &Env<'_>) -> Option<ContextAssignment> {
 
 /// What the context rules give the directory `dir` itself, when the configuration can be
 /// read.
-fn directory_rule(layout: &Layout, dir: &Path, home: Option<&Path>) -> Option<ContextAssignment> {
+pub fn directory_rule(
+    layout: &Layout,
+    dir: &Path,
+    home: Option<&Path>,
+) -> Option<ContextAssignment> {
     let home = home?;
     let config = load_config(&layout.config)
         .map_err(|error| debug!(%error, "configuration ignored for disambiguation"))
