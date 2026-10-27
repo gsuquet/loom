@@ -751,7 +751,7 @@ pub static BINDINGS: &[KeyBinding] = &[
         keys: &[(KeyCode::Enter, KeyModifiers::NONE)],
         command: KeyCommand::ConfirmModal,
         label: "Enter",
-        description: "Open selected result",
+        description: "Open the task, or go to the repository",
     },
     // Modal: Accept
     KeyBinding {

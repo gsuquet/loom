@@ -1,12 +1,14 @@
-//! Task actions that the TUI sends to `loomd`: accept, snooze, cancel, done, go, undo and create.
+//! Actions that the TUI sends to `loomd`: accept, snooze, cancel, done, go, undo and create a
+//! task, and go to a repository.
 //!
 //! The state reducer only names an [`AppEffect`]; this module turns it into API calls.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use loom_api::{
-    ContextName, Date, GoResult, Importance, Kind, StatusName, TaskActionRequest, TaskDetail,
-    TaskEdit, TaskId, TaskMoveRequest,
+    ContextName, Date, GoResult, Importance, Kind, RegisterRequest, RepoSummary, StatusName,
+    TaskActionRequest, TaskDetail, TaskEdit, TaskId, TaskMoveRequest,
 };
 
 use crate::client::Client;
@@ -69,6 +71,8 @@ pub enum ActionRequest {
     Done(TaskId),
     /// `POST /v1/tasks/{id}/go`.
     Go(TaskId),
+    /// `POST /v1/repos/register` on use, for the repository at this path.
+    GoRepo(PathBuf),
     /// `POST /v1/tasks/{id}/undo`.
     Undo(TaskId),
     /// `POST /v1/tasks`.
@@ -116,6 +120,7 @@ impl ActionRequest {
             AppEffect::CancelTask(id) => Ok(Self::Cancel(id)),
             AppEffect::DoneTask(id) => Ok(Self::Done(id)),
             AppEffect::GoTask(id) => Ok(Self::Go(id)),
+            AppEffect::GoRepo(path) => Ok(Self::GoRepo(path)),
             AppEffect::UndoTask(id) => Ok(Self::Undo(id)),
             AppEffect::CreateTask { title, context } => Ok(Self::Create { title, context }),
             effect @ (AppEffect::None
@@ -228,6 +233,7 @@ pub fn take_next(
         | ActionRequest::Cancel(_)
         | ActionRequest::Done(_)
         | ActionRequest::Go(_)
+        | ActionRequest::GoRepo(_)
         | ActionRequest::Create { .. } => Next::Send(request),
     }
 }
@@ -245,7 +251,8 @@ const fn changed(id: TaskId, message: String) -> ActionOutcome {
     }
 }
 
-/// Sends `request` to `loomd`. `go` writes the repository path to `cd_file`, if any.
+/// Sends `request` to `loomd`. `go` writes the repository path to `cd_file`, if any. Going to a
+/// repository needs `cd_file`.
 ///
 /// # Errors
 ///
@@ -301,21 +308,8 @@ pub async fn execute_action(
             let message = format!("task {id} marked done");
             move_task(client, id, "done", message).await
         }
-        ActionRequest::Go(id) => {
-            let result: GoResult = client
-                .post(&format!("/v1/tasks/{id}/go"), None::<&()>)
-                .await
-                .map_err(|error| error.to_string())?;
-            write_cd_file(cd_file, result.repo_path.as_deref())
-                .map_err(|error| format!("cannot write the repository path: {error}"))?;
-            Ok(ActionOutcome {
-                task_id: None,
-                undone: None,
-                should_refresh: false,
-                should_quit: true,
-                message: None,
-            })
-        }
+        ActionRequest::Go(id) => go_task(client, &id, cd_file).await,
+        ActionRequest::GoRepo(path) => go_repo(client, path, cd_file).await,
         ActionRequest::Undo(id) => {
             let _detail: TaskDetail = client
                 .post(&format!("/v1/tasks/{id}/undo"), None::<&()>)
@@ -353,6 +347,63 @@ pub async fn execute_action(
             })
         }
     }
+}
+
+/// Outcome of a go: leave the TUI, so that the shell function changes directory.
+const QUIT: ActionOutcome = ActionOutcome {
+    task_id: None,
+    undone: None,
+    should_refresh: false,
+    should_quit: true,
+    message: None,
+};
+
+/// Focuses the task `id`, writes its repository path to `cd_file`, if any, and quits.
+async fn go_task(client: &Client, id: &TaskId, cd_file: Option<&Path>) -> ActionResponse {
+    let result: GoResult = client
+        .post(&format!("/v1/tasks/{id}/go"), None::<&()>)
+        .await
+        .map_err(|error| error.to_string())?;
+    write_cd_file(cd_file, result.repo_path.as_deref())
+        .map_err(|error| format!("cannot write the repository path: {error}"))?;
+    Ok(QUIT)
+}
+
+/// Marks the repository at `path` used, writes its path to `cd_file` and quits.
+///
+/// `path` is the root of an indexed repository. It must still be one: loomd registers the
+/// repository that holds a path, so a deleted checkout inside another repository would register
+/// and go to that one.
+async fn go_repo(client: &Client, path: PathBuf, cd_file: Option<&Path>) -> ActionResponse {
+    let Some(cd_file) = cd_file else {
+        return Err(format!(
+            "{}: load `loom shell-init` to change to it",
+            path.display()
+        ));
+    };
+    let gone = || {
+        format!(
+            "{} is no longer a git repository: run `loom repo scan`",
+            path.display()
+        )
+    };
+    if fs::symlink_metadata(path.join(".git")).is_err() {
+        return Err(gone());
+    }
+    let request = RegisterRequest {
+        path: path.clone(),
+        on_use: true,
+    };
+    let repo: RepoSummary = client
+        .post("/v1/repos/register", Some(&request))
+        .await
+        .map_err(|error| error.to_string())?;
+    if repo.identity.path != path {
+        return Err(gone());
+    }
+    write_cd_file(Some(cd_file), Some(&path))
+        .map_err(|error| format!("cannot write the repository path: {error}"))?;
+    Ok(QUIT)
 }
 
 // `due` follows `TaskEdit`: `Some(None)` removes the date.
