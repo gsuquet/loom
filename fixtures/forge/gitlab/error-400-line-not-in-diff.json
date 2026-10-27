@@ -1,0 +1,7 @@
+{
+  "message": {
+    "base": [
+      "Note {:line_code=>[\"can't be blank\", \"must be a valid line code\"]}"
+    ]
+  }
+}

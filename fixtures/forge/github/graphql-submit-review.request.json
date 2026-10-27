@@ -1,0 +1,10 @@
+{
+  "query": "mutation($input: SubmitPullRequestReviewInput!) { submitPullRequestReview(input: $input) { pullRequestReview { id state submittedAt url } } }",
+  "variables": {
+    "input": {
+      "pullRequestReviewId": "PRR_kwDOAAATic4AABd9",
+      "event": "REQUEST_CHANGES",
+      "body": "One rename, then good to go."
+    }
+  }
+}

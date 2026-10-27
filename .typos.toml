@@ -3,3 +3,5 @@ Ratatui = "Ratatui"
 ratatui = "ratatui"
 # `gix` API: `rela_path()` (path relative to the working tree).
 rela = "rela"
+# GitLab API field names (`noteable_id`, `noteable_type`).
+noteable = "noteable"

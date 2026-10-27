@@ -1,0 +1,26 @@
+{
+  "id": 3088,
+  "iid": 88,
+  "project_id": 77,
+  "title": "Auth refactor",
+  "state": "opened",
+  "merge_status": "can_be_merged",
+  "approved": true,
+  "approvals_required": 1,
+  "approvals_left": 0,
+  "approved_by": [
+    {
+      "user": {
+        "id": 13,
+        "username": "carol",
+        "name": "Carol Example",
+        "state": "active",
+        "locked": false,
+        "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/13/avatar.png",
+        "web_url": "https://gitlab.example.com/carol"
+      }
+    }
+  ],
+  "user_has_approved": true,
+  "user_can_approve": false
+}

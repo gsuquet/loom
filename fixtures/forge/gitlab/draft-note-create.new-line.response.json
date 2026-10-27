@@ -1,0 +1,21 @@
+{
+  "id": 901,
+  "author_id": 13,
+  "merge_request_id": 3088,
+  "resolve_discussion": false,
+  "discussion_id": null,
+  "note": "suggestion (non-blocking): name the error after the claim.\n\n```suggestion:-0+0\n        return Err(Error::MissingSubject);\n```",
+  "commit_id": null,
+  "line_code": null,
+  "position": {
+    "base_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26",
+    "start_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26",
+    "head_sha": "84280c47b6aa128c645b1fbea54aded8b32e8463",
+    "old_path": "src/auth/jwt.rs",
+    "new_path": "src/auth/jwt.rs",
+    "position_type": "text",
+    "old_line": null,
+    "new_line": 14,
+    "line_range": null
+  }
+}

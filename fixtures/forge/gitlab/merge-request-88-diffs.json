@@ -1,0 +1,41 @@
+[
+  {
+    "diff": "@@ -1 +1 @@\n-# lock v1\n+# lock v2\n",
+    "collapsed": false,
+    "too_large": false,
+    "new_path": "Cargo.lock",
+    "old_path": "Cargo.lock",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": true
+  },
+  {
+    "diff": "@@ -3,6 +3,7 @@ use crate::auth::jwt;\n pub fn login(token: &str) -> Response {\n     match jwt::verify(token) {\n         Ok(claims) => Response::ok(claims.sub),\n+        Err(jwt::Error::Expired) => Response::expired(),\n         Err(_) => Response::unauthorized(),\n     }\n }\n",
+    "collapsed": false,
+    "too_large": false,
+    "new_path": "src/api/login.rs",
+    "old_path": "src/api/login.rs",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": false
+  },
+  {
+    "diff": "@@ -7,8 +7,11 @@ pub struct Claims {\n \n pub fn verify(token: &str) -> Result<Claims, Error> {\n     let claims = decode(token)?;\n-    if claims.exp < now() {\n+    if claims.exp + LEEWAY <= now() {\n         return Err(Error::Expired);\n     }\n+    if claims.sub.is_empty() {\n+        return Err(Error::NoSubject);\n+    }\n     Ok(claims)\n }\n",
+    "collapsed": false,
+    "too_large": false,
+    "new_path": "src/auth/jwt.rs",
+    "old_path": "src/auth/jwt.rs",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": false
+  }
+]

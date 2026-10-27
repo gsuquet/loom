@@ -1,0 +1,38 @@
+[
+  {
+    "sha": "b538694c987be1fec0fe444c3e135c3634d3898f",
+    "filename": "Cargo.lock",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "blob_url": "https://github.com/acme/shop/blob/84280c47b6aa128c645b1fbea54aded8b32e8463/Cargo.lock",
+    "raw_url": "https://github.com/acme/shop/raw/84280c47b6aa128c645b1fbea54aded8b32e8463/Cargo.lock",
+    "contents_url": "https://api.github.com/repos/acme/shop/contents/Cargo.lock?ref=84280c47b6aa128c645b1fbea54aded8b32e8463",
+    "patch": "@@ -1 +1 @@\n-# lock v1\n+# lock v2"
+  },
+  {
+    "sha": "7891dec1bbde2c40dec789d1e3ea2e7924b085dd",
+    "filename": "src/api/login.rs",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 0,
+    "changes": 1,
+    "blob_url": "https://github.com/acme/shop/blob/84280c47b6aa128c645b1fbea54aded8b32e8463/src/api/login.rs",
+    "raw_url": "https://github.com/acme/shop/raw/84280c47b6aa128c645b1fbea54aded8b32e8463/src/api/login.rs",
+    "contents_url": "https://api.github.com/repos/acme/shop/contents/src/api/login.rs?ref=84280c47b6aa128c645b1fbea54aded8b32e8463",
+    "patch": "@@ -3,6 +3,7 @@ use crate::auth::jwt;\n pub fn login(token: &str) -> Response {\n     match jwt::verify(token) {\n         Ok(claims) => Response::ok(claims.sub),\n+        Err(jwt::Error::Expired) => Response::expired(),\n         Err(_) => Response::unauthorized(),\n     }\n }"
+  },
+  {
+    "sha": "7975e07517c98f5a408332ce939ef72643561940",
+    "filename": "src/auth/jwt.rs",
+    "status": "modified",
+    "additions": 4,
+    "deletions": 1,
+    "changes": 5,
+    "blob_url": "https://github.com/acme/shop/blob/84280c47b6aa128c645b1fbea54aded8b32e8463/src/auth/jwt.rs",
+    "raw_url": "https://github.com/acme/shop/raw/84280c47b6aa128c645b1fbea54aded8b32e8463/src/auth/jwt.rs",
+    "contents_url": "https://api.github.com/repos/acme/shop/contents/src/auth/jwt.rs?ref=84280c47b6aa128c645b1fbea54aded8b32e8463",
+    "patch": "@@ -7,8 +7,11 @@ pub struct Claims {\n \n pub fn verify(token: &str) -> Result<Claims, Error> {\n     let claims = decode(token)?;\n-    if claims.exp < now() {\n+    if claims.exp + LEEWAY <= now() {\n         return Err(Error::Expired);\n     }\n+    if claims.sub.is_empty() {\n+        return Err(Error::NoSubject);\n+    }\n     Ok(claims)\n }"
+  }
+]

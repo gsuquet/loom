@@ -56,7 +56,7 @@ run = "actionlint"
 
 [tasks.shellcheck]
 description = "Lint shell scripts, including the bash integration printed by `loom shell-init bash`"
-run = "shellcheck dist/*.sh crates/loom/src/shell/init.bash"
+run = "shellcheck dist/*.sh crates/loom/src/shell/init.bash fixtures/forge/scenario.sh"
 
 [tasks.test-install]
 description = "Test dist/install.sh against fake releases on a local fake API"

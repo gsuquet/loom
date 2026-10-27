@@ -1,0 +1,10 @@
+{
+  "query": "mutation($input: AddPullRequestReviewThreadReplyInput!) { addPullRequestReviewThreadReply(input: $input) { comment { id } } }",
+  "variables": {
+    "input": {
+      "pullRequestReviewId": "PRR_kwDOAAATic4AABd9",
+      "pullRequestReviewThreadId": "PRRT_kwDOAAATic5AAAAB",
+      "body": "Thanks, the leeway fixes it."
+    }
+  }
+}
