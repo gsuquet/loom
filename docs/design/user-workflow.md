@@ -96,22 +96,11 @@ Projects are parent tasks: Relations shows the tree, and Today can group its lis
 
 ### Code review
 
-Data, git and forge side: [Code review](reviews.md).
-
-```
-┌ Review !412 auth refactor ─ [company-b] ─ head a1b2 · since last review: 3 files ┐
-│ ✓ src/auth/mod.rs   +12 -4 │ @@ -40,7 +40,9 @@ fn verify(token: &str)          │
-│ ● src/auth/jwt.rs   +88 -31│  40   let claims = decode(token)?;                 │
-│   src/api/login.rs  +5  -2 │  41 - if claims.exp < now() {                       │
-│   Cargo.lock (collapsed)   │  41 + if claims.exp <= now() {                      │
-│                            │  ┆ ⚑ agent: issue (blocking): clock skew not handled│
-│                            │  ┆ 💬 alice: why not leeway?          [1 reply]     │
-└ ]/[ hunk  }/{ file  v viewed  c comment  y/n finding  r reply  P publish review ┘
-```
+Data, git and forge side: [Code review](reviews.md). Components, widths, colors and sketches at 80 and 160 columns: [UI style](ui-style.md#49-review-page).
 
 - **Layout**: file tree (change counts, viewed mark, findings and threads count), diff (unified, or side by side when the terminal is wide enough), threads and findings inline under their line.
 - **Data, all local**: diff per head SHA, base and head file contents from the fetched refs (expand context around a hunk), forge threads pulled into the MR mirror, agent findings from reviewer runs.
-- **Gestures**: `]`/`[` hunks, `}`/`{` files, `v` mark file viewed, `c` comment on a line or `V` selection, with a Conventional Comments label and decoration picker, `s` suggestion block (GitHub/GitLab suggestion syntax), `r` reply, `R` resolve, `o` open the file at the line in `$EDITOR` (optional), `w` check the MR out in a worktree to run it.
+- **Gestures**: `]`/`[` hunks, `}`/`{` files, `v` mark file viewed, `c` comment on a line or `V` selection, with a Conventional Comments label and decoration picker, `s` suggestion block (GitHub/GitLab suggestion syntax), `r` reply, `R` resolve, `o` open the file at the line in `$EDITOR` (optional), `w` check the MR out in a worktree to run it, `e` edit a draft, `x` delete a draft, `m` move a flagged draft, `Tab` switch between the file tree and the diff (`|` under 120 columns), `S` unified or side by side, `←`/`→` old or new side in side by side.
 - **Agent findings**: typed (path, line range, side, label, decorations, body, optional suggestion, confidence), shown inline. `y` turns a finding into my draft comment, `n` dismisses it, `e` edits it. Accept and dismiss rates are the reviewer template's precision metric.
 - **Drafts until publish**: comments stay local; `P` publishes them as a single review with a verdict (approve, request changes, comment), through the forge's batch review APIs. Publishing is team-visible: autonomy policy applies.
 - **Re-review after a push**: "since last review" shows only the files whose diff changed since the last reviewed version (not `git diff <old head> <new head>`, which is wrong after a rebase; see [Code review](reviews.md#git-refs-and-diffs)). Viewed marks reset only on those files. Draft comments are re-anchored, or flagged when their line disappeared.
