@@ -14,6 +14,8 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 
 /// Writes the escape sequences that enter the alternate screen and hide the cursor to `out`.
 ///
@@ -98,6 +100,22 @@ pub async fn while_suspended<T>(
     let output = work.await;
     resume().map_err(SuspendError::Resume)?;
     Ok(output)
+}
+
+/// Clears the screen and makes the next draw of `terminal` write every cell, for example after
+/// the editor used the terminal.
+///
+/// `Terminal::clear` is not used: it first asks the terminal for the cursor position, and that
+/// question gets no answer in time after the editor, so the clear is not done and the next draw
+/// writes only the cells that changed. A resize to the current size clears the screen and the
+/// back buffer without that question, and also takes a new size of the window.
+///
+/// # Errors
+///
+/// The error of the backend when it cannot give the size or clear the screen.
+pub fn repaint_all<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::Error> {
+    let size = terminal.size()?;
+    terminal.resize(size.into())
 }
 
 type PanicHook = Arc<dyn Fn(&panic::PanicHookInfo<'_>) + Send + Sync>;
@@ -214,6 +232,125 @@ impl Drop for TerminalGuard {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    use ratatui::backend::{ClearType, TestBackend, WindowSize};
+    use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Size};
+    use ratatui::widgets::Paragraph;
+
+    /// A [`TestBackend`] that gets no answer when it asks for the cursor position, as the
+    /// terminal after the editor.
+    struct NoCursorAnswer(TestBackend);
+
+    fn no_answer() -> io::Error {
+        io::Error::other("the cursor position could not be read")
+    }
+
+    impl Backend for NoCursorAnswer {
+        type Error = io::Error;
+
+        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            self.0.draw(content).map_err(|never| match never {})
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            self.0.hide_cursor().map_err(|never| match never {})
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.0.show_cursor().map_err(|never| match never {})
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            Err(no_answer())
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            self.0
+                .set_cursor_position(position)
+                .map_err(|never| match never {})
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            Backend::clear(&mut self.0).map_err(|never| match never {})
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+            self.0
+                .clear_region(clear_type)
+                .map_err(|never| match never {})
+        }
+
+        fn size(&self) -> io::Result<Size> {
+            self.0.size().map_err(|never| match never {})
+        }
+
+        fn window_size(&mut self) -> io::Result<WindowSize> {
+            self.0.window_size().map_err(|never| match never {})
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Backend::flush(&mut self.0).map_err(|never| match never {})
+        }
+    }
+
+    fn draw_page(terminal: &mut Terminal<NoCursorAnswer>) {
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new("task page"), frame.area()))
+            .unwrap();
+    }
+
+    #[test]
+    fn repaint_all_draws_the_whole_screen_again_after_the_editor() {
+        let mut terminal = Terminal::new(NoCursorAnswer(TestBackend::new(12, 2))).unwrap();
+        draw_page(&mut terminal);
+        // The editor leaves a screen that the TUI did not draw.
+        Backend::clear(&mut terminal.backend_mut().0).unwrap();
+
+        repaint_all(&mut terminal).unwrap();
+        draw_page(&mut terminal);
+
+        terminal
+            .backend()
+            .0
+            .assert_buffer_lines(["task page   ", "            "]);
+    }
+
+    #[test]
+    fn without_repaint_all_the_next_draw_writes_nothing() {
+        let mut terminal = Terminal::new(NoCursorAnswer(TestBackend::new(12, 2))).unwrap();
+        draw_page(&mut terminal);
+        Backend::clear(&mut terminal.backend_mut().0).unwrap();
+
+        // `Terminal::clear` asks for the cursor position first, gets no answer and does nothing.
+        // If a new ratatui no longer asks, this test fails: then `repaint_all` can go back to
+        // `Terminal::clear`.
+        assert!(terminal.clear().is_err());
+        draw_page(&mut terminal);
+
+        terminal
+            .backend()
+            .0
+            .assert_buffer_lines(["            ", "            "]);
+    }
+
+    #[test]
+    fn repaint_all_takes_a_new_size_of_the_window() {
+        let mut terminal = Terminal::new(NoCursorAnswer(TestBackend::new(12, 2))).unwrap();
+        draw_page(&mut terminal);
+        terminal.backend_mut().0.resize(10, 3);
+
+        repaint_all(&mut terminal).unwrap();
+        draw_page(&mut terminal);
+
+        terminal
+            .backend()
+            .0
+            .assert_buffer_lines(["task page ", "          ", "          "]);
+    }
 
     #[test]
     fn terminal_is_restored_after_a_forced_panic() {
