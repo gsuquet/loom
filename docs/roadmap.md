@@ -95,7 +95,7 @@ Each task is a GitHub issue in the `v0.3` milestone, written with the [agent tas
 | 24 | [#97](https://github.com/gsuquet/loom/issues/97) | Record notes-only hand edits of `task.md` | Story | 5 | Agent |
 | 25 | [#98](https://github.com/gsuquet/loom/issues/98) | Doctor checks for task stores | Story | 5 | Agent |
 
-Done on `main`: 1 to 14, 16, 18 to 20. Remaining: 15, 21 to 23 in order (22 and 23 in parallel after 15), 24 and 25 at any time, then 17.
+Released as [v0.3.0](https://github.com/gsuquet/loom/releases/tag/v0.3.0) on 2026-10-27, with tasks 1 to 16 and 18 to 25. Task 17 (a week of starting the day with `loom`) continues on v0.3.x.
 
 Parallel tracks: 18 and 20 from the start; after 2, {3} and {4, 5}; after 5, {11, 12, 16}; after 6, {7, 8}, {9, 10}, {19 -> 13, 14, 15}.
 
