@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{ContextAssignment, LastUpdate, RepoState, Timestamp};
 
 /// Forge that hosts a remote (`[forges."<host>"] kind`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ForgeKind {
     /// GitHub or GitHub Enterprise.

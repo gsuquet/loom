@@ -141,19 +141,8 @@ impl ContextRules {
                 context: context.clone(),
             };
         }
-        if let Some(remote) = primary {
-            let best = longest(
-                self.hosts
-                    .iter()
-                    .filter(|(pattern, _)| host_matches(pattern, remote))
-                    .map(|rule| (rule.0.segments().len(), rule)),
-            );
-            if let Some((pattern, context)) = best {
-                return ContextAssignment::Host {
-                    context: context.clone(),
-                    pattern: pattern.to_string(),
-                };
-            }
+        if let Some(assignment) = primary.and_then(|remote| self.assign_host(remote)) {
+            return assignment;
         }
         let best = longest(
             self.paths
@@ -174,6 +163,23 @@ impl ContextRules {
                     context: context.clone(),
                 }
             })
+    }
+
+    /// The `match.hosts` entry with the host of `remote` and the longest path prefix (whole
+    /// segments, ASCII case ignored), as a [`ContextAssignment::Host`]; `None` when no entry
+    /// matches. Rule 2 of [`Self::assign`], also used for projects without a clone. Pure.
+    #[must_use]
+    pub fn assign_host(&self, remote: &RemoteUrl) -> Option<ContextAssignment> {
+        let best = longest(
+            self.hosts
+                .iter()
+                .filter(|(pattern, _)| host_matches(pattern, remote))
+                .map(|rule| (rule.0.segments().len(), rule)),
+        );
+        best.map(|(pattern, context)| ContextAssignment::Host {
+            context: context.clone(),
+            pattern: pattern.to_string(),
+        })
     }
 }
 

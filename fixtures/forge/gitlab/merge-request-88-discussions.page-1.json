@@ -125,9 +125,9 @@
         },
         "resolved_at": "2026-10-22T09:00:00.000Z",
         "position": {
-          "base_sha": "506ce3f338acb7125973db71a5c43fd062c4f046",
-          "start_sha": "506ce3f338acb7125973db71a5c43fd062c4f046",
-          "head_sha": "7ebf283bfee25ab48f95c0c55181a4ca66b4c990",
+          "base_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26",
+          "start_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26",
+          "head_sha": "84280c47b6aa128c645b1fbea54aded8b32e8463",
           "old_path": "src/api/login.rs",
           "new_path": "src/api/login.rs",
           "position_type": "text",

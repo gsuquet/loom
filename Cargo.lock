@@ -2315,6 +2315,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-forge"
+version = "0.4.0"
+dependencies = [
+ "jiff",
+ "loom-api",
+ "loom-config",
+ "loom-repo",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "loom-repo"
 version = "0.4.0"
 dependencies = [

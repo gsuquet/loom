@@ -1,0 +1,28 @@
+[package]
+name = "loom-forge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `ForgeKind`, `ContextName`, `ContextAssignment`, `RemoteUrl` and `Timestamp`.
+loom-api.workspace = true
+# `match.hosts` rules of the configuration, applied as for repositories (ADR-0012).
+loom-repo.workspace = true
+# RFC 3339 instants of the forges (fractional seconds, offsets), reduced to `Timestamp`.
+jiff.workspace = true
+schemars.workspace = true
+serde.workspace = true
+# The forge payloads.
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# `match.hosts` rules of the context table tests.
+loom-config.workspace = true
+
+[lints]
+workspace = true
