@@ -84,3 +84,5 @@ Host `gitlab.example.com`, API `https://gitlab.example.com/api/v4`, project `com
 | a write with a `read_api` token | 403 | | `error-403-insufficient-scope.json` |
 
 A line code is `<sha1 of the path>_<old line>_<new line>`; for `src/auth/jwt.rs` the hash is `d6731b5918e52205f2871b9c60cea4aed6807584`.
+
+The GitLab API has no `outdated` flag on a discussion. When a new version keeps the lines of a discussion in the diff, GitLab moves its `position` to that version (bob's nitpick: version 2). An outdated discussion keeps the `position` of the version it was written on (bob's question: version 1).

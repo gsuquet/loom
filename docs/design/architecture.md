@@ -46,6 +46,7 @@ Crates are added when a version needs them, never ahead of time.
 | `loom-repo` | lib | v0.2 | Repo identity, context matching, scan diff, update decisions (pure); discovery scan (`scan` module: directory listing and git files read with `gix-config`) and state (`state` module: read with `gix`, bounded by a time budget), the only modules with I/O, no git process |
 | `loom-core` | lib | v0.3 | Task domain (pure): kinds, statuses and transitions, IDs and prefix resolution, commands, events, undo, replay of a log and the changes of a hand edit, priority order, file formats. No I/O, clock, randomness source or async runtime: time and randomness are injected. Owns the primitives the API shares: `Timestamp`, `ContextName`; dates are `jiff` civil dates |
 | `loom-store` | lib | v0.2 | SQLite index (`index.db`): repos and search in v0.2; `StorePort`, its local files adapter, the tasks index and the hand-edit decision in v0.3 (git backup next) |
+| `loom-forge` | lib | v0.4 | MR review (ADR-0016): the provider-neutral model (MR, version, thread, anchor, drafts, verdict), parsing of the GitHub and GitLab payloads, MR keys, context of an MR (pure, with the `match.hosts` matcher of `loom-repo`); later re-anchoring, the publish plan, and the forge clients in one `client` module (`ureq`), its only I/O |
 
 Rules:
 
