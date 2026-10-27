@@ -366,6 +366,25 @@ fn pending_reviews() {
     assert_eq!(review.author, "carol");
     assert_eq!(review.created_at, time("2026-10-22T09:00:00Z"));
     assert_eq!(review.comment_count, 2);
+    assert_eq!(review.commit_sha, Some(sha(V2)));
+    let [first, reply] = review.comments.as_slice() else {
+        panic!("{:?}", review.comments)
+    };
+    assert_eq!(
+        (first.path.as_str(), first.line),
+        ("src/auth/jwt.rs", Some(12))
+    );
+    assert_eq!(first.reply_to, None);
+    assert_eq!(reply.reply_to.as_deref(), Some("PRRC_kwDOAAATic5AAAAC"));
+    // Without the commit and the comment nodes, the count is enough.
+    let short = edit(fixture!("graphql-pending-reviews.json"), |body| {
+        let review = &mut body["data"]["repository"]["pullRequest"]["reviews"]["nodes"][0];
+        review.as_object_mut().unwrap().remove("commit");
+        review["comments"].as_object_mut().unwrap().remove("nodes");
+    });
+    let reviews = parse_pending_reviews(&short).unwrap();
+    assert_eq!(reviews[0].commit_sha, None);
+    assert_eq!(reviews[0].comments.len(), 0);
     assert_eq!(
         parse_pending_reviews(fixture!("graphql-pending-reviews.empty.json")).unwrap(),
         Vec::<loom_forge::github::PendingReview>::new()

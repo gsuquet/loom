@@ -12,7 +12,30 @@
               },
               "createdAt": "2026-10-22T09:00:00Z",
               "comments": {
-                "totalCount": 2
+                "totalCount": 2,
+                "nodes": [
+                  {
+                    "id": "PRRC_kwDOAAATic5AAAAX",
+                    "body": "note: started in the web UI.",
+                    "path": "src/auth/jwt.rs",
+                    "line": 12,
+                    "startLine": null,
+                    "replyTo": null
+                  },
+                  {
+                    "id": "PRRC_kwDOAAATic5AAAAY",
+                    "body": "Agreed.",
+                    "path": "src/auth/jwt.rs",
+                    "line": null,
+                    "startLine": null,
+                    "replyTo": {
+                      "id": "PRRC_kwDOAAATic5AAAAC"
+                    }
+                  }
+                ]
+              },
+              "commit": {
+                "oid": "84280c47b6aa128c645b1fbea54aded8b32e8463"
               }
             }
           ]

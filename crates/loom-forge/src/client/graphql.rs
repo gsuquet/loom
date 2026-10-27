@@ -15,7 +15,7 @@ pub const REVIEW_THREADS: &str = "query($owner: String!, $name: String!, $number
 pub const THREAD_COMMENTS: &str = "query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequestReviewThread { comments(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id author { login } body createdAt originalCommit { oid } state } } } } }";
 
 /// The pending reviews of the viewer: GitHub shows a pending review to its author only.
-pub const PENDING_REVIEWS: &str = "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(states: PENDING, first: 100) { nodes { id state author { login } createdAt comments { totalCount } } } } } }";
+pub const PENDING_REVIEWS: &str = "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(states: PENDING, first: 100) { nodes { id state author { login } createdAt commit { oid } comments(first: 100) { totalCount nodes { id body path line startLine replyTo { id } } } } } } } }";
 
 /// Step 1 of a publish: a pending review with the new threads (no `event`).
 pub const ADD_REVIEW: &str = "mutation($input: AddPullRequestReviewInput!) { addPullRequestReview(input: $input) { pullRequestReview { id state } } }";
@@ -258,11 +258,16 @@ impl GithubClient {
                 },
                 crate::github::parse_review_threads,
             )?;
-            let mut threads = page.threads;
-            for thread in &mut threads {
+            let mut threads = Vec::with_capacity(page.threads.len());
+            for mut thread in page.threads {
                 if page.threads_with_more_comments.contains(&thread.id) {
-                    thread.comments = self.thread_comments(&thread.id)?;
+                    let comments = self.thread_comments(&thread.id)?;
+                    // Comments deleted between the two reads: keep the first page.
+                    if !comments.is_empty() {
+                        thread.comments = comments;
+                    }
                 }
+                threads.push(thread);
             }
             let mut joined = all.take().unwrap_or_else(|| ReviewThreads {
                 pull_request_id: page.pull_request_id,
@@ -332,6 +337,16 @@ impl GithubClient {
         commit: &Sha,
         threads: &[NewThread<'_>],
     ) -> Result<String, ForgeError> {
+        // GitHub reads the lines of every thread in `commitOID`: an anchor on another head
+        // would land on the wrong lines.
+        if let Some(thread) = threads.iter().find(|thread| thread.anchor.sha != *commit) {
+            return Err(ForgeError::Unexpected(format!(
+                "a thread on {} is anchored on {}, not on the review commit {}",
+                thread.anchor.path,
+                thread.anchor.sha.as_str(),
+                commit.as_str()
+            )));
+        }
         self.graphql(
             GraphqlStep::AddReview,
             ADD_REVIEW,

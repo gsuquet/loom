@@ -623,6 +623,8 @@ fn submitted(comments: Vec<ThreadComment>) -> Vec<Comment> {
         .collect()
 }
 
+/// A thread with no submitted comment on its first page is left out, even when it has more
+/// pages: its first comment is of my pending review, so nobody else can see it or reply to it.
 fn review_thread(thread: ReviewThread, head: &Sha) -> Option<Thread> {
     let original_sha = thread
         .comments
@@ -689,6 +691,28 @@ pub struct PendingReview {
     pub created_at: Timestamp,
     /// The number of its comments.
     pub comment_count: u64,
+    /// The commit that the review is on, when the response gives it.
+    pub commit_sha: Option<Sha>,
+    /// Its comments (first 100), when the response gives them: a resume of a publish matches
+    /// them with its intents.
+    pub comments: Vec<PendingComment>,
+}
+
+/// A comment of a pending review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingComment {
+    /// The GraphQL node ID.
+    pub id: String,
+    /// The body, in Markdown.
+    pub body: String,
+    /// The path of the file.
+    pub path: String,
+    /// The last line; `None` for a comment on a file or on lines GitHub lost.
+    pub line: Option<u32>,
+    /// The first line of a range; `None` for one line.
+    pub start_line: Option<u32>,
+    /// The ID of the comment that it replies to, for a reply to an existing thread.
+    pub reply_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -720,13 +744,27 @@ struct PendingNode {
     state: ReviewState,
     author: Option<Login>,
     created_at: ForgeTime,
-    comments: Count,
+    commit: Option<Commit>,
+    comments: PendingComments,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Count {
+struct PendingComments {
     total_count: u64,
+    #[serde(default)]
+    nodes: Vec<PendingCommentNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingCommentNode {
+    id: String,
+    body: String,
+    path: String,
+    line: Option<u32>,
+    start_line: Option<u32>,
+    reply_to: Option<Id>,
 }
 
 /// GraphQL `repository.pullRequest.reviews(states: PENDING)`. Reviews in another state are
@@ -755,6 +793,20 @@ pub fn parse_pending_reviews(body: &[u8]) -> Result<Vec<PendingReview>, ParseErr
                 .map_or_else(|| GHOST.to_owned(), |author| author.login),
             created_at: review.created_at.0,
             comment_count: review.comments.total_count,
+            commit_sha: review.commit.map(|commit| commit.oid),
+            comments: review
+                .comments
+                .nodes
+                .into_iter()
+                .map(|comment| PendingComment {
+                    id: comment.id,
+                    body: comment.body,
+                    path: comment.path,
+                    line: comment.line,
+                    start_line: comment.start_line,
+                    reply_to: comment.reply_to.map(|reply_to| reply_to.id),
+                })
+                .collect(),
         })
         .collect())
 }

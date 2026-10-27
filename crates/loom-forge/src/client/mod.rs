@@ -237,8 +237,8 @@ impl fmt::Display for GraphqlStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::ReviewThreads => "reviewThreads",
-            Self::ThreadComments => "review thread comments",
-            Self::PendingReviews => "pending reviews",
+            Self::ThreadComments => "node(PullRequestReviewThread).comments",
+            Self::PendingReviews => "reviews(states: PENDING)",
             Self::AddReview => "addPullRequestReview",
             Self::AddReply => "addPullRequestReviewThreadReply",
             Self::SubmitReview => "submitPullRequestReview",
@@ -348,20 +348,21 @@ pub trait GithubForge: Forge {
     /// [`GraphqlStep::ThreadComments`].
     fn review_threads(&self, key: &MrKey) -> Result<ReviewThreads, ForgeError>;
 
-    /// The pending reviews of the viewer on the pull request (GraphQL). At most one: GitHub
-    /// allows one pending review per user and pull request.
+    /// The pending reviews of the viewer on the pull request (GraphQL), with their commit and
+    /// comments. At most one: GitHub allows one pending review per user and pull request.
     ///
     /// # Errors
     ///
     /// [`ForgeError`].
     fn pending_reviews(&self, key: &MrKey) -> Result<Vec<PendingReview>, ForgeError>;
 
-    /// Publish step 1: a pending review on `commit` with the new `threads`. Returns the ID of
-    /// the review. Nothing is visible to others yet.
+    /// Publish step 1: a pending review on `commit` with the new `threads`, every one anchored
+    /// on `commit`. Returns the ID of the review. Nothing is visible to others yet.
     ///
     /// # Errors
     ///
-    /// [`ForgeError`]; [`ForgeError::Graphql`] with [`GraphqlStep::AddReview`] when the state
+    /// [`ForgeError::Unexpected`], before any request, for a thread anchored on another
+    /// commit; [`ForgeError::Graphql`] with [`GraphqlStep::AddReview`] when the state
     /// of the pull request changed since the checks (another pending review, a line outside
     /// the diff).
     fn add_review(

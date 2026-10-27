@@ -449,3 +449,54 @@ fn the_token_is_in_no_graphql_error() {
         );
     }
 }
+
+#[test]
+fn a_thread_anchored_on_another_commit_is_refused_before_any_request() {
+    let forge = FakeForge::start();
+    let mut old = anchor(14, 14);
+    old.sha = sha(V1);
+    let error = client(&forge)
+        .add_review(
+            PULL_ID,
+            &sha(V2),
+            &[NewThread {
+                anchor: &old,
+                body: "b",
+            }],
+        )
+        .unwrap_err();
+    assert!(matches!(error, ForgeError::Unexpected(_)), "{error:?}");
+    assert_eq!(forge.requests().len(), 0);
+}
+
+#[test]
+fn a_rate_limit_without_headers_waits_an_unknown_time() {
+    let forge = FakeForge::start();
+    forge.route(
+        Route::post("/graphql")
+            .body(r#"{"errors":[{"type":"RATE_LIMITED","message":"slow down"}]}"#),
+    );
+    let error = client(&forge).pending_reviews(&key()).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ForgeError::RateLimited {
+                wait: RateLimitWait::Unknown,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn an_error_without_a_type_is_an_error_of_its_step() {
+    let forge = FakeForge::start();
+    forge.route(Route::post("/graphql").body(r#"{"errors":[{"message":"Something went wrong"}]}"#));
+    let error = client(&forge).resolve_thread(THREAD_ID).unwrap_err();
+    assert!(
+        matches!(&error, ForgeError::Graphql { step: GraphqlStep::ResolveThread, errors }
+            if errors[0].kind.is_none()),
+        "{error:?}"
+    );
+}
