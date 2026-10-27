@@ -26,8 +26,9 @@ pub fn public_forge(host: &str) -> Option<ForgeKind> {
     }
 }
 
-/// Where a forge token comes from. The token itself is never in the configuration.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Where a forge token comes from. The token itself is never in the configuration. `Debug`
+/// does not print the text of `token_cmd`: it can hold a secret.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TokenSource {
     /// `token_cmd`: a command run through `sh -c`; its standard output, trimmed, is the token.
     Command(String),
@@ -35,11 +36,11 @@ pub enum TokenSource {
     Env(String),
 }
 
-impl fmt::Display for TokenSource {
+impl fmt::Debug for TokenSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Command(command) => write!(f, "token_cmd `{command}`"),
-            Self::Env(name) => write!(f, "token_env `{name}`"),
+            Self::Command(_) => f.write_str("Command(<token_cmd>)"),
+            Self::Env(name) => f.debug_tuple("Env").field(name).finish(),
         }
     }
 }
@@ -415,6 +416,12 @@ kind = "gitlab"
         let credential = config.forge_credential(&personal, &gitlab_com).unwrap();
         assert_eq!(credential.kind, ForgeKind::Gitlab);
         assert_eq!(credential.origin, CredentialOrigin::Context);
+    }
+
+    #[test]
+    fn debug_does_not_print_the_command() {
+        let source = TokenSource::Command("op read op://secret".to_owned());
+        assert_eq!(format!("{source:?}"), "Command(<token_cmd>)");
     }
 
     #[test]

@@ -5,18 +5,20 @@
 //! git or to an agent.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use loom_api::TokenProblem;
 use loom_config::forges::TokenSource;
 use thiserror::Error;
-use tracing::{debug, info_span};
+use tracing::{debug, info_span, warn};
 
 use super::Token;
-use crate::repo_update::{Failure, wait};
+use crate::repo_update::{STDERR_TAIL_BYTES, stop_group};
 
 /// Longest run of a `token_cmd`.
 pub const TOKEN_CMD_TIMEOUT: Duration = Duration::from_secs(10);
@@ -92,23 +94,35 @@ impl TokenError {
 /// The first word of a `token_cmd`, the program `sh` looks for. Pure.
 #[must_use]
 pub fn program(command: &str) -> String {
-    command
-        .split_whitespace()
-        .find(|word| !word.contains('='))
-        .unwrap_or_default()
-        .trim_matches(['"', '\''])
-        .to_owned()
+    let mut rest = command.trim_start();
+    // Variable assignments before the program, such as `GH_HOST=x gh`.
+    loop {
+        let word = rest.split_whitespace().next().unwrap_or_default();
+        if word.contains('=') && !word.starts_with(['"', '\'']) {
+            rest = rest[word.len()..].trim_start();
+        } else {
+            break;
+        }
+    }
+    match rest.chars().next() {
+        Some(quote @ ('"' | '\'')) => rest[1..].split(quote).next().unwrap_or_default().to_owned(),
+        _ => rest
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+    }
 }
 
 /// Reads an environment variable of loomd.
 type EnvLookup = dyn Fn(&str) -> Option<String> + Send + Sync;
 
 /// Resolves tokens and keeps them in memory, by source: two contexts with the same source run
-/// its command once.
+/// its command once, even at the same time.
 pub struct TokenResolver {
     timeout: Duration,
     env: Box<EnvLookup>,
-    cache: Mutex<HashMap<TokenSource, Token>>,
+    cache: Mutex<HashMap<TokenSource, Arc<Mutex<Option<Token>>>>>,
 }
 
 impl std::fmt::Debug for TokenResolver {
@@ -137,15 +151,18 @@ impl TokenResolver {
         }
     }
 
-    /// The token of `source`: from memory, otherwise resolved and kept.
+    /// The token of `source`: from memory, otherwise resolved and kept. Callers that ask for
+    /// the same source at the same time wait for one run of its command.
     ///
     /// # Errors
     ///
     /// [`TokenError`] when the command fails, times out or writes nothing, or the variable is
     /// unset or empty. A failure is not kept: the next call tries again.
     pub fn resolve(&self, source: &TokenSource) -> Result<Token, TokenError> {
-        if let Some(token) = self.cached(source) {
-            return Ok(token);
+        let slot = self.slot(source);
+        let mut kept = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(token) = kept.as_ref() {
+            return Ok(token.clone());
         }
         let token = match source {
             TokenSource::Command(command) => self.run(command)?,
@@ -158,27 +175,29 @@ impl TokenResolver {
                 Token::new(value.to_owned())
             }
         };
-        self.cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(source.clone(), token.clone());
+        *kept = Some(token.clone());
+        drop(kept);
         Ok(token)
     }
 
-    /// Forgets the token of `source`, after the forge refused it (401).
-    pub fn invalidate(&self, source: &TokenSource) {
-        self.cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(source);
+    /// Forgets the token of `source` after the forge refused `refused` (401). A token resolved
+    /// since then by another caller is kept.
+    pub fn invalidate(&self, source: &TokenSource, refused: &Token) {
+        let slot = self.slot(source);
+        let mut kept = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if kept.as_ref() == Some(refused) {
+            *kept = None;
+        }
     }
 
-    fn cached(&self, source: &TokenSource) -> Option<Token> {
-        self.cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(source)
-            .cloned()
+    fn slot(&self, source: &TokenSource) -> Arc<Mutex<Option<Token>>> {
+        Arc::clone(
+            self.cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(source.clone())
+                .or_default(),
+        )
     }
 
     /// Runs `sh -c <command>` with no input, in its own process group; its standard output,
@@ -186,7 +205,7 @@ impl TokenResolver {
     fn run(&self, command: &str) -> Result<Token, TokenError> {
         let span = info_span!("forge.token_cmd", program = program(command).as_str());
         let _entered = span.enter();
-        let child = Command::new("sh")
+        let mut child = Command::new("sh")
             .arg("-c")
             .arg(command)
             .stdin(Stdio::null())
@@ -195,33 +214,87 @@ impl TokenResolver {
             .process_group(0)
             .spawn()
             .map_err(TokenError::Spawn)?;
-        match wait(child, self.timeout, KILL_GRACE) {
-            Ok(stdout) => {
-                let token = stdout.trim();
-                if token.is_empty() {
-                    return Err(TokenError::EmptyCommand);
+        let stdout = child.stdout.take().map(chunks);
+        let stderr = child.stderr.take().map(chunks);
+        let deadline = Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                Ok(None) => {
+                    stop_group(&mut child, KILL_GRACE);
+                    return Err(TokenError::Timeout(self.timeout));
                 }
-                debug!("token_cmd gave a token");
-                Ok(Token::new(token.to_owned()))
+                Err(error) => {
+                    stop_group(&mut child, KILL_GRACE);
+                    return Err(TokenError::Spawn(error));
+                }
             }
-            Err(Failure::Exit {
-                status,
-                stderr_tail,
-            }) if status.code() == Some(COMMAND_NOT_FOUND) => Err(TokenError::CommandNotFound {
+        };
+        // A process the command left behind may keep the pipes open: take what arrived.
+        let stdout = stdout
+            .map(|received| collect(&received))
+            .unwrap_or_default();
+        let stderr = stderr
+            .map(|received| collect(&received))
+            .unwrap_or_default();
+        let stderr = tail(&stderr);
+        if status.code() == Some(COMMAND_NOT_FOUND) {
+            return Err(TokenError::CommandNotFound {
                 program: program(command),
-                stderr: stderr_tail.trim().to_owned(),
-            }),
-            Err(Failure::Exit {
-                status,
-                stderr_tail,
-            }) => Err(TokenError::CommandFailed {
-                status: status.to_string(),
-                stderr: stderr_tail.trim().to_owned(),
-            }),
-            Err(Failure::Timeout { after, .. }) => Err(TokenError::Timeout(after)),
-            Err(Failure::Run(error)) => Err(TokenError::Spawn(error)),
+                stderr,
+            });
         }
+        if !status.success() {
+            return Err(TokenError::CommandFailed {
+                status: status.to_string(),
+                stderr,
+            });
+        }
+        let token = String::from_utf8_lossy(&stdout).trim().to_owned();
+        if token.is_empty() {
+            return Err(TokenError::EmptyCommand);
+        }
+        debug!("token_cmd gave a token");
+        Ok(Token::new(token))
     }
+}
+
+/// Wait for more output after the command exited.
+const OUTPUT_GRACE: Duration = Duration::from_millis(200);
+
+/// Reads `pipe` on a thread; each chunk arrives on the channel as soon as it is read.
+fn chunks(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (send, received) = mpsc::channel();
+    let spawned = thread::Builder::new()
+        .name("token-cmd-output".to_owned())
+        .spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(read @ 1..) = pipe.read(&mut buffer) {
+                if send.send(buffer[..read].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        warn!(%error, "cannot start a thread to read the output of token_cmd");
+    }
+    received
+}
+
+/// The chunks received until the pipe closes, or until no chunk came for [`OUTPUT_GRACE`].
+fn collect(received: &mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while let Ok(chunk) = received.recv_timeout(OUTPUT_GRACE) {
+        bytes.extend(chunk);
+    }
+    bytes
+}
+
+/// The last [`STDERR_TAIL_BYTES`] of `bytes`, trimmed.
+fn tail(bytes: &[u8]) -> String {
+    let start = bytes.len().saturating_sub(STDERR_TAIL_BYTES);
+    String::from_utf8_lossy(&bytes[start..]).trim().to_owned()
 }
 
 #[cfg(test)]
@@ -257,7 +330,11 @@ mod tests {
             "/opt/homebrew/bin/op"
         );
         assert_eq!(program("  GH_HOST=x gh auth token"), "gh");
-        assert_eq!(program("'my tool' x"), "my");
+        assert_eq!(
+            program("'/Applications/My Tool/op' read x"),
+            "/Applications/My Tool/op"
+        );
+        assert_eq!(program("\"gh\" auth token"), "gh");
     }
 
     #[test]
@@ -327,15 +404,50 @@ mod tests {
     fn a_token_is_kept_until_invalidated() {
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("runs");
-        let source = command(&format!("echo run >> '{}'; echo tok", runs.display()));
+        // A new token at each run: tok-1, tok-2…
+        let source = command(&format!(
+            "echo run >> '{0}'; echo tok-$(wc -l < '{0}' | tr -d ' ')",
+            runs.display()
+        ));
         let resolver = resolver(Duration::from_secs(10));
         let count = || fs::read_to_string(&runs).unwrap().lines().count();
-        resolver.resolve(&source).unwrap();
+        let first = resolver.resolve(&source).unwrap();
         resolver.resolve(&source).unwrap();
         assert_eq!(count(), 1);
-        resolver.invalidate(&source);
-        resolver.resolve(&source).unwrap();
+        resolver.invalidate(&source, &first);
+        let second = resolver.resolve(&source).unwrap();
         assert_eq!(count(), 2);
+        // A refusal of the old token does not drop the new one.
+        resolver.invalidate(&source, &first);
+        assert_eq!(resolver.resolve(&source).unwrap(), second);
+        assert_eq!(count(), 2);
+    }
+
+    #[test]
+    fn callers_at_the_same_time_wait_for_one_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        let source = command(&format!(
+            "echo run >> '{}'; sleep 0.3; echo tok",
+            runs.display()
+        ));
+        let resolver = resolver(Duration::from_secs(10));
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| assert_eq!(resolver.resolve(&source).unwrap().expose(), "tok"));
+            }
+        });
+        assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn a_process_left_behind_does_not_lose_the_token() {
+        let started = Instant::now();
+        let token = resolver(Duration::from_secs(10))
+            .resolve(&command("echo tok; sleep 5 &"))
+            .unwrap();
+        assert_eq!(token.expose(), "tok");
+        assert!(started.elapsed() < Duration::from_secs(4));
     }
 
     #[test]

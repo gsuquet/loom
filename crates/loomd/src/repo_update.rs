@@ -689,7 +689,7 @@ fn reader(mut pipe: impl io::Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
 
 /// Sends `SIGTERM` to the process group of `child` (its id: it leads its own group), waits
 /// `grace`, then `SIGKILL`, through the `kill` command (no `unsafe`).
-fn stop_group(child: &mut Child, grace: Duration) {
+pub(crate) fn stop_group(child: &mut Child, grace: Duration) {
     let group = child.id();
     signal_group(group, "-TERM");
     let deadline = Instant::now() + grace;

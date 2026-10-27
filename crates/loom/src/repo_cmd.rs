@@ -55,8 +55,9 @@ const REMOTE_CHECK_PATH: &str = "/v1/diagnostics/remote-check";
 const REMOTE_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 /// Path of loomd's forge check.
 const FORGE_CHECK_PATH: &str = "/v1/diagnostics/forge-check";
-/// Longest wait for loomd's forge check: a token command (10 s) and two calls of 20 s.
-const FORGE_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest wait for loomd's forge check: after a 401, two token commands (10 s each) and three
+/// calls of 20 s (`/user` twice, then the GitLab token scopes), with margin.
+const FORGE_CHECK_TIMEOUT: Duration = Duration::from_secs(100);
 /// Longest wait for a scan: it walks every root.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Longest wait for a state read on demand: its budget, plus a scan it may wait for.

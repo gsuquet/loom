@@ -96,14 +96,14 @@ fn outcome(
     let (token, user) = match api.user(&token) {
         Err(ApiFailure::Status { status: 401, .. }) => {
             // The token may have been renewed since it was resolved.
-            resolver.invalidate(&target.source);
+            resolver.invalidate(&target.source, &token);
             let token = match resolve() {
                 Ok(token) => token,
                 Err(outcome) => return outcome,
             };
             let user = api.user(&token);
             if matches!(user, Err(ApiFailure::Status { status: 401, .. })) {
-                resolver.invalidate(&target.source);
+                resolver.invalidate(&target.source, &token);
             }
             (token, user)
         }
@@ -351,7 +351,7 @@ kind = "gitlab"
             status(401, "Bad credentials"),
             status(401, "Bad credentials"),
         ]);
-        resolver.invalidate(&source);
+        resolver.invalidate(&source, &Token::new("tok-2".to_owned()));
         let check = check_forge(&target(ForgeKind::Github, source), &resolver, &fake);
         assert_eq!(
             check.result,

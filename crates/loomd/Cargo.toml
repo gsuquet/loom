@@ -52,6 +52,8 @@ assert_cmd.workspace = true
 jsonschema.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
+# Captures the logs and spans of the forge check, to show that they never hold the token.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

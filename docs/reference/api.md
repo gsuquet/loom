@@ -136,11 +136,11 @@ If an update of a repository is in progress, `loomd` updates the repository agai
 | Property | Value |
 | --- | --- |
 | Credentials | `[contexts.<ctx>.forges."<host>"]` of the context, otherwise `[forges."<host>"]`. A context without a credential for a host is not checked for it. |
-| Token | `token_cmd` runs through `sh -c` in the environment of `loomd`, with no input, stopped after 10 s (process group `SIGTERM`, then `SIGKILL` 1 s later). Its standard output, trimmed, is the token. `token_env` reads the variable from the environment of `loomd`, trimmed. `loomd` keeps the token in memory, per source, and gets it again after a `401`. |
+| Token | `token_cmd` runs through `sh -c` in the environment of `loomd`, with no input, stopped after 10 s (process group `SIGTERM`, then `SIGKILL` 1 s later). Its standard output, trimmed, is the token. `token_env` reads the variable from the environment of `loomd`, trimmed. `loomd` keeps the token in memory, per source: checks of the same source run its command once. `loomd` gets the token again after a `401`. |
 | Forge calls | `GET <api>/user` with `Authorization: Bearer <token>`. On a `401`, `loomd` gets the token again and calls once more. GitLab: then `GET <api>/personal_access_tokens/self` for the scopes. Each call stops after 20 s. The header follows a redirect only to the same host over HTTPS. |
 | API | `https://api.github.com` for `github.com`, `https://<host>/api/v3` for another GitHub host (GitHub Enterprise Server), `https://<host>/api/v4` for GitLab. |
 | Timing | Every credential at once. |
-| Secrets | The answer, the logs and the traces never contain the token. Of the text of `token_cmd`, only its program (the first word) is in the answer and the traces. |
+| Secrets | The answer, the logs and the traces never contain the token. The answer and the traces contain the program of `token_cmd` (its first word), not its other text. When `token_cmd` fails, `error` contains the end of its standard error. |
 
 ### Search
 
@@ -1028,7 +1028,7 @@ Answer of [`POST /v1/diagnostics/forge-check`](#forge-check).
 | `authenticated` | `login`; `access`, tagged by `kind`: `write` or `read_only` with `scopes`, `unknown` with `reason` | `GET /user` accepted the token. GitHub: `write` when `x-oauth-scopes` holds `repo`, `read_only` otherwise, `unknown` without the header (fine-grained token). GitLab: `write` when the token has the `api` scope, `read_only` otherwise, `unknown` when `GET /personal_access_tokens/self` fails (not a personal access token). |
 | `token_unresolved` | `problem`, `error`, `program` (for `command_not_found` only) | `problem`: `command_not_found` (exit status 127 of `sh`), `command_failed` (another non-zero status, or `sh` cannot start), `timeout`, `empty` (no output, or an empty variable), `env_unset`. |
 | `rejected` | `status`, `error` | The forge answered `GET /user` with an error status. `error` is the `message` (or `error`) of its body. |
-| `sso_required` | `url` (absent when the header has none) | GitHub answered `403` with an `x-github-sso` header: the token is not authorized for the SAML single sign-on of an organization. |
+| `sso_required` | `url` (absent when the header has none) | GitHub answered `GET /user` with `403` and an `x-github-sso` header: the token is not authorized for the SAML single sign-on of an organization. GitHub applies single sign-on to the resources of the organization, so `GET /user` can accept a token that the organization refuses. |
 | `unreachable` | `error` | No answer, or an answer that cannot be read. |
 
 ```json
