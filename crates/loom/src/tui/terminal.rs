@@ -326,6 +326,8 @@ mod tests {
         Backend::clear(&mut terminal.backend_mut().0).unwrap();
 
         // `Terminal::clear` asks for the cursor position first, gets no answer and does nothing.
+        // If a new ratatui no longer asks, this test fails: then `repaint_all` can go back to
+        // `Terminal::clear`.
         assert!(terminal.clear().is_err());
         draw_page(&mut terminal);
 
