@@ -28,8 +28,8 @@ use loom::tui::keymap::QueueTab;
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent};
 use loom_api::{
-    ContextName, Importance, Kind, RankReason, Relations, SearchResults, Status, Task, TaskDetail,
-    TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary,
+    ContextName, Importance, Kind, RankReason, Relations, RepoSummary, SearchResult, SearchResults,
+    Status, Task, TaskDetail, TaskId, TaskList, TaskRank, TaskReadOnly, TaskSummary,
 };
 use loom_config::repos::{ContextColor, ContextConfig};
 use ratatui::Terminal;
@@ -1576,4 +1576,98 @@ async fn the_context_picker_moves_a_task_like_loom_set() {
     assert_eq!(tui_event, cli_event);
     assert_eq!(tui_event["type"], "edited");
     assert_eq!(tui_event["changes"][0]["field"], "context");
+}
+
+fn git_init(home: &std::path::Path, dir: &std::path::Path) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .args(["-c", "init.defaultBranch=main", "init", "--quiet"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn enter_on_a_repo_result_marks_it_used_and_changes_to_it_on_quit() {
+    let sandbox = Sandbox::new();
+    let repo_dir = sandbox.home().join("checkout");
+    fs::create_dir_all(&repo_dir).unwrap();
+    git_init(&sandbox.home(), &repo_dir);
+    let repo_arg = repo_dir.to_string_lossy().into_owned();
+    let output = sandbox.run(&["repo", "register", &repo_arg]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let client = Client::new(sandbox.socket());
+    let cd_dir = tempfile::tempdir().unwrap();
+    let cd_file = cd_dir.path().join("cd");
+
+    let mut state = AppState::new(
+        Theme::from_config(&BTreeMap::new(), false),
+        None,
+        vec![ContextName::from_str("work").unwrap()],
+        jiff::civil::date(2026, 10, 22),
+    );
+    press(&mut state, KeyCode::Char('/'));
+    let search_path = search_api_path(&["checkout".to_owned()], None, None, 10);
+    let results: SearchResults = client.get(&search_path).await.unwrap();
+    state.search_results = results.results;
+    let Some(SearchResult::Repo(found)) = state.search_results.first().cloned() else {
+        panic!("no repository result: {:?}", state.search_results);
+    };
+
+    // Without the shell integration, the TUI stays open and names the path.
+    let effect = press(&mut state, KeyCode::Enter);
+    let request = ActionRequest::from_effect(effect).unwrap();
+    assert_eq!(request, ActionRequest::GoRepo(found.path.clone()));
+    let outcome = execute_action(&client, request.clone(), None)
+        .await
+        .unwrap();
+    assert!(!outcome.should_quit);
+    let message = outcome.message.unwrap();
+    assert!(message.contains("loom shell-init"), "{message}");
+    assert!(
+        message.contains(&found.path.display().to_string()),
+        "{message}"
+    );
+
+    let before: RepoSummary = client
+        .get(&format!("/v1/repos/{}", found.slug))
+        .await
+        .unwrap();
+    assert_eq!(before.last_used, None);
+
+    // With it, loomd marks the repository used and the shell gets its path.
+    let outcome = execute_action(&client, request, Some(&cd_file))
+        .await
+        .unwrap();
+    assert!(outcome.should_quit);
+    assert_eq!(
+        fs::read_to_string(&cd_file).unwrap(),
+        format!("{}\n", found.path.display())
+    );
+    let repo: RepoSummary = client
+        .get(&format!("/v1/repos/{}", found.slug))
+        .await
+        .unwrap();
+    assert!(repo.last_used.is_some());
+
+    // A path that is no longer a repository is an error, and the shell gets no path.
+    fs::remove_file(&cd_file).unwrap();
+    let gone = ActionRequest::GoRepo(sandbox.home().join("gone"));
+    assert!(execute_action(&client, gone, Some(&cd_file)).await.is_err());
+    assert!(!cd_file.exists());
 }

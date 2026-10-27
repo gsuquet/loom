@@ -50,7 +50,7 @@ A task that is read-only shows `[ro: <reason>]` in the list row and a banner `âš
 
 ## Object pages
 
-When you press `Enter` on a selected row in a queue, or on a search result, the TUI pushes an object page onto the navigation stack. When you press `Esc`, the TUI pops the object page and returns to the previous view with its selection intact.
+When you press `Enter` on a selected row in a queue, or on a task search result, the TUI pushes an object page onto the navigation stack. When you press `Esc`, the TUI pops the object page and returns to the previous view with its selection intact.
 
 | Object | Content |
 | --- | --- |
@@ -105,7 +105,7 @@ A modal sits on top of the active view and captures key presses until you close 
 | --- | --- | --- |
 | `?` | Help | Shows every key binding of the TUI, grouped by layer (`Global`, `Queue`, `Object page`, `Modals`). `j`/`k` (or `Down`/`Up`) scrolls the list; `Esc`, `?`, or `q` closes it. |
 | `:` | Command palette | Fuzzy-filters views (`queue: Today`, `queue: Inbox`, `queue: Waiting`), actions (`action: Search (/...)`, `action: Pick context filter (@)`, `action: Toggle preview pane (|)`, `action: Refresh from loomd (r)`, `action: Help (?)`, `action: Quit loom (q)`), and context switches (`context: all`, `context: <name>`). |
-| `/` | Search | Queries `GET /v1/search?q=<query>` as you type after a 150 ms pause. `Enter` opens the selected task page. |
+| `/` | Search | Queries `GET /v1/search?q=<query>` as you type after a 150 ms pause. `Enter` on a task opens its page. `Enter` on a repository marks it used (`POST /v1/repos/register` with `on_use`), writes its path to the file in `LOOM_CD_FILE` and quits the TUI, so that the shell function of `loom shell-init` changes to that directory. If `LOOM_CD_FILE` is not set, the TUI stays open and shows the path with a hint to load `loom shell-init`. |
 | `@` | Context picker | Lists `all` and every known context. `Enter` switches the active context filter and reloads the queues. |
 | `a` | Accept | Triages an `inbox` task to `ready`. Configures `Kind`, `Importance`, and optional `Due` date. |
 | `z` | Snooze | Moves a task to `waiting`. Configures `Until` date and optional `Waiting on` note. |

@@ -3,6 +3,8 @@
 //! No I/O happens in this module: key events and SSE [`ChangeEvent`]s mutate [`AppState`] and
 //! return an [`AppEffect`] that the runtime loop in the binary executes.
 
+use std::path::PathBuf;
+
 use crate::tui::events::{self, EventsFilter, EventsLoad, EventsView};
 use crate::tui::relations::{self, RelationsData, RelationsLoad, RelationsView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -379,6 +381,8 @@ pub enum AppEffect {
     DoneTask(TaskId),
     /// Focus task, set status active, and cd to repo on quit.
     GoTask(TaskId),
+    /// Mark the repository at this path used, and cd to it on quit.
+    GoRepo(PathBuf),
     /// Undo last task event.
     UndoTask(TaskId),
     /// Create new task in context.
@@ -1815,7 +1819,7 @@ impl AppState {
                 });
                 AppEffect::FetchTask(task.id.clone())
             }
-            SearchResult::Repo(_) => AppEffect::None,
+            SearchResult::Repo(repo) => AppEffect::GoRepo(repo.path.clone()),
         }
     }
 
@@ -3079,6 +3083,35 @@ mod tests {
         let effect = state.handle_key(backspace);
         assert_eq!(effect, AppEffect::Search("a".to_owned()));
         assert_eq!(state.search_query, "a");
+    }
+
+    #[test]
+    fn enter_on_a_repo_result_goes_to_its_path() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.modal = Some(ModalKind::Search);
+        state.search_results = vec![SearchResult::Repo(loom_api::RepoMatch {
+            slug: "work/checkout".to_owned(),
+            name: "checkout".to_owned(),
+            context: "work".to_owned(),
+            path: "/src/work/checkout".into(),
+            score: 1.0,
+            matched_fields: Vec::new(),
+        })];
+
+        let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(effect, AppEffect::GoRepo("/src/work/checkout".into()));
+        assert_eq!(state.modal, None);
+        assert_eq!(state.page_stack.len(), 0);
+    }
+
+    #[test]
+    fn enter_without_a_search_result_does_nothing() {
+        let mut state = AppState::new(test_theme(), None, Vec::new(), test_date());
+        state.modal = Some(ModalKind::Search);
+
+        let effect = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(effect, AppEffect::None);
+        assert_eq!(state.modal, None);
     }
 
     #[test]
