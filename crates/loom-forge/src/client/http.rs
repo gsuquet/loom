@@ -9,7 +9,7 @@ use ureq::Agent;
 use ureq::config::RedirectAuthHeaders;
 
 use super::{ForgeError, RateLimitWait, Token, sso_url};
-use crate::error::ParseError;
+use crate::error::{ErrorBody, ParseError};
 
 /// Longest wait for one forge call.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -219,7 +219,7 @@ impl Http {
     /// The error of an answer with an error status, its texts redacted.
     pub fn error(&self, answer: &Answer) -> ForgeError {
         let body = self.token.redact(&String::from_utf8_lossy(&answer.body));
-        classify(answer.status, &answer.headers, body.as_bytes())
+        classify(self.kind, answer.status, &answer.headers, body.as_bytes())
     }
 
     fn transport(&self, url: &str, error: &dyn std::fmt::Display) -> ForgeError {
@@ -227,9 +227,16 @@ impl Http {
     }
 }
 
-/// The error of an answer with an error status. Matches on the status and the headers, never
-/// on the message. Pure.
-pub fn classify(status: u16, headers: &Headers, body: &[u8]) -> ForgeError {
+/// The error of an answer with an error status, by forge. Matches on the status, the headers
+/// and, for a GitLab 403, the machine code of the `error` field, never on the message. Pure.
+pub fn classify(kind: ForgeKind, status: u16, headers: &Headers, body: &[u8]) -> ForgeError {
+    match kind {
+        ForgeKind::Github => classify_github(status, headers, body),
+        ForgeKind::Gitlab => classify_gitlab(status, headers, body),
+    }
+}
+
+fn classify_github(status: u16, headers: &Headers, body: &[u8]) -> ForgeError {
     let message = message(body);
     match status {
         401 => ForgeError::Unauthorized { message },
@@ -262,7 +269,51 @@ pub fn classify(status: u16, headers: &Headers, body: &[u8]) -> ForgeError {
     }
 }
 
-/// `retry-after` (seconds) first, then `x-ratelimit-reset` (Unix seconds). Pure.
+/// The OAuth error code of GitLab, such as `insufficient_scope`: a machine code, not a message.
+#[derive(serde::Deserialize)]
+struct ScopeError {
+    error: Option<String>,
+    error_description: Option<String>,
+    scope: Option<String>,
+}
+
+/// The OAuth code of GitLab for a token without the scope of the request.
+const INSUFFICIENT_SCOPE: &str = "insufficient_scope";
+
+fn classify_gitlab(status: u16, headers: &Headers, body: &[u8]) -> ForgeError {
+    let ErrorBody { message, details } =
+        crate::gitlab::parse_error(body).unwrap_or_else(|_| ErrorBody {
+            message: message(body),
+            details: Vec::new(),
+        });
+    match status {
+        400 => ForgeError::BadRequest { message, details },
+        401 => ForgeError::Unauthorized { message },
+        403 => match serde_json::from_slice::<ScopeError>(body) {
+            Ok(ScopeError {
+                error: Some(code),
+                error_description,
+                scope,
+            }) if code == INSUFFICIENT_SCOPE => ForgeError::InsufficientScope {
+                scope,
+                message: error_description.unwrap_or(code),
+            },
+            Ok(_) | Err(_) => ForgeError::Forbidden { message },
+        },
+        404 => ForgeError::NotFound { message },
+        409 => ForgeError::Conflict { message },
+        422 => ForgeError::Unprocessable { message, details },
+        429 => ForgeError::RateLimited {
+            status,
+            wait: rate_limit_wait(headers),
+            message,
+        },
+        status => ForgeError::Status { status, message },
+    }
+}
+
+/// `retry-after` (seconds) first, then `x-ratelimit-reset` (GitHub) or `ratelimit-reset`
+/// (GitLab), in Unix seconds. Pure.
 pub fn rate_limit_wait(headers: &Headers) -> RateLimitWait {
     if let Some(seconds) = headers
         .get("retry-after")
@@ -272,6 +323,7 @@ pub fn rate_limit_wait(headers: &Headers) -> RateLimitWait {
     }
     headers
         .get("x-ratelimit-reset")
+        .or_else(|| headers.get("ratelimit-reset"))
         .and_then(|value| value.trim().parse::<u64>().ok())
         .and_then(Timestamp::from_unix_secs)
         .map_or(RateLimitWait::Unknown, RateLimitWait::Until)
@@ -351,7 +403,7 @@ fn details(body: &[u8]) -> Vec<String> {
 mod tests {
     use std::time::Duration;
 
-    use loom_api::Timestamp;
+    use loom_api::{ForgeKind, Timestamp};
 
     use super::{Headers, classify, next_link, rate_limit_wait};
     use crate::client::{ForgeError, RateLimitWait};
@@ -364,28 +416,28 @@ mod tests {
         // The same message under every status: only the status and headers decide.
         let body = br#"{"message":"Not Found"}"#;
         assert!(matches!(
-            classify(401, &none, body),
+            classify(ForgeKind::Github, 401, &none, body),
             ForgeError::Unauthorized { .. }
         ));
         assert!(matches!(
-            classify(403, &none, body),
+            classify(ForgeKind::Github, 403, &none, body),
             ForgeError::Forbidden { .. }
         ));
         assert!(matches!(
-            classify(404, &none, body),
+            classify(ForgeKind::Github, 404, &none, body),
             ForgeError::NotFound { .. }
         ));
         assert!(matches!(
-            classify(422, &none, body),
+            classify(ForgeKind::Github, 422, &none, body),
             ForgeError::Unprocessable { .. }
         ));
         assert!(matches!(
-            classify(500, &none, body),
+            classify(ForgeKind::Github, 500, &none, body),
             ForgeError::Status { status: 500, .. }
         ));
         // A rate limit message under a plain 403 is a plain 403.
         assert!(matches!(
-            classify(403, &none, RATE),
+            classify(ForgeKind::Github, 403, &none, RATE),
             ForgeError::Forbidden { .. }
         ));
     }
@@ -398,23 +450,23 @@ mod tests {
         ]);
         let reset = Timestamp::from_unix_secs(1_791_792_000).unwrap();
         assert!(matches!(
-            classify(403, &exhausted, RATE),
+            classify(ForgeKind::Github, 403, &exhausted, RATE),
             ForgeError::RateLimited { status: 403, wait: RateLimitWait::Until(at), .. } if at == reset
         ));
         // A secondary rate limit: requests remain, but `retry-after` says to wait.
         let secondary = Headers::from([("x-ratelimit-remaining", "12"), ("retry-after", "30")]);
         assert!(matches!(
-            classify(403, &secondary, RATE),
+            classify(ForgeKind::Github, 403, &secondary, RATE),
             ForgeError::RateLimited { wait: RateLimitWait::After(wait), .. }
                 if wait == Duration::from_secs(30)
         ));
         let spaced = Headers::from([("x-ratelimit-remaining", " 0 ")]);
         assert!(matches!(
-            classify(403, &spaced, RATE),
+            classify(ForgeKind::Github, 403, &spaced, RATE),
             ForgeError::RateLimited { .. }
         ));
         assert!(matches!(
-            classify(429, &Headers::default(), b""),
+            classify(ForgeKind::Github, 429, &Headers::default(), b""),
             ForgeError::RateLimited {
                 status: 429,
                 wait: RateLimitWait::Unknown,
@@ -450,7 +502,7 @@ mod tests {
             ("x-ratelimit-remaining", "0"),
         ]);
         assert!(matches!(
-            classify(403, &headers, b"{}"),
+            classify(ForgeKind::Github, 403, &headers, b"{}"),
             ForgeError::SsoRequired { url: Some(url) } if url == "https://github.com/orgs/acme/sso?x=1"
         ));
     }
@@ -458,6 +510,7 @@ mod tests {
     #[test]
     fn messages_and_details_of_error_bodies() {
         let ForgeError::Unprocessable { message, details } = classify(
+            ForgeKind::Github,
             422,
             &Headers::default(),
             br#"{"message":"Unprocessable Entity","errors":["Review Can not approve your own pull request",{"message":"other"},{"code":"x"}]}"#,
@@ -473,13 +526,17 @@ mod tests {
                 r#"{"code":"x"}"#
             ]
         );
-        let ForgeError::Status { message, .. } =
-            classify(502, &Headers::default(), b"<html>Bad gateway</html>")
-        else {
+        let ForgeError::Status { message, .. } = classify(
+            ForgeKind::Github,
+            502,
+            &Headers::default(),
+            b"<html>Bad gateway</html>",
+        ) else {
             panic!("not a status");
         };
         assert_eq!(message, "<html>Bad gateway</html>");
         let ForgeError::Forbidden { message } = classify(
+            ForgeKind::Github,
             403,
             &Headers::default(),
             br#"{"error":"insufficient_scope","scope":"api"}"#,
@@ -487,6 +544,95 @@ mod tests {
             panic!("not a 403");
         };
         assert_eq!(message, "insufficient_scope");
+    }
+
+    #[test]
+    fn gitlab_statuses_map_to_variants_without_reading_the_message() {
+        let none = Headers::default();
+        let gitlab = |status, body: &[u8]| classify(ForgeKind::Gitlab, status, &none, body);
+        let body = br#"{"message":"404 Not found"}"#;
+        assert!(matches!(gitlab(401, body), ForgeError::Unauthorized { .. }));
+        assert!(matches!(gitlab(403, body), ForgeError::Forbidden { .. }));
+        assert!(matches!(gitlab(404, body), ForgeError::NotFound { .. }));
+        assert!(matches!(
+            gitlab(409, body),
+            ForgeError::Conflict { message } if message == "404 Not found"
+        ));
+        assert!(matches!(gitlab(400, body), ForgeError::BadRequest { .. }));
+        assert!(matches!(
+            gitlab(422, body),
+            ForgeError::Unprocessable { .. }
+        ));
+        assert!(matches!(
+            gitlab(500, b"<html>oops</html>"),
+            ForgeError::Status { status: 500, message } if message == "<html>oops</html>"
+        ));
+        // GitLab limits the rate with 429 only: a 403 is never a rate limit there.
+        let exhausted = Headers::from([("x-ratelimit-remaining", "0"), ("retry-after", "5")]);
+        assert!(matches!(
+            classify(ForgeKind::Gitlab, 403, &exhausted, body),
+            ForgeError::Forbidden { .. }
+        ));
+        let limited = Headers::from([("RateLimit-Reset", "1791792000")]);
+        let reset = Timestamp::from_unix_secs(1_791_792_000).unwrap();
+        assert!(matches!(
+            classify(ForgeKind::Gitlab, 429, &limited, b"Retry later"),
+            ForgeError::RateLimited { status: 429, wait: RateLimitWait::Until(at), .. } if at == reset
+        ));
+    }
+
+    #[test]
+    fn a_gitlab_403_with_the_insufficient_scope_code_names_the_scope() {
+        let none = Headers::default();
+        let ForgeError::InsufficientScope { scope, message } = classify(
+            ForgeKind::Gitlab,
+            403,
+            &none,
+            br#"{"error":"insufficient_scope","error_description":"Needs more.","scope":"api"}"#,
+        ) else {
+            panic!("not an insufficient scope");
+        };
+        assert_eq!(scope.as_deref(), Some("api"));
+        assert_eq!(message, "Needs more.");
+        assert!(matches!(
+            classify(ForgeKind::Gitlab, 403, &none, br#"{"error":"insufficient_scope"}"#),
+            ForgeError::InsufficientScope { scope: None, message } if message == "insufficient_scope"
+        ));
+        // Another OAuth code, or the code in the message, is a plain 403.
+        for body in [
+            br#"{"error":"invalid_token"}"#.as_slice(),
+            br#"{"message":"insufficient_scope"}"#,
+        ] {
+            assert!(matches!(
+                classify(ForgeKind::Gitlab, 403, &none, body),
+                ForgeError::Forbidden { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn a_gitlab_400_keeps_its_validation_errors() {
+        let ForgeError::BadRequest { message, details } = classify(
+            ForgeKind::Gitlab,
+            400,
+            &Headers::default(),
+            br#"{"message":{"base":["first","second"]}}"#,
+        ) else {
+            panic!("not a 400");
+        };
+        assert_eq!(message, "base: first");
+        assert_eq!(details, ["base: first", "base: second"]);
+    }
+
+    #[test]
+    fn github_keeps_400_and_409_as_plain_statuses() {
+        let none = Headers::default();
+        for status in [400, 409] {
+            assert!(matches!(
+                classify(ForgeKind::Github, status, &none, b"{}"),
+                ForgeError::Status { .. }
+            ));
+        }
     }
 
     #[test]

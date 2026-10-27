@@ -66,13 +66,13 @@ Host `gitlab.example.com`, API `https://gitlab.example.com/api/v4`, project `com
 | --- | --- | --- | --- |
 | `GET /user` | 200 | | `user.json` |
 | `GET /personal_access_tokens/self` | 200 | | `personal-access-token-self.json` (`api`), `.read-api.json` (`read_api`) |
-| `GET /merge_requests?scope=reviews_for_me&state=opened&updated_after=…` | 200 | `x-next-page`, `link` | `merge-requests-reviews-for-me.json`, `.empty.json` |
+| `GET /merge_requests?scope=reviews_for_me&state=opened&updated_after=…&per_page=100` (no `updated_after` on the first poll) | 200 | `x-next-page`, `link` | `merge-requests-reviews-for-me.json`, `.empty.json` |
 | `GET /projects/77/merge_requests/88` | 200 | `etag` | `merge-request-88.v1.json`, `merge-request-88.v2.json` |
-| `GET /projects/77/merge_requests/88/versions` | 200 | | `merge-request-88-versions.json` (newest first) |
+| `GET /projects/77/merge_requests/88/versions?per_page=100` | 200 | | `merge-request-88-versions.json` (newest first) |
 | `GET /projects/77/merge_requests/88/diffs?per_page=100` | 200 | `x-next-page` | `merge-request-88-diffs.json` |
-| `GET /projects/77/merge_requests/88/discussions?per_page=2&page=1` | 200 | `x-next-page: 2`, `x-total-pages: 2` | `merge-request-88-discussions.page-1.json` |
+| `GET /projects/77/merge_requests/88/discussions?per_page=2` | 200 | `x-next-page: 2`, `x-total-pages: 2` | `merge-request-88-discussions.page-1.json` |
 | `GET /projects/77/merge_requests/88/discussions?per_page=2&page=2` | 200 | `x-next-page:` (empty) | `merge-request-88-discussions.page-2.json` |
-| `GET /projects/77/merge_requests/88/draft_notes` | 200 | | `draft-notes.empty.json`, `draft-notes.foreign.json` (a draft started in the web UI) |
+| `GET /projects/77/merge_requests/88/draft_notes?per_page=100` | 200 | | `draft-notes.empty.json`, `draft-notes.foreign.json` (a draft started in the web UI) |
 | `POST /projects/77/merge_requests/88/draft_notes`, added line | 201 | | `draft-note-create.new-line.request.json`, `.response.json` |
 | same, line range (`line_range` with line codes) | 201 | | `draft-note-create.range.request.json` |
 | same, unchanged line (both `old_line` and `new_line`) | 201 | | `draft-note-create.context-line.request.json` |
@@ -81,8 +81,12 @@ Host `gitlab.example.com`, API `https://gitlab.example.com/api/v4`, project `com
 | `POST /projects/77/merge_requests/88/draft_notes/bulk_publish` | 204 | | `draft-notes-bulk-publish.request.json` |
 | `POST /projects/77/merge_requests/88/approve` | 201 | | `approve.request.json`, `approve.response.json` |
 | same, after a new push | 409 | | `error-409-sha-mismatch.json` |
+| `GET /projects/77/merge_requests/88/approvals` | 200 | | `approve.response.json` (same shape) |
+| `PUT /projects/77/merge_requests/88/discussions/6a9c1750b37d513a43987b574953fceb50b03ce7?resolved=true` | 200 | | (the discussion; not read) |
 | any, bad token | 401 | | `error-401.json` |
 | a write with a `read_api` token | 403 | | `error-403-insufficient-scope.json` |
+
+Lists are read with `per_page=100`; the discussions use `per_page=2` here to show two pages. The first page has no `page` parameter, the next ones add `page=<x-next-page>`.
 
 A line code is `<sha1 of the path>_<old line>_<new line>`; for `src/auth/jwt.rs` the hash is `d6731b5918e52205f2871b9c60cea4aed6807584`.
 

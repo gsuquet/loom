@@ -3,6 +3,8 @@
 //! Every parser takes the body of a response with a success status. Error bodies (4xx, 5xx)
 //! go to [`parse_error`].
 
+pub mod request;
+
 use loom_api::ForgeKind;
 use serde::Deserialize;
 

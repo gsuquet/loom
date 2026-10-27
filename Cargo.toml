@@ -62,6 +62,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
 sha2 = "0.11"
+# Already compiled through gix-hash: the SHA-1 of the GitLab line codes.
+sha1dc = { version = "0.1.5", default-features = false }
 tar = { version = "0.4", default-features = false }
 tempfile = "3.27"
 thiserror = "2.0"
