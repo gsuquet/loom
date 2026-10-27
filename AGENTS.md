@@ -8,7 +8,7 @@ A personal work engine: a prioritized list of everything I have to do across con
 
 ## Status
 
-v0.2.0 is released (repo index); v0.3 (tasks core and TUI) is in progress. The crates are listed in `docs/design/architecture.md`. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
+v0.3.0 is released (tasks core and TUI); v0.4 (MR review) is in progress. The crates are listed in `docs/design/architecture.md`. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
 
 ## Read only what your task needs
 

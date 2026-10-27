@@ -29,12 +29,14 @@ Loom keeps all the work that I have to do in one prioritized list, for all my co
 
 ## Project status
 
-[v0.2.0](https://github.com/gsuquet/loom/releases/tag/v0.2.0) has these functions:
+[v0.3.0](https://github.com/gsuquet/loom/releases/tag/v0.3.0) has these functions:
 
 * It installs, runs `loomd` as a user service and keeps itself up to date.
 * It indexes the git repositories of the machine: contexts, repo cards, `loom search`, automatic fetch and fast-forward.
+* It keeps the tasks of each context in a git repository: capture, triage, priority list, focus, recurring tasks, archive, backup to a remote.
+* It shows the tasks in a terminal user interface: `Today`, `Inbox` and `Waiting` queues, triage keys, a task page with its events and relations.
 
-v0.3 (tasks and TUI) is in progress on the `dev` channel. The [changelog](CHANGELOG.md) gives the shipped changes. The design is in [docs/design/](docs/design/), and the plan is in the [roadmap](docs/roadmap.md).
+v0.4 (merge request review) is in progress on the `dev` channel. The [changelog](CHANGELOG.md) gives the shipped changes. The design is in [docs/design/](docs/design/), and the plan is in the [roadmap](docs/roadmap.md).
 
 ## Who this project is for
 
@@ -62,7 +64,8 @@ loom status
 
 1. Define your contexts in `~/.loom/config.toml` ([configure contexts](docs/how-to-guides/configure-contexts.md)).
 2. Check them with `loom repo doctor`.
-3. To register the repositories that the shell enters, use `eval "$(loom shell-init zsh)"` ([shell integration](docs/how-to-guides/shell-integration.md)).
+3. To register the repositories that the shell enters, and to let `loom go` change the directory, use `eval "$(loom shell-init zsh)"` ([shell integration](docs/how-to-guides/shell-integration.md)).
+4. Run `loom` to open the terminal user interface ([start your day](docs/tutorials/start-your-day.md)).
 
 To work on Loom, run these commands:
 
@@ -81,10 +84,10 @@ Read the [Contributing Guide](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF
 
 The documentation uses the [Diátaxis](https://diataxis.fr/) framework:
 
-* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [task files](docs/reference/task-file.md) (`task.md`, `events.jsonl`), [style guide](docs/reference/style-guide.md). The reference gets new file formats when their features ship.
-* **How-to guides:** [install loom](docs/how-to-guides/install.md), [run loomd as a service](docs/how-to-guides/run-loomd-as-a-service.md), [upgrade and roll back](docs/how-to-guides/upgrade-and-roll-back.md), [configure contexts](docs/how-to-guides/configure-contexts.md), [recurring tasks](docs/how-to-guides/recurring-tasks.md), [shell integration](docs/how-to-guides/shell-integration.md), [local traces](docs/how-to-guides/local-traces.md).
+* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [task files](docs/reference/task-file.md) (`task.md`, `events.jsonl`), [TUI](docs/reference/tui.md), [style guide](docs/reference/style-guide.md). The reference gets new file formats when their features ship.
+* **How-to guides:** [install loom](docs/how-to-guides/install.md), [run loomd as a service](docs/how-to-guides/run-loomd-as-a-service.md), [upgrade and roll back](docs/how-to-guides/upgrade-and-roll-back.md), [configure contexts](docs/how-to-guides/configure-contexts.md), [manage tasks](docs/how-to-guides/manage-tasks.md), [recurring tasks](docs/how-to-guides/recurring-tasks.md), [back up context stores](docs/how-to-guides/back-up-context-stores.md), [shell integration](docs/how-to-guides/shell-integration.md), [local traces](docs/how-to-guides/local-traces.md).
 * **Explanation:** [auto-upgrade](docs/explanation/auto-upgrade.md), [repository updates](docs/explanation/repo-updates.md), [task store](docs/explanation/task-store.md), [search](docs/explanation/search.md).
-* **Tutorials:** to come when features ship (from v0.3).
+* **Tutorials:** [start your day](docs/tutorials/start-your-day.md).
 
 Design and plan, outside Diátaxis (target behavior, not shipped behavior):
 
