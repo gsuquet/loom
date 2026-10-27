@@ -5,6 +5,7 @@
 //! tested without a server.
 
 mod github;
+mod gitlab;
 mod graphql;
 mod http;
 
@@ -16,9 +17,14 @@ use thiserror::Error;
 
 use crate::error::GraphqlError;
 use crate::github::{PendingReview, Review, SearchPage, SubmittedReview};
-use crate::model::{Anchor, FileDiff, ForgeUser, Mr, MrKey, Sha, Thread, VerdictKind};
+use crate::gitlab::request::{BulkPublishBody, DraftNoteBody};
+use crate::gitlab::{Approvals, DraftNote, TokenInfo};
+use crate::model::{
+    Anchor, FileDiff, ForgeUser, Mr, MrKey, MrSummary, MrVersion, Sha, Thread, VerdictKind,
+};
 
 pub use github::GithubClient;
+pub use gitlab::GitlabClient;
 pub use graphql::ReviewThreads;
 
 /// The API endpoints of a forge host.
@@ -134,6 +140,15 @@ impl RateLimitWait {
 /// transport is redacted.
 #[derive(Debug, Error)]
 pub enum ForgeError {
+    /// 400 (GitLab): the forge refused the request, such as a draft note on a line outside the
+    /// diff.
+    #[error("the forge refused the request (400): {message}")]
+    BadRequest {
+        /// The message of the forge, for humans.
+        message: String,
+        /// The validation errors, for humans.
+        details: Vec<String>,
+    },
     /// 401: the token is not valid, or expired. Resolve it again.
     #[error("the forge refused the token (401): {message}")]
     Unauthorized {
@@ -157,6 +172,15 @@ pub enum ForgeError {
         /// The URL that authorizes the token, when GitHub gives one.
         url: Option<String>,
     },
+    /// 403 with the GitLab code `insufficient_scope`: the token cannot write, such as a
+    /// `read_api` token.
+    #[error("the token does not have the scope of this request (403): {message}")]
+    InsufficientScope {
+        /// The scope that the request needs, when the forge gives it, such as `api`.
+        scope: Option<String>,
+        /// The description of the forge, for humans.
+        message: String,
+    },
     /// Another 403: the token cannot do this.
     #[error("the forge refused the request (403): {message}")]
     Forbidden {
@@ -166,6 +190,13 @@ pub enum ForgeError {
     /// 404: no such resource, or the token cannot see it.
     #[error("not found on the forge (404): {message}")]
     NotFound {
+        /// The message of the forge, for humans.
+        message: String,
+    },
+    /// 409 (GitLab): the request is not valid for the current state, such as an approval
+    /// with a `sha` that is not the head of the merge request.
+    #[error("the forge refused the request as in conflict (409): {message}")]
+    Conflict {
         /// The message of the forge, for humans.
         message: String,
     },
@@ -400,6 +431,117 @@ pub trait GithubForge: Forge {
     ///
     /// [`ForgeError`].
     fn resolve_thread(&self, thread_id: &str) -> Result<String, ForgeError>;
+}
+
+/// A GitLab merge request in the REST paths: `/projects/<project_id>/merge_requests/<iid>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitlabMr {
+    /// The ID of the target project, such as `77`.
+    pub project_id: u64,
+    /// The number of the merge request in its project, such as `88` for `!88`.
+    pub iid: u64,
+}
+
+/// The GitLab REST calls of the review. Blocking. Every list follows its pages.
+pub trait GitlabForge: Forge {
+    /// `GET /personal_access_tokens/self`: the scopes of the token. It fails for a token that
+    /// is not a personal access token, such as the OAuth token of `glab`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn token_scopes(&self) -> Result<TokenInfo, ForgeError>;
+
+    /// The open merge requests where I am a reviewer (`scope=reviews_for_me`), changed after
+    /// `updated_after` when it is given.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn review_requests(
+        &self,
+        updated_after: Option<Timestamp>,
+    ) -> Result<Vec<MrSummary>, ForgeError>;
+
+    /// The merge request; with `etag`, [`Conditional::NotModified`] when it did not change.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn merge_request(
+        &self,
+        mr: GitlabMr,
+        etag: Option<&str>,
+    ) -> Result<Conditional<Mr>, ForgeError>;
+
+    /// The versions of the merge request, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn versions(&self, mr: GitlabMr) -> Result<Vec<MrVersion>, ForgeError>;
+
+    /// The diffs of the files of the current version.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn diffs(&self, mr: GitlabMr) -> Result<Vec<FileDiff>, ForgeError>;
+
+    /// The discussions, without system notes. `head` is the current head SHA: a discussion on
+    /// another head is outdated.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn discussions(&self, mr: GitlabMr, head: &Sha) -> Result<Vec<Thread>, ForgeError>;
+
+    /// My draft notes on the merge request, those made in the web UI included.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn draft_notes(&self, mr: GitlabMr) -> Result<Vec<DraftNote>, ForgeError>;
+
+    /// Creates a draft note, visible only to me until [`Self::bulk_publish`].
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::BadRequest`] for a line outside the diff,
+    /// [`ForgeError::InsufficientScope`] for a token without `api`.
+    fn create_draft_note(
+        &self,
+        mr: GitlabMr,
+        body: &DraftNoteBody,
+    ) -> Result<DraftNote, ForgeError>;
+
+    /// Publishes all my draft notes, with the summary and the reviewer state of `body`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn bulk_publish(&self, mr: GitlabMr, body: &BulkPublishBody) -> Result<(), ForgeError>;
+
+    /// Approves the merge request at the head `sha`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::Conflict`] when `sha` is not the head any more.
+    fn approve(&self, mr: GitlabMr, sha: &Sha) -> Result<Approvals, ForgeError>;
+
+    /// The approvals of the merge request.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn approvals(&self, mr: GitlabMr) -> Result<Approvals, ForgeError>;
+
+    /// Resolves the discussion `discussion_id`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn resolve_discussion(&self, mr: GitlabMr, discussion_id: &str) -> Result<(), ForgeError>;
 }
 
 #[cfg(test)]
