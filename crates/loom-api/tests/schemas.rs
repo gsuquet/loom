@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 use loom_api::{
     Action, Actor, AmbiguousPrefix, Change, EventId, EventRecord, FieldChange, FocusEntry,
-    FocusList, GoResult, IllegalTransition, Kind, MachineId, NewTask, RankReason, Relations,
-    Status, StatusName, Task, TaskActionName, TaskActionRequest, TaskCandidate, TaskDetail,
-    TaskEdit, TaskEvents, TaskId, TaskList, TaskMoveRequest, TaskRank, TaskReadOnly, TaskSummary,
-    UndoConflict,
+    FocusList, GoResult, IllegalTransition, Kind, MachineId, NewTask, PromptSegment, RankReason,
+    Relations, Status, StatusName, Task, TaskActionName, TaskActionRequest, TaskCandidate,
+    TaskDetail, TaskEdit, TaskEvents, TaskId, TaskList, TaskMoveRequest, TaskRank, TaskReadOnly,
+    TaskSummary, UndoConflict,
 };
 use loom_api::{
     ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
@@ -54,6 +54,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("illegal_transition", schema_for!(IllegalTransition)),
         ("last_update", schema_for!(LastUpdate)),
         ("new_task", schema_for!(NewTask)),
+        ("prompt_segment", schema_for!(PromptSegment)),
         ("register_request", schema_for!(RegisterRequest)),
         ("reindex_result", schema_for!(ReindexResult)),
         ("task_store_health", schema_for!(TaskStoreHealth)),
@@ -1120,6 +1121,19 @@ fn task_samples_validate_against_their_schema() {
         })
         .unwrap(),
     );
+    errors.extend(
+        violations(&PromptSegment {
+            context: Some(task.context.clone()),
+            focus: Some(FocusEntry {
+                context: task.context.clone(),
+                task: plain_summary.clone(),
+                since: at,
+                repo_path: None,
+            }),
+        })
+        .unwrap(),
+    );
+    errors.extend(violations(&PromptSegment::default()).unwrap());
     errors.extend(
         violations(&GoResult {
             task: TaskDetail {

@@ -1,0 +1,521 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PromptSegment",
+  "description": "Output of `loom prompt --json`: the segment that a shell prompt shows.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "description": "Context of the current directory. Absent when loom cannot find it in time.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "focus": {
+      "description": "Focus of `context`. Absent when the context has no focus, or when loomd does not\nanswer in time.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FocusEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "ExternalRef": {
+      "description": "An item of a forge or tracker.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key at the provider, such as `CORE-1042` or `!88`.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider, such as `jira` or `gitlab`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Web URL, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "key"
+      ]
+    },
+    "FocusEntry": {
+      "description": "Focus of one context.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of the focus.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "repo_path": {
+          "description": "If `task` has a repository link in the index, its path on disk.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "since": {
+          "description": "Time when `task` became the focus of `context`.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "task": {
+          "description": "Task that is the focus of `context`.",
+          "$ref": "#/$defs/TaskSummary"
+        }
+      },
+      "required": [
+        "context",
+        "task",
+        "since"
+      ]
+    },
+    "Importance": {
+      "description": "Importance, p0 (highest) to p3.",
+      "oneOf": [
+        {
+          "description": "Highest.",
+          "type": "string",
+          "const": "p0"
+        },
+        {
+          "description": "High.",
+          "type": "string",
+          "const": "p1"
+        },
+        {
+          "description": "Normal.",
+          "type": "string",
+          "const": "p2"
+        },
+        {
+          "description": "Low.",
+          "type": "string",
+          "const": "p3"
+        }
+      ]
+    },
+    "Link": {
+      "description": "A link from a task to the outside, by role.",
+      "oneOf": [
+        {
+          "description": "Where the task came from (dedup key `(provider, key)`).",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "origin"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "An item that belongs to the same done condition: an MR, a CI pipeline.",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "related"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
+          "description": "The repository to work in, a slug of the repo index.",
+          "type": "object",
+          "properties": {
+            "repo": {
+              "description": "Repo slug, such as `company-a/checkout`.",
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "repo"
+            }
+          },
+          "required": [
+            "role",
+            "repo"
+          ]
+        }
+      ]
+    },
+    "RankReason": {
+      "description": "The rule that placed a task after its predecessor in the priority list, for `--why`.",
+      "oneOf": [
+        {
+          "description": "The task heads the list: it has no predecessor.",
+          "type": "string",
+          "const": "first"
+        },
+        {
+          "description": "The predecessor is pinned, this task is not.",
+          "type": "string",
+          "const": "pinned"
+        },
+        {
+          "description": "The predecessor is overdue or due today and this task is not, or both are and the\npredecessor is due earlier.",
+          "type": "string",
+          "const": "urgent"
+        },
+        {
+          "description": "The predecessor is more important.",
+          "type": "string",
+          "const": "importance"
+        },
+        {
+          "description": "The predecessor is due earlier, or this task has no due date.",
+          "type": "string",
+          "const": "due_date"
+        },
+        {
+          "description": "The predecessor is older.",
+          "type": "string",
+          "const": "age"
+        },
+        {
+          "description": "Every other rule ties: the predecessor has the smaller ID.",
+          "type": "string",
+          "const": "id"
+        }
+      ]
+    },
+    "Relations": {
+      "description": "Relations of a task to other tasks.",
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "description": "Tasks this one blocks.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "parent": {
+          "description": "The parent task: a project is a parent task.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spawned_from": {
+          "description": "Tasks this one was spawned from (a Bug spawned from a Support task).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          }
+        }
+      }
+    },
+    "Task": {
+      "description": "Something I still have to do.\n\nSerialized flat: `kind` and `format` for [`Kind`], `status`, `waiting_on` and `waiting_until`\nfor [`Status`].",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "The one context the task belongs to.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "created": {
+          "description": "When the task was created.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "due": {
+          "description": "Due date, if any.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "format": {
+          "description": "Content only: talk, article, training or workshop.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Identifier, also the name of the task directory.",
+          "$ref": "#/$defs/TaskId"
+        },
+        "importance": {
+          "description": "p0 (highest) to p3.",
+          "$ref": "#/$defs/Importance"
+        },
+        "kind": {
+          "description": "story, bug, chore, research, investigation, review, support, content, admin, interview\nor learning. Any other name makes the task read-only.",
+          "type": "string"
+        },
+        "links": {
+          "description": "Links to the outside: origin, related items, repository.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Link"
+          }
+        },
+        "pinned": {
+          "description": "Pinned tasks come first in the priority list.",
+          "type": "boolean",
+          "default": false
+        },
+        "relations": {
+          "description": "Relations to other tasks.",
+          "$ref": "#/$defs/Relations",
+          "default": {
+            "blocks": [],
+            "spawned_from": []
+          }
+        },
+        "status": {
+          "description": "inbox, ready, active, waiting, done or cancelled. Any other name makes the task read-only.",
+          "type": "string"
+        },
+        "title": {
+          "description": "One-line title.",
+          "type": "string"
+        },
+        "updated": {
+          "description": "When the task last changed.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "waiting_on": {
+          "description": "`waiting` only: what or whom the task waits on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting_until": {
+          "description": "`waiting` only: the priority list does not show the task until this date.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "context",
+        "status",
+        "importance",
+        "created",
+        "updated"
+      ]
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    },
+    "TaskRank": {
+      "description": "Place of a task in the priority list.",
+      "type": "object",
+      "properties": {
+        "position": {
+          "description": "Position, from 1.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "reason": {
+          "description": "The rule that placed the task after its predecessor.",
+          "$ref": "#/$defs/RankReason"
+        }
+      },
+      "required": [
+        "position",
+        "reason"
+      ]
+    },
+    "TaskReadOnly": {
+      "description": "Why a task cannot be changed. Also the `details` of a `read_only` error.",
+      "oneOf": [
+        {
+          "description": "A kind written by a newer version of loom.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "const": "unknown_kind"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "value"
+          ]
+        },
+        {
+          "description": "A content format written by a newer version of loom.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "const": "unknown_content_format"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "value"
+          ]
+        },
+        {
+          "description": "A status written by a newer version of loom.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "const": "unknown_status"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "value"
+          ]
+        },
+        {
+          "description": "`task.md` cannot be read: why, with the line when known.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "const": "invalid_file"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "value"
+          ]
+        },
+        {
+          "description": "The task is archived in `archive/<yyyy>/`: the year.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "const": "archived"
+            },
+            "value": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "required": [
+            "reason",
+            "value"
+          ]
+        }
+      ]
+    },
+    "TaskSummary": {
+      "description": "A task as listed.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of the store that holds the task.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "id": {
+          "description": "ID, the name of its directory.",
+          "$ref": "#/$defs/TaskId"
+        },
+        "prefix": {
+          "description": "Shortest prefix of the ID that no other task ID starts with, across every context.",
+          "type": "string"
+        },
+        "rank": {
+          "description": "Its place in the priority list. Present with `ranked=true` only.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskRank"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "read_only": {
+          "description": "Why the task cannot be changed. Absent when it can.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskReadOnly"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task": {
+          "description": "The task. `null` when its `task.md` is invalid.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Task"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "prefix",
+        "context"
+      ]
+    },
+    "Timestamp": {
+      "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

@@ -551,6 +551,27 @@ loom focus [OPTIONS]
 
 Global options apply.
 
+### `loom prompt`
+
+Print the context of the current directory and its focus task, for a shell prompt.
+
+The line is `<context>`, or `<context> <prefix> <title>` when the context has a focus task. The context is resolved in the order of `loom add`. If the current directory is in a git repository that loomd does not know, the line is empty. The command never starts loomd and never registers a repository. It waits for loomd for at most 100 ms. If loomd does not answer in that time, the line has no focus task, and in a git repository the line is empty. Except for usage errors, the command never prints on standard error and exits with 0: when it cannot find the context, it prints nothing.
+
+```text
+loom prompt [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--shell <SHELL>` | `zsh`, `bash` |  | Shell of the prompt. With `zsh`, `%` becomes `%%`, so that prompt expansion shows it. With `bash`, the line stays as it is |
+| `--max-title <N>` |  | `30` | Maximum number of characters of the task title. A longer title ends with `…`. With 0, the line has no title |
+| `--json` |  |  | Print the segment as JSON (`PromptSegment` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
 ### `loom log`
 
 Record a note event on the focus task of the context, or on `--task`.

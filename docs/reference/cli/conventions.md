@@ -78,6 +78,7 @@ Thus, a `loomd` that stops while a sync or a remote check runs leaves no git pro
 | `LOOM_UPDATE_HEALTH_DEADLINE` | Test hook, debug builds only: duration replacing the 60 s deadline of the auto-upgrade watchdog. Ignored by release builds. |
 | `LOOM_TEST_BUILD_VERSION` | Test hook, debug builds only: version reported by `loom` and `loomd` (`--version`, `loom version`, `/v1/status`) instead of the build's. Ignored by release builds. |
 | `LOOM_TEST_TODAY` | Test hook, debug builds only: date (`YYYY-MM-DD`) of the priority list of `loomd` (`GET /v1/tasks?ranked=true`) and of its [schedules](../configuration.md#schedules), instead of the local date. An invalid value is ignored. Ignored by release builds. |
+| `LOOM_TEST_PROMPT_BUDGET_MS` | Test hook, debug builds only: number of milliseconds that replaces the 100 ms that `loom prompt` waits for `loomd`. An invalid value is ignored. Ignored by release builds. |
 | `TZ` | Time zone of the local date of the priority list and of the [schedules](../configuration.md#schedules) in `loomd`; `/etc/localtime` when unset, UTC when neither can be read. |
 | `LOOM_TEST_EVENTS_HEARTBEAT` | Test hook, debug builds only: duration that replaces the 15 s interval between two heartbeats of `GET /v1/events`. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
 | `LOOM_TEST_SCHEDULE_INTERVAL` | Test hook, debug builds only: duration that replaces the 1 min interval between two checks of the [schedules](../configuration.md#schedules) in `loomd`. `loomd` logs an invalid value and ignores it. Release builds ignore it. |
@@ -555,7 +556,7 @@ Error: `loom` names several repositories; give one of:
 
 ### Registration on use
 
-A `loom` command that runs inside a git repository sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory. The exceptions are `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync`, `shell-init` and the internal watchdog. The request goes on a separate thread. loomd registers the repository if the index does not have it, and sets its `last_used`.
+A `loom` command that runs inside a git repository sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory. The exceptions are `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync`, `shell-init`, `prompt` and the internal watchdog. The request goes on a separate thread. loomd registers the repository if the index does not have it, and sets its `last_used`.
 
 The command waits for the request at most 50 ms after the command started, and never fails because of it. If the socket file does not exist, nothing is sent. The registration on use never starts loomd. `loom repo show` sets `last_used` the same way. `loom repo register --on-use --background`, run by the [shell integration](#loom-shell-init), sends the same request for its `<PATH>` (default: the current directory).
 
@@ -836,6 +837,42 @@ The hook starts `loom` detached (zsh `&!`, bash `( … & )`), with stdin, stdout
 | --- | --- |
 | `0` | The script is printed. |
 | `2` | Missing or unsupported shell. |
+
+## `loom prompt`
+
+`loom prompt` prints one line for a shell prompt: `<context>`, or `<context> <prefix> <title>` when the context has a focus task. `<prefix>` is the shortest unique prefix of the task ID. Setup: [add the context and the focus task to the prompt](../../how-to-guides/shell-integration.md#add-the-context-and-the-focus-task-to-the-prompt).
+
+The context is the first of:
+
+1. `-c`/`--context`.
+2. `LOOM_CONTEXT`, if it is not empty.
+3. The context of the indexed repository that contains the current directory, as for the [task commands](#context).
+4. The `match.paths` prefix of the current directory.
+5. `default_context`.
+
+These are the differences from the task commands:
+
+- An invalid `LOOM_CONTEXT` gives no context. It is not an error.
+- If the current directory is in a git repository that `loomd` does not have in its index, there is no context. The repository could give another context than the rules of its path. `loom prompt` does not register the repository. The [shell integration](#loom-shell-init) registers it.
+- If `loomd` does not run, `loom prompt` does not start it. Outside a git repository, the line has the context and no focus task. In a git repository, the line is empty.
+
+`loom prompt` sends at most two requests to `loomd`, at the same time: `GET /v1/focus`, and `GET /v1/repos` when the current directory is in a git repository and the context depends on it. It waits for `loomd` at most 100 ms after it started, connection included. If `loomd` does not answer in that time, `loom prompt` continues without the answer. The time to read `config.toml` and to find the repository of the current directory is not in this limit. It reads no `[telemetry]`, exports no trace, and writes no log. It sends no [registration on use](#registration-on-use).
+
+| Option | Effect |
+| --- | --- |
+| `--max-title <N>` | Maximum number of characters of the title, 30 by default. A longer title is cut, and its last character is `…`. With `0`, the line has no title. |
+| `--shell zsh` | Each `%` becomes `%%`. Thus zsh prompt expansion shows `%` as it is. |
+| `--shell bash` | No change. bash does not expand the output of a command substitution in `PS1` again. |
+| `--json` | The `PromptSegment`: `context` and `focus` (a `FocusEntry`), each absent when unknown. Not with `--shell` or `--max-title`. |
+
+Control characters in the prefix and the title (for example a line feed or an escape character) become spaces. Invisible characters that can reorder or hide text also become spaces: U+200B to U+200F, U+2028 to U+202E, U+2060 to U+2069 and U+FEFF. `--max-title` counts Unicode scalar values, not columns.
+
+With the zsh option `PROMPT_BANG`, zsh shows a `!` of the title as the history number. `--shell zsh` does not change `!`. Without a context, the output is empty (`{}` with `--json`).
+
+| Code | Cases |
+| --- | --- |
+| `0` | Every case, with nothing on stderr: a failure gives a shorter line or an empty one. |
+| `2` | Usage error: unknown option or invalid value. |
 
 ## Build-time variables
 

@@ -92,6 +92,18 @@ pub struct FocusEntry {
     pub repo_path: Option<PathBuf>,
 }
 
+/// Output of `loom prompt --json`: the segment that a shell prompt shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PromptSegment {
+    /// Context of the current directory. Absent when loom cannot find it in time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextName>,
+    /// Focus of `context`. Absent when the context has no focus, or when loomd does not
+    /// answer in time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<FocusEntry>,
+}
+
 /// Answer of `POST /v1/tasks/{id}/go` and `loom go <id> --json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GoResult {

@@ -54,6 +54,35 @@ If the repository is not in the list, do these checks:
 - Make sure that loomd runs: `loom status`.
 - Make sure that the startup file has the `eval` line: `type _loom_chpwd` in zsh, `type __loom_prompt` in bash.
 
+## Add the context and the focus task to the prompt
+
+`loom prompt` prints the context of the current directory and its focus task, for example `work k3 Fix the login timeout`. It does not need the `eval` line, but it needs loomd to show the focus task. It waits for loomd at most 100 ms, and it never prints an error.
+
+1. Add the segment to the prompt, in the shell's startup file:
+
+   - zsh, in `~/.zshrc`. Use single quotes, so that zsh runs the command at each prompt:
+
+     ```zsh
+     setopt PROMPT_SUBST
+     PROMPT='$(loom prompt --shell zsh) %~ %# '
+     ```
+
+   - bash, in `~/.bashrc`. Use single quotes, so that bash runs the command at each prompt:
+
+     ```bash
+     PS1='$(loom prompt) \w \$ '
+     ```
+
+2. Open a new terminal, or reload the file in the current one.
+
+3. To make the segment shorter, add `--max-title <n>`. For example, `--max-title 20` cuts the title after 20 characters. `--max-title 0` shows the context and the task prefix only.
+
+If the segment is empty, do these checks:
+
+- Run `loom prompt` in the same directory. If the output is empty, no rule gives a context: see [configure contexts](configure-contexts.md).
+- In a git repository, loomd must have the repository in its index. Make sure that loomd runs (`loom status`) and that the `eval` line of the shell integration is in the startup file.
+- If the segment has no task, the context has no focus task. To set one, run `loom go <id>`.
+
 ## Disable the integration
 
 1. Remove the `eval "$(loom shell-init …)"` line from the startup file.
@@ -78,3 +107,4 @@ The repositories that are already registered stay in the index. To remove one, r
 
 - What the snippet does and how `--on-use --background` behaves: [CLI conventions](../reference/cli/conventions.md#loom-shell-init).
 - Commands and flags: [loom CLI reference](../reference/cli/loom.md#loom-shell-init).
+- What `loom prompt` prints and how long it waits: [CLI conventions](../reference/cli/conventions.md#loom-prompt).

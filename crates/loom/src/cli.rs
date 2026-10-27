@@ -10,6 +10,7 @@ use loom_api::{
 };
 use semver::Version;
 
+use crate::prompt::DEFAULT_MAX_TITLE;
 use crate::task::{Assignment, FormatArg, ImportanceArg, KindArg, assignment, task_prefix};
 
 /// Build information, computed once for `--version` and `loom version`;
@@ -151,6 +152,16 @@ pub enum Command {
     /// The focus is stored in `index.db` on this machine, never in the context store. Starts
     /// loomd if it is stopped.
     Focus(FocusArgs),
+    /// Print the context of the current directory and its focus task, for a shell prompt.
+    ///
+    /// The line is `<context>`, or `<context> <prefix> <title>` when the context has a focus
+    /// task. The context is resolved in the order of `loom add`. If the current directory is in a
+    /// git repository that loomd does not know, the line is empty. The command never starts loomd
+    /// and never registers a repository. It waits for loomd for at most 100 ms. If loomd does
+    /// not answer in that time, the line has no focus task, and in a git repository the line is
+    /// empty. Except for usage errors, the command never prints on standard error and exits
+    /// with 0: when it cannot find the context, it prints nothing.
+    Prompt(PromptArgs),
     /// Record a note event on the focus task of the context, or on `--task`.
     ///
     /// Without `--task`, the context is resolved as for `loom add`. If that context has no focus
@@ -434,6 +445,22 @@ pub struct GoArgs {
 pub struct FocusArgs {
     /// Print the list as JSON (`FocusList` schema).
     #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom prompt`.
+#[derive(Debug, clap::Args)]
+pub struct PromptArgs {
+    /// Shell of the prompt. With `zsh`, `%` becomes `%%`, so that prompt expansion shows it.
+    /// With `bash`, the line stays as it is.
+    #[arg(long, value_name = "SHELL", value_enum)]
+    pub shell: Option<Shell>,
+    /// Maximum number of characters of the task title. A longer title ends with `…`. With 0,
+    /// the line has no title.
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_MAX_TITLE)]
+    pub max_title: usize,
+    /// Print the segment as JSON (`PromptSegment` schema).
+    #[arg(long, conflicts_with_all = ["shell", "max_title"])]
     pub json: bool,
 }
 
@@ -901,6 +928,7 @@ mod tests {
                 | Command::Set(_)
                 | Command::Go(_)
                 | Command::Focus(_)
+                | Command::Prompt(_)
                 | Command::Log(_)
                 | Command::Done(_)
                 | Command::Cancel(_)
