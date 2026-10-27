@@ -23,7 +23,7 @@ use loom::tui::events::EventsLoad;
 use loom::tui::relations::{RelationsData, RelationsLoad};
 use loom::tui::render::render;
 use loom::tui::state::{AppEffect, AppState, ObjectPageContent, ObjectTarget, PageTab, SseState};
-use loom::tui::terminal::{SuspendError, TerminalGuard, while_suspended};
+use loom::tui::terminal::{SuspendError, TerminalGuard, repaint_all, while_suspended};
 use loom_api::{
     ContextName, DEFAULT_SEARCH_LIMIT, EventCursor, SearchResults, TaskDetail, TaskEvents, TaskId,
     TaskList,
@@ -635,7 +635,6 @@ async fn edit_in_editor(
     // One turn of the scheduler first, so that a signal that is on its way is counted.
     tokio::task::yield_now().await;
     drain_signal(sigint);
-    let _ = terminal.clear();
     match ran {
         Ok(Ok(())) => match edit::finish(client, &session).await {
             // The save worked: a warning is information, not an error.
@@ -651,6 +650,10 @@ async fn edit_in_editor(
         },
         Ok(Err(error)) => state.set_error(error.to_string()),
         Err(error) => state.set_error(format!("the editor did not finish: {error}")),
+    }
+    // The editor drew on the screen: the next draw must write all of it again.
+    if let Err(error) = repaint_all(terminal) {
+        state.set_error(format!("cannot clear the screen: {error}"));
     }
     Ok(())
 }

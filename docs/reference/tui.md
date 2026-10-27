@@ -200,7 +200,7 @@ The five pickers open on the `Overview` tab only. They show a status message whe
 
 #### Edit the task file
 
-`e` on the `Overview` tab opens `task.md` of the task in the editor, as `loom edit` does. The TUI leaves the alternate screen and raw mode, runs the editor, then takes the terminal back and reloads the task. The editor is `$VISUAL`, then `$EDITOR`, then `vi`; it can have arguments, such as `code --wait`.
+`e` on the `Overview` tab opens `task.md` of the task in the editor, as `loom edit` does. The TUI leaves the alternate screen and raw mode, runs the editor, then takes the terminal back, clears the screen, draws all of it again and reloads the task. The editor is `$VISUAL`, then `$EDITOR`, then `vi`; it can have arguments, such as `code --wait`.
 
 - `Ctrl-C` belongs to the editor. A `SIGINT` that reaches `loom` while the editor runs is dropped when the editor ends, so the exit status of the editor decides what happens. A `SIGTERM` is kept: the TUI stops when the editor ends.
 - Change events wait while the editor runs. When the editor ends, the TUI reloads the queues and the task, so no change is lost.
