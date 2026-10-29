@@ -264,7 +264,24 @@ pub fn resolve<'a>(prefix: &str, rows: &'a [IndexedTask]) -> Result<&'a IndexedT
             .copied()
             .filter(|row| row.location == TaskLocation::Active)
             .collect();
-        let mut found = if active.is_empty() { matches } else { active }.into_iter();
+        // Without one, the archived task of the last change, as the poll reads it.
+        let last_archived = || {
+            matches
+                .iter()
+                .copied()
+                .max_by_key(|row| match &row.state {
+                    IndexedState::Valid { task, .. } => Some(task.updated),
+                    IndexedState::Invalid { .. } => None,
+                })
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let mut found = if active.is_empty() {
+            last_archived()
+        } else {
+            active
+        }
+        .into_iter();
         return match (found.next(), found.next()) {
             (Some(row), None) => Ok(row),
             (None, _) => Err((

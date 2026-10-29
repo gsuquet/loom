@@ -415,6 +415,16 @@ fn an_mr_key_resolves_to_its_review_task() {
         resolve("acme/shop#412", &archived).unwrap().id,
         id("r1000000")
     );
+    // Only archived tasks: the last changed one.
+    let mut older = review("r4000000", "work", "acme/shop#99");
+    older.location = TaskLocation::Archived(2025);
+    let mut newer = review("r5000000", "work", "acme/shop#99");
+    newer.location = TaskLocation::Archived(2025);
+    if let IndexedState::Valid { task, .. } = &mut newer.state {
+        task.updated = Timestamp::from_unix_secs(500).unwrap();
+    }
+    let both = vec![newer, older];
+    assert_eq!(resolve("acme/shop#99", &both).unwrap().id, id("r5000000"));
     let mut twice = rows;
     twice.push(review("r3000000", "home", "acme/shop#412"));
     let (status, error) = resolve("acme/shop#412", &twice).unwrap_err();

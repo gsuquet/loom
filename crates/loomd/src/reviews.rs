@@ -21,8 +21,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use loom_api::{
-    ContextName, ForgeKind, ReviewSync, ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncResult,
-    Timestamp,
+    ContextName, CredentialOrigin, ForgeKind, ReviewSync, ReviewSyncFailure, ReviewSyncOutcome,
+    ReviewSyncResult, Timestamp,
 };
 use loom_config::config::Config;
 use loom_config::forges::ReviewRequests as ConfigRequests;
@@ -43,8 +43,8 @@ use loomd::forge::token::TokenResolver;
 use loomd::hooks;
 use loomd::recurring::{Runner, runner};
 use loomd::review_sync::{
-    MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, clone_of, github_verdict,
-    gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
+    Belongs, MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, belongs, clone_of,
+    github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
 };
 use loomd::shutdown::{JOIN_DEADLINE, join_within};
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -54,8 +54,32 @@ use tracing::{Span, debug, info, info_span, warn};
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
 
+/// For each of `targets`, whether its credential is shared: `[forges."<host>"]` gives its
+/// credential to each context without its own table.
+fn shared_credentials(targets: &[ForgeTarget]) -> Vec<bool> {
+    let host_level = |host: &str| {
+        targets
+            .iter()
+            .filter(|target| target.host == host && target.origin == CredentialOrigin::Host)
+            .count()
+    };
+    targets
+        .iter()
+        .map(|target| target.origin == CredentialOrigin::Host && host_level(&target.host) > 1)
+        .collect()
+}
+
 /// An MR to read: its key, its summary when the search found it, and its Review task.
 type Key = (MrKey, Option<MrSummary>, Option<loom_api::TaskId>);
+
+/// The MRs that a poll reads, and the MRs found that it does not read.
+struct ToRead {
+    mrs: Vec<Key>,
+    /// The MRs of another context.
+    other_context: usize,
+    /// The MRs of no context.
+    unassigned: Vec<ReviewSyncFailure>,
+}
 
 /// The first poll of each host, after the start: the task store reconciles first.
 const START_DELAY: Duration = Duration::from_secs(30);
@@ -120,7 +144,8 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     .unwrap_or(START_DELAY);
     let now = Instant::now();
     let mut hosts = Vec::new();
-    for target in setup.targets {
+    let shared = shared_credentials(&setup.targets);
+    for (target, shared) in setup.targets.into_iter().zip(shared) {
         let machines = config
             .contexts
             .get(&target.context)
@@ -160,6 +185,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
                 },
             );
         hosts.push(Host {
+            shared,
             next: now + start_delay,
             api,
             interval,
@@ -231,6 +257,8 @@ impl ReviewHandle {
 /// One context and forge host.
 struct Host {
     target: ForgeTarget,
+    /// Its credential is `[forges."<host>"]`, shared with other held contexts.
+    shared: bool,
     api: ApiBase,
     interval: Duration,
     requests: ReviewRequests,
@@ -581,8 +609,8 @@ impl Poller {
         read_mr(&std::fs::read(dir.join(MR_FILE)).ok()?, "")
     }
 
-    /// Whether an MR found by the search of host `index` belongs to its context.
-    fn ours(&self, index: usize, key: &MrKey, repos: &[loom_api::RepoSummary]) -> bool {
+    /// Where an MR found by the search of host `index` goes.
+    fn ours(&self, index: usize, key: &MrKey, repos: &[loom_api::RepoSummary]) -> Belongs {
         let target = &self.hosts[index].target;
         let clone = clone_of(repos, &target.host, key.project());
         let contexts = MrContexts {
@@ -591,17 +619,16 @@ impl Poller {
             finder: &target.context,
         };
         let context = mr_context(&target.host, key.project(), &contexts);
-        if context.context() == &target.context {
-            true
-        } else {
+        let belongs = belongs(&context, &target.context, self.hosts[index].shared);
+        if belongs == Belongs::Elsewhere {
             debug!(key = %key, other = %context.context(), "MR of another context, not written here");
-            false
         }
+        belongs
     }
 
     /// The MRs found by the search that belong to the context of host `index`, then the MRs of
     /// its Review tasks: `(key, found, task)`.
-    fn keys(&self, index: usize, found: Vec<MrSummary>) -> Result<(Vec<Key>, usize), Stopped> {
+    fn keys(&self, index: usize, found: Vec<MrSummary>) -> Result<ToRead, Stopped> {
         let target = &self.hosts[index].target;
         let reader = Reader::open(self.tasks.index_db())
             .map_err(|error| Stopped::Other(format!("cannot read the index: {error}")))?;
@@ -613,6 +640,7 @@ impl Poller {
             .map_err(|error| Stopped::Other(format!("cannot read the tasks: {error}")))?;
         let tracked = tracked_reviews(&rows, &target.context, &target.host);
         let mut other_context = 0;
+        let mut unassigned = Vec::new();
         let mut keys: Vec<Key> = Vec::new();
         for summary in found {
             if keys.iter().any(|(key, _, _)| *key == summary.key) {
@@ -623,9 +651,26 @@ impl Poller {
                 .find(|(_, key, _)| *key == summary.key)
                 .map(|(id, _, _)| id.clone());
             // A tracked MR stays in its task's context: a task does not move.
-            if task.is_none() && !self.ours(index, &summary.key, &repos) {
-                other_context += 1;
-                continue;
+            if task.is_none() {
+                match self.ours(index, &summary.key, &repos) {
+                    Belongs::Here => {}
+                    Belongs::Elsewhere => {
+                        other_context += 1;
+                        continue;
+                    }
+                    Belongs::Unassigned => {
+                        unassigned.push(ReviewSyncFailure {
+                            key: summary.key.to_string(),
+                            error: format!(
+                                "no context for {}/{}: several contexts share the credential of [forges.\"{}\"]; add a match.hosts rule or clone the project",
+                                target.host,
+                                summary.key.project(),
+                                target.host
+                            ),
+                        });
+                        continue;
+                    }
+                }
             }
             keys.push((summary.key.clone(), Some(summary), task));
         }
@@ -643,7 +688,11 @@ impl Poller {
             }
             keys.push((key, None, Some(id)));
         }
-        Ok((keys, other_context))
+        Ok(ToRead {
+            mrs: keys,
+            other_context,
+            unassigned,
+        })
     }
 
     fn poll_github(&mut self, index: usize, client: &GithubClient) -> Result<Fetched, Stopped> {
@@ -654,12 +703,18 @@ impl Poller {
             debug!("GitHub search results are incomplete");
         }
         let incomplete = page.incomplete_results;
-        let (keys, other_context) = self.keys(index, page.items)?;
+        let ToRead {
+            mrs: keys,
+            other_context,
+            unassigned,
+        } = self.keys(index, page.items)?;
+        let mut untracked = untracked(&keys);
+        untracked.extend(unassigned.iter().map(|failure| failure.key.clone()));
         let mut fetched = Fetched {
             updates: Vec::new(),
             other_context,
-            failed: Vec::new(),
-            untracked: untracked(&keys),
+            failed: unassigned,
+            untracked,
             stopped: None,
         };
         for (key, found, _) in keys {
@@ -693,12 +748,18 @@ impl Poller {
         self.go_on()?;
         let login = self.login(index, client)?;
         let listed = client.review_requests(self.hosts[index].updated_after)?;
-        let (keys, other_context) = self.keys(index, listed)?;
+        let ToRead {
+            mrs: keys,
+            other_context,
+            unassigned,
+        } = self.keys(index, listed)?;
+        let mut untracked = untracked(&keys);
+        untracked.extend(unassigned.iter().map(|failure| failure.key.clone()));
         let mut fetched = Fetched {
             updates: Vec::new(),
             other_context,
-            failed: Vec::new(),
-            untracked: untracked(&keys),
+            failed: unassigned,
+            untracked,
             stopped: None,
         };
         for (key, found, task) in keys {

@@ -586,3 +586,23 @@ fn notes_name_the_mr_and_the_heads() {
     );
     assert_eq!(Reason::Merged.note(&key), "MR acme/shop#412: merged");
 }
+
+#[test]
+fn a_shared_credential_does_not_choose_the_context_of_an_mr() {
+    let here: ContextName = "personal".parse().unwrap();
+    let other: ContextName = "company-a".parse().unwrap();
+    let finder = loom_forge::MrContext::Finder {
+        context: here.clone(),
+    };
+    assert_eq!(belongs(&finder, &here, false), Belongs::Here);
+    // Every context that shares the token is the finder: none of them is the context.
+    assert_eq!(belongs(&finder, &here, true), Belongs::Unassigned);
+    let rule = loom_forge::MrContext::Host {
+        context: here.clone(),
+        pattern: "github.com/acme".to_owned(),
+    };
+    assert_eq!(belongs(&rule, &here, true), Belongs::Here);
+    assert_eq!(belongs(&rule, &other, true), Belongs::Elsewhere);
+    let clone = loom_forge::MrContext::Clone { context: other };
+    assert_eq!(belongs(&clone, &here, false), Belongs::Elsewhere);
+}

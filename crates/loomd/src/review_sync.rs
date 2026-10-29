@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use loom_api::{ContextName, ForgeKind, RepoSummary, TaskId, Timestamp};
 use loom_core::{ExternalRef, Kind, Link, NewTask, Relations, Status, StatusName};
+use loom_forge::MrContext;
 use loom_forge::github::{Review, ReviewState};
 use loom_forge::model::{Mr, MrKey, MrState, MrVersion, Sha, Thread};
 use loom_store::IndexedTask;
@@ -408,6 +409,35 @@ pub fn review_key(kind: &Kind, links: &[Link]) -> Option<(MrKey, Option<String>)
         }
         Link::Related(_) | Link::Repo { .. } => None,
     })
+}
+
+/// Where an MR found by the poll of a context goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Belongs {
+    /// To this context.
+    Here,
+    /// To another context: not written here.
+    Elsewhere,
+    /// To no context: no clone and no `match.hosts` rule, and the credential that found it is
+    /// shared by several contexts, so the finder tells nothing.
+    Unassigned,
+}
+
+/// Where the MR of `context` (from `loom_forge::mr_context`) goes, for the poll of `here`.
+/// `shared`: the credential of `here` for the host is `[forges."<host>"]`, which other held
+/// contexts use too. Pure.
+#[must_use]
+pub fn belongs(context: &MrContext, here: &ContextName, shared: bool) -> Belongs {
+    match context {
+        MrContext::Finder { .. } if shared => Belongs::Unassigned,
+        MrContext::Clone { .. } | MrContext::Host { .. } | MrContext::Finder { .. } => {
+            if context.context() == here {
+                Belongs::Here
+            } else {
+                Belongs::Elsewhere
+            }
+        }
+    }
 }
 
 /// The host of an `https://host[:port]/…` URL, lowercase, without the port. Pure.

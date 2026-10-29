@@ -835,3 +835,47 @@ fn an_mr_whose_web_url_is_on_another_host_gets_no_task() {
     assert_eq!(tasks(&socket, "company-a").tasks.len(), 0);
     daemon.stop();
 }
+
+#[test]
+fn an_mr_that_no_rule_assigns_goes_to_no_store_when_the_token_is_shared() {
+    let sandbox = Sandbox::new();
+    // `orphan/app` has no clone and no `match.hosts` rule, and both contexts poll github.com
+    // with the token of `[forges."github.com"]`: neither is its context.
+    let mut search = fixture_json("github/search-review-requested.json");
+    let mut orphan = search["items"][0].clone();
+    orphan["number"] = json!(5);
+    orphan["url"] = json!("https://api.github.com/repos/orphan/app/issues/5");
+    orphan["repository_url"] = json!("https://api.github.com/repos/orphan/app");
+    orphan["html_url"] = json!("https://github.com/orphan/app/pull/5");
+    orphan["pull_request"]["url"] = json!("https://api.github.com/repos/orphan/app/pulls/5");
+    orphan["pull_request"]["html_url"] = json!("https://github.com/orphan/app/pull/5");
+    search["items"].as_array_mut().unwrap().push(orphan);
+    search["total_count"] = json!(2);
+    sandbox
+        .github
+        .set("GET /search/issues", route(search.to_string()));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let result = sandbox.sync();
+    for context in ["personal", "company-a"] {
+        let ReviewSyncOutcome::Synced { failed, .. } =
+            &poll(&result, context, "github.com").outcome
+        else {
+            panic!("{result:?}");
+        };
+        assert_eq!(failed.len(), 1, "{context}: {failed:?}");
+        assert_eq!(failed[0].key, "orphan/app#5");
+        assert!(failed[0].error.contains("match.hosts"), "{failed:?}");
+    }
+    // Only acme/shop#412, which a rule assigns, has a task.
+    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+    assert_eq!(tasks(&socket, "company-a").tasks.len(), 1);
+    assert!(
+        !sandbox
+            .github
+            .requests()
+            .iter()
+            .any(|request| request.contains("orphan"))
+    );
+    daemon.stop();
+}
