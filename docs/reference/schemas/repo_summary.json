@@ -275,7 +275,7 @@
           "minimum": 0
         },
         "open_mrs": {
-          "description": "Number of open merge requests (pull requests on GitHub). `null` when the forge does not\ngive the count (GitLab, above 10,000).",
+          "description": "Number of open merge requests (pull requests on GitHub). `null` when the forge does not\ngive the count (GitLab: above 10,000, or merge requests not visible).",
           "type": [
             "integer",
             "null"

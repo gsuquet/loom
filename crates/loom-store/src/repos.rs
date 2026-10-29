@@ -432,10 +432,15 @@ fn build(
         .map(serde_json::from_str)
         .transpose()
         .map_err(|error| corrupt("last_update", &error))?;
-    let forge_metadata: Option<ForgeMetadata> = forge_metadata
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|error| corrupt("forge_metadata", &error))?;
+    // A cache that the next forge poll writes again: a row that cannot be read is dropped,
+    // never an error of the whole list.
+    let forge_metadata: Option<ForgeMetadata> = forge_metadata.and_then(|json| {
+        serde_json::from_str(json)
+            .inspect_err(|error| {
+                tracing::warn!(slug, %error, "forge metadata cannot be read, ignored");
+            })
+            .ok()
+    });
     Ok(RepoSummary {
         identity: RepoIdentity {
             path: PathBuf::from(path),

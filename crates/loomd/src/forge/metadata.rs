@@ -4,8 +4,9 @@
 //! [`plan`] is pure. [`read_target`] calls the forge through [`ProjectApi`], so that tests use
 //! a fake; [`HttpProjects`] is the real client.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use loom_api::{ForgeKind, ForgeMetadata, ForgeProject, MaybeKnown, RepoSummary, Timestamp};
 use loom_forge::client::{
@@ -26,7 +27,8 @@ pub struct Fetch {
     pub project: String,
     /// The repositories, sorted. More than one for clones and worktrees of one project.
     pub repos: Vec<PathBuf>,
-    /// One of them has no forge metadata yet.
+    /// One of them has no forge metadata yet, or metadata of another project (its primary
+    /// remote changed).
     pub new: bool,
 }
 
@@ -74,7 +76,7 @@ pub fn plan(repos: &[RepoSummary], targets: &[ForgeTarget]) -> Plan {
                         new: false,
                     });
                 fetch.repos.push(identity.path.clone());
-                fetch.new |= repo.forge_metadata.is_none();
+                fetch.new |= outdated(repo, &location.path);
             }
             (None, _) | (_, None) => {
                 if repo.forge_metadata.is_some() {
@@ -91,14 +93,52 @@ pub fn plan(repos: &[RepoSummary], targets: &[ForgeTarget]) -> Plan {
     Plan { fetches, clears }
 }
 
+/// The repository has no forge metadata, or the metadata of another project than `project`.
+fn outdated(repo: &RepoSummary, project: &str) -> bool {
+    repo.forge_metadata
+        .as_ref()
+        .is_none_or(|metadata| match &metadata.project {
+            MaybeKnown::Known(known) => !known
+                .web_url
+                .to_ascii_lowercase()
+                .ends_with(&format!("/{}", project.to_ascii_lowercase())),
+            MaybeKnown::Unknown => false,
+        })
+}
+
 /// The fetches of the credential `target` to read now: all of them when its poll is `due`,
-/// otherwise those of repositories without forge metadata yet. Pure.
+/// otherwise the [`Fetch::new`] ones not in `read` (read already, the write not seen yet).
+/// Pure.
 #[must_use]
-pub fn select(plan: &Plan, target: usize, due: bool) -> Vec<&Fetch> {
+pub fn select<'a>(
+    plan: &'a Plan,
+    target: usize,
+    due: bool,
+    read: &BTreeSet<(usize, String)>,
+) -> Vec<&'a Fetch> {
     plan.fetches
         .iter()
-        .filter(|fetch| fetch.target == target && (due || fetch.new))
+        .filter(|fetch| {
+            fetch.target == target
+                && (due || (fetch.new && !read.contains(&(target, fetch.project.clone()))))
+        })
         .collect()
+}
+
+/// The next poll of a credential and the end of its pause, after reads at `started`. Pure.
+///
+/// `next_poll` moves one `interval` (jittered by the caller) after `started` when the poll was
+/// `due`. After a rate limit, nothing is read before `resume`, the next poll included.
+#[must_use]
+pub fn reschedule(
+    next_poll: Instant,
+    started: Instant,
+    due: bool,
+    interval: Duration,
+    resume: Option<Instant>,
+) -> (Instant, Option<Instant>) {
+    let next = if due { started + interval } else { next_poll };
+    (resume.map_or(next, |resume| next.max(resume)), resume)
 }
 
 /// The forge call that reads one project.
@@ -155,8 +195,9 @@ pub struct TargetReads {
 ///
 /// - The token cannot be resolved: every project is unknown, with the reason.
 /// - A 401 resolves the token again, once, and the read is made again.
-/// - The forge cannot be reached: this project and the next ones are unknown, without a call
-///   each (a forge that is down would make every call wait for its timeout).
+/// - The forge cannot be reached, or refuses the new token too: this project and the next ones
+///   are unknown, without a call each (a forge that is down would make every call wait for its
+///   timeout).
 /// - The forge limits the rate: the reads stop; the projects not read are not in the results.
 /// - Any other failure: this project is unknown, with the reason.
 pub fn read_target(
@@ -177,6 +218,9 @@ pub fn read_target(
         results: Vec::new(),
         rate_limited: None,
     };
+    // The error of a token command can show its output: it stays in the log.
+    let no_token =
+        || "cannot resolve the forge token: `loom repo doctor` gives the reason".to_owned();
     let unknown = |error: String| ForgeMetadata {
         refreshed_at: now,
         project: MaybeKnown::Unknown,
@@ -186,7 +230,7 @@ pub fn read_target(
         Ok(token) => token,
         Err(error) => {
             warn!(%error, "cannot resolve the forge token");
-            let metadata = unknown(format!("cannot resolve the forge token: {error}"));
+            let metadata = unknown(no_token());
             reads.results = results(fetches, &metadata);
             return reads;
         }
@@ -203,7 +247,8 @@ pub fn read_target(
                     result = api.project(target, &token, &fetch.project);
                 }
                 Err(error) => {
-                    let metadata = unknown(format!("cannot resolve the forge token: {error}"));
+                    warn!(%error, "cannot resolve the forge token again");
+                    let metadata = unknown(no_token());
                     reads.results.extend(results(&fetches[index..], &metadata));
                     return reads;
                 }
@@ -226,8 +271,9 @@ pub fn read_target(
                 reads.rate_limited = Some(wait);
                 return reads;
             }
-            Err(error @ ForgeError::Transport(_)) => {
-                warn!(%error, "forge not reachable: forge metadata unknown");
+            // Refused after a new token, or not reachable: the next calls would fail the same.
+            Err(error @ (ForgeError::Transport(_) | ForgeError::Unauthorized { .. })) => {
+                warn!(%error, "forge metadata unknown for the rest of this poll");
                 let metadata = unknown(error.to_string());
                 reads.results.extend(results(&fetches[index..], &metadata));
                 return reads;
@@ -266,7 +312,10 @@ mod tests {
     use loom_config::forges::TokenSource;
     use loom_forge::client::{ForgeError, RateLimitWait};
 
-    use super::{Fetch, Plan, ProjectApi, plan, read_target, select};
+    use std::collections::BTreeSet;
+    use std::time::Instant;
+
+    use super::{Fetch, Plan, ProjectApi, plan, read_target, reschedule, select};
     use crate::forge::Token;
     use crate::forge::api_base;
     use crate::forge::check::ForgeTarget;
@@ -436,8 +485,9 @@ mod tests {
             fetches: vec![fetch("acme/shop", &["/p/shop"]), old, new],
             clears: vec![],
         };
+        let none = BTreeSet::new();
         let projects = |target, due| {
-            select(&plan, target, due)
+            select(&plan, target, due, &none)
                 .iter()
                 .map(|fetch| fetch.project.clone())
                 .collect::<Vec<_>>()
@@ -446,6 +496,65 @@ mod tests {
         assert_eq!(projects(1, false), ["acme/new"]);
         assert_eq!(projects(0, false), Vec::<String>::new());
         assert_eq!(projects(2, true), Vec::<String>::new());
+        // Read already, its write not seen yet: not read again before the poll.
+        let read = BTreeSet::from([(1, "acme/new".to_owned())]);
+        assert_eq!(select(&plan, 1, false, &read), Vec::<&Fetch>::new());
+        assert_eq!(select(&plan, 1, true, &read).len(), 2);
+    }
+
+    #[test]
+    fn a_changed_remote_reads_the_new_project_at_once() {
+        let targets = [target("personal", "github.com", ForgeKind::Github)];
+        let mut moved = repo(
+            "/p/shop",
+            Some("personal"),
+            Some(("github.com", "acme/shop-v2")),
+        );
+        moved.forge_metadata = Some(known(project(false)));
+        let mut same = repo("/p/x", Some("personal"), Some(("github.com", "ACME/Shop")));
+        same.forge_metadata = Some(known(project(false)));
+        let mut failed = repo("/p/y", Some("personal"), Some(("github.com", "acme/y")));
+        failed.forge_metadata = Some(ForgeMetadata {
+            refreshed_at: at(100),
+            project: MaybeKnown::Unknown,
+            error: Some("down".to_owned()),
+        });
+        let new: Vec<bool> = plan(&[moved, same, failed], &targets)
+            .fetches
+            .iter()
+            .map(|fetch| fetch.new)
+            .collect();
+        // Sorted by project: `ACME/Shop`, `acme/shop-v2`, `acme/y`.
+        assert_eq!(new, [false, true, false]);
+    }
+
+    #[test]
+    fn schedule_after_a_poll_a_new_read_and_a_rate_limit() {
+        let start = Instant::now();
+        let interval = Duration::from_mins(5);
+        let later = start + Duration::from_secs(30);
+        // A due poll: one interval after it started.
+        assert_eq!(
+            reschedule(start, start, true, interval, None),
+            (start + interval, None)
+        );
+        // Reads of new repositories only: the poll stays where it was.
+        assert_eq!(
+            reschedule(start + interval, later, false, interval, None),
+            (start + interval, None)
+        );
+        // A rate limit that ends after the next poll moves the poll.
+        let resume = start + Duration::from_mins(20);
+        assert_eq!(
+            reschedule(start, start, true, interval, Some(resume)),
+            (resume, Some(resume))
+        );
+        // One that ends before it keeps the poll.
+        let soon = start + Duration::from_mins(1);
+        assert_eq!(
+            reschedule(start, start, true, interval, Some(soon)),
+            (start + interval, Some(soon))
+        );
     }
 
     /// Answers each call with the next result, and records the projects and tokens.
@@ -613,7 +722,7 @@ mod tests {
                     .error
                     .as_deref()
                     .unwrap()
-                    .starts_with("cannot resolve the forge token: "),
+                    .starts_with("cannot resolve the forge token: `loom repo doctor`"),
                 "{metadata:?}"
             );
         }
@@ -633,7 +742,11 @@ mod tests {
         let unauthorized = || ForgeError::Unauthorized {
             message: "Bad credentials".to_owned(),
         };
-        let fetches = [fetch("acme/shop", &["/p/shop"]), fetch("acme/a", &["/p/a"])];
+        let fetches = [
+            fetch("acme/shop", &["/p/shop"]),
+            fetch("acme/a", &["/p/a"]),
+            fetch("acme/b", &["/p/b"]),
+        ];
         let api = FakeApi::new(vec![
             Err(unauthorized()),
             Ok(project(false)),
@@ -651,15 +764,19 @@ mod tests {
             [
                 ("acme/shop".to_owned(), "token-1".to_owned()),
                 ("acme/shop".to_owned(), "token-11".to_owned()),
-                // Not resolved again: refused twice in one poll is a bad token.
+                // Not resolved again: refused twice in one poll is a bad token, and
+                // `acme/b` is not called.
                 ("acme/a".to_owned(), "token-11".to_owned()),
             ]
         );
         assert_eq!(reads.results[0].1, known(project(false)));
-        assert_eq!(reads.results[1].1.project, MaybeKnown::Unknown);
-        assert_eq!(
-            reads.results[1].1.error.as_deref(),
-            Some("the forge refused the token (401): Bad credentials")
-        );
+        for (_, metadata) in &reads.results[1..] {
+            assert_eq!(metadata.project, MaybeKnown::Unknown);
+            assert_eq!(
+                metadata.error.as_deref(),
+                Some("the forge refused the token (401): Bad credentials")
+            );
+        }
+        assert_eq!(reads.results.len(), 3);
     }
 }

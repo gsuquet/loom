@@ -990,6 +990,19 @@ fn forge_metadata_is_saved_replaced_cleared_and_kept_across_refreshes() {
             .unwrap()
     );
 
+    // A row that cannot be read is ignored, the repository still listed.
+    store
+        .conn
+        .execute(
+            "INSERT INTO repo_forge (repo_id, refreshed_at, metadata) \
+             SELECT id, 1, '{\"project\":\"other\"}' FROM repos WHERE path = '/w/a'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(reader.get("p/a").unwrap().unwrap().forge_metadata, None);
+    assert_eq!(reader.list(&RepoFilter::default()).unwrap().len(), 1);
+    store.conn.execute("DELETE FROM repo_forge", []).unwrap();
+
     // Removed with its repository.
     assert!(
         store

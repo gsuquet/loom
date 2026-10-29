@@ -208,11 +208,15 @@ impl GitlabForge for GitlabClient {
     fn project(&self, path: &str) -> Result<ForgeProject, ForgeError> {
         let answer = self.get(&format!("/projects/{}", path_segment(path)))?;
         let mut project = self.parse(&answer.body, parse_project)?;
-        let open = self.get(&format!(
+        // Merge requests disabled, or open to members only: the project is still known.
+        project.open_mrs = match self.get(&format!(
             "/projects/{}/merge_requests?state=opened&per_page=1",
             project.id
-        ))?;
-        project.open_mrs = total(&open.headers);
+        )) {
+            Ok(open) => total(&open.headers),
+            Err(ForgeError::Forbidden { .. } | ForgeError::NotFound { .. }) => None,
+            Err(error) => return Err(error),
+        };
         Ok(project)
     }
 

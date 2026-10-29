@@ -80,7 +80,7 @@ pub struct ForgeProject {
     /// URL of the project page.
     pub web_url: String,
     /// Number of open merge requests (pull requests on GitHub). `null` when the forge does not
-    /// give the count (GitLab, above 10,000).
+    /// give the count (GitLab: above 10,000, or merge requests not visible).
     pub open_mrs: Option<u64>,
 }
 

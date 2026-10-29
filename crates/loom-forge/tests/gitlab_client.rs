@@ -688,6 +688,33 @@ fn project_without_a_count_or_not_visible() {
     let project = client(&forge).project("company-a/sub/checkout").unwrap();
     assert_eq!(project.open_mrs, None);
 
+    // Merge requests disabled or for members only: the project stays known.
+    for status in [403, 404] {
+        let forge = FakeForge::start();
+        forge
+            .route(Route::get("/projects/company-a%2Fcheckout").fixture("gitlab/project.json"))
+            .route(
+                Route::get("/projects/77/merge_requests?state=opened&per_page=1")
+                    .status(status)
+                    .body(r#"{"message":"403 Forbidden"}"#),
+            );
+        let project = client(&forge).project("company-a/checkout").unwrap();
+        assert_eq!((project.id, project.open_mrs), (77, None), "{status}");
+    }
+    // Any other failure of the count fails the read.
+    let forge = FakeForge::start();
+    forge
+        .route(Route::get("/projects/company-a%2Fcheckout").fixture("gitlab/project.json"))
+        .route(
+            Route::get("/projects/77/merge_requests?state=opened&per_page=1")
+                .status(401)
+                .body(r#"{"message":"401 Unauthorized"}"#),
+        );
+    assert!(matches!(
+        client(&forge).project("company-a/checkout"),
+        Err(ForgeError::Unauthorized { .. })
+    ));
+
     let forge = FakeForge::start();
     forge.route(
         Route::get("/projects/company-a%2Fgone")

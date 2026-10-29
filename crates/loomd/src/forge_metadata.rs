@@ -4,6 +4,7 @@
 //! and at once for a repository without forge metadata yet. Results are written through the
 //! store thread.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -13,7 +14,7 @@ use loom_api::Timestamp;
 use loom_store::{Reader, RepoFilter};
 use loomd::api::timestamp;
 use loomd::forge::check::ForgeTarget;
-use loomd::forge::metadata::{HttpProjects, plan, read_target, select};
+use loomd::forge::metadata::{HttpProjects, plan, read_target, reschedule, select};
 use loomd::forge::token::TokenResolver;
 use loomd::schedule::jittered;
 use tracing::{debug, info, warn};
@@ -80,6 +81,9 @@ fn run(
     let mut next_poll: Vec<Instant> = vec![Instant::now(); settings.targets.len()];
     // After a rate limit: nothing for the credential, new repositories included, until then.
     let mut paused_until: Vec<Option<Instant>> = vec![None; settings.targets.len()];
+    // Projects read in this run: a new one is not read again while its write waits in the
+    // queue of the store thread (a scan can hold it for a while).
+    let mut read: BTreeSet<(usize, String)> = BTreeSet::new();
     let mut reader: Option<Reader> = None;
     loop {
         match stopped.recv_timeout(TICK) {
@@ -114,21 +118,23 @@ fn run(
             }
         }
         for (index, target) in settings.targets.iter().enumerate() {
+            if !matches!(stopped.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                return;
+            }
             let started = Instant::now();
             if paused_until[index].is_some_and(|until| started < until) {
                 continue;
             }
             let due = started >= next_poll[index];
-            let fetches = select(&plan, index, due);
-            if fetches.is_empty() {
-                if due {
-                    next_poll[index] = started + jittered(settings.intervals[index], random_unit());
-                }
-                continue;
-            }
+            let fetches = select(&plan, index, due, &read);
             let now = timestamp(SystemTime::now()).unwrap_or(Timestamp::EPOCH);
-            let reads = read_target(target, &fetches, &settings.resolver, &api, now);
-            for (path, metadata) in reads.results {
+            let reads = if fetches.is_empty() {
+                None
+            } else {
+                Some(read_target(target, &fetches, &settings.resolver, &api, now))
+            };
+            let rate_limited = reads.as_ref().and_then(|reads| reads.rate_limited);
+            for (path, metadata) in reads.map(|reads| reads.results).unwrap_or_default() {
                 let command = Command::SaveForge {
                     path,
                     metadata: Some(Box::new(metadata)),
@@ -137,15 +143,17 @@ fn run(
                     return;
                 }
             }
-            if due {
-                next_poll[index] = started + jittered(settings.intervals[index], random_unit());
+            // After a rate limit, the projects not read are read after the pause.
+            if rate_limited.is_none() {
+                read.extend(fetches.iter().map(|fetch| (index, fetch.project.clone())));
             }
-            paused_until[index] = reads.rate_limited.map(|wait| {
-                let resume = Instant::now() + wait.duration(now);
-                // The projects not read are read with the next full poll, after the wait.
-                next_poll[index] = next_poll[index].max(resume);
-                resume
-            });
+            (next_poll[index], paused_until[index]) = reschedule(
+                next_poll[index],
+                started,
+                due,
+                jittered(settings.intervals[index], random_unit()),
+                rate_limited.map(|wait| Instant::now() + wait.duration(now)),
+            );
         }
     }
 }

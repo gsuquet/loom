@@ -130,7 +130,7 @@ token_cmd = "op read op://company-a/github/token"   # another account on the sam
 
 ## Repo forge metadata
 
-The repo card gets, from the forge, for repos of a host with a credential: project ID, default branch on the forge, visibility, archived, web URL, open MRs count. Refreshed on the schedule of the MR poll (`poll_interval`, its own thread until the MR poll exists), and at once for a repository without metadata; shown by `loom repo show`, never used for updates (the git state stays the source for branches).
+The repo card gets, from the forge, for repos of a host with a credential: project ID, default branch on the forge, visibility, archived, web URL, open MRs count. Refreshed on the schedule of the MR poll (`poll_interval`, its own thread until the MR poll exists), and at once for a repository without metadata; no backoff: a token refused twice or a forge not reachable stops the reads of the credential until its next poll; shown by `loom repo show`, never used for updates (the git state stays the source for branches).
 
 ## `loom pr`
 

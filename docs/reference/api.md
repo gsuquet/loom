@@ -124,11 +124,11 @@ If an update of a repository is in progress, `loomd` updates the repository agai
 | Property | Value |
 | --- | --- |
 | Repositories | A repository whose context has a [forge credential](configuration.md#forges) for the host of its primary remote, on a context held on this machine. The project is the path of the primary remote, such as `acme/shop`. Clones and worktrees of one project share one read. `loomd` removes the `forge_metadata` of a repository without such a credential. |
-| Schedule | Every `[forges."<host>"] poll_interval` (default 5 minutes) per credential, ±10 % at random, starting at the first read of the index after the start. `loomd` reads the index again every 10 seconds: a repository without `forge_metadata` is read at once. |
+| Schedule | Every `[forges."<host>"] poll_interval` (default 5 minutes) per credential, ±10 % at random, starting at the first read of the index after the start. `loomd` reads the index again every 10 seconds: a repository without `forge_metadata`, or with the metadata of another project (its primary remote changed), is read at once, one time per run of `loomd` until the next poll. |
 | GitHub | One GraphQL call: `POST <graphql>` with `repository(owner, name) { databaseId url isArchived visibility defaultBranchRef { name } pullRequests(states: OPEN) { totalCount } }`. |
-| GitLab | `GET <api>/projects/<encoded path>`, then `GET <api>/projects/<id>/merge_requests?state=opened&per_page=1`: `open_mrs` is its `x-total` header. |
-| Token | As for the [forge check](#forge-check): the same tokens in memory, resolved again once after a `401`. Each call stops after 20 s. |
-| Failures | The project is unknown, with the reason in `error`. When the token cannot be resolved, or the forge cannot be reached, every project of the credential is unknown, and `loomd` makes no other call for it until the next poll. When the forge limits the rate, `loomd` stops the reads of the credential and keeps the `forge_metadata` that it did not read again. It reads again after the wait that the forge gives, and not before the next poll. |
+| GitLab | `GET <api>/projects/<encoded path>`, then `GET <api>/projects/<id>/merge_requests?state=opened&per_page=1`: `open_mrs` is its `x-total` header, `null` when GitLab answers this call with `403` or `404` (merge requests turned off, or for members only). |
+| Token | As for the [forge check](#forge-check): the same tokens in memory, resolved again once per poll after a `401`. Each call stops after 30 s. |
+| Failures | The project is unknown, with the reason in `error`. When the token cannot be resolved, the forge cannot be reached, or the forge refuses the token resolved again, the project and the next projects of that read are unknown, and `loomd` makes no other call for the credential until its next read. The `error` of a token that cannot be resolved names `loom repo doctor`, which gives the reason; the output of `token_cmd` is not stored. When the forge limits the rate, `loomd` stops the reads of the credential and keeps the `forge_metadata` that it did not read again. It reads again after the wait that the forge gives, and not before the next poll. |
 
 #### Remote check
 
@@ -626,7 +626,7 @@ The project of a repository on its forge (in `RepoSummary`, schema in [`schemas/
 | `visibility` | `public` \| `internal` \| `private` | Who can see the project. |
 | `archived` | boolean | The project is archived (read-only on the forge). |
 | `web_url` | string | URL of the project page. |
-| `open_mrs` | integer (u64) \| `null` | Open pull requests (GitHub) or merge requests (GitLab). `null` when GitLab does not give the count (above 10,000). |
+| `open_mrs` | integer (u64) \| `null` | Open pull requests (GitHub) or merge requests (GitLab). `null` when GitLab does not give the count (above 10,000, merge requests turned off or for members only). |
 
 ```json
 {

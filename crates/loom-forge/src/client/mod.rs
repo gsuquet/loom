@@ -465,7 +465,8 @@ pub struct GitlabMr {
 /// The GitLab REST calls of the review. Blocking. Every list follows its pages.
 pub trait GitlabForge: Forge {
     /// The metadata of the project at `path` (`<group>/<name>`, subgroups included), and the
-    /// count of its open merge requests (`x-total`; `None` when GitLab does not give it).
+    /// count of its open merge requests (`x-total`; `None` when GitLab does not give it, or
+    /// refuses the list with 403 or 404: merge requests disabled or for members only).
     ///
     /// # Errors
     ///
