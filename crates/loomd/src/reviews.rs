@@ -25,7 +25,7 @@ use loom_api::{
     Timestamp,
 };
 use loom_config::config::Config;
-use loom_config::forges::ReviewRequests as ConfigRequests;
+use loom_config::forges::{ForgeCredential, ReviewRequests as ConfigRequests};
 use loom_config::machine::MachineName;
 use loom_forge::client::{
     ApiBase, Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient,
@@ -54,18 +54,13 @@ use tracing::{Span, debug, info, info_span, warn};
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
 
-/// For each of `targets`, how many other held contexts poll its host, on any machine.
-fn host_peers(targets: &[ForgeTarget]) -> Vec<usize> {
-    targets
+/// How many other contexts have a credential for the host of `target`, held here or not:
+/// another machine can poll them with the same account.
+fn host_peers(credentials: &[ForgeCredential<'_>], target: &ForgeTarget) -> usize {
+    credentials
         .iter()
-        .map(|target| {
-            targets
-                .iter()
-                .filter(|other| other.host == target.host)
-                .count()
-                - 1
-        })
-        .collect()
+        .filter(|other| other.host.as_str() == target.host && *other.context != target.context)
+        .count()
 }
 
 /// An MR to read: its key, its summary when the search found it, and its Review task.
@@ -143,8 +138,9 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     .unwrap_or(START_DELAY);
     let now = Instant::now();
     let mut hosts = Vec::new();
-    let peers = host_peers(&setup.targets);
-    for (target, peers) in setup.targets.into_iter().zip(peers) {
+    let credentials = config.forge_credentials();
+    for target in setup.targets {
+        let peers = host_peers(&credentials, &target);
         let machines = config
             .contexts
             .get(&target.context)
@@ -256,7 +252,7 @@ impl ReviewHandle {
 /// One context and forge host.
 struct Host {
     target: ForgeTarget,
-    /// How many other held contexts poll its host, on any machine.
+    /// How many other contexts have a credential for its host, held here or not.
     peers: usize,
     api: ApiBase,
     interval: Duration,

@@ -31,6 +31,8 @@ use common::{Daemon, ok, request};
 
 const GITHUB_TOKEN: &str = "fake-github-token-0123";
 const GITLAB_TOKEN: &str = "fake-gitlab-token-4567";
+/// The GitHub token of another account.
+const CLIENT_TOKEN: &str = "fake-client-token-89ab";
 const V1: &str = "7ebf283bfee25ab48f95c0c55181a4ca66b4c990";
 const V2: &str = "84280c47b6aa128c645b1fbea54aded8b32e8463";
 const MIRROR: &str = "mrs/github-acme%2Fshop%23412";
@@ -75,7 +77,8 @@ fn with_etag(body: impl Into<String>, etag: &str) -> Route {
 type Routes = Arc<Mutex<HashMap<String, Route>>>;
 
 /// A fake forge on `127.0.0.1`. A request is routed by its method and path; the query only
-/// adds `+after` (an `updated_after` parameter) or `+page=<n>`. Other requests get a 404.
+/// adds `+after` (an `updated_after` parameter) or `+page=<n>`. A route `<key>@<token>` answers
+/// the requests with that token before `<key>`. Other requests get a 404.
 /// `down` drops every connection without an answer.
 struct Server {
     base: String,
@@ -122,6 +125,7 @@ impl Server {
                 let target = words.next().unwrap_or("").to_owned();
                 let mut length = 0;
                 let mut if_none_match = None;
+                let mut token = String::new();
                 loop {
                     let mut header = String::new();
                     reader.read_line(&mut header).unwrap();
@@ -135,6 +139,12 @@ impl Server {
                             length = value.parse().unwrap();
                         } else if name.eq_ignore_ascii_case("if-none-match") {
                             if_none_match = Some(value.to_owned());
+                        } else if name.eq_ignore_ascii_case("authorization") {
+                            value
+                                .rsplit(' ')
+                                .next()
+                                .unwrap_or("")
+                                .clone_into(&mut token);
                         }
                     }
                 }
@@ -142,7 +152,13 @@ impl Server {
                 reader.read_exact(&mut body).unwrap();
                 let key = route_key(&method, &target);
                 recorded.lock().unwrap().push(key.clone());
-                let found = served.lock().unwrap().get(&key).cloned();
+                let found = {
+                    let served = served.lock().unwrap();
+                    served
+                        .get(&format!("{key}@{token}"))
+                        .or_else(|| served.get(&key))
+                        .cloned()
+                };
                 let route = found.unwrap_or_else(|| Route {
                     status: 404,
                     ..route(r#"{"message":"Not Found"}"#)
@@ -331,6 +347,7 @@ impl Sandbox {
             .env("GIT_COMMITTER_EMAIL", "test@example.com")
             .env("LOOM_TEST_GITHUB_TOKEN", GITHUB_TOKEN)
             .env("LOOM_TEST_GITLAB_TOKEN", GITLAB_TOKEN)
+            .env("LOOM_TEST_CLIENT_TOKEN", CLIENT_TOKEN)
             .env(
                 "LOOM_TEST_FORGE_API",
                 format!(
@@ -836,6 +853,105 @@ fn an_mr_whose_web_url_is_on_another_host_gets_no_task() {
     daemon.stop();
 }
 
+/// `orphan/app#5`: no clone and no `match.hosts` rule.
+fn orphan(json: &str) -> String {
+    json.replace("acme/shop", "orphan/app")
+        .replace("/412", "/5")
+        .replace("\"number\": 412", "\"number\": 5")
+        .replace("\"number\":412", "\"number\":5")
+}
+
+/// The search of `GITHUB_TOKEN`, with `orphan/app#5`.
+fn with_orphan() -> Value {
+    let mut search = fixture_json("github/search-review-requested.json");
+    let item: Value = serde_json::from_str(&orphan(&search["items"][0].to_string())).unwrap();
+    search["items"].as_array_mut().unwrap().push(item);
+    search["total_count"] = json!(2);
+    search
+}
+
+#[test]
+fn an_mr_that_no_rule_assigns_goes_to_no_store_when_another_machine_polls_the_other_context() {
+    let sandbox = Sandbox::new();
+    // This machine polls `personal` only, and `work` can poll `company-a` with the same token.
+    let config = CONFIG.replace(
+        "[contexts.company-a]\n",
+        "[contexts.company-a]\nmachines = [\"work\"]\n",
+    );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    sandbox
+        .github
+        .set("GET /search/issues", route(with_orphan().to_string()));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let result = sandbox.sync();
+    let ReviewSyncOutcome::Synced { failed, .. } = &poll(&result, "personal", "github.com").outcome
+    else {
+        panic!("{result:?}");
+    };
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].key, "orphan/app#5");
+    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn an_mr_that_no_rule_assigns_goes_to_the_context_whose_account_found_it() {
+    let sandbox = Sandbox::new();
+    let config = format!(
+        "{CONFIG}\n[contexts.company-a.forges.\"github.com\"]\ntoken_env = \"LOOM_TEST_CLIENT_TOKEN\"\n"
+    );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    // The client account is `dave`, and only `orphan/app#5` requests it.
+    let mut user = fixture_json("github/user.json");
+    user["login"] = json!("dave");
+    let mut search = with_orphan();
+    search["items"].as_array_mut().unwrap().remove(0);
+    search["total_count"] = json!(1);
+    let client = |key: &str| format!("{key}@{CLIENT_TOKEN}");
+    sandbox
+        .github
+        .set(&client("GET /user"), route(user.to_string()));
+    sandbox
+        .github
+        .set(&client("GET /search/issues"), route(search.to_string()));
+    for (path, file) in [
+        ("GET /repos/orphan/app/pulls/5", "github/pull-412.v1.json"),
+        (
+            "GET /repos/orphan/app/pulls/5/reviews",
+            "github/pull-412-reviews.json",
+        ),
+        (
+            "GET /repos/orphan/app/issues/5/comments",
+            "github/issue-412-comments.json",
+        ),
+    ] {
+        sandbox.github.set(path, route(orphan(&fixture(file))));
+    }
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    // A login is read at the first poll of its context: the first sync may not tell yet.
+    sandbox.sync();
+    let second = sandbox.sync();
+    let ReviewSyncOutcome::Synced { failed, .. } =
+        &poll(&second, "company-a", "github.com").outcome
+    else {
+        panic!("{second:?}");
+    };
+    assert!(failed.is_empty(), "{second:?}");
+    let company = tasks(&socket, "company-a");
+    assert!(
+        company.tasks.iter().any(|task| task
+            .task
+            .as_ref()
+            .is_some_and(|task| task.title.starts_with("Review orphan/app#5"))),
+        "{company:?}"
+    );
+    // `personal` keeps acme/shop#412 only.
+    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+    daemon.stop();
+}
+
 #[test]
 fn an_mr_that_no_rule_assigns_goes_to_no_store_when_the_token_is_shared() {
     an_mr_that_no_rule_assigns_goes_to_no_store(CONFIG);
@@ -855,19 +971,9 @@ fn an_mr_that_no_rule_assigns_goes_to_no_store_when_each_context_has_a_token() {
 fn an_mr_that_no_rule_assigns_goes_to_no_store(config: &str) {
     let sandbox = Sandbox::new();
     fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
-    let mut search = fixture_json("github/search-review-requested.json");
-    let mut orphan = search["items"][0].clone();
-    orphan["number"] = json!(5);
-    orphan["url"] = json!("https://api.github.com/repos/orphan/app/issues/5");
-    orphan["repository_url"] = json!("https://api.github.com/repos/orphan/app");
-    orphan["html_url"] = json!("https://github.com/orphan/app/pull/5");
-    orphan["pull_request"]["url"] = json!("https://api.github.com/repos/orphan/app/pulls/5");
-    orphan["pull_request"]["html_url"] = json!("https://github.com/orphan/app/pull/5");
-    search["items"].as_array_mut().unwrap().push(orphan);
-    search["total_count"] = json!(2);
     sandbox
         .github
-        .set("GET /search/issues", route(search.to_string()));
+        .set("GET /search/issues", route(with_orphan().to_string()));
     let daemon = sandbox.start();
     let socket = sandbox.socket();
     let result = sandbox.sync();

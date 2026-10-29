@@ -23,7 +23,7 @@ One token can see the projects of several contexts. A context keeps only the MRs
 
 1. the context of an indexed clone of the project (when several clones exist: the most recently used one, then the shortest path);
 2. the `match.hosts` rules on `<host>/<project path>`;
-3. the context whose token found the MR, when each other held context with a credential for the host is polled on this machine with the token of another account.
+3. the context whose token found the MR, when each other context with a credential for the host is polled on this machine with the token of another account. A context that this machine does not poll counts too: another machine can poll it with the same account.
 
 One token, or two tokens of one account, find the same MRs. Then rule 3 tells nothing, and the MR goes to no store: each poll reports it as failed, and asks for a `match.hosts` rule or a clone of the project. `loomd` compares the logins of the tokens. A login is read at the first poll of its context and host. Thus, until each context polled the host once, rule 3 does not apply, and the MR is reported as failed.
 
