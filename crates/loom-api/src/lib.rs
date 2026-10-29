@@ -52,8 +52,8 @@ pub use loom_core::{
 };
 pub use mr::{ForgeRequestPlan, MrOpenRequest, MrOpenResult, MrOutcome, PrReport, PushPlan};
 pub use repo::{
-    ForgeKind, RegisterRequest, Remote, RemoteUrl, RepoIdentity, RepoList, RepoSummary,
-    RepoUpdatePolicy, ScanIssue, ScanResult,
+    ForgeKind, ForgeMetadata, ForgeProject, ForgeVisibility, RegisterRequest, Remote, RemoteUrl,
+    RepoIdentity, RepoList, RepoSummary, RepoUpdatePolicy, ScanIssue, ScanResult,
 };
 pub use repo_state::{MaybeKnown, RepoHead, RepoOperation, RepoState, Untracked, Upstream};
 pub use repo_update::{

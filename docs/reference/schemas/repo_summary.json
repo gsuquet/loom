@@ -19,6 +19,18 @@
         }
       ]
     },
+    "forge_metadata": {
+      "description": "Forge metadata, `null` when no credential of the context gives access to the host of\nthe primary remote, or before the first forge poll.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ForgeMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "last_update": {
       "description": "Result of the last update (fetch, fast-forward), `null` until the first one.",
       "anyOf": [
@@ -216,6 +228,97 @@
         }
       ]
     },
+    "ForgeMetadata": {
+      "description": "The forge metadata of a repository, read by `loomd` with the forge poll. Never used for\nupdates: the git state stays the source for branches.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "Why `project` is unknown, in English. `null` when it is known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The project, unknown when the forge call failed (the reason is in `error`).",
+          "$ref": "#/$defs/MaybeKnown_ForgeProject"
+        },
+        "refreshed_at": {
+          "description": "When `loomd` last asked the forge.",
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "refreshed_at",
+        "project"
+      ]
+    },
+    "ForgeProject": {
+      "description": "The project of a repository on its forge, as the forge API gives it.",
+      "type": "object",
+      "properties": {
+        "archived": {
+          "description": "The project is archived: it is read-only on the forge.",
+          "type": "boolean"
+        },
+        "default_branch": {
+          "description": "Default branch on the forge. `null` for an empty project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Numeric ID of the project on the forge (GitHub `databaseId`, GitLab `id`).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "open_mrs": {
+          "description": "Number of open merge requests (pull requests on GitHub). `null` when the forge does not\ngive the count (GitLab: above 10,000, or merge requests not visible).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "visibility": {
+          "description": "Who can see the project.",
+          "$ref": "#/$defs/ForgeVisibility"
+        },
+        "web_url": {
+          "description": "URL of the project page.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "visibility",
+        "archived",
+        "web_url"
+      ]
+    },
+    "ForgeVisibility": {
+      "description": "Who can see a project on its forge.",
+      "oneOf": [
+        {
+          "description": "Everyone.",
+          "type": "string",
+          "const": "public"
+        },
+        {
+          "description": "Every signed-in user of the forge (GitLab, GitHub Enterprise).",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "Only the members.",
+          "type": "string",
+          "const": "private"
+        }
+      ]
+    },
     "LastUpdate": {
       "description": "The last update of a repository, by `loomd` on its schedule or by `POST /v1/repos/sync`.",
       "type": "object",
@@ -240,6 +343,29 @@
         "time",
         "policy",
         "outcomes"
+      ]
+    },
+    "MaybeKnown_ForgeProject": {
+      "description": "A state field that may not have been computed: the time budget ran out, or it could not\nbe read (the reason is in [`RepoState::error`]).\n\nSerialized as `{\"known\": <value>}` or `\"unknown\"`, so that a known `null` (no upstream, no\noperation…) is never confused with an unknown value.",
+      "oneOf": [
+        {
+          "description": "The value.",
+          "type": "object",
+          "properties": {
+            "known": {
+              "$ref": "#/$defs/ForgeProject"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "known"
+          ]
+        },
+        {
+          "description": "Not computed.",
+          "type": "string",
+          "const": "unknown"
+        }
       ]
     },
     "MaybeKnown_Nullable_RepoOperation": {

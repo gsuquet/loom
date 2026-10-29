@@ -9,7 +9,7 @@ mod common;
 
 use common::fake_forge::{FakeForge, Route, fixture};
 use common::{M2, V2, edit, sha, time};
-use loom_api::ForgeKind;
+use loom_api::{ForgeKind, ForgeProject, ForgeVisibility};
 use loom_forge::client::{
     ApiBase, Conditional, Forge, ForgeError, GitlabClient, GitlabForge, GitlabMr, REDACTED, Token,
 };
@@ -646,4 +646,84 @@ fn a_401_on_approve_reads_the_approvals_to_tell_why() {
         matches!(error, ForgeError::Unauthorized { .. }),
         "{error:?}"
     );
+}
+
+#[test]
+fn project_metadata_with_the_count_of_open_merge_requests() {
+    let forge = FakeForge::start();
+    forge
+        .route(Route::get("/projects/company-a%2Fcheckout").fixture("gitlab/project.json"))
+        .route(
+            Route::get("/projects/77/merge_requests?state=opened&per_page=1")
+                .body("[]")
+                .header("x-total", "4"),
+        );
+    let project = client(&forge).project("company-a/checkout").unwrap();
+    assert_eq!(
+        project,
+        ForgeProject {
+            id: 77,
+            default_branch: Some("main".to_owned()),
+            visibility: ForgeVisibility::Internal,
+            archived: true,
+            web_url: "https://gitlab.example.com/company-a/checkout".to_owned(),
+            open_mrs: Some(4),
+        }
+    );
+    for request in forge.requests() {
+        assert_eq!(
+            request.header("authorization"),
+            Some(format!("Bearer {TOKEN}").as_str())
+        );
+    }
+}
+
+#[test]
+fn project_without_a_count_or_not_visible() {
+    // GitLab leaves `x-total` out above 10,000 items.
+    let forge = FakeForge::start();
+    forge
+        .route(Route::get("/projects/company-a%2Fsub%2Fcheckout").fixture("gitlab/project.json"))
+        .route(Route::get("/projects/77/merge_requests?state=opened&per_page=1").body("[]"));
+    let project = client(&forge).project("company-a/sub/checkout").unwrap();
+    assert_eq!(project.open_mrs, None);
+
+    // Merge requests disabled or for members only: the project stays known.
+    for status in [403, 404] {
+        let forge = FakeForge::start();
+        forge
+            .route(Route::get("/projects/company-a%2Fcheckout").fixture("gitlab/project.json"))
+            .route(
+                Route::get("/projects/77/merge_requests?state=opened&per_page=1")
+                    .status(status)
+                    .body(r#"{"message":"403 Forbidden"}"#),
+            );
+        let project = client(&forge).project("company-a/checkout").unwrap();
+        assert_eq!((project.id, project.open_mrs), (77, None), "{status}");
+    }
+    // Any other failure of the count fails the read.
+    let forge = FakeForge::start();
+    forge
+        .route(Route::get("/projects/company-a%2Fcheckout").fixture("gitlab/project.json"))
+        .route(
+            Route::get("/projects/77/merge_requests?state=opened&per_page=1")
+                .status(401)
+                .body(r#"{"message":"401 Unauthorized"}"#),
+        );
+    assert!(matches!(
+        client(&forge).project("company-a/checkout"),
+        Err(ForgeError::Unauthorized { .. })
+    ));
+
+    let forge = FakeForge::start();
+    forge.route(
+        Route::get("/projects/company-a%2Fgone")
+            .status(404)
+            .body(r#"{"message":"404 Project Not Found"}"#),
+    );
+    assert!(matches!(
+        client(&forge).project("company-a/gone"),
+        Err(ForgeError::NotFound { .. })
+    ));
+    assert_eq!(forge.requests().len(), 1);
 }

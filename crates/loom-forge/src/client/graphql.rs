@@ -29,6 +29,9 @@ pub const SUBMIT_REVIEW: &str = "mutation($input: SubmitPullRequestReviewInput!)
 /// Step 5: the resolution of a thread.
 pub const RESOLVE_THREAD: &str = "mutation($input: ResolveReviewThreadInput!) { resolveReviewThread(input: $input) { thread { id isResolved } } }";
 
+/// The metadata of a repository, for its card.
+pub const REPOSITORY: &str = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { databaseId url isArchived visibility defaultBranchRef { name } pullRequests(states: OPEN) { totalCount } } }";
+
 /// A GraphQL request body.
 #[derive(Serialize)]
 struct Request<'a, V> {
@@ -43,6 +46,12 @@ struct PullVariables<'a> {
     number: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     cursor: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct RepositoryVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
 }
 
 #[derive(Serialize)]
@@ -402,6 +411,21 @@ impl GithubClient {
                 },
             },
             crate::github::parse_submit_review,
+        )
+    }
+
+    pub(super) fn graphql_repository(
+        &self,
+        project: &str,
+    ) -> Result<loom_api::ForgeProject, ForgeError> {
+        let (owner, name) = project.split_once('/').ok_or_else(|| {
+            ForgeError::Unexpected(format!("`{project}` is not an <owner>/<name> repository"))
+        })?;
+        self.graphql(
+            GraphqlStep::Repository,
+            REPOSITORY,
+            RepositoryVariables { owner, name },
+            crate::github::parse_repository,
         )
     }
 

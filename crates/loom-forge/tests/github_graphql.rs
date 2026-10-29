@@ -9,7 +9,7 @@ mod common;
 
 use common::fake_forge::{FakeForge, Recorded, Route, fixture};
 use common::{V1, V2, edit, sha};
-use loom_api::ForgeKind;
+use loom_api::{ForgeKind, ForgeProject, ForgeVisibility};
 use loom_forge::client::{
     ApiBase, ForgeError, GithubClient, GithubForge, GraphqlStep, NewThread, REDACTED,
     RateLimitWait, Token,
@@ -499,4 +499,73 @@ fn an_error_without_a_type_is_an_error_of_its_step() {
             if errors[0].kind.is_none()),
         "{error:?}"
     );
+}
+
+#[test]
+fn repository_metadata_in_one_call() {
+    let forge = FakeForge::start();
+    forge.route(
+        Route::post("/graphql")
+            .when_body("pullRequests(states: OPEN)")
+            .fixture("github/graphql-repository.json"),
+    );
+    let project = client(&forge).repository("acme/shop").unwrap();
+    assert_eq!(
+        project,
+        ForgeProject {
+            id: 1_296_269,
+            default_branch: Some("main".to_owned()),
+            visibility: ForgeVisibility::Private,
+            archived: false,
+            web_url: "https://github.com/acme/shop".to_owned(),
+            open_mrs: Some(3),
+        }
+    );
+    let request = only_request(&forge).json();
+    assert_eq!(
+        request["variables"],
+        serde_json::json!({"owner": "acme", "name": "shop"})
+    );
+}
+
+#[test]
+fn an_archived_and_empty_repository() {
+    let forge = FakeForge::start();
+    forge.route(Route::post("/graphql").body(edit(
+        &fixture("github/graphql-repository.json"),
+        |body| {
+            let repository = &mut body["data"]["repository"];
+            repository["isArchived"] = true.into();
+            repository["visibility"] = "PUBLIC".into();
+            repository["defaultBranchRef"] = serde_json::Value::Null;
+            repository["pullRequests"]["totalCount"] = 0.into();
+        },
+    )));
+    let project = client(&forge).repository("acme/shop").unwrap();
+    assert!(project.archived);
+    assert_eq!(project.visibility, ForgeVisibility::Public);
+    assert_eq!(project.default_branch, None);
+    assert_eq!(project.open_mrs, Some(0));
+}
+
+#[test]
+fn a_repository_the_token_cannot_see() {
+    let forge = FakeForge::start();
+    forge.route(Route::post("/graphql").fixture("github/graphql-error-repository-not-found.json"));
+    let error = client(&forge).repository("acme/gone").unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ForgeError::Graphql { step: GraphqlStep::Repository, errors }
+                if errors[0].kind.as_deref() == Some("NOT_FOUND")
+        ),
+        "{error:?}"
+    );
+    // Not an <owner>/<name>: nothing sent.
+    let forge = FakeForge::start();
+    assert!(matches!(
+        client(&forge).repository("shop"),
+        Err(ForgeError::Unexpected(_))
+    ));
+    assert_eq!(forge.lines(), Vec::<String>::new());
 }

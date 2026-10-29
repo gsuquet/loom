@@ -29,7 +29,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_api::{
-    LastUpdate, RepoIdentity, RepoState, RepoSummary, SearchKind, SearchResult, Timestamp,
+    ForgeMetadata, LastUpdate, RepoIdentity, RepoState, RepoSummary, SearchKind, SearchResult,
+    Timestamp,
 };
 use loom_core::{ContextName, TaskId};
 use loom_repo::ScanDiff;
@@ -277,6 +278,26 @@ impl Store {
         }
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Replaces the forge metadata of the repository at `path` with `metadata`, or removes it
+    /// when `None` (no credential for its host any more). Returns `false`, changing nothing,
+    /// when no repository has this path (removed since the forge call), or when there was
+    /// nothing to remove.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails, or the path is not valid UTF-8.
+    pub fn save_forge(
+        &mut self,
+        path: &Path,
+        metadata: Option<&ForgeMetadata>,
+    ) -> Result<bool, StoreError> {
+        let _span = debug_span!("store.save_forge", path = %path.display()).entered();
+        match metadata {
+            Some(metadata) => repos::save_forge(&self.conn, path, metadata),
+            None => repos::clear_forge(&self.conn, path),
+        }
     }
 }
 

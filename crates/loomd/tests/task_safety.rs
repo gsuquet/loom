@@ -873,25 +873,16 @@ fn reindex_from_files_and_cli_loom_reindex_equal_the_live_index() {
     let work_archived = seed_reindex_history(&sandbox);
     sandbox.assert_store_clean("work", 6);
     sandbox.assert_store_clean("home", 2);
-    let events: TaskEvents = ok(&request(
-        &sandbox.socket(),
-        "GET",
-        &format!("/v1/tasks/{work_archived}/events"),
-        None,
-    ));
-    let closed: jiff::civil::Date = events.events.last().unwrap().at.to_string()[..10]
-        .parse()
-        .unwrap();
-    // 15 days after the close, from the clock of the run: a fixed date fails once it is less
-    // than `archive_after` after the day the tests run.
-    let day_15 = closed
-        .checked_add(jiff::Span::new().days(15))
-        .unwrap()
-        .to_string();
     daemon.stop();
 
     // Advance `LOOM_TEST_TODAY` by 15 days so `work_archived` moves to `archive/<yyyy>/` at start.
-    let daemon = sandbox.start_with(&[("LOOM_TEST_TODAY", &day_15)]);
+    // The tasks are closed at the real time, so the day is counted from it, not fixed.
+    let later = jiff::Zoned::now()
+        .date()
+        .checked_add(jiff::Span::new().days(15))
+        .unwrap()
+        .to_string();
+    let daemon = sandbox.start_with(&[("LOOM_TEST_TODAY", &later)]);
     sandbox.reindex();
     let live = sandbox.indexed();
     assert_eq!(live.len(), 3);
@@ -915,7 +906,7 @@ fn reindex_from_files_and_cli_loom_reindex_equal_the_live_index() {
     }
     assert!(!sandbox.index().exists());
 
-    let daemon = sandbox.start_with(&[("LOOM_TEST_TODAY", &day_15)]);
+    let daemon = sandbox.start_with(&[("LOOM_TEST_TODAY", &later)]);
     let loom_bin = Path::new(env!("CARGO_BIN_EXE_loomd")).with_file_name("loom");
     if loom_bin.is_file() {
         let output = Command::new(&loom_bin)
@@ -924,7 +915,7 @@ fn reindex_from_files_and_cli_loom_reindex_equal_the_live_index() {
             .env("XDG_CONFIG_HOME", sandbox.user_home().join(".config"))
             .env("GIT_CONFIG_GLOBAL", sandbox.gitconfig())
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("LOOM_TEST_TODAY", &day_15)
+            .env("LOOM_TEST_TODAY", &later)
             .current_dir(sandbox.user_home())
             .args(["--color=never", "reindex", "--json"])
             .stdin(Stdio::null())

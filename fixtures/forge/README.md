@@ -52,6 +52,8 @@ Host `github.com`, API `https://api.github.com`, repository `acme/shop`, pull re
 | `POST /graphql`, `addPullRequestReviewThreadReply` | 200 | | `graphql-add-reply.request.json`, `.response.json` |
 | `POST /graphql`, `submitPullRequestReview` | 200 | | `graphql-submit-review.request.json`, `.response.json` |
 | `POST /graphql`, `resolveReviewThread` | 200 | | `graphql-resolve-thread.request.json`, `.response.json` |
+| `POST /graphql`, `repository`: the forge metadata of a repo card | 200 | | `graphql-repository.json` |
+| `POST /graphql`, `repository` that the token cannot see | 200 with `errors` (`NOT_FOUND`) | | `graphql-error-repository-not-found.json` |
 | `POST /graphql`, a second pending review | 200 with `errors` | | `graphql-error-one-pending-review.json` |
 | `POST /graphql`, a thread on a line outside the diff | 200 with `errors` | | `graphql-error-line-not-in-diff.json` |
 | any, bad token | 401 | | `error-401.json` |
@@ -67,6 +69,8 @@ Host `gitlab.example.com`, API `https://gitlab.example.com/api/v4`, project `com
 | `GET /user` | 200 | | `user.json` |
 | `GET /personal_access_tokens/self` | 200 | | `personal-access-token-self.json` (`api`), `.read-api.json` (`read_api`) |
 | `GET /merge_requests?scope=reviews_for_me&state=opened&updated_after=…&per_page=100` (no `updated_after` on the first poll) | 200 | `x-next-page`, `link` | `merge-requests-reviews-for-me.json`, `.empty.json` |
+| `GET /projects/company-a%2Fcheckout`: the forge metadata of a repo card | 200 | | `project.json` (archived) |
+| `GET /projects/77/merge_requests?state=opened&per_page=1` | 200 | `x-total` (left out above 10,000) | composed in `crates/loom-forge/tests/gitlab_client.rs` |
 | `GET /projects/77/merge_requests/88` | 200 | `etag` | `merge-request-88.v1.json`, `merge-request-88.v2.json` |
 | `GET /projects/77/merge_requests/88/versions?per_page=100` | 200 | | `merge-request-88-versions.json` (newest first) |
 | `GET /projects/77/merge_requests/88/diffs?per_page=100` | 200 | `x-next-page` | `merge-request-88-diffs.json` |

@@ -6,6 +6,7 @@
 
 pub mod check;
 pub mod client;
+pub mod metadata;
 pub mod open;
 pub mod token;
 
