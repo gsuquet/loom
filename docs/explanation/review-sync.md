@@ -10,7 +10,11 @@ Review requests come from many forges, many projects and many clients. Each forg
 
 ## Which forges, which MRs
 
-`loomd` polls each context held on this machine, for each forge host that the context has a credential for (`token_cmd` or `token_env`). A context with `machines` is polled only by the first machine of its list, so that two machines do not both create a task for one MR.
+`loomd` polls each context held on this machine, for each forge host that the context has a credential for (`token_cmd` or `token_env`). A context with `machines` is polled only by the first machine of its list, so that two machines do not both create a task for one MR. A context without `machines` is polled on each machine that holds it, and each `loomd` writes this warning at start, because two machines that share the store create two tasks for one MR:
+
+```text
+WARN MRs are polled on every machine holding the context: set `machines` so that only its first machine creates their Review tasks context=company-a host=github.com
+```
 
 Each poll reads two sets of MRs:
 
@@ -98,6 +102,7 @@ A poll writes nothing when nothing changed:
 
 - GitLab: only the approvals give a verdict. A comment without an approval is not a verdict, and a reset of the state of a reviewer is not a new request.
 - GitHub: a request to one of your teams counts as a request to you, unless `review_requests = "direct"`.
+- Rule 3 of the context: when the tokens of two accounts are both requested on one MR (for example, both accounts are in the requested team), each context creates a task for it.
 - An archived Review task is not changed. After the archive, a new task comes only when you are requested: on a new head without your verdict, or by a new request, against what the last poll saw.
 - An MR whose web URL is on another host than the forge host of `[forges]` gets no task: the poll reports it as failed.
 - A review and a new request that both occur between two polls are not seen as a new request.

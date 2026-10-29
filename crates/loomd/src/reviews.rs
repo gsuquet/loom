@@ -121,6 +121,30 @@ pub struct Setup {
     pub tasks: TaskHandle,
 }
 
+/// Whether this machine polls `target`: the first of `machines`, or any machine without them.
+/// As for schedules: two machines would both create each Review task.
+fn polled_here(
+    target: &ForgeTarget,
+    machines: Option<&[MachineName]>,
+    machine: &MachineName,
+) -> bool {
+    match runner(machines, machine) {
+        Runner::This => true,
+        Runner::Other(first) => {
+            info!(context = %target.context, host = %target.host, runner = %first, "MRs of the context are polled by another machine");
+            false
+        }
+        Runner::Unpinned => {
+            warn!(
+                context = %target.context,
+                host = %target.host,
+                "MRs are polled on every machine holding the context: set `machines` so that only its first machine creates their Review tasks"
+            );
+            true
+        }
+    }
+}
+
 /// Starts the poller thread.
 pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandle)> {
     let rules = ContextRules::new(config, &setup.user_home)
@@ -145,9 +169,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             .contexts
             .get(&target.context)
             .and_then(|context| context.machines.as_deref());
-        // As for schedules: two machines would both create each Review task.
-        if let Runner::Other(first) = runner(machines, &setup.machine) {
-            info!(context = %target.context, host = %target.host, runner = %first, "MRs of the context are polled by another machine");
+        if !polled_here(&target, machines, &setup.machine) {
             continue;
         }
         let forge = config
