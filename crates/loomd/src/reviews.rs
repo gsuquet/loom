@@ -188,6 +188,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             failures: 0,
             rate_limited: None,
             login: None,
+            last_login: None,
             last_success: None,
             updated_after: None,
             mrs: HashMap::new(),
@@ -264,6 +265,8 @@ struct Host {
     rate_limited: Option<(Instant, Timestamp)>,
     /// The login of the token, read once.
     login: Option<String>,
+    /// The last login read, kept after a 401: it tells the account to the other contexts.
+    last_login: Option<String>,
     last_success: Option<Timestamp>,
     /// GitLab `updated_after` of the next poll.
     updated_after: Option<Timestamp>,
@@ -594,6 +597,7 @@ impl Poller {
         }
         let login = client.user()?.user.login;
         self.hosts[index].login = Some(login.clone());
+        self.hosts[index].last_login = Some(login.clone());
         Ok(login)
     }
 
@@ -619,10 +623,10 @@ impl Poller {
             .iter()
             .enumerate()
             .filter(|(other, host)| *other != index && host.target.host == target.host)
-            .map(|(_, host)| host.login.as_deref())
+            .map(|(_, host)| host.last_login.as_deref())
             .collect();
         let tells = finder_tells(
-            self.hosts[index].login.as_deref(),
+            self.hosts[index].last_login.as_deref(),
             self.hosts[index].peers,
             &polled,
         );
@@ -669,7 +673,7 @@ impl Poller {
                         unassigned.push(ReviewSyncFailure {
                             key: summary.key.to_string(),
                             error: format!(
-                                "no context for {}/{}: other contexts poll {}, maybe with the same account; add a match.hosts rule or clone the project",
+                                "no context for {}/{}: other contexts poll {}, maybe with the same account (or their login is not read yet); add a match.hosts rule or clone the project",
                                 target.host,
                                 summary.key.project(),
                                 target.host
