@@ -418,13 +418,13 @@ pub enum Belongs {
     Here,
     /// To another context: not written here.
     Elsewhere,
-    /// To no context: no clone and no `match.hosts` rule, and several contexts poll the host,
-    /// so the finder tells nothing.
+    /// To no context: no clone and no `match.hosts` rule, and other contexts poll the host
+    /// maybe with the same account, so the finder tells nothing.
     Unassigned,
 }
 
 /// Where the MR of `context` (from `loom_forge::mr_context`) goes, for the poll of `here`.
-/// `shared`: other held contexts poll the host too. Pure.
+/// `shared`: the finder tells nothing (see [`finder_tells`]). Pure.
 #[must_use]
 pub fn belongs(context: &MrContext, here: &ContextName, shared: bool) -> Belongs {
     match context {
@@ -437,6 +437,24 @@ pub fn belongs(context: &MrContext, here: &ContextName, shared: bool) -> Belongs
             }
         }
     }
+}
+
+/// Whether the context that found an MR is its context. Pure.
+///
+/// `peers`: how many other held contexts poll the host. `mine`: the login of the token that
+/// found it. `polled`: the logins
+/// of the peers that this machine polls, `None` when not read yet. The finder tells only
+/// when each peer is polled here with the token of another account: one token, or two tokens
+/// of one account, find the same MRs.
+#[must_use]
+pub fn finder_tells(mine: Option<&str>, peers: usize, polled: &[Option<&str>]) -> bool {
+    let Some(mine) = mine else {
+        return peers == 0;
+    };
+    polled.len() == peers
+        && polled
+            .iter()
+            .all(|login| login.is_some_and(|login| !login.eq_ignore_ascii_case(mine)))
 }
 
 /// The host of an `https://host[:port]/…` URL, lowercase, without the port. Pure.

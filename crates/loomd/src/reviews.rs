@@ -44,7 +44,7 @@ use loomd::hooks;
 use loomd::recurring::{Runner, runner};
 use loomd::review_sync::{
     Belongs, MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, belongs, clone_of,
-    github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
+    finder_tells, github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
 };
 use loomd::shutdown::{JOIN_DEADLINE, join_within};
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -54,9 +54,8 @@ use tracing::{Span, debug, info, info_span, warn};
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
 
-/// For each of `targets`, whether other held contexts poll its host too. Then the context
-/// that found an MR tells nothing: the tokens can be of one account, or one token.
-fn shared_hosts(targets: &[ForgeTarget]) -> Vec<bool> {
+/// For each of `targets`, how many other held contexts poll its host, on any machine.
+fn host_peers(targets: &[ForgeTarget]) -> Vec<usize> {
     targets
         .iter()
         .map(|target| {
@@ -64,7 +63,7 @@ fn shared_hosts(targets: &[ForgeTarget]) -> Vec<bool> {
                 .iter()
                 .filter(|other| other.host == target.host)
                 .count()
-                > 1
+                - 1
         })
         .collect()
 }
@@ -144,8 +143,8 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     .unwrap_or(START_DELAY);
     let now = Instant::now();
     let mut hosts = Vec::new();
-    let shared = shared_hosts(&setup.targets);
-    for (target, shared) in setup.targets.into_iter().zip(shared) {
+    let peers = host_peers(&setup.targets);
+    for (target, peers) in setup.targets.into_iter().zip(peers) {
         let machines = config
             .contexts
             .get(&target.context)
@@ -185,7 +184,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
                 },
             );
         hosts.push(Host {
-            shared,
+            peers,
             next: now + start_delay,
             api,
             interval,
@@ -257,8 +256,8 @@ impl ReviewHandle {
 /// One context and forge host.
 struct Host {
     target: ForgeTarget,
-    /// Other held contexts poll its host too.
-    shared: bool,
+    /// How many other held contexts poll its host, on any machine.
+    peers: usize,
     api: ApiBase,
     interval: Duration,
     requests: ReviewRequests,
@@ -619,7 +618,19 @@ impl Poller {
             finder: &target.context,
         };
         let context = mr_context(&target.host, key.project(), &contexts);
-        let belongs = belongs(&context, &target.context, self.hosts[index].shared);
+        let polled: Vec<Option<&str>> = self
+            .hosts
+            .iter()
+            .enumerate()
+            .filter(|(other, host)| *other != index && host.target.host == target.host)
+            .map(|(_, host)| host.login.as_deref())
+            .collect();
+        let tells = finder_tells(
+            self.hosts[index].login.as_deref(),
+            self.hosts[index].peers,
+            &polled,
+        );
+        let belongs = belongs(&context, &target.context, !tells);
         if belongs == Belongs::Elsewhere {
             debug!(key = %key, other = %context.context(), "MR of another context, not written here");
         }
@@ -662,7 +673,7 @@ impl Poller {
                         unassigned.push(ReviewSyncFailure {
                             key: summary.key.to_string(),
                             error: format!(
-                                "no context for {}/{}: several contexts poll {}; add a match.hosts rule or clone the project",
+                                "no context for {}/{}: other contexts poll {}, maybe with the same account; add a match.hosts rule or clone the project",
                                 target.host,
                                 summary.key.project(),
                                 target.host

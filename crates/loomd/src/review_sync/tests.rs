@@ -606,3 +606,18 @@ fn a_host_that_several_contexts_poll_does_not_choose_the_context_of_an_mr() {
     let clone = loom_forge::MrContext::Clone { context: other };
     assert_eq!(belongs(&clone, &here, false), Belongs::Elsewhere);
 }
+
+#[test]
+fn the_finder_tells_the_context_only_for_tokens_of_distinct_accounts() {
+    // The only context on the host.
+    assert!(finder_tells(Some("me"), 0, &[]));
+    assert!(finder_tells(None, 0, &[]));
+    // Another account.
+    assert!(finder_tells(Some("me"), 1, &[Some("me-at-client")]));
+    // One token, or two tokens of one account.
+    assert!(!finder_tells(Some("me"), 1, &[Some("ME")]));
+    // A login not read yet, or a peer that another machine polls.
+    assert!(!finder_tells(Some("me"), 1, &[None]));
+    assert!(!finder_tells(Some("me"), 2, &[Some("me-at-client")]));
+    assert!(!finder_tells(None, 1, &[Some("me-at-client")]));
+}
