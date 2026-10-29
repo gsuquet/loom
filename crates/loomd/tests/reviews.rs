@@ -32,6 +32,7 @@ use common::{Daemon, ok, request};
 const GITHUB_TOKEN: &str = "fake-github-token-0123";
 const GITLAB_TOKEN: &str = "fake-gitlab-token-4567";
 const V1: &str = "7ebf283bfee25ab48f95c0c55181a4ca66b4c990";
+const V2: &str = "84280c47b6aa128c645b1fbea54aded8b32e8463";
 const MIRROR: &str = "mrs/github-acme%2Fshop%23412";
 
 fn fixture(path: &str) -> String {
@@ -652,6 +653,110 @@ fn mrs_to_review_become_review_tasks_with_a_mirror() {
         (1, 0, 0, 0, 0)
     );
     assert_eq!(files(&sandbox.store("personal")), before);
+
+    daemon.stop();
+}
+
+/// The GitLab MR of `gitlab()` on `head`, with `updated_at` and `state`, and its `ETag`.
+fn gitlab_mr(head: &str, updated_at: &str, state: &str, etag: &str) -> Route {
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["sha"] = json!(head);
+    mr["diff_refs"]["head_sha"] = json!(head);
+    mr["updated_at"] = json!(updated_at);
+    mr["state"] = json!(state);
+    with_etag(mr.to_string(), etag)
+}
+
+fn approvals(approved: bool) -> Route {
+    let mut approvals = fixture_json("gitlab/approve.response.json");
+    approvals["user_has_approved"] = json!(approved);
+    approvals["approved"] = json!(approved);
+    route(approvals.to_string())
+}
+
+fn status(socket: &Path, id: &str) -> Status {
+    task(socket, id).summary.task.unwrap().status
+}
+
+#[test]
+fn a_gitlab_approval_closes_once_a_new_head_reopens_and_a_merge_closes() {
+    const MR: &str = "GET /projects/77/merge_requests/88";
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let id = tasks(&socket, "company-a").tasks[0].id.to_string();
+
+    // My approval on the current head: done.
+    sandbox
+        .gitlab
+        .set(&format!("{MR}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR,
+        gitlab_mr(V2, "2026-10-24T08:00:00.000Z", "opened", "W/\"a\""),
+    );
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Done);
+
+    // A push that keeps my approval (the project does not reset approvals): reopened.
+    sandbox.gitlab.set(
+        MR,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"b\""),
+    );
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Ready);
+
+    // The MR changes again, my approval still shown: it is not a review of the push.
+    sandbox.gitlab.set(
+        MR,
+        gitlab_mr(V3, "2026-10-24T10:00:00.000Z", "opened", "W/\"c\""),
+    );
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Ready);
+
+    // After a restart, the first full read of an unchanged MR writes nothing.
+    daemon.stop();
+    let before = (
+        files(&sandbox.store("company-a")),
+        commits(&sandbox.store("company-a")),
+    );
+    let daemon = sandbox.start();
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (1, 0, 0, 0, 0)
+    );
+    assert_eq!(
+        (
+            files(&sandbox.store("company-a")),
+            commits(&sandbox.store("company-a"))
+        ),
+        before
+    );
+    assert_eq!(status(&socket, &id), Status::Ready);
+
+    // Merged: done.
+    sandbox.gitlab.set(
+        MR,
+        gitlab_mr(V3, "2026-10-24T11:00:00.000Z", "merged", "W/\"d\""),
+    );
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Done);
+    // A closed task of a merged MR is no longer polled.
+    let polled = sandbox.gitlab.requests().len();
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (0, 0, 0, 0, 0)
+    );
+    assert!(
+        !sandbox.gitlab.requests()[polled..]
+            .iter()
+            .any(|request| request.starts_with(MR)),
+        "{:?}",
+        &sandbox.gitlab.requests()[polled..]
+    );
 
     daemon.stop();
 }

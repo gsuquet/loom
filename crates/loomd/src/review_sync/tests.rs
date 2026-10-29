@@ -137,10 +137,21 @@ fn decision_table() {
         (
             Some(Some(Ready)),
             Observation {
-                verdict: Some(sha(V1)),
+                verdict: Some(sha(V2)),
                 ..removed.clone()
             },
             set(Done, Reason::RequestRemoved),
+        ),
+        // Request removed after a verdict on an older head (GitHub drops me when I review, and
+        // the author pushed before the poll): the new head is still to review.
+        (
+            Some(Some(Ready)),
+            Observation {
+                previous_head: Some(sha(V1)),
+                verdict: Some(sha(V1)),
+                ..removed.clone()
+            },
+            Decision::Keep,
         ),
         // Not requested at either poll: no change (the task reopened by a new head stays).
         (
@@ -233,21 +244,52 @@ fn my_last_submitted_review_is_my_github_verdict() {
 fn a_verdict_is_new_once_and_a_reset_approval_stays_remembered() {
     let on_v1 = gitlab_verdict(true, &sha(V1));
     assert_eq!(gitlab_verdict(false, &sha(V1)), None);
-    let (recorded, new) = next_verdict(None, on_v1.clone());
+    let (recorded, new) = next_verdict(None, false, on_v1.clone());
     assert!(new);
     assert_eq!(recorded, on_v1);
     // Seen again: not new.
     assert_eq!(
-        next_verdict(recorded.as_ref(), on_v1.clone()),
+        next_verdict(recorded.as_ref(), true, on_v1.clone()),
         (on_v1.clone(), false)
     );
     // The approval is reset by a push: still remembered.
-    assert_eq!(next_verdict(recorded.as_ref(), None), (on_v1, false));
-    // Approved again on V2: new.
+    assert_eq!(next_verdict(recorded.as_ref(), true, None), (on_v1, false));
+    // Approved again on V2, after the reset: new.
     let on_v2 = gitlab_verdict(true, &sha(V2));
     assert_eq!(
-        next_verdict(recorded.as_ref(), on_v2.clone()),
+        next_verdict(recorded.as_ref(), false, on_v2.clone()),
         (on_v2, true)
+    );
+}
+
+#[test]
+fn a_gitlab_approval_kept_across_pushes_is_not_a_new_verdict() {
+    // A project that does not reset approvals: approved on V1, then pushes to V2 and V3.
+    let v3 = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let on_v1 = gitlab_verdict(true, &sha(V1));
+    let (recorded, _) = next_verdict(None, false, on_v1.clone());
+    for head in [V2, v3] {
+        assert_eq!(
+            next_verdict(recorded.as_ref(), true, gitlab_verdict(true, &sha(head))),
+            (on_v1.clone(), false),
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn a_new_github_review_is_new_even_while_the_last_one_is_shown() {
+    let first = Some(SeenVerdict {
+        sha: sha(V1),
+        id: "R1".to_owned(),
+    });
+    let second = Some(SeenVerdict {
+        sha: sha(V2),
+        id: "R2".to_owned(),
+    });
+    assert_eq!(
+        next_verdict(first.as_ref(), true, second.clone()),
+        (second, true)
     );
 }
 
@@ -368,6 +410,7 @@ fn the_mirror_round_trips_and_keeps_the_description_apart() {
         v: SyncState::VERSION,
         requested: true,
         verdict: None,
+        shown: false,
     };
     let files = mirror(&mr, &versions, None, &state).unwrap();
     let snapshot: serde_json::Value = serde_json::from_slice(&files.mr).unwrap();

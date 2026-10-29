@@ -67,6 +67,9 @@ pub struct SyncState {
     /// My last verdict seen on the forge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<SeenVerdict>,
+    /// The last poll that read my verdicts saw one (a GitLab approval is not reset).
+    #[serde(default)]
+    pub shown: bool,
 }
 
 impl SyncState {
@@ -162,7 +165,8 @@ pub enum Decision {
 /// - No task: one is created for an open MR where I am a requested reviewer.
 /// - Merged: `done`; closed: `cancelled` (a terminal remote state closes the local task).
 /// - Open task: `done` on a new verdict of mine on the current head; my request removed:
-///   `done` when I posted a verdict, otherwise `cancelled`.
+///   `done` when my verdict is on the current head, `cancelled` without a verdict, unchanged
+///   when my verdict is on an older head.
 /// - Done task: a new head reopens it (`ready`), even when the forge removed me from the
 ///   reviewers after my review; so does a new request.
 /// - Cancelled task: a new request reopens it.
@@ -200,12 +204,12 @@ pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision 
             if seen.new_verdict {
                 set(StatusName::Done, Reason::Verdict)
             } else if request_removed {
-                let status = if seen.verdict.is_some() {
-                    StatusName::Done
-                } else {
-                    StatusName::Cancelled
-                };
-                set(status, Reason::RequestRemoved)
+                match &seen.verdict {
+                    Some(sha) if *sha == seen.head => set(StatusName::Done, Reason::RequestRemoved),
+                    // My verdict is on an older head: the new head is still to review.
+                    Some(_) => Decision::Keep,
+                    None => set(StatusName::Cancelled, Reason::RequestRemoved),
+                }
             } else {
                 Decision::Keep
             }
@@ -262,17 +266,28 @@ pub fn gitlab_verdict(user_has_approved: bool, head: &Sha) -> Option<SeenVerdict
     })
 }
 
-/// The verdict to remember after a poll that saw `latest`, and whether it is new: one that
-/// the last poll did not see. A verdict no longer shown (a GitLab approval reset by a push)
-/// stays remembered. Pure.
+/// The verdict to remember after a poll that saw `latest`, and whether it is new. `shown`: the
+/// last poll that read the verdicts saw one.
+///
+/// - The verdict that the last poll showed, still shown, is not new, and keeps the head it was
+///   first seen on: a GitLab approval that a push does not reset is not a review of the push.
+/// - Another verdict (a new GitHub review), or a verdict after none was shown (a GitLab
+///   approval given again after a reset), is new.
+/// - A verdict no longer shown (a GitLab approval reset by a push) stays remembered.
+///
+/// Pure.
 #[must_use]
 pub fn next_verdict(
     recorded: Option<&SeenVerdict>,
+    shown: bool,
     latest: Option<SeenVerdict>,
 ) -> (Option<SeenVerdict>, bool) {
     match latest {
-        Some(latest) if recorded != Some(&latest) => (Some(latest), true),
-        Some(_) | None => (recorded.cloned(), false),
+        Some(latest) if shown && recorded.is_some_and(|recorded| recorded.id == latest.id) => {
+            (recorded.cloned(), false)
+        }
+        Some(latest) => (Some(latest), true),
+        None => (recorded.cloned(), false),
     }
 }
 
@@ -497,7 +512,8 @@ pub struct MrUpdate {
     /// The key of the MR.
     pub key: MrKey,
     /// I am a requested reviewer now: the MR is in the search, or I am in its reviewers.
-    pub requested: bool,
+    /// `None` when the poll cannot tell (an incomplete search): as at the last poll.
+    pub requested: Option<bool>,
     /// The MR, `None` when it did not change since the last poll (304): the mirror holds it.
     pub mr: Option<Mr>,
     /// The versions that the forge lists (GitLab), or the current one (GitHub); empty when
@@ -520,39 +536,45 @@ pub struct MrBatch {
     pub updates: Vec<MrUpdate>,
 }
 
-/// The active Review tasks of `context` whose MR is on `host`, with their key. Pure.
+/// The active Review tasks of `context` whose MR is on `host`, with their key, and whether
+/// the task is closed (`done` or `cancelled`). Pure.
 #[must_use]
 pub fn tracked_reviews(
     rows: &[IndexedTask],
     context: &ContextName,
     host: &str,
-) -> Vec<(TaskId, MrKey)> {
+) -> Vec<(TaskId, MrKey, bool)> {
     rows.iter()
         .filter(|row| row.context == *context && row.location == TaskLocation::Active)
         .filter_map(|row| match &row.state {
             IndexedState::Valid { task, .. } => {
                 let (key, task_host) = review_key(&task.kind, &task.links)?;
-                (task_host.as_deref() == Some(host)).then(|| (row.id.clone(), key))
+                let closed = matches!(
+                    task.status.name(),
+                    Some(StatusName::Done | StatusName::Cancelled)
+                );
+                (task_host.as_deref() == Some(host)).then(|| (row.id.clone(), key, closed))
             }
             IndexedState::Invalid { .. } => None,
         })
         .collect()
 }
 
-/// The Review task of `key` in `context`, with its status (`None`: unknown to this loom), and
-/// whether it is archived (an archived task is never changed). Pure.
+/// The Review task of `key` on `host` in `context`, with its status (`None`: unknown to this
+/// loom), and whether it is archived (an archived task is never changed). Pure.
 #[must_use]
 pub fn find_review(
     rows: &[IndexedTask],
     context: &ContextName,
+    host: &str,
     key: &MrKey,
 ) -> Option<(TaskId, Option<StatusName>, bool)> {
     rows.iter()
         .filter(|row| row.context == *context)
         .find_map(|row| match &row.state {
             IndexedState::Valid { task, .. } => {
-                let (found, _) = review_key(&task.kind, &task.links)?;
-                (found == *key).then(|| {
+                let (found, task_host) = review_key(&task.kind, &task.links)?;
+                (found == *key && task_host.as_deref() == Some(host)).then(|| {
                     (
                         row.id.clone(),
                         task.status.name(),

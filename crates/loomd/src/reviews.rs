@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
@@ -30,7 +31,7 @@ use loom_forge::client::{
     ApiBase, Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient,
     GitlabForge as _, GitlabMr, ReviewRequests, Token,
 };
-use loom_forge::model::{Mr, MrForgeIds, MrKey, MrSummary, Sha, Thread};
+use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, MrSummary, Sha, Thread};
 use loom_forge::{MrContexts, mr_context};
 use loom_repo::ContextRules;
 use loom_store::files::TASKS_DIR;
@@ -75,6 +76,7 @@ enum Request {
 /// The running poller.
 pub struct ReviewPoller {
     requests: mpsc::Sender<Request>,
+    stopping: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -174,7 +176,9 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
         info!(hosts = hosts.len(), "MR polls loaded");
     }
     let (requests, received) = mpsc::channel();
+    let stopping = Arc::new(AtomicBool::new(false));
     let poller = Poller {
+        stopping: Arc::clone(&stopping),
         hosts,
         rules,
         stores: setup.stores,
@@ -190,6 +194,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     Ok((
         ReviewPoller {
             requests: requests.clone(),
+            stopping,
             thread,
         },
         ReviewHandle { requests },
@@ -197,8 +202,9 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
 }
 
 impl ReviewPoller {
-    /// Stops the thread after the poll it runs.
+    /// Stops the thread: a poll that runs stops before its next forge call.
     pub fn stop(self) {
+        self.stopping.store(true, Ordering::Relaxed);
         let _ = self.requests.send(Request::Stop);
         if self.thread.join().is_err() {
             warn!("the review poller thread panicked");
@@ -255,6 +261,8 @@ struct MrCache {
 }
 
 struct Poller {
+    /// Set when loomd stops: a poll stops before its next forge call.
+    stopping: Arc<AtomicBool>,
     hosts: Vec<Host>,
     rules: ContextRules,
     stores: BTreeMap<ContextName, PathBuf>,
@@ -302,9 +310,24 @@ struct Fetched {
     updates: Vec<MrUpdate>,
     other_context: usize,
     failed: Vec<ReviewSyncFailure>,
+    /// The keys of the MRs without a Review task.
+    untracked: Vec<String>,
 }
 
 impl Poller {
+    fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::Relaxed)
+    }
+
+    /// Stops a poll when loomd stops.
+    fn go_on(&self) -> Result<(), Stopped> {
+        if self.stopping() {
+            Err(Stopped::Other("loomd is stopping".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+
     fn run(mut self, received: &mpsc::Receiver<Request>) {
         loop {
             let wait = self
@@ -322,6 +345,9 @@ impl Poller {
                     let _span = info_span!(parent: &parent, "reviews.sync").entered();
                     let mut forges = Vec::new();
                     for index in 0..self.hosts.len() {
+                        if self.stopping() {
+                            break;
+                        }
                         if context
                             .as_ref()
                             .is_none_or(|context| *context == self.hosts[index].target.context)
@@ -334,6 +360,9 @@ impl Poller {
                 Ok(Request::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => {
                     for index in 0..self.hosts.len() {
+                        if self.stopping() {
+                            return;
+                        }
                         if self.hosts[index].next <= Instant::now() {
                             let _ = self.poll(index);
                         }
@@ -415,7 +444,13 @@ impl Poller {
             }
         };
         match fetched {
-            Ok(fetched) => self.apply(index, fetched, started),
+            Ok(mut fetched) => {
+                for failure in &mut fetched.failed {
+                    failure.error = token.redact(&failure.error);
+                    warn!(key = %failure.key, error = %failure.error, "cannot poll an MR, its mirror keeps its last snapshot");
+                }
+                self.apply(index, fetched, started)
+            }
             Err(stopped) => self.stopped(index, stopped, &token),
         }
     }
@@ -443,8 +478,12 @@ impl Poller {
         let mut failed = fetched.failed;
         failed.extend(applied.failed);
         host.last_success = Some(started);
-        // An MR that failed before its task exists is listed again only from the same time.
-        if failed.is_empty() {
+        // An MR that failed before its task exists is listed again only from the same time; an
+        // MR with a task is polled one by one anyway.
+        if !failed
+            .iter()
+            .any(|failure| fetched.untracked.contains(&failure.key))
+        {
             host.updated_after = Timestamp::from_unix_secs(
                 started
                     .unix_secs()
@@ -513,6 +552,13 @@ impl Poller {
         Ok(login)
     }
 
+    /// The MR of the mirror of task `id`, in the store of host `index`.
+    fn mirror_mr(&self, index: usize, id: &loom_api::TaskId, key: &MrKey) -> Option<Mr> {
+        let root = self.stores.get(&self.hosts[index].target.context)?;
+        let dir = mirror_dir(&root.join(TASKS_DIR).join(id.as_str()), key);
+        read_mr(&std::fs::read(dir.join(MR_FILE)).ok()?, "")
+    }
+
     /// Whether an MR found by the search of host `index` belongs to its context.
     fn ours(&self, index: usize, key: &MrKey, repos: &[loom_api::RepoSummary]) -> bool {
         let target = &self.hosts[index].target;
@@ -552,8 +598,8 @@ impl Poller {
             }
             let task = tracked
                 .iter()
-                .find(|(_, key)| *key == summary.key)
-                .map(|(id, _)| id.clone());
+                .find(|(_, key, _)| *key == summary.key)
+                .map(|(id, _, _)| id.clone());
             // A tracked MR stays in its task's context: a task does not move.
             if task.is_none() && !self.ours(index, &summary.key, &repos) {
                 other_context += 1;
@@ -561,10 +607,19 @@ impl Poller {
             }
             keys.push((summary.key.clone(), Some(summary), task));
         }
-        for (id, key) in tracked {
-            if !keys.iter().any(|(known, _, _)| *known == key) {
-                keys.push((key, None, Some(id)));
+        for (id, key, closed) in tracked {
+            if keys.iter().any(|(known, _, _)| *known == key) {
+                continue;
             }
+            // A closed task of a merged or closed MR has nothing more to sync until archived.
+            if closed
+                && self
+                    .mirror_mr(index, &id, &key)
+                    .is_some_and(|mr| mr.state != MrState::Open)
+            {
+                continue;
+            }
+            keys.push((key, None, Some(id)));
         }
         Ok((keys, other_context))
     }
@@ -575,15 +630,24 @@ impl Poller {
         if page.incomplete_results {
             debug!("GitHub search results are incomplete");
         }
+        let incomplete = page.incomplete_results;
         let (keys, other_context) = self.keys(index, page.items)?;
         let mut fetched = Fetched {
             updates: Vec::new(),
             other_context,
             failed: Vec::new(),
+            untracked: untracked(&keys),
         };
         for (key, found, _) in keys {
+            self.go_on()?;
+            // Missing from an incomplete search: unknown.
+            let found = match found {
+                Some(_) => Some(true),
+                None if incomplete => None,
+                None => Some(false),
+            };
             let cache = self.hosts[index].mrs.entry(key.dir_name()).or_default();
-            match github_update(client, &key, found.is_some(), &login, cache) {
+            match github_update(client, &key, found, &login, cache) {
                 Ok(update) => fetched.updates.push(update),
                 Err(error) if stops_the_host(&error) => return Err(error.into()),
                 Err(error) => {
@@ -603,14 +667,11 @@ impl Poller {
             updates: Vec::new(),
             other_context,
             failed: Vec::new(),
+            untracked: untracked(&keys),
         };
         for (key, found, task) in keys {
-            let mirror_project = || {
-                let root = self.stores.get(&self.hosts[index].target.context)?;
-                let dir = mirror_dir(&root.join(TASKS_DIR).join(task.as_ref()?.as_str()), &key);
-                let mr = read_mr(&std::fs::read(dir.join(MR_FILE)).ok()?, "")?;
-                project_of(&mr)
-            };
+            self.go_on()?;
+            let mirror_project = || project_of(&self.mirror_mr(index, task.as_ref()?, &key)?);
             let project_id = self.hosts[index]
                 .mrs
                 .get(&key.dir_name())
@@ -630,7 +691,7 @@ impl Poller {
                 project_id,
                 iid: key.number(),
             };
-            match gitlab_update(client, &key, mr, found.is_some(), &login, cache) {
+            match gitlab_update(client, &key, mr, Some(found.is_some()), &login, cache) {
                 Ok(update) => fetched.updates.push(update),
                 Err(error) if stops_the_host(&error) => return Err(error.into()),
                 Err(error) => {
@@ -643,8 +704,25 @@ impl Poller {
     }
 }
 
+/// The keys of the MRs of `keys` without a Review task.
+fn untracked(keys: &[Key]) -> Vec<String> {
+    keys.iter()
+        .filter(|(_, _, task)| task.is_none())
+        .map(|(key, _, _)| key.to_string())
+        .collect()
+}
+
+/// Whether I am a requested reviewer: `found` by the search (`None`: the search cannot tell),
+/// or `direct`ly in the reviewers.
+const fn requested(found: Option<bool>, direct: bool) -> Option<bool> {
+    match found {
+        Some(true) => Some(true),
+        _ if direct => Some(true),
+        other => other,
+    }
+}
+
 fn failure(key: &MrKey, error: &ForgeError) -> ReviewSyncFailure {
-    warn!(%key, %error, "cannot poll an MR, its mirror keeps its last snapshot");
     ReviewSyncFailure {
         key: key.to_string(),
         error: error.to_string(),
@@ -676,7 +754,7 @@ fn is_reviewer(mr: &Mr, login: &str) -> bool {
 fn github_update(
     client: &GithubClient,
     key: &MrKey,
-    found: bool,
+    found: Option<bool>,
     login: &str,
     cache: &mut MrCache,
 ) -> Result<MrUpdate, ForgeError> {
@@ -695,7 +773,7 @@ fn github_update(
             cache.threads_at = Some(Instant::now());
             Ok(MrUpdate {
                 key: key.clone(),
-                requested: found || cache.direct,
+                requested: requested(found, cache.direct),
                 versions: vec![mr.version.clone()],
                 mr: Some(mr),
                 threads: Some(threads),
@@ -712,7 +790,7 @@ fn github_update(
             };
             Ok(MrUpdate {
                 key: key.clone(),
-                requested: found || cache.direct,
+                requested: requested(found, cache.direct),
                 mr: None,
                 versions: Vec::new(),
                 threads,
@@ -727,7 +805,7 @@ fn gitlab_update(
     client: &GitlabClient,
     key: &MrKey,
     reference: GitlabMr,
-    found: bool,
+    found: Option<bool>,
     login: &str,
     cache: &mut MrCache,
 ) -> Result<MrUpdate, ForgeError> {
@@ -743,7 +821,7 @@ fn gitlab_update(
             cache.head = Some(head.clone());
             Ok(MrUpdate {
                 key: key.clone(),
-                requested: found || cache.direct,
+                requested: requested(found, cache.direct),
                 mr: Some(mr),
                 versions,
                 threads: Some(threads),
@@ -761,7 +839,7 @@ fn gitlab_update(
             };
             Ok(MrUpdate {
                 key: key.clone(),
-                requested: found || cache.direct,
+                requested: requested(found, cache.direct),
                 mr: None,
                 versions: Vec::new(),
                 threads,

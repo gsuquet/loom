@@ -227,6 +227,6 @@ A Review task of an MR has a copy of the MR in `<store>/tasks/<id>/mrs/<provider
 | `description.md` | The description of the MR, as the forge gives it. |
 | `versions.json` | Each version (head) seen, oldest first: `head_sha`, `base_sha`, `merge_base` (optional), `forge_version_id` (GitLab), `created_at` (optional), `first_seen` (the time of the poll that saw it first). |
 | `threads.json` | Each review thread and general comment of the MR, at the last pull of the threads, sorted. A thread has `id`, `anchor` (absent for a general comment), `resolved`, `outdated` and `comments`. |
-| `sync.json` | The state of the sync: `v` (`1`), `requested` (I was a requested reviewer at the last poll), `verdict` (optional: `sha` and `id` of my last review with a verdict). |
+| `sync.json` | The state of the sync: `v` (`1`), `requested` (I was a requested reviewer at the last poll), `verdict` (optional: `sha` and `id` of my last verdict; for GitLab, `id` is `approved` and `sha` is the head of the poll that first saw the approval), `shown` (the last poll that read my verdicts saw one). |
 
 The files are JSON with two-space indentation and a final newline, except `description.md`. `loomd` writes a file only when its content changes, with an atomic rename. A change of the files of a task gives one commit of the store per poll: the message of its events (for example `status(<id>): done`), otherwise `mr(<id>): <key> mirror updated`. How the sync uses these files: [review sync](../explanation/review-sync.md).

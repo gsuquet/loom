@@ -23,7 +23,9 @@
 - Done (domain model): a verdict posted for the current head SHA. A new head after my verdict reopens the task (`ready`), with an event.
 - MR merged or closed: the task is `done` or `cancelled` with an event (a terminal remote state closes the local task). My review request removed: `cancelled`, unless I already posted a verdict (then `done`).
 - An MR I am asked to review again (GitHub re-request, GitLab request added again) reopens the task. A GitLab reviewer state reset without a new request is not seen in v0.4 (the reviewer states are not read).
-- Verdict: GitHub, my latest submitted review that approves, requests changes or comments, on a commit; GitLab, my approval of the current head (`approvals.user_has_approved`): a comment without approval is not a verdict. The last verdict is kept in `sync.json`, so an approval reset by a push is not forgotten.
+- Verdict: GitHub, my latest submitted review that approves, requests changes or comments, on a commit (a new review ID is a new verdict); GitLab, my approval (`approvals.user_has_approved`), dated to the head of the poll that first shows it: an approval still shown after a push is not a new verdict (projects that do not reset approvals), one shown again after a reset is. A comment without approval is not a verdict. The last verdict is kept in `sync.json`, so an approval reset by a push is not forgotten.
+- A request removed after a verdict on an older head (I reviewed, the author pushed before the poll) leaves the task open: the new head is still to review. A task created for an MR whose current head already has my verdict (GitLab lists approved MRs) is closed at once.
+- An incomplete GitHub search does not count as a removed request: an MR missing from it keeps the request state of the last poll. A `done` or `cancelled` task of a merged or closed MR is not polled any more.
 
 ## MR mirror
 
@@ -35,7 +37,7 @@ tasks/<id>/mrs/<provider>-<key>/       # key with every byte but [A-Za-z0-9_-] a
   description.md     # MR description, read-only
   versions.json      # every head SHA seen: SHA, base SHA, merge base, first seen, forge version ID (GitLab)
   threads.json       # snapshot of every thread and general comment, normalized, rewritten on each pull
-  sync.json          # sync state: requested at the last poll, last verdict seen (SHA, review ID)
+  sync.json          # sync state: requested at the last poll, last verdict seen (SHA, review ID), verdict shown at the last read
   diffs/<sha>.patch  # diff of a version I opened or reviewed (merge base..head)
   review.json        # mine: draft comments, replies, resolves, verdict, viewed marks, last reviewed SHA, publish progress
 ```

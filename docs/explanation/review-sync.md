@@ -15,7 +15,7 @@ Review requests come from many forges, many projects and many clients. Each forg
 Each poll reads two sets of MRs:
 
 - **The MRs to review.** GitHub: the search `is:pr is:open archived:false review-requested:@me` (requests to you and to your teams), or `user-review-requested:@me` when `review_requests = "direct"`. GitLab: the open MRs with `scope=reviews_for_me`. From the second poll on, GitLab lists only the MRs updated since the start of the last poll that succeeded, minus one minute.
-- **The MRs of the open Review tasks**, one by one. This set is necessary: GitHub removes you from the requested reviewers when you submit a review, and the GitLab list does not show a request that was removed. If `loomd` read only the search, a new head after your review would never open the task again.
+- **The MRs of the Review tasks**, one by one, except a `done` or `cancelled` task of a merged or closed MR. This set is necessary: GitHub removes you from the requested reviewers when you submit a review, and the GitLab list does not show a request that was removed. If `loomd` read only the search, a new head after your review would never open the task again.
 
 ## The context of an MR
 
@@ -33,11 +33,12 @@ For the same reason, `loomd` refuses to move a Review task to another context. T
 
 | The poll sees | Task status before | Task status after |
 | --- | --- | --- |
-| An open MR where you are requested, and no task | (none) | `inbox`, new task |
+| An open MR where you are requested, and no task | (none) | `inbox`, new task; `done` at once if your verdict is on the current head |
 | The MR is merged | open | `done` |
 | The MR is closed | open | `cancelled` |
 | Your verdict (approve, request changes, comment) on the current head | open | `done` |
-| Your request is removed, after your verdict | open | `done` |
+| Your request is removed, after your verdict on the current head | open | `done` |
+| Your request is removed, after your verdict on an older head | open | no change: the new head is still to review |
 | Your request is removed, with no verdict | open | `cancelled` |
 | A new head after the head of the last poll | `done` | `ready` |
 | You are requested again (requested now, not at the last poll) | `done`, `cancelled` | `ready` |
@@ -46,7 +47,13 @@ An open status is `inbox`, `ready`, `active` or `waiting`. Each status change ha
 
 The sync compares two polls, not the state of one poll. A request that is removed is a change from "requested" to "not requested". Thus, if you close a task by hand, the next poll does not open it again because you are still requested. Only a new head or a new request opens it again.
 
-GitHub gives the verdict from the reviews of the MR: your last review that approves, requests changes or comments, on a commit. GitLab gives the verdict from the approvals: your approval of the current head. `loomd` keeps the last verdict in `sync.json`. Thus, when GitLab resets the approvals after a push, the task still knows that a verdict was given.
+GitHub gives the verdict from the reviews of the MR: your last review that approves, requests changes or comments, on a commit. A new review is a new verdict.
+
+GitLab gives the verdict from the approvals. GitLab does not tell on which head you approved. Thus, `loomd` takes the head of the poll that first sees your approval. An approval that stays after a push is not a new verdict: some projects do not reset the approvals on a push, and you did not review the push. An approval that comes back after a reset is a new verdict.
+
+`loomd` keeps the last verdict in `sync.json`. Thus, when GitLab resets the approvals after a push, the task still knows that a verdict was given.
+
+When the search of GitHub is incomplete, an MR that is not in the results keeps the request state of the last poll. Thus, an incomplete search does not cancel a task.
 
 ## What the sync changes
 
@@ -65,9 +72,10 @@ The MR mirror is in the task directory, in `mrs/<provider>-<key>/`. `loomd` owns
 
 A poll writes nothing when nothing changed:
 
-- `loomd` reads each MR with the `ETag` of its last read. A `304 Not Modified` costs no request of the rate limit and gives no new data.
+- `loomd` reads each MR with the `ETag` of its last read. A `304 Not Modified` gives no new data. On GitHub, it also costs no request of the rate limit.
 - When an MR changed, `loomd` reads its reviews (GitHub) or its versions and approvals (GitLab), and its threads.
 - The threads are also read again one hour after their last read, because a resolved thread does not always change the MR.
+- A `done` or `cancelled` task of a merged or closed MR is not read again. Only the archive moves it.
 - `loomd` writes a file only when its bytes change, with an atomic rename.
 - Each task that changed gets one commit of its store per poll. The message is the message of its events, otherwise `mr(<id>): <key> mirror updated`.
 
@@ -76,11 +84,12 @@ A poll writes nothing when nothing changed:
 ## When a forge fails
 
 - A host that does not answer, or that refuses the token, stops its own poll only. The other hosts go on.
-- The mirrors keep their last snapshot. The answer gives the error and the time of the last poll that succeeded.
+- The mirrors keep their last snapshot. The answer of `loom review sync` and the log of `loomd` give the error. The answer also gives the time of the last poll that succeeded. `loomd` keeps this time in memory only: after a restart, it is empty until a poll succeeds.
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.
 - A failure of one MR (for example, a `404`) stops only that MR. Its mirror keeps its snapshot, and the next poll reads it in full.
+- When `loomd` stops, a poll that runs stops before its next forge call.
 
 ## Limits
 
