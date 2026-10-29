@@ -406,6 +406,15 @@ fn an_mr_key_resolves_to_its_review_task() {
         (status, error.code),
         (StatusCode::NOT_FOUND, ErrorCode::NotFound)
     );
+    // An archived task of the same MR: the active one is the alias.
+    let mut archived = rows.clone();
+    let mut old = review("r0000000", "work", "acme/shop#412");
+    old.location = TaskLocation::Archived(2025);
+    archived.push(old);
+    assert_eq!(
+        resolve("acme/shop#412", &archived).unwrap().id,
+        id("r1000000")
+    );
     let mut twice = rows;
     twice.push(review("r3000000", "home", "acme/shop#412"));
     let (status, error) = resolve("acme/shop#412", &twice).unwrap_err();

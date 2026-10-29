@@ -34,8 +34,8 @@ For the same reason, `loomd` refuses to move a Review task to another context. T
 | The poll sees | Task status before | Task status after |
 | --- | --- | --- |
 | An open MR where you are requested, and no task | (none) | `inbox`, new task. No task when your verdict is on the current head: there is nothing to review. |
-| The MR is merged | open | `done` |
-| The MR is closed | open | `cancelled` |
+| The MR is merged (open at the last poll) | open | `done` |
+| The MR is closed (open at the last poll) | open | `cancelled` |
 | Your verdict (approve, request changes, comment) on the current head | open | `done` |
 | Your request is removed, after your verdict on the current head | open | `done` |
 | Your request is removed, after your verdict on an older head | open | no change: the new head is still to review |
@@ -96,6 +96,8 @@ A poll writes nothing when nothing changed:
 
 - GitLab: only the approvals give a verdict. A comment without an approval is not a verdict, and a reset of the state of a reviewer is not a new request.
 - GitHub: a request to one of your teams counts as a request to you, unless `review_requests = "direct"`.
-- An archived Review task is not changed. If the MR asks for your review after the archive, the poll creates a new task.
-- GitHub: a new request on a head that you already reviewed, with no push, does not open the task again.
+- An archived Review task is not changed. After the archive, a new task comes only from a new head or a new request, against what the last poll saw.
+- A review and a new request that both occur between two polls are not seen as a new request.
+- GitLab, without a task: your approval is taken as a verdict on each new head. Thus, an MR that you approved before the first poll gets no task, even after a push, in a project that keeps the approvals.
+- An MR that the forge no longer shows (deleted project, lost access) fails at each poll until you close its task.
 - `loom review sync` exits with status 0 when a forge limits the rate: the answer gives the time of the reset.

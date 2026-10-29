@@ -249,12 +249,22 @@ pub fn resolve<'a>(prefix: &str, rows: &'a [IndexedTask]) -> Result<&'a IndexedT
     // An MR key (`acme/shop#412`, `company-a/checkout!88`) is never an ID prefix: it is the
     // alias of its Review task.
     if let Ok(key) = MrKey::parse(prefix) {
-        let mut found = rows.iter().filter(|row| match &row.state {
-            IndexedState::Valid { task, .. } => {
-                review_key(&task.kind, &task.links).is_some_and(|(alias, _)| alias == key)
-            }
-            IndexedState::Invalid { .. } => false,
-        });
+        let matches: Vec<&IndexedTask> = rows
+            .iter()
+            .filter(|row| match &row.state {
+                IndexedState::Valid { task, .. } => {
+                    review_key(&task.kind, &task.links).is_some_and(|(alias, _)| alias == key)
+                }
+                IndexedState::Invalid { .. } => false,
+            })
+            .collect();
+        // The active task, after an archive: a later request of the MR gets a new task.
+        let active: Vec<&IndexedTask> = matches
+            .iter()
+            .copied()
+            .filter(|row| row.location == TaskLocation::Active)
+            .collect();
+        let mut found = if active.is_empty() { matches } else { active }.into_iter();
         return match (found.next(), found.next()) {
             (Some(row), None) => Ok(row),
             (None, _) => Err((

@@ -14,7 +14,7 @@ use loom_core::{Actor, Origin};
 use loom_forge::model::{Mr, MrKey};
 use loom_store::IndexedTask;
 use loom_store::atomic::write_file;
-use loom_store::files::{TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
+use loom_store::files::{ARCHIVE_DIR, TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
 use loom_store::port::TaskLocation;
 use loomd::backup::commit_message;
 use loomd::review_sync::{
@@ -102,10 +102,20 @@ impl Worker {
             .get(context)
             .ok_or_else(|| format!("no store for context `{context}`"))?
             .clone();
-        let found = find_review(rows, context, &batch.host, &update.key);
-        let previous = match &found {
-            Some((id, _)) => read_previous(&mirror_dir(&task_dir(&root, id), &update.key)),
-            None => Previous::default(),
+        let (found, previous) = match find_review(rows, context, &batch.host, &update.key) {
+            Some((id, status, TaskLocation::Active)) => {
+                let previous = read_previous(&mirror_dir(&task_dir(&root, &id), &update.key));
+                (Some((id, status)), previous)
+            }
+            // What the poll saw before the archive: a new task needs a new head or request.
+            Some((id, _, TaskLocation::Archived(year))) => {
+                let dir = root
+                    .join(ARCHIVE_DIR)
+                    .join(format!("{year:04}"))
+                    .join(id.as_str());
+                (None, read_previous(&mirror_dir(&dir, &update.key)))
+            }
+            None => (None, Previous::default()),
         };
         let Some(mr) = update.mr.clone().or_else(|| previous.mr.clone()) else {
             // A 304 without a mirror: nothing to compare with until the next full read.

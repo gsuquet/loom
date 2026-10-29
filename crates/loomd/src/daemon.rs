@@ -174,17 +174,6 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     )
     .wrap_err("cannot start the task store")?;
     let schedule_thread = schedules::start(&config, &stores.held, &machine, task_handle.clone())?;
-    let (review_poller, review_handle) = reviews::start(
-        &config,
-        reviews::Setup {
-            targets: forges.targets.clone(),
-            stores: store_paths,
-            machine: machine.clone(),
-            user_home,
-            resolver: Arc::clone(&forges.resolver),
-            tasks: task_handle.clone(),
-        },
-    )?;
     let (sync_thread, sync_handle) = store_sync::start(
         store_sync::Stores {
             machine: machine.as_str().to_owned(),
@@ -194,6 +183,17 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         config.tasks.sync_interval.get(),
         task_handle.clone(),
         children,
+    )?;
+    let (review_poller, review_handle) = reviews::start(
+        &config,
+        reviews::Setup {
+            targets: forges.targets.clone(),
+            stores: store_paths,
+            machine,
+            user_home,
+            resolver: Arc::clone(&forges.resolver),
+            tasks: task_handle.clone(),
+        },
     )?;
 
     let base = initial_status(started_at, &layout);

@@ -164,12 +164,14 @@ pub enum Decision {
     },
 }
 
-/// What a poll does with the Review task of an MR, whose status is `task` (`None`: no task;
-/// `Some(None)`: a status unknown to this version of loom). Pure.
+/// What a poll does with the Review task of an MR, whose status is `task` (`None`: no active
+/// task; `Some(None)`: a status unknown to this version of loom). Pure.
 ///
 /// - No task: one is created for an open MR where I am a requested reviewer, unless my verdict
-///   is on its current head.
-/// - Merged: `done`; closed: `cancelled` (a terminal remote state closes the local task).
+///   is on its current head. When an archived task left a mirror, only a new head or a new
+///   request creates one.
+/// - Merged: `done`; closed: `cancelled` (a terminal remote state closes the local task), when
+///   the last poll saw the MR open.
 /// - Open task: `done` on a new verdict of mine on the current head; my request removed:
 ///   `done` when my verdict is on the current head, `cancelled` without a verdict, unchanged
 ///   when my verdict is on an older head.
@@ -183,9 +185,16 @@ pub enum Decision {
 #[must_use]
 pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision {
     let on_head = seen.verdict.as_ref() == Some(&seen.head);
+    let requested_again = seen.requested && seen.was_requested == Some(false);
     let Some(status) = task else {
+        // The mirror of an archived task: only a new head or a new request is new.
+        let new = seen
+            .previous_head
+            .as_ref()
+            .is_none_or(|previous| *previous != seen.head)
+            || requested_again;
         // An MR whose current head I already reviewed has nothing for me to do.
-        return if seen.state == MrState::Open && seen.requested && !on_head {
+        return if seen.state == MrState::Open && seen.requested && !on_head && new {
             Decision::Create
         } else {
             Decision::Ignore
@@ -200,13 +209,14 @@ pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision 
         status,
         StatusName::Inbox | StatusName::Ready | StatusName::Active | StatusName::Waiting
     );
+    // A close on the forge is an edge too: a task that I reopen by hand stays open.
+    let changed = seen.previous_state != Some(seen.state);
     match seen.state {
-        MrState::Merged if open => return set(StatusName::Done, Reason::Merged),
-        MrState::Closed if open => return set(StatusName::Cancelled, Reason::Closed),
+        MrState::Merged if open && changed => return set(StatusName::Done, Reason::Merged),
+        MrState::Closed if open && changed => return set(StatusName::Cancelled, Reason::Closed),
         MrState::Merged | MrState::Closed => return Decision::Keep,
         MrState::Open => {}
     }
-    let requested_again = seen.requested && seen.was_requested == Some(false);
     let request_removed = !seen.requested && seen.was_requested == Some(true);
     match status {
         StatusName::Inbox | StatusName::Ready | StatusName::Active | StatusName::Waiting => {
@@ -573,24 +583,30 @@ pub fn tracked_reviews(
         .collect()
 }
 
-/// The active Review task of `key` on `host` in `context`, with its status (`None`: unknown to
-/// this loom). An archived task is never changed: a new request gets a new task. Pure.
+/// The Review task of `key` on `host` in `context`: the active one, else the last archived one.
+///
+/// It comes with its status (`None`: unknown to this loom) and its location. An archived task
+/// is never changed: its mirror only tells what the last poll saw. Pure.
 #[must_use]
 pub fn find_review(
     rows: &[IndexedTask],
     context: &ContextName,
     host: &str,
     key: &MrKey,
-) -> Option<(TaskId, Option<StatusName>)> {
+) -> Option<(TaskId, Option<StatusName>, TaskLocation)> {
     rows.iter()
-        .filter(|row| row.context == *context && row.location == TaskLocation::Active)
-        .find_map(|row| match &row.state {
+        .filter(|row| row.context == *context)
+        .filter_map(|row| match &row.state {
             IndexedState::Valid { task, .. } => {
                 let (found, task_host) = review_key(&task.kind, &task.links)?;
                 (found == *key && task_host.as_deref() == Some(host))
-                    .then(|| (row.id.clone(), task.status.name()))
+                    .then(|| (row.id.clone(), task.status.name(), row.location))
             }
             IndexedState::Invalid { .. } => None,
+        })
+        .max_by_key(|(_, _, location)| match location {
+            TaskLocation::Active => u32::MAX,
+            TaskLocation::Archived(year) => u32::from(*year),
         })
 }
 

@@ -86,12 +86,30 @@ fn decision_table() {
     // (task status, observation, decision)
     let table: Vec<(Option<Option<StatusName>>, Observation, Decision)> = vec![
         // Create: an open MR where I am requested, without a task.
-        (None, seen(), Decision::Create),
         (
             None,
             Observation {
                 previous_head: None,
                 was_requested: None,
+                previous_state: None,
+                ..seen()
+            },
+            Decision::Create,
+        ),
+        // The mirror of an archived task: a new task only on a new head or a new request.
+        (None, seen(), Decision::Ignore),
+        (
+            None,
+            Observation {
+                previous_head: Some(sha(V1)),
+                ..seen()
+            },
+            Decision::Create,
+        ),
+        (
+            None,
+            Observation {
+                was_requested: Some(false),
                 ..seen()
             },
             Decision::Create,
@@ -244,7 +262,34 @@ fn decision_table() {
             closed.clone(),
             set(Cancelled, Reason::Closed),
         ),
-        (Some(Some(Cancelled)), merged, Decision::Keep),
+        (Some(Some(Cancelled)), merged.clone(), Decision::Keep),
+        // Closed on the forge at the last poll already: a task that I reopened by hand stays.
+        (
+            Some(Some(Ready)),
+            Observation {
+                previous_state: Some(MrState::Merged),
+                ..merged
+            },
+            Decision::Keep,
+        ),
+        (
+            Some(Some(Active)),
+            Observation {
+                previous_state: Some(MrState::Closed),
+                ..closed.clone()
+            },
+            Decision::Keep,
+        ),
+        // Without a mirror, a merged MR closes its open task.
+        (
+            Some(Some(Inbox)),
+            Observation {
+                previous_state: None,
+                state: MrState::Merged,
+                ..seen()
+            },
+            set(Done, Reason::Merged),
+        ),
         (Some(Some(Done)), closed, Decision::Keep),
         // A status of a newer loom: read-only.
         (Some(None), seen(), Decision::Keep),
