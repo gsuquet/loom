@@ -21,7 +21,7 @@ use loomd::backup::commit_message;
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
     SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror,
-    mirror_dir, new_review_task, next_verdict, read_mr, review_key,
+    mirror_dir, new_review_task, next_verdict, read_mr, review_key, url_host,
 };
 use tracing::{info, info_span, warn};
 
@@ -139,16 +139,7 @@ impl Worker {
                 return Ok(None);
             }
             (Decision::Create, _) => {
-                // A task that the index cannot read (a broken hand edit), or whose link names
-                // another host, may hold this MR already: never a second task.
-                if let Some(holder) = mirror_holder(&root, &update.key, |holder| {
-                    other_host_review(rows, holder, &update.key, &batch.host)
-                }) {
-                    return Err(format!(
-                        "task `{holder}` holds a mirror of this MR but is not its readable Review task on {}: fix or remove it",
-                        batch.host
-                    ));
-                }
+                can_create(&root, rows, batch, &mr)?;
                 let task = self
                     .tasks
                     .create(
@@ -268,6 +259,30 @@ fn observe(mr: &Mr, previous: &Previous, update: &MrUpdate) -> (Observation, Syn
         shown,
     };
     (observation, state)
+}
+
+/// Whether a Review task of `mr` can be created in the store at `root`: never a second task.
+fn can_create(root: &Path, rows: &[IndexedTask], batch: &MrBatch, mr: &Mr) -> Result<(), String> {
+    // The task is found again by the host of its link: a web URL on another host would give a
+    // new task at each poll.
+    let web_host = url_host(&mr.web_url);
+    if web_host.as_deref() != Some(batch.host.as_str()) {
+        return Err(format!(
+            "the web URL of the MR is on {}, not on the forge host {}: no Review task",
+            web_host.as_deref().unwrap_or("no host"),
+            batch.host
+        ));
+    }
+    // A task that the index cannot read (a broken hand edit) may hold this MR already.
+    let holder = mirror_holder(root, &mr.key, |holder| {
+        other_host_review(rows, holder, &mr.key, &batch.host)
+    });
+    holder.map_or(Ok(()), |holder| {
+        Err(format!(
+            "task `{holder}` holds a mirror of this MR but is not its readable Review task on {}: fix or remove it",
+            batch.host
+        ))
+    })
 }
 
 /// The active task of the store at `root` that holds a mirror of `key`, if one does, except

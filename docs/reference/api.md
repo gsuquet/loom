@@ -264,9 +264,9 @@ A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to a
 | Schedule | 30 s after the start, then every `[forges."<host>"] poll_interval` (default 5 min), with ±10 % at random. |
 | GitHub calls | `GET <api>/user` once, then `GET /search/issues` (`review-requested:@me`, or `user-review-requested:@me` when `review_requests = "direct"`). Then, for each MR found and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /repos/<project>/pulls/<n>` with `If-None-Match`. When the MR changed: its reviews, its review threads (GraphQL) and its comments. |
 | GitLab calls | `GET <api>/user` once, then `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` from the second poll. Then, for each MR listed and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /projects/<id>/merge_requests/<iid>` with `If-None-Match`. When the MR changed: its versions, its approvals and its discussions. |
-| Threads | When the MR changed, and at most one hour after the last pull of the threads. |
+| Threads | When the MR changed, and at most one hour after the last pull of the threads. The hourly pull also reads my verdict (GitHub reviews, GitLab approvals). |
 | Rate limit | `429`, or `403` with no remaining requests: the host is not polled until the reset. Other hosts go on. |
-| Failures | A host that does not answer, or that refuses the token, stops its poll: its mirrors keep their last snapshot. The next poll waits 2, then 4, then 8 times the interval, never more. A failure of one MR stops only that MR. When `loomd` stops, a poll stops before its next forge call. |
+| Failures | A host that does not answer, or that refuses the token, stops its poll: its mirrors keep their last snapshot. The next poll waits 2, then 4, then 8 times the interval, never more. A failure of one MR stops only that MR. When a failure of one MR stops the host, the MRs read before it are applied. When `loomd` stops, a poll stops before its next forge call. |
 | Writes | The task thread writes the Review tasks and the mirrors. A file is written only when its content changes. Each task that changed gets one commit per poll. |
 | Secrets | The answer, the logs and the traces never contain the token. |
 

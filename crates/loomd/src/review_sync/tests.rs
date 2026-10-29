@@ -114,6 +114,16 @@ fn decision_table() {
             },
             Decision::Create,
         ),
+        // A new request after the archive, on a head that I reviewed: a new task.
+        (
+            None,
+            Observation {
+                was_requested: Some(false),
+                verdict: Some(sha(V2)),
+                ..seen()
+            },
+            Decision::Create,
+        ),
         // Ignore: my verdict is already on the current head (GitLab lists approved MRs too).
         (
             None,

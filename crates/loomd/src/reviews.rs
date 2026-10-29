@@ -51,7 +51,7 @@ use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::{Span, debug, info, info_span, warn};
 
-use crate::tasks::TaskHandle;
+use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
 
 /// An MR to read: its key, its summary when the search found it, and its Review task.
@@ -312,6 +312,8 @@ struct Fetched {
     failed: Vec<ReviewSyncFailure>,
     /// The keys of the MRs without a Review task.
     untracked: Vec<String>,
+    /// Why the poll stopped before its last MR: the MRs read before are applied all the same.
+    stopped: Option<Stopped>,
 }
 
 impl Poller {
@@ -449,41 +451,52 @@ impl Poller {
                     failure.error = token.redact(&failure.error);
                     warn!(key = %failure.key, error = %failure.error, "cannot poll an MR, its mirror keeps its last snapshot");
                 }
-                self.apply(index, fetched, started)
+                match fetched.stopped.take() {
+                    // One MR that stops the host does not hold back the MRs read before it.
+                    Some(stopped) => {
+                        let _ = self.hand_over(index, fetched.updates);
+                        self.stopped(index, stopped, &token)
+                    }
+                    None => self.apply(index, fetched, started),
+                }
             }
             Err(stopped) => self.stopped(index, stopped, &token),
         }
     }
 
-    /// A poll of host `index` that stops drops what it fetched: the MRs of `updates` are read
-    /// in full next time, or their cached `ETag` would hide the change with a 304.
-    fn forget(&mut self, index: usize, updates: &[MrUpdate], stopped: Stopped) -> Stopped {
-        for update in updates {
-            self.hosts[index].mrs.remove(&update.key.dir_name());
-        }
-        stopped
-    }
-
-    /// Hands the MRs fetched from host `index` to the task thread.
-    fn apply(&mut self, index: usize, fetched: Fetched, started: Timestamp) -> ReviewSyncOutcome {
+    /// Hands `updates` of host `index` to the task thread. What the task thread did not write
+    /// is read in full next time, or its cached `ETag` would hide the change with a 304.
+    fn hand_over(&mut self, index: usize, updates: Vec<MrUpdate>) -> Option<ReviewsApplied> {
+        let keys: Vec<String> = updates.iter().map(|update| update.key.dir_name()).collect();
         let host = &mut self.hosts[index];
-        let mrs = fetched.updates.len() + fetched.failed.len();
         let batch = MrBatch {
             context: host.target.context.clone(),
             host: host.target.host.clone(),
-            updates: fetched.updates,
+            updates,
         };
         let Some(applied) = self.tasks.sync_reviews(batch) else {
-            return ReviewSyncOutcome::Failed {
-                error: "loomd is stopping".to_owned(),
-            };
+            for key in &keys {
+                host.mrs.remove(key);
+            }
+            return None;
         };
-        // What was not written is read again in full next time.
         for failure in &applied.failed {
             if let Ok(key) = MrKey::parse(&failure.key) {
                 host.mrs.remove(&key.dir_name());
             }
         }
+        Some(applied)
+    }
+
+    /// Hands the MRs fetched from host `index` to the task thread.
+    fn apply(&mut self, index: usize, fetched: Fetched, started: Timestamp) -> ReviewSyncOutcome {
+        let mrs = fetched.updates.len() + fetched.failed.len();
+        let Some(applied) = self.hand_over(index, fetched.updates) else {
+            return ReviewSyncOutcome::Failed {
+                error: "loomd is stopping".to_owned(),
+            };
+        };
+        let host = &mut self.hosts[index];
         let mut failed = fetched.failed;
         failed.extend(applied.failed);
         host.last_success = Some(started);
@@ -647,10 +660,12 @@ impl Poller {
             other_context,
             failed: Vec::new(),
             untracked: untracked(&keys),
+            stopped: None,
         };
         for (key, found, _) in keys {
             if let Err(stopped) = self.go_on() {
-                return Err(self.forget(index, &fetched.updates, stopped));
+                fetched.stopped = Some(stopped);
+                break;
             }
             // Missing from an incomplete search: unknown.
             let found = match found {
@@ -662,7 +677,8 @@ impl Poller {
             match github_update(client, &key, found, &login, cache) {
                 Ok(update) => fetched.updates.push(update),
                 Err(error) if stops_the_host(&error) => {
-                    return Err(self.forget(index, &fetched.updates, error.into()));
+                    fetched.stopped = Some(error.into());
+                    break;
                 }
                 Err(error) => {
                     self.hosts[index].mrs.remove(&key.dir_name());
@@ -683,10 +699,12 @@ impl Poller {
             other_context,
             failed: Vec::new(),
             untracked: untracked(&keys),
+            stopped: None,
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
-                return Err(self.forget(index, &fetched.updates, stopped));
+                fetched.stopped = Some(stopped);
+                break;
             }
             let mirror_project = || project_of(&self.mirror_mr(index, task.as_ref()?, &key)?);
             let project_id = self.hosts[index]
@@ -711,7 +729,8 @@ impl Poller {
             match gitlab_update(client, &key, mr, Some(found.is_some()), &login, cache) {
                 Ok(update) => fetched.updates.push(update),
                 Err(error) if stops_the_host(&error) => {
-                    return Err(self.forget(index, &fetched.updates, error.into()));
+                    fetched.stopped = Some(error.into());
+                    break;
                 }
                 Err(error) => {
                     self.hosts[index].mrs.remove(&key.dir_name());
@@ -800,12 +819,14 @@ fn github_update(
             })
         }
         Conditional::NotModified => {
-            let threads = if threads_due(cache) {
+            // Hourly, the threads and my verdict, in case they changed without the MR.
+            let (threads, verdict) = if threads_due(cache) {
                 let threads = threads(client)?;
+                let verdict = github_verdict(&client.reviews(key)?, login);
                 cache.threads_at = Some(Instant::now());
-                Some(threads)
+                (Some(threads), Some(verdict))
             } else {
-                None
+                (None, None)
             };
             Ok(MrUpdate {
                 key: key.clone(),
@@ -813,7 +834,7 @@ fn github_update(
                 mr: None,
                 versions: Vec::new(),
                 threads,
-                verdict: None,
+                verdict,
             })
         }
     }
@@ -848,13 +869,18 @@ fn gitlab_update(
             })
         }
         Conditional::NotModified => {
-            let threads = match &cache.head {
+            // Hourly, the threads and my approval, in case they changed without the MR.
+            let (threads, verdict) = match &cache.head {
                 Some(head) if threads_due(cache) => {
                     let threads = client.discussions(reference, head)?;
+                    let approvals = client.approvals(reference)?;
                     cache.threads_at = Some(Instant::now());
-                    Some(threads)
+                    (
+                        Some(threads),
+                        Some(gitlab_verdict(approvals.user_has_approved, head)),
+                    )
                 }
-                Some(_) | None => None,
+                Some(_) | None => (None, None),
             };
             Ok(MrUpdate {
                 key: key.clone(),
@@ -862,7 +888,7 @@ fn gitlab_update(
                 mr: None,
                 versions: Vec::new(),
                 threads,
-                verdict: None,
+                verdict,
             })
         }
     }

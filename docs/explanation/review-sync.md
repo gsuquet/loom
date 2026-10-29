@@ -75,7 +75,7 @@ A poll writes nothing when nothing changed:
 
 - `loomd` reads each MR with the `ETag` of its last read. A `304 Not Modified` gives no new data. On GitHub, it also costs no request of the rate limit.
 - When an MR changed, `loomd` reads its reviews (GitHub) or its versions and approvals (GitLab), and its threads.
-- The threads are also read again one hour after their last read, because a resolved thread does not always change the MR.
+- The threads and your verdict are also read again one hour after their last read, because a resolved thread or a review does not always change the MR.
 - A `done` or `cancelled` task of a merged or closed MR is not read again. Only the archive moves it.
 - `loomd` writes a file only when its bytes change, with an atomic rename.
 - Each task that changed gets one commit of its store per poll. The message is the message of its events, otherwise `mr(<id>): <key> mirror updated`.
@@ -85,7 +85,7 @@ A poll writes nothing when nothing changed:
 ## When a forge fails
 
 - A host that does not answer, or that refuses the token, stops its own poll only. The other hosts go on.
-- The mirrors keep their last snapshot. The MRs that the stopped poll already read are read in full at the next poll, so that a `304` does not hide what changed. The answer of `loom review sync` and the log of `loomd` give the error. The answer also gives the time of the last poll that succeeded. `loomd` keeps this time in memory only: after a restart, it is empty until a poll succeeds.
+- The mirrors keep their last snapshot. The MRs that the stopped poll read before the failure are applied all the same. Thus, one MR that fails does not hold back the others. The answer of `loom review sync` and the log of `loomd` give the error. The answer also gives the time of the last poll that succeeded. `loomd` keeps this time in memory only: after a restart, it is empty until a poll succeeds.
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.
@@ -96,7 +96,8 @@ A poll writes nothing when nothing changed:
 
 - GitLab: only the approvals give a verdict. A comment without an approval is not a verdict, and a reset of the state of a reviewer is not a new request.
 - GitHub: a request to one of your teams counts as a request to you, unless `review_requests = "direct"`.
-- An archived Review task is not changed. After the archive, a new task comes only when you are requested, on a new head or by a new request, against what the last poll saw.
+- An archived Review task is not changed. After the archive, a new task comes only when you are requested: on a new head without your verdict, or by a new request, against what the last poll saw.
+- An MR whose web URL is on another host than the forge host of `[forges]` gets no task: the poll reports it as failed.
 - A review and a new request that both occur between two polls are not seen as a new request.
 - GitLab, without a task: your approval is taken as a verdict on each new head. Thus, an MR that you approved before the first poll gets no task, even after a push, in a project that keeps the approvals.
 - An MR that the forge no longer shows (deleted project, lost access) fails at each poll until you close its task.

@@ -762,7 +762,7 @@ fn a_gitlab_approval_closes_once_a_new_head_reopens_and_a_merge_closes() {
 }
 
 #[test]
-fn a_poll_that_stops_reads_its_mrs_in_full_again() {
+fn a_poll_that_stops_on_one_mr_applies_the_mrs_read_before_it() {
     const PULL_413: &str = "GET /repos/acme/shop/pulls/413";
     let sandbox = Sandbox::new();
     // Two MRs to review: 412 is read in full, then 413 stops the poll of the host.
@@ -793,10 +793,10 @@ fn a_poll_that_stops_reads_its_mrs_in_full_again() {
         matches!(stopped.outcome, ReviewSyncOutcome::Failed { .. }),
         "{stopped:?}"
     );
-    assert_eq!(tasks(&socket, "personal").tasks.len(), 0);
+    // 412, read before 413 stopped the poll, has its task.
+    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
 
-    // 413 is gone: only that MR fails, and 412, unchanged on the forge (its ETag matches),
-    // gets its task.
+    // 413 is gone: only that MR fails; 412 is unchanged (its ETag matches), no second task.
     sandbox.github.set(
         PULL_413,
         Route {
@@ -807,9 +807,31 @@ fn a_poll_that_stops_reads_its_mrs_in_full_again() {
     let result = sandbox.sync();
     assert_eq!(
         counts(poll(&result, "personal", "github.com")),
-        (2, 1, 0, 0, 1)
+        (2, 0, 0, 0, 1)
     );
     assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
 
+    daemon.stop();
+}
+
+#[test]
+fn an_mr_whose_web_url_is_on_another_host_gets_no_task() {
+    let sandbox = Sandbox::new();
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["web_url"] = json!("https://gitlab.public.example/company-a/checkout/-/merge_requests/88");
+    sandbox.gitlab.set(
+        "GET /projects/77/merge_requests/88",
+        with_etag(mr.to_string(), "W/\"other\""),
+    );
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    for _ in 0..2 {
+        let result = sandbox.sync();
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")),
+            (1, 0, 0, 0, 1)
+        );
+    }
+    assert_eq!(tasks(&socket, "company-a").tasks.len(), 0);
     daemon.stop();
 }

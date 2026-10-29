@@ -194,7 +194,11 @@ pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision 
             .is_none_or(|previous| *previous != seen.head)
             || requested_again;
         // An MR whose current head I already reviewed has nothing for me to do.
-        return if seen.state == MrState::Open && seen.requested && !on_head && new {
+        // A new request counts even on a head that I reviewed, as for a done task.
+        return if seen.state == MrState::Open
+            && seen.requested
+            && ((!on_head && new) || requested_again)
+        {
             Decision::Create
         } else {
             Decision::Ignore
@@ -406,8 +410,9 @@ pub fn review_key(kind: &Kind, links: &[Link]) -> Option<(MrKey, Option<String>)
     })
 }
 
-/// The host of an `https://host[:port]/…` URL, lowercase, without the port.
-fn url_host(url: &str) -> Option<String> {
+/// The host of an `https://host[:port]/…` URL, lowercase, without the port. Pure.
+#[must_use]
+pub fn url_host(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let authority = rest.split(['/', '?', '#']).next()?;
     let host = authority.rsplit('@').next()?;
