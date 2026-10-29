@@ -94,6 +94,9 @@ pub fn plan(repos: &[RepoSummary], targets: &[ForgeTarget]) -> Plan {
 }
 
 /// The repository has no forge metadata, or the metadata of another project than `project`.
+///
+/// A project renamed or moved on the forge stays outdated (its `web_url` names the new path):
+/// the `read` set of [`select`] keeps it from being read at each tick.
 fn outdated(repo: &RepoSummary, project: &str) -> bool {
     repo.forge_metadata
         .as_ref()
@@ -123,6 +126,17 @@ pub fn select<'a>(
                 && (due || (fetch.new && !read.contains(&(target, fetch.project.clone()))))
         })
         .collect()
+}
+
+/// Keeps in `read` only the projects that are still [`Fetch::new`]: their write is not seen
+/// yet. A project whose write landed leaves the set, so a new clone of it later is read at
+/// once. Pure.
+pub fn prune_read(plan: &Plan, read: &mut BTreeSet<(usize, String)>) {
+    read.retain(|(target, project)| {
+        plan.fetches
+            .iter()
+            .any(|fetch| fetch.target == *target && fetch.project == *project && fetch.new)
+    });
 }
 
 /// The next poll of a credential and the end of its pause, after reads at `started`. Pure.
@@ -315,7 +329,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::time::Instant;
 
-    use super::{Fetch, Plan, ProjectApi, plan, read_target, reschedule, select};
+    use super::{Fetch, Plan, ProjectApi, plan, prune_read, read_target, reschedule, select};
     use crate::forge::Token;
     use crate::forge::api_base;
     use crate::forge::check::ForgeTarget;
@@ -500,6 +514,15 @@ mod tests {
         let read = BTreeSet::from([(1, "acme/new".to_owned())]);
         assert_eq!(select(&plan, 1, false, &read), Vec::<&Fetch>::new());
         assert_eq!(select(&plan, 1, true, &read).len(), 2);
+
+        // Written since: out of the set, so a new clone of it later is read at once.
+        let mut read = BTreeSet::from([
+            (1, "acme/new".to_owned()),
+            (1, "acme/old".to_owned()),
+            (0, "acme/gone".to_owned()),
+        ]);
+        prune_read(&plan, &mut read);
+        assert_eq!(read, BTreeSet::from([(1, "acme/new".to_owned())]));
     }
 
     #[test]

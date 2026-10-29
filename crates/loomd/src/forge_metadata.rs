@@ -14,7 +14,7 @@ use loom_api::Timestamp;
 use loom_store::{Reader, RepoFilter};
 use loomd::api::timestamp;
 use loomd::forge::check::ForgeTarget;
-use loomd::forge::metadata::{HttpProjects, plan, read_target, reschedule, select};
+use loomd::forge::metadata::{HttpProjects, plan, prune_read, read_target, reschedule, select};
 use loomd::forge::token::TokenResolver;
 use loomd::schedule::jittered;
 use tracing::{debug, info, warn};
@@ -105,6 +105,7 @@ fn run(
             }
         };
         let plan = plan(&repos, &settings.targets);
+        prune_read(&plan, &mut read);
         for path in plan.clears.iter().cloned() {
             debug!(path = %path.display(), "no forge credential: forge metadata removed");
             if store
