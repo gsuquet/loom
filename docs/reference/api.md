@@ -321,9 +321,9 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: status change the transitions forbid | `409` | `illegal_transition`, `details`: [`IllegalTransition`](#problem-details) |
 | Task: undo of a change whose field changed since (a hand edit not recorded yet) | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) |
 | Task: undo of a task without a change | `409` | `nothing_to_undo` |
+| Task: undo of a move | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) with `field` `context` |
 | MR: body not a valid `MrOpenRequest`, an empty field, `head` equal to `base`, a `project` with fewer than 2 segments or a `.` or `..` segment, or no forge credential of the context of the task for `host` | `400` | `invalid_request` |
 | MR: the token cannot be resolved, the forge refuses a request or does not answer | `502` | `forge` |
-| Task: undo of a move | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) with `field` `context` |
 | Task: a move failed and was rolled back, or failed halfway and left the task in two stores | `500` | `internal` |
 | Task: the task files cannot be read or written | `500` | `internal` |
 | The index cannot be read or written | `500` | `internal` |

@@ -62,7 +62,12 @@ pub fn check_upstream(branch: &str, remote: &str, merge: Option<&str>) -> Result
     if remote == "." {
         return Err(PrRefusal::LocalUpstream(branch.to_owned()));
     }
-    if remote.contains(['/', ':']) {
+    // A remote name can hold `/` (`up/stream`); a URL or a path has `:` or starts like a path.
+    if remote.contains(':')
+        || ["/", "./", "../"]
+            .iter()
+            .any(|start| remote.starts_with(start))
+    {
         return Err(PrRefusal::UrlUpstream {
             branch: branch.to_owned(),
             remote: remote.to_owned(),
@@ -209,6 +214,7 @@ mod tests {
     #[test]
     fn an_upstream_must_be_a_remote_name_and_the_same_branch_name() {
         assert_eq!(check_upstream("fix/a", "origin", None), Ok(()));
+        assert_eq!(check_upstream("fix/a", "up/stream", None), Ok(()));
         assert_eq!(
             check_upstream("fix/a", "origin", Some("refs/heads/fix/a")),
             Ok(())
@@ -221,6 +227,7 @@ mod tests {
             "https://github.com/acme/shop.git",
             "git@github.com:acme/shop.git",
             "../shop",
+            "/srv/shop.git",
         ] {
             assert_eq!(
                 check_upstream("fix/a", url, None),
