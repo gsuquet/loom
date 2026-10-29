@@ -1,4 +1,4 @@
-//! Test hooks of loomd (auto-upgrade, ADR-0011; event heartbeat; schedule interval), honoured
+//! Test hooks of loomd (auto-upgrade, ADR-0011; event heartbeat; schedule interval; forge API), honoured
 //! by debug builds only. The binary reads the environment; these functions decide.
 
 use std::path::Path;
@@ -18,6 +18,16 @@ pub const SCHEDULE_INTERVAL_ENV: &str = "LOOM_TEST_SCHEDULE_INTERVAL";
 pub const SHUTDOWN_GRACE_ENV: &str = "LOOM_TEST_SHUTDOWN_GRACE";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
+/// Replaces the API of every forge host: the base URL of a fake forge.
+pub const FORGE_API_ENV: &str = "LOOM_TEST_FORGE_API";
+
+/// The forge API base of the hook variable: `None` when unset or empty, or in a release build.
+#[must_use]
+pub fn forge_api_hook(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|value| !value.is_empty() && cfg!(debug_assertions))
+        .map(|value| value.trim_end_matches('/').to_owned())
+}
 
 /// The duration of a hook variable: `None` when unset or empty, in a release build, or
 /// unparsable (`Err` with a message to log).
@@ -67,6 +77,18 @@ mod tests {
             assert!(error.starts_with("X ignored: invalid duration"), "{error}");
         } else {
             assert_eq!(duration_hook("X", Some("2s")), Ok(None));
+        }
+    }
+
+    #[test]
+    fn forge_api_hook_in_debug_builds() {
+        assert_eq!(super::forge_api_hook(None), None);
+        assert_eq!(super::forge_api_hook(Some("")), None);
+        let hooked = super::forge_api_hook(Some("http://127.0.0.1:9/"));
+        if cfg!(debug_assertions) {
+            assert_eq!(hooked.as_deref(), Some("http://127.0.0.1:9"));
+        } else {
+            assert_eq!(hooked, None);
         }
     }
 

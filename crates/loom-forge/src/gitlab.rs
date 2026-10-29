@@ -178,6 +178,31 @@ pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
     })
 }
 
+/// `POST /projects/<id>/merge_requests`: the created merge request, as a summary. GitLab
+/// computes the `diff_refs` after the answer: the summary does not need them.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a GitLab merge request, or its reference or state is
+/// not valid.
+pub fn parse_merge_request_summary(body: &[u8]) -> Result<MrSummary, ParseError> {
+    const PAYLOAD: &str = "GitLab merge request";
+    summary(PAYLOAD, json(PAYLOAD, body)?)
+}
+
+fn summary(payload: &'static str, mr: MergeRequest) -> Result<MrSummary, ParseError> {
+    Ok(MrSummary {
+        key: key(payload, &mr)?,
+        state: state(payload, &mr.state)?,
+        title: mr.title,
+        author: username(mr.author),
+        draft: mr.draft || mr.work_in_progress,
+        head_sha: mr.sha,
+        web_url: mr.web_url,
+        updated_at: mr.updated_at.0,
+    })
+}
+
 /// `GET /merge_requests?scope=reviews_for_me&…`, one page.
 ///
 /// # Errors
@@ -187,20 +212,7 @@ pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
 pub fn parse_merge_requests(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
     const PAYLOAD: &str = "GitLab merge requests";
     let mrs: Vec<MergeRequest> = json(PAYLOAD, body)?;
-    mrs.into_iter()
-        .map(|mr| {
-            Ok(MrSummary {
-                key: key(PAYLOAD, &mr)?,
-                state: state(PAYLOAD, &mr.state)?,
-                title: mr.title,
-                author: username(mr.author),
-                draft: mr.draft || mr.work_in_progress,
-                head_sha: mr.sha,
-                web_url: mr.web_url,
-                updated_at: mr.updated_at.0,
-            })
-        })
-        .collect()
+    mrs.into_iter().map(|mr| summary(PAYLOAD, mr)).collect()
 }
 
 #[derive(Deserialize)]

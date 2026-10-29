@@ -107,9 +107,16 @@ fn a_new_document_reads_back_into_the_same_task() {
         key: "!88".to_owned(),
         url: None,
     }));
+    task.links.push(Link::Delivery(ExternalRef {
+        provider: "gitlab".to_owned(),
+        key: "company-a/checkout!91".to_owned(),
+        url: Some("https://gitlab.com/company-a/checkout/-/merge_requests/91".to_owned()),
+    }));
     task.relations.blocks = vec![id("m4x9pq2r")];
     let text = render_task_md(&TaskDocument::new(&task));
+    assert!(text.contains("role = \"delivery\"\n"), "{text}");
     let document = parse_task_md(&text).unwrap();
+    assert!(document.unknown_keys().is_empty(), "{text}");
     assert_eq!(document.task(task.updated), task, "{text}");
     assert_eq!(document.body(), body_template(&task.kind));
 }

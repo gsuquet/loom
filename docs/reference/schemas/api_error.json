@@ -73,6 +73,11 @@
           "description": "The task has no change to undo.",
           "type": "string",
           "const": "nothing_to_undo"
+        },
+        {
+          "description": "The forge refused a request, or did not answer. `message` gives the reason of the\nforge.",
+          "type": "string",
+          "const": "forge"
         }
       ]
     }

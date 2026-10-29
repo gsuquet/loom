@@ -56,6 +56,9 @@ pub enum ErrorCode {
     Conflict,
     /// The task has no change to undo.
     NothingToUndo,
+    /// The forge refused a request, or did not answer. `message` gives the reason of the
+    /// forge.
+    Forge,
 }
 
 impl ErrorCode {
@@ -73,6 +76,7 @@ impl ErrorCode {
             Self::IllegalTransition => "illegal_transition",
             Self::Conflict => "conflict",
             Self::NothingToUndo => "nothing_to_undo",
+            Self::Forge => "forge",
         }
     }
 }
@@ -88,7 +92,7 @@ mod tests {
     use super::{ApiError, ErrorCode};
     use serde_json::json;
 
-    const ALL_CODES: [ErrorCode; 10] = [
+    const ALL_CODES: [ErrorCode; 11] = [
         ErrorCode::InvalidRequest,
         ErrorCode::NotFound,
         ErrorCode::VersionMismatch,
@@ -99,6 +103,7 @@ mod tests {
         ErrorCode::IllegalTransition,
         ErrorCode::Conflict,
         ErrorCode::NothingToUndo,
+        ErrorCode::Forge,
     ];
 
     #[test]

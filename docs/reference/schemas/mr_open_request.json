@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MrOpenRequest",
+  "description": "Body of `POST /v1/tasks/{prefix}/mr`: the branch that `loom pr` pushed, in the project of\nits remote.",
+  "type": "object",
+  "properties": {
+    "base": {
+      "description": "The target branch.",
+      "type": "string"
+    },
+    "dry_run": {
+      "description": "When true, loomd sends nothing to the forge and changes no task: the result gives the\nrequests it would send.",
+      "type": "boolean",
+      "default": false
+    },
+    "head": {
+      "description": "The source branch.",
+      "type": "string"
+    },
+    "host": {
+      "description": "The forge host of the remote, such as `github.com`.",
+      "type": "string"
+    },
+    "project": {
+      "description": "The project path on the host, such as `acme/shop`.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "host",
+    "project",
+    "head",
+    "base"
+  ]
+}

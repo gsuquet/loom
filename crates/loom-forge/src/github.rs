@@ -123,6 +123,49 @@ pub fn parse_pull(body: &[u8]) -> Result<Mr, ParseError> {
     })
 }
 
+/// A pull request of a list (`GET /repos/<o>/<r>/pulls`) or created (`POST`), as a summary.
+fn pull_summary(payload: &'static str, pull: Pull) -> Result<MrSummary, ParseError> {
+    let repo = pull
+        .base
+        .repo
+        .ok_or_else(|| invalid(payload, "the base has no repository"))?;
+    Ok(MrSummary {
+        key: MrKey::new(ForgeKind::Github, &repo.full_name, pull.number)
+            .map_err(|error| invalid(payload, error))?,
+        state: state(payload, &pull.state, pull.merged_at.is_some())?,
+        title: pull.title,
+        author: login(pull.user),
+        draft: pull.draft,
+        head_sha: Some(pull.head.sha),
+        web_url: pull.html_url,
+        updated_at: pull.updated_at.0,
+    })
+}
+
+/// `POST /repos/<owner>/<repo>/pulls`: the created pull request.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a GitHub pull request.
+pub fn parse_pull_summary(body: &[u8]) -> Result<MrSummary, ParseError> {
+    const PAYLOAD: &str = "GitHub pull request";
+    pull_summary(PAYLOAD, json(PAYLOAD, body)?)
+}
+
+/// `GET /repos/<owner>/<repo>/pulls?head=…`, one page.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a list of GitHub pull requests.
+pub fn parse_pull_summaries(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
+    const PAYLOAD: &str = "GitHub pull requests";
+    let pulls: Vec<Pull> = json(PAYLOAD, body)?;
+    pulls
+        .into_iter()
+        .map(|pull| pull_summary(PAYLOAD, pull))
+        .collect()
+}
+
 fn login(user: Option<User>) -> String {
     user.map_or_else(|| GHOST.to_owned(), |user| user.login)
 }

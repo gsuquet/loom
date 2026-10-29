@@ -9,6 +9,7 @@ pub mod conventions;
 pub mod doctor;
 pub mod edit;
 pub mod loomd_path;
+pub mod pr;
 pub mod prompt;
 pub mod reindex;
 pub mod repo;

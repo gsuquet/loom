@@ -3,7 +3,7 @@
 //! Pure functions; the state keeps the loaded log and the two filters.
 
 use jiff::tz::TimeZone;
-use loom_api::{Actor, Event, EventRecord, FieldChange, TaskEvents};
+use loom_api::{Actor, Event, EventRecord, FieldChange, MrAction, TaskEvents};
 
 use super::render::importance_label;
 
@@ -64,6 +64,7 @@ pub const fn type_name(event: &Event) -> &'static str {
         Event::NoteLogged { .. } => "note_logged",
         Event::NotesChanged(_) => "notes_changed",
         Event::Undone { .. } => "undone",
+        Event::Mr { .. } => "mr",
     }
 }
 
@@ -125,6 +126,10 @@ pub fn summary(event: &Event) -> String {
         Event::NoteLogged { text } => text.lines().next().unwrap_or_default().to_owned(),
         Event::NotesChanged(_) => "the notes changed".to_owned(),
         Event::Undone { changes, .. } => format!("undone: {}", changes_text(changes)),
+        Event::Mr { action, mr } => match action {
+            MrAction::Opened => format!("opened MR {}", mr.key),
+            MrAction::Linked => format!("linked MR {}", mr.key),
+        },
     }
 }
 

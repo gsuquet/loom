@@ -147,6 +147,20 @@
           ]
         },
         {
+          "description": "An MR that delivers the task, such as the MR that `loom pr` opens.",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "delivery"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
           "description": "The repository to work in, a slug of the repo index.",
           "type": "object",
           "properties": {

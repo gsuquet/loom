@@ -316,7 +316,7 @@ fn unique_prefix<'a>(target: &'a TaskId, ids: &'a [TaskId]) -> &'a str {
 pub fn linked_repo_slug(task: &Task) -> Option<&str> {
     task.links.iter().find_map(|link| match link {
         Link::Repo { repo } => Some(repo.as_str()),
-        Link::Origin(_) | Link::Related(_) => None,
+        Link::Origin(_) | Link::Related(_) | Link::Delivery(_) => None,
     })
 }
 

@@ -24,9 +24,9 @@ use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use futures_util::StreamExt as _;
 use loom_api::{
-    ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, ForgeCheckResult,
-    RegisterRequest, RepoList, SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp,
-    UpdateState,
+    ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, ErrorCode,
+    ForgeCheckResult, ForgeKind, MrAction, MrOpenRequest, MrOpenResult, MrOutcome, RegisterRequest,
+    RepoList, SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -36,22 +36,25 @@ use loom_config::layout::{
 };
 use loom_config::machine::{MachineName, parse_machine, render_machine};
 use loom_core::MachineId;
+use loom_forge::client::{ForgeError, GithubClient, GitlabClient};
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, FORGE_CHECK_PATH, REMOTE_CHECK_PATH, REPO_PATH,
     REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery,
     SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH,
-    TASK_GO_PATH, TASK_MOVE_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH,
-    TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value,
-    internal, invalid_request, method_not_allowed, not_found, register_path, repo_filter,
-    search_request, slug, status_at, timestamp,
+    TASK_GO_PATH, TASK_MOVE_PATH, TASK_MR_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH,
+    TASKS_HEALTH_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error,
+    home_value, internal, invalid_request, method_not_allowed, not_found, register_path,
+    repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
 use loomd::exit::Shutdown;
+use loomd::forge::ApiBase;
 use loomd::forge::check::{ForgeTarget, check_forge, forge_targets};
 use loomd::forge::client::HttpForge;
+use loomd::forge::open::{OpenRefusal, delivery, new_mr, open_or_link, requests, target_of};
 use loomd::forge::token::TokenResolver;
 use loomd::hooks;
 use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, SHUTDOWN_GRACE};
@@ -138,10 +141,9 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     let machine = load_machine(&layout.machine)?;
     let stores = config.stores(&layout.home, &user_home, &machine);
     // Contexts not held here do not poll from this machine.
-    let forges = Forges {
-        targets: forge_targets(&config, |context| stores.held.contains_key(context)),
-        resolver: Arc::new(TokenResolver::default()),
-    };
+    let forges = Forges::new(forge_targets(&config, |context| {
+        stores.held.contains_key(context)
+    }));
     if !stores.not_held.is_empty() {
         info!(
             machine = %machine,
@@ -321,6 +323,24 @@ struct App {
 struct Forges {
     targets: Vec<ForgeTarget>,
     resolver: Arc<TokenResolver>,
+}
+
+impl Forges {
+    /// `targets`, each on the API of the `LOOM_TEST_FORGE_API` hook when it is set.
+    fn new(mut targets: Vec<ForgeTarget>) -> Self {
+        if let Some(rest) = hooks::forge_api_hook(env::var(hooks::FORGE_API_ENV).ok().as_deref()) {
+            for target in &mut targets {
+                target.api = ApiBase {
+                    rest: rest.clone(),
+                    graphql: Some(format!("{rest}/graphql")),
+                };
+            }
+        }
+        Self {
+            targets,
+            resolver: Arc::new(TokenResolver::default()),
+        }
+    }
 }
 
 /// Reads the configuration, and whether the file is missing: a missing file gives the
@@ -567,6 +587,7 @@ fn router(app: App) -> Router {
         .route(TASK_UNDO_PATH, post(undo_task))
         .route(TASK_MOVE_PATH, post(move_task))
         .route(TASK_GO_PATH, post(go_task))
+        .route(TASK_MR_PATH, post(open_mr))
         .route(FOCUS_PATH, get(list_focus))
         .route(EVENTS_PATH, get(change_events))
         .route(TASKS_BACKUP_PATH, get(backup_report))
@@ -892,6 +913,148 @@ async fn move_task(
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
     respond(resolve_then(&app, prefix, |id| app.tasks.move_task(id, to)).await)
+}
+
+/// `loom pr`: finds the open MR of the pushed branch or opens it as a draft, with the forge
+/// credential of the context of the task, then links it to the task. A dry run sends nothing
+/// and changes nothing.
+async fn open_mr(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+    body: Result<Json<MrOpenRequest>, JsonRejection>,
+) -> Response {
+    let request = path
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|UrlPath(prefix)| {
+            let body = body.map_err(|rejection| invalid_request(rejection.body_text()))?;
+            Ok((prefix, body.0))
+        });
+    let (prefix, request) = match request {
+        Ok(request) => request,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    respond(open_mr_of(&app, prefix, request).await)
+}
+
+async fn open_mr_of(
+    app: &Arc<App>,
+    prefix: String,
+    request: MrOpenRequest,
+) -> Result<MrOpenResult, Failure> {
+    let detail = app.tasks.get(prefix).await?;
+    let id = detail.summary.id.clone();
+    let task = detail.summary.task.ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            ApiError::new(
+                ErrorCode::ReadOnly,
+                format!("task {id} has an invalid task.md: fix it first"),
+            ),
+        )
+    })?;
+    let target = target_of(&app.forges.targets, &task.context, &request)
+        .map_err(|refusal: OpenRefusal| {
+            (
+                StatusCode::BAD_REQUEST,
+                invalid_request(refusal.to_string()),
+            )
+        })?
+        .clone();
+    let mr = new_mr(&task, &request);
+    if request.dry_run {
+        return Ok(MrOpenResult {
+            task: id,
+            forge: target.kind,
+            outcome: MrOutcome::Planned,
+            mr: None,
+            requests: requests(&target, &mr).to_vec(),
+        });
+    }
+    let resolver = Arc::clone(&app.forges.resolver);
+    let user_agent = format!("loomd/{}", VERSION_INFO.version);
+    let blocking_target = target.clone();
+    let parent = Span::current();
+    let opened = tokio::task::spawn_blocking(move || {
+        let _entered = parent.entered();
+        open_with_token(&blocking_target, &resolver, &user_agent, &mr)
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            internal(format!("forge call failed: {error}")),
+        )
+    })??;
+    let link = delivery(&target, &opened.mr);
+    app.tasks
+        .apply(
+            id.clone(),
+            loom_core::Command::LinkMr {
+                action: opened.action,
+                mr: link.clone(),
+            },
+        )
+        .await?;
+    Ok(MrOpenResult {
+        task: id,
+        forge: target.kind,
+        outcome: match opened.action {
+            MrAction::Opened => MrOutcome::Opened,
+            MrAction::Linked => MrOutcome::Linked,
+        },
+        mr: Some(link),
+        requests: opened.sent,
+    })
+}
+
+/// [`open_or_link`] with the token of `target`, resolved again once after a 401.
+fn open_with_token(
+    target: &ForgeTarget,
+    resolver: &TokenResolver,
+    user_agent: &str,
+    mr: &loom_forge::open::NewMr,
+) -> Result<loomd::forge::open::Opened, Failure> {
+    let forge_error = |error: &dyn std::fmt::Display| {
+        (
+            StatusCode::BAD_GATEWAY,
+            ApiError::new(
+                ErrorCode::Forge,
+                format!("{} ({}): {error}", target.host, target.kind),
+            ),
+        )
+    };
+    let mut retried = false;
+    loop {
+        let token = resolver
+            .resolve(&target.source)
+            .map_err(|error| forge_error(&format!("cannot resolve the token: {error}")))?;
+        let result = match target.kind {
+            ForgeKind::Github => open_or_link(
+                target,
+                &GithubClient::new(&target.api, token.clone(), user_agent),
+                mr,
+            ),
+            ForgeKind::Gitlab => open_or_link(
+                target,
+                &GitlabClient::new(&target.api, token.clone(), user_agent),
+                mr,
+            ),
+        };
+        match result {
+            Err(ForgeError::Unauthorized { .. }) if !retried => {
+                // The token may have been renewed since it was resolved.
+                resolver.invalidate(&target.source, &token);
+                retried = true;
+            }
+            Err(error) => {
+                if matches!(error, ForgeError::Unauthorized { .. }) {
+                    resolver.invalidate(&target.source, &token);
+                }
+                return Err(forge_error(&error));
+            }
+            Ok(opened) => return Ok(opened),
+        }
+    }
 }
 
 /// Reverts the last change of the task: loomd computes the compensating change from its log;

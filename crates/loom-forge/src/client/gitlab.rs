@@ -4,15 +4,18 @@ use loom_api::{ForgeKind, Timestamp};
 use serde::Serialize;
 
 use super::http::{Answer, Body, Headers, Http, MAX_PAGES, next_link};
-use super::{ApiBase, Conditional, Forge, ForgeError, GitlabForge, GitlabMr, Token, TokenUser};
+use super::{
+    ApiBase, Conditional, Forge, ForgeError, GitlabForge, GitlabMr, OpenForge, Token, TokenUser,
+};
 use crate::error::ParseError;
 use crate::gitlab::request::{ApproveBody, BulkPublishBody, DraftNoteBody};
 use crate::gitlab::{
     Approvals, DraftNote, TokenInfo, parse_approvals, parse_diffs, parse_discussions,
-    parse_draft_note, parse_draft_notes, parse_merge_request, parse_merge_requests, parse_token,
-    parse_user, parse_versions,
+    parse_draft_note, parse_draft_notes, parse_merge_request, parse_merge_request_summary,
+    parse_merge_requests, parse_token, parse_user, parse_versions,
 };
 use crate::model::{FileDiff, Mr, MrSummary, MrVersion, Sha, Thread};
+use crate::open::{NewMr, create_request, find_request};
 
 /// The largest page that GitLab gives.
 const MAX_PER_PAGE: u8 = 100;
@@ -195,6 +198,19 @@ impl Forge for GitlabClient {
             user: self.parse(&answer.body, parse_user)?,
             scopes_header: None,
         })
+    }
+}
+
+impl OpenForge for GitlabClient {
+    fn open_mrs_of_branch(&self, project: &str, head: &str) -> Result<Vec<MrSummary>, ForgeError> {
+        let request = find_request(ForgeKind::Gitlab, project, head);
+        self.list(&request.path, parse_merge_requests)
+    }
+
+    fn create_draft_mr(&self, mr: &NewMr) -> Result<MrSummary, ForgeError> {
+        let request = create_request(ForgeKind::Gitlab, mr);
+        let answer = self.send_json(request.method, &request.path, &request.body)?;
+        self.parse(&answer.body, parse_merge_request_summary)
     }
 }
 

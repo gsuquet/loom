@@ -22,6 +22,7 @@ use crate::gitlab::{Approvals, DraftNote, TokenInfo};
 use crate::model::{
     Anchor, FileDiff, ForgeUser, Mr, MrKey, MrSummary, MrVersion, Sha, Thread, VerdictKind,
 };
+use crate::open::NewMr;
 
 pub use github::GithubClient;
 pub use gitlab::GitlabClient;
@@ -338,6 +339,25 @@ pub trait Forge {
     ///
     /// [`ForgeError`].
     fn user(&self) -> Result<TokenUser, ForgeError>;
+}
+
+/// The calls of `loom pr`, on both forges. Blocking.
+pub trait OpenForge: Forge {
+    /// The open MRs whose source branch is `head`, in `project` (requests of
+    /// [`find_request`](crate::open::find_request)).
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn open_mrs_of_branch(&self, project: &str, head: &str) -> Result<Vec<MrSummary>, ForgeError>;
+
+    /// Opens `mr` as a draft (request of [`create_request`](crate::open::create_request)).
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::Unprocessable`] (GitHub) or [`ForgeError::Conflict`]
+    /// (GitLab) when the forge refuses it, such as when an MR of the branch exists already.
+    fn create_draft_mr(&self, mr: &NewMr) -> Result<MrSummary, ForgeError>;
 }
 
 /// The GitHub REST reads. Blocking. Every list follows its pages.

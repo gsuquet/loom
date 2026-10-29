@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::Date;
 use crate::context::ContextName;
 use crate::id::EventId;
-use crate::task::{Importance, Kind, Link, Relations, Status, Task};
+use crate::task::{ExternalRef, Importance, Kind, Link, Relations, Status, Task};
 use crate::timestamp::Timestamp;
 
 /// Schema version written in the `v` field of every event.
@@ -109,6 +109,24 @@ pub enum Event {
         /// The changes made to revert it.
         changes: Vec<FieldChange>,
     },
+    /// An MR became a `delivery` link of the task. The link itself is added by an `edited`
+    /// event just before, so that a version of loom without this event still replays it.
+    Mr {
+        /// What `loom pr` did on the forge.
+        action: MrAction,
+        /// The MR: provider, key and web URL.
+        mr: ExternalRef,
+    },
+}
+
+/// What `loom pr` did on the forge for an [`Event::Mr`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MrAction {
+    /// It opened a new draft MR.
+    Opened,
+    /// It found an open MR of the branch and linked it.
+    Linked,
 }
 
 impl Event {
@@ -119,7 +137,10 @@ impl Event {
         match self {
             Self::Edited { changes } | Self::Undone { changes, .. } => Some(changes.clone()),
             Self::StatusChanged(change) => Some(vec![FieldChange::Status(change.clone())]),
-            Self::Created { .. } | Self::NoteLogged { .. } | Self::NotesChanged(_) => None,
+            Self::Created { .. }
+            | Self::NoteLogged { .. }
+            | Self::NotesChanged(_)
+            | Self::Mr { .. } => None,
         }
     }
 }

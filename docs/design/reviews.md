@@ -136,6 +136,12 @@ The repo card gets, from the forge, for repos of a host with a credential: proje
 
 `loom pr [<task>]` opens a draft MR for the current branch, linked to the task (default: the focus of the current context): `git push -u <remote> <branch>` (git CLI, user's credentials), then the forge API (`POST /repos/<o>/<r>/pulls` with `draft: true`, GitLab `POST /projects/<id>/merge_requests` with `Draft:` title). Title and body from the task (title, kind template, links). The MR becomes a `mr` link of the task (role `delivery`) and a `mr` event. Refuses on the default branch and on a branch with no commit ahead of the base. When an MR already exists for the branch, it links it instead.
 
+- **Who does what**: `loom` reads the branch, checks it and pushes it (the user's terminal and git credentials); then `POST /v1/tasks/{id}/mr` asks loomd, which holds the forge credential of the context of the task, to search the open MRs of the branch and open the draft. A refused push sends nothing to loomd.
+- **Remote and base**: the upstream remote of the branch, otherwise the primary remote; the project is the host and path of its URL. The base is `--base`, otherwise `refs/remotes/<remote>/HEAD`. Commits ahead are counted against `<remote>/<base>`, otherwise the local `<base>`. The head is a branch of the same project: an MR from a fork is out of v0.4.
+- **Description**: the body template of the kind and the `origin` and `related` links. Never the notes: `task.md` is private (storage).
+- **Ledger**: an `edited` event adds the `delivery` link, then an `mr` event (`opened` or `linked`): a version without the `mr` type still replays the link. Linking an MR the task has already records nothing.
+- `-n` prints the push and the two forge requests, and sends nothing.
+
 ## Out of scope for v0.4
 
 Agent findings inline (v0.7), comments outside hunks, file-level comments, image diffs, editing or deleting published comments, multi-machine (one poller per context, later), a loom-owned clone when no local clone exists.
