@@ -3,7 +3,7 @@
 //! Every parser takes the body of a response with a success status. Error bodies (4xx, 5xx)
 //! go to [`parse_error`].
 
-use loom_api::{ForgeKind, Timestamp};
+use loom_api::{ForgeKind, ForgeProject, ForgeVisibility, Timestamp};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -971,6 +971,68 @@ struct RestError {
     message: String,
     #[serde(default)]
     errors: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct RepositoryData {
+    repository: Option<Repository>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Repository {
+    database_id: u64,
+    url: String,
+    is_archived: bool,
+    visibility: Visibility,
+    default_branch_ref: Option<BranchRef>,
+    pull_requests: TotalCount,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum Visibility {
+    Public,
+    Internal,
+    Private,
+}
+
+#[derive(Deserialize)]
+struct BranchRef {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TotalCount {
+    total_count: u64,
+}
+
+/// GraphQL `repository`, with the fields of `fixtures/forge/github/graphql-repository.json`:
+/// the forge metadata of a repository card.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not such a response, has GraphQL errors (`NOT_FOUND` for a
+/// repository that the token cannot see), or has no repository.
+pub fn parse_repository(body: &[u8]) -> Result<ForgeProject, ParseError> {
+    const PAYLOAD: &str = "GitHub repository";
+    let data: RepositoryData = graphql(PAYLOAD, body)?;
+    let repository = data
+        .repository
+        .ok_or_else(|| invalid(PAYLOAD, "no repository"))?;
+    Ok(ForgeProject {
+        id: repository.database_id,
+        default_branch: repository.default_branch_ref.map(|branch| branch.name),
+        visibility: match repository.visibility {
+            Visibility::Public => ForgeVisibility::Public,
+            Visibility::Internal => ForgeVisibility::Internal,
+            Visibility::Private => ForgeVisibility::Private,
+        },
+        archived: repository.is_archived,
+        web_url: repository.url,
+        open_mrs: Some(repository.pull_requests.total_count),
+    })
 }
 
 /// The body of a REST error response (401, 403, 404, 422…).

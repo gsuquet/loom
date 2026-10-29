@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContextAssignment, LastUpdate, RepoState, Timestamp};
+use crate::{ContextAssignment, LastUpdate, MaybeKnown, RepoState, Timestamp};
 
 /// Forge that hosts a remote (`[forges."<host>"] kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -34,6 +34,66 @@ impl fmt::Display for ForgeKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// Who can see a project on its forge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeVisibility {
+    /// Everyone.
+    Public,
+    /// Every signed-in user of the forge (GitLab, GitHub Enterprise).
+    Internal,
+    /// Only the members.
+    Private,
+}
+
+impl ForgeVisibility {
+    /// Lowercase name, as serialized.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Internal => "internal",
+            Self::Private => "private",
+        }
+    }
+}
+
+impl fmt::Display for ForgeVisibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The project of a repository on its forge, as the forge API gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ForgeProject {
+    /// Numeric ID of the project on the forge (GitHub `databaseId`, GitLab `id`).
+    pub id: u64,
+    /// Default branch on the forge. `null` for an empty project.
+    pub default_branch: Option<String>,
+    /// Who can see the project.
+    pub visibility: ForgeVisibility,
+    /// The project is archived: it is read-only on the forge.
+    pub archived: bool,
+    /// URL of the project page.
+    pub web_url: String,
+    /// Number of open merge requests (pull requests on GitHub). `null` when the forge does not
+    /// give the count (GitLab, above 10,000).
+    pub open_mrs: Option<u64>,
+}
+
+/// The forge metadata of a repository, read by `loomd` with the forge poll. Never used for
+/// updates: the git state stays the source for branches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ForgeMetadata {
+    /// When `loomd` last asked the forge.
+    pub refreshed_at: Timestamp,
+    /// The project, unknown when the forge call failed (the reason is in `error`).
+    pub project: MaybeKnown<ForgeProject>,
+    /// Why `project` is unknown, in English. `null` when it is known.
+    pub error: Option<String>,
 }
 
 /// How `loomd` updates a repository (`update` of a context or of `[repos."<path>"]`).
@@ -142,6 +202,10 @@ pub struct RepoSummary {
     /// Result of the last update (fetch, fast-forward), `null` until the first one.
     #[serde(default)]
     pub last_update: Option<LastUpdate>,
+    /// Forge metadata, `null` when no credential of the context gives access to the host of
+    /// the primary remote, or before the first forge poll.
+    #[serde(default)]
+    pub forge_metadata: Option<ForgeMetadata>,
 }
 
 /// Repositories of the index, sorted by slug.
@@ -190,7 +254,7 @@ pub struct ScanIssue {
 
 #[cfg(test)]
 mod tests {
-    use super::{ForgeKind, RemoteUrl, RepoUpdatePolicy};
+    use super::{ForgeKind, ForgeVisibility, RemoteUrl, RepoUpdatePolicy};
 
     #[test]
     fn names_match_serialization() {
@@ -198,6 +262,16 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(kind).unwrap(),
                 serde_json::Value::from(kind.as_str())
+            );
+        }
+        for visibility in [
+            ForgeVisibility::Public,
+            ForgeVisibility::Internal,
+            ForgeVisibility::Private,
+        ] {
+            assert_eq!(
+                serde_json::to_value(visibility).unwrap(),
+                serde_json::Value::from(visibility.to_string())
             );
         }
         for policy in [

@@ -29,6 +29,7 @@ use loom_api::{
     UpdateState,
 };
 use loom_config::config::{Config, parse_config};
+use loom_config::forges::DEFAULT_POLL_INTERVAL;
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
 use loom_config::layout::{
     Layout, MAX_SOCKET_PATH_BYTES, RUN_DIR_MODE, RUN_FILE_MODE, check_socket_path,
@@ -68,6 +69,7 @@ use tokio::sync::oneshot;
 use tracing::{Span, debug, info, warn};
 
 use crate::disk_usage::DiskCache;
+use crate::forge_metadata;
 use crate::repos::{self, Failure, RepoHandle};
 use crate::schedules;
 use crate::sync::{self as store_sync, SyncHandle};
@@ -152,7 +154,8 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     // The git commands that the daemon stops at shutdown: the store sync and the remote checks.
     let children = Arc::new(ChildGroups::default());
     // Opened under the lock: this daemon is the only writer of the index.
-    let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home, &children)
+    let poll = forge_poll(&config, &forges);
+    let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home, &children, poll)
         .wrap_err("cannot start the repository index")?;
     let store_paths = stores
         .held
@@ -315,6 +318,31 @@ struct App {
     heartbeat: Duration,
     /// The forge credentials of the held contexts.
     forges: Forges,
+}
+
+/// The forge metadata poll of the credentials of the held contexts.
+fn forge_poll(config: &Config, forges: &Forges) -> forge_metadata::Settings {
+    forge_metadata::Settings {
+        intervals: forges
+            .targets
+            .iter()
+            .map(|target| poll_interval(config, &target.host))
+            .collect(),
+        targets: forges.targets.clone(),
+        resolver: Arc::clone(&forges.resolver),
+        user_agent: format!("loomd/{}", VERSION_INFO.version),
+    }
+}
+
+/// `[forges."<host>"] poll_interval` of `host`, the default without a table.
+fn poll_interval(config: &Config, host: &str) -> Duration {
+    config
+        .forges
+        .iter()
+        .find(|(name, _)| name.as_str() == host)
+        .map_or(DEFAULT_POLL_INTERVAL, |(_, forge)| {
+            forge.poll_interval.get()
+        })
 }
 
 /// The forge credentials of the held contexts, and their tokens in memory.

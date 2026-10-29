@@ -175,7 +175,7 @@ token_cmd = "op read op://company-a/github/token"
 | --- | --- | --- | --- |
 | `[forges."<host>"] token_cmd` | string: shell command | none | Not empty. `loomd` runs it with `sh -c`, with no input, and stops it after 10 s. Its standard output, trimmed, is the token. Not with `token_env`. |
 | `[forges."<host>"] token_env` | string: variable name | none | ASCII letters, digits and `_`, not starting with a digit. The variable of the environment of `loomd` that holds the token. Not with `token_cmd`. |
-| `[forges."<host>"] poll_interval` | string: duration | `"5m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. `loomd` validates it; no version of `loomd` uses it yet. |
+| `[forges."<host>"] poll_interval` | string: duration | `"5m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. Interval of the [forge metadata](api.md#forge-metadata) poll of the host, per credential. |
 | `[forges."<host>"] review_requests` | string: `"teams"`, `"direct"` | `"teams"` | GitHub review requests that count: to me and my teams (`teams`), or to me only (`direct`). `loomd` validates it; no version of `loomd` uses it yet. |
 | `[contexts.<name>.forges."<host>"]` | table | none | `<host>`: the rules of `[forges."<host>"]`. The host is `github.com`, `gitlab.com`, or has a `[forges."<host>"]` table: a host with no known forge is an error. |
 | `[contexts.<name>.forges."<host>"] token_cmd`, `token_env` | string | none | The rules of `[forges."<host>"]`. Exactly one of them. |

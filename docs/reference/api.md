@@ -117,6 +117,19 @@ Except on `?refresh=true`, `loomd` reads the states in the background. It uses a
 
 If an update of a repository is in progress, `loomd` updates the repository again when that update ends. The answer can take as long as the updates (each command has its timeout). With `dry_run: true`, nothing runs: `loomd` reads each state now, and the result says what an update would do.
 
+#### Forge metadata
+
+`loomd` reads the project of each repository on its forge, for the [repo card](#forgemetadata). It stores the result as the repository's `forge_metadata`. `loomd` never uses it for updates: the git state stays the source for branches.
+
+| Property | Value |
+| --- | --- |
+| Repositories | A repository whose context has a [forge credential](configuration.md#forges) for the host of its primary remote, on a context held on this machine. The project is the path of the primary remote, such as `acme/shop`. Clones and worktrees of one project share one read. `loomd` removes the `forge_metadata` of a repository without such a credential. |
+| Schedule | Every `[forges."<host>"] poll_interval` (default 5 minutes) per credential, ±10 % at random, starting at the first read of the index after the start. `loomd` reads the index again every 10 seconds: a repository without `forge_metadata` is read at once. |
+| GitHub | One GraphQL call: `POST <graphql>` with `repository(owner, name) { databaseId url isArchived visibility defaultBranchRef { name } pullRequests(states: OPEN) { totalCount } }`. |
+| GitLab | `GET <api>/projects/<encoded path>`, then `GET <api>/projects/<id>/merge_requests?state=opened&per_page=1`: `open_mrs` is its `x-total` header. |
+| Token | As for the [forge check](#forge-check): the same tokens in memory, resolved again once after a `401`. Each call stops after 20 s. |
+| Failures | The project is unknown, with the reason in `error`. When the token cannot be resolved, or the forge cannot be reached, every project of the credential is unknown, and `loomd` makes no other call for it until the next poll. When the forge limits the rate, `loomd` stops the reads of the credential and keeps the `forge_metadata` that it did not read again. It reads again after the wait that the forge gives, and not before the next poll. |
+
 #### Remote check
 
 `POST /v1/diagnostics/remote-check` (no body) checks that each remote endpoint of the index responds to the git of `loomd`. It answers with a [`RemoteCheckResult`](#remotecheckresult) (the checks of `loom repo doctor`).
@@ -534,6 +547,7 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
 | `last_used` | `Timestamp` or absent | Last time the repository was used: a registration on use (`on_use`), sent by `loom` run inside it and by `loom repo show`. Kept by scans, dropped by a rebuild. |
 | `state` | [`RepoState`](#repostate) \| `null` | State of the repository, `null` until it is read for the first time (see [state refresh](#state-refresh)). |
 | `last_update` | [`LastUpdate`](#lastupdate) \| `null` | Result of the last [update](#updates), `null` until the first one. Kept across state refreshes and scans. |
+| `forge_metadata` | [`ForgeMetadata`](#forgemetadata) \| `null` | The project on the forge, read by the [forge metadata](#forge-metadata) poll. `null` when the context has no forge credential for the host of the primary remote, or before the first read. Kept across state refreshes, updates and scans. |
 
 ```json
 {
@@ -552,7 +566,8 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
   "forge": "github",
   "registered": false,
   "state": null,
-  "last_update": null
+  "last_update": null,
+  "forge_metadata": null
 }
 ```
 
@@ -590,6 +605,42 @@ The status walk (`dirty`), the untracked count and the ahead/behind counts share
   "default_branch": { "known": "main" },
   "last_commit": { "known": "2026-10-12T17:42:10Z" },
   "last_fetch": { "known": null },
+  "error": null
+}
+```
+
+### `ForgeMetadata`
+
+The project of a repository on its forge (in `RepoSummary`, schema in [`schemas/repo_summary.json`](schemas/repo_summary.json)).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `refreshed_at` | `Timestamp` | When `loomd` last asked the forge. |
+| `project` | `{"known": <project>}` \| `"unknown"` | The project. Unknown when the forge call failed. |
+| `error` | string \| `null` | Why `project` is unknown, in English, such as `no usable answer from the forge: …` or `not found on the forge (404): …`. `null` when `project` is known. |
+
+| Project field | Type | Content |
+| --- | --- | --- |
+| `id` | integer (u64) | Numeric ID of the project: GitHub `databaseId` (the `id` of the REST API), GitLab `id`. |
+| `default_branch` | string \| `null` | Default branch on the forge. `null` for an empty project. |
+| `visibility` | `public` \| `internal` \| `private` | Who can see the project. |
+| `archived` | boolean | The project is archived (read-only on the forge). |
+| `web_url` | string | URL of the project page. |
+| `open_mrs` | integer (u64) \| `null` | Open pull requests (GitHub) or merge requests (GitLab). `null` when GitLab does not give the count (above 10,000). |
+
+```json
+{
+  "refreshed_at": "2026-10-13T08:00:00Z",
+  "project": {
+    "known": {
+      "id": 1296269,
+      "default_branch": "main",
+      "visibility": "private",
+      "archived": false,
+      "web_url": "https://github.com/acme/shop",
+      "open_mrs": 3
+    }
+  },
   "error": null
 }
 ```

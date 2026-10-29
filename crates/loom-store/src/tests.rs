@@ -3,9 +3,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{
-    ContextAssignment, LastUpdate, MaybeKnown, Remote, RepoHead, RepoIdentity, RepoMatch,
-    RepoState, RepoUpdatePolicy, SearchField, SearchKind, SearchResult, SkipReason, Timestamp,
-    Untracked, UpdateOutcome, Upstream,
+    ContextAssignment, ForgeMetadata, ForgeProject, ForgeVisibility, LastUpdate, MaybeKnown,
+    Remote, RepoHead, RepoIdentity, RepoMatch, RepoState, RepoUpdatePolicy, SearchField,
+    SearchKind, SearchResult, SkipReason, Timestamp, Untracked, UpdateOutcome, Upstream,
 };
 use loom_repo::ScanDiff;
 use rusqlite::Connection;
@@ -873,6 +873,135 @@ fn version_2_database_migrates_to_3_with_its_states() {
         store.get("unassigned/a").unwrap().unwrap().last_update,
         Some(update)
     );
+}
+
+fn forge_at(refreshed_at: u64, archived: bool) -> ForgeMetadata {
+    ForgeMetadata {
+        refreshed_at: at(refreshed_at),
+        project: MaybeKnown::Known(ForgeProject {
+            id: 77,
+            default_branch: Some("main".to_owned()),
+            visibility: ForgeVisibility::Internal,
+            archived,
+            web_url: "https://gitlab.example/company-a/checkout".to_owned(),
+            open_mrs: Some(2),
+        }),
+        error: None,
+    }
+}
+
+#[test]
+fn version_7_database_migrates_to_8_with_its_repositories_and_no_forge_metadata() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut conn = Connection::open(&path).unwrap();
+    migrate_with(&mut conn, &path, migrations_up_to(7)).unwrap();
+    conn.execute(
+        "INSERT INTO repos (path, name, slug, context, assignment, remotes, registered, \
+                            first_seen, updated_at) \
+         VALUES ('/w/a', 'a', 'unassigned/a', 'unassigned', '{\"rule\":\"unassigned\"}', \
+                 '[]', 0, 10, 10)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO repo_state (repo_id, refreshed_at, dirty) VALUES (1, 20, '0')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(user_version(&store.conn).unwrap(), 8);
+    let repo = store.get("unassigned/a").unwrap().unwrap();
+    assert_eq!(repo.state.unwrap().dirty, MaybeKnown::Known(0));
+    assert_eq!(repo.forge_metadata, None);
+    let metadata = forge_at(30, true);
+    assert!(
+        store
+            .save_forge(Path::new("/w/a"), Some(&metadata))
+            .unwrap()
+    );
+    assert_eq!(
+        store.get("unassigned/a").unwrap().unwrap().forge_metadata,
+        Some(metadata)
+    );
+}
+
+#[test]
+fn forge_metadata_is_saved_replaced_cleared_and_kept_across_refreshes() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    let mut store = Store::open(&path).unwrap();
+    store
+        .apply_scan(&added(vec![repo("/w/a", "p", "p/a", &[])]), at(100))
+        .unwrap();
+    assert_eq!(store.get("p/a").unwrap().unwrap().forge_metadata, None);
+
+    let first = forge_at(150, false);
+    assert!(store.save_forge(Path::new("/w/a"), Some(&first)).unwrap());
+    // A state refresh, an update and a scan keep it.
+    store
+        .save_state(Path::new("/w/a"), &state_on("main", 160))
+        .unwrap();
+    store
+        .save_update(
+            Path::new("/w/a"),
+            &update_at(170, vec![UpdateOutcome::Fetched]),
+            None,
+        )
+        .unwrap();
+    store
+        .apply_scan(
+            &ScanDiff {
+                updated: vec![repo("/w/a", "p", "p/a", &["git@x:y/a.git"])],
+                ..ScanDiff::default()
+            },
+            at(180),
+        )
+        .unwrap();
+    let reader = Reader::open(&path).unwrap();
+    assert_eq!(
+        reader.get("p/a").unwrap().unwrap().forge_metadata,
+        Some(first)
+    );
+
+    // A failed poll: the project is unknown, with the reason.
+    let failed = ForgeMetadata {
+        refreshed_at: at(200),
+        project: MaybeKnown::Unknown,
+        error: Some("no usable answer from the forge: connection refused".to_owned()),
+    };
+    assert!(store.save_forge(Path::new("/w/a"), Some(&failed)).unwrap());
+    assert_eq!(
+        reader.get("p/a").unwrap().unwrap().forge_metadata,
+        Some(failed)
+    );
+
+    // No credential any more: removed, once.
+    assert!(store.save_forge(Path::new("/w/a"), None).unwrap());
+    assert!(!store.save_forge(Path::new("/w/a"), None).unwrap());
+    assert_eq!(reader.get("p/a").unwrap().unwrap().forge_metadata, None);
+
+    // Unknown path: nothing written.
+    assert!(
+        !store
+            .save_forge(Path::new("/w/gone"), Some(&forge_at(210, false)))
+            .unwrap()
+    );
+
+    // Removed with its repository.
+    assert!(
+        store
+            .save_forge(Path::new("/w/a"), Some(&forge_at(220, true)))
+            .unwrap()
+    );
+    store.forget("p/a").unwrap();
+    let rows: i64 = store
+        .conn
+        .query_row("SELECT count(*) FROM repo_forge", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
 }
 
 #[test]

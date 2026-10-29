@@ -24,8 +24,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::StatusCode;
 use loom_api::{
-    ApiError, LastUpdate, RemoteCheck, RemoteCheckResult, RepoState, RepoSummary, RepoSync,
-    ScanIssue, ScanResult, SearchResult, SyncOutcome, SyncRequest, SyncResult, Timestamp,
+    ApiError, ForgeMetadata, LastUpdate, RemoteCheck, RemoteCheckResult, RepoState, RepoSummary,
+    RepoSync, ScanIssue, ScanResult, SearchResult, SyncOutcome, SyncRequest, SyncResult, Timestamp,
 };
 use loom_config::config::Config;
 use loom_config::repos::{ForgeConfig, ForgeHost};
@@ -46,6 +46,7 @@ use tokio::sync::oneshot;
 use tracing::field::Empty;
 use tracing::{Span, debug, info, info_span, warn};
 
+use crate::forge_metadata;
 use crate::updates::{self, Updater, UpdaterHandle};
 
 /// Longest wait for `ssh -G <alias>`.
@@ -85,6 +86,11 @@ pub enum Command {
         state: Option<Box<RepoState>>,
         reply: Reply<RepoSummary>,
     },
+    /// Writes the forge metadata of the repository at `path`, or removes it when `None`.
+    SaveForge {
+        path: PathBuf,
+        metadata: Option<Box<ForgeMetadata>>,
+    },
     Register {
         path: PathBuf,
         on_use: bool,
@@ -105,6 +111,7 @@ pub struct RepoIndex {
     thread: JoinHandle<()>,
     states: StatePool,
     updater: Updater,
+    forges: forge_metadata::Poller,
 }
 
 /// What the API handlers use: the command channel, the database path for reads, and how
@@ -139,6 +146,7 @@ pub fn start(
     config: &Config,
     home: &Path,
     children: &Arc<ChildGroups>,
+    forges: forge_metadata::Settings,
 ) -> Result<(RepoIndex, RepoHandle)> {
     let store = Store::open(db).into_diagnostic()?;
     let discovery = Discovery {
@@ -203,6 +211,9 @@ pub fn start(
     )
     .into_diagnostic()
     .wrap_err("cannot start the repository update threads")?;
+    let forges = forge_metadata::start(forges, &commands, db.to_path_buf())
+        .into_diagnostic()
+        .wrap_err("cannot start the forge metadata thread")?;
     // The same runner as the updates, plus the registry: a remote check runs git as an update does.
     let remote_runner = GitRunner {
         children: Some(Arc::clone(children)),
@@ -221,6 +232,7 @@ pub fn start(
             thread,
             states,
             updater,
+            forges,
         },
         handle,
     ))
@@ -233,6 +245,7 @@ impl RepoIndex {
     pub fn stop(self) {
         // First: its workers write through the store thread.
         self.updater.stop();
+        self.forges.stop();
         self.states.stopping.store(true, Ordering::Release);
         let _ = self.commands.send(Command::Stop);
         if self.thread.join().is_err() {
@@ -645,6 +658,11 @@ impl Worker {
                     reply,
                 } => {
                     let _ = reply.send(self.save_update(&path, &update, state.as_deref()));
+                }
+                Command::SaveForge { path, metadata } => {
+                    if let Err(error) = self.store.save_forge(&path, metadata.as_deref()) {
+                        warn!(path = %path.display(), %error, "cannot write the forge metadata");
+                    }
                 }
                 Command::Register {
                     path,
