@@ -45,7 +45,8 @@ pub fn find_request(kind: ForgeKind, project: &str, head: &str) -> ForgeRequest 
         ForgeKind::Github => {
             let owner = project.split('/').next().unwrap_or_default();
             format!(
-                "/repos/{project}/pulls?head={}&state=open&per_page=100",
+                "/repos/{}/pulls?head={}&state=open&per_page=100",
+                encode_path(project),
                 encode(&format!("{owner}:{head}"))
             )
         }
@@ -72,7 +73,7 @@ pub fn create_request(kind: ForgeKind, mr: &NewMr) -> ForgeRequest {
     match kind {
         ForgeKind::Github => ForgeRequest {
             method: "POST",
-            path: format!("/repos/{}/pulls", mr.project),
+            path: format!("/repos/{}/pulls", encode_path(&mr.project)),
             body: Some(json!({
                 "title": mr.title,
                 "head": mr.head,
@@ -102,6 +103,12 @@ pub fn gitlab_draft_title(title: &str) -> String {
     } else {
         format!("{GITLAB_DRAFT_PREFIX}{title}")
     }
+}
+
+/// `path` with each `/`-separated segment [encoded](encode). Pure.
+#[must_use]
+pub fn encode_path(path: &str) -> String {
+    path.split('/').map(encode).collect::<Vec<_>>().join("/")
 }
 
 /// `text` percent-encoded for a path segment or a query value: every byte but
@@ -197,5 +204,6 @@ mod tests {
     fn encoding() {
         assert_eq!(encode("a-Z_0.9~"), "a-Z_0.9~");
         assert_eq!(encode("a/b c:é"), "a%2Fb%20c%3A%C3%A9");
+        assert_eq!(super::encode_path("acme/shop?x#y"), "acme/shop%3Fx%23y");
     }
 }

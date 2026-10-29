@@ -99,6 +99,10 @@ struct MergeRequest {
     work_in_progress: bool,
     target_branch: String,
     source_branch: String,
+    #[serde(default)]
+    source_project_id: Option<u64>,
+    #[serde(default)]
+    target_project_id: Option<u64>,
     sha: Option<Sha>,
     diff_refs: Option<DiffRefs>,
     references: References,
@@ -201,6 +205,24 @@ fn summary(payload: &'static str, mr: MergeRequest) -> Result<MrSummary, ParseEr
         web_url: mr.web_url,
         updated_at: mr.updated_at.0,
     })
+}
+
+/// `GET /projects/<id>/merge_requests?source_branch=…`, one page, without forks.
+///
+/// GitLab lists the merge requests from forks too, with the same source branch name: they are
+/// not the branch that `loom pr` pushed.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a list of GitLab merge requests, or one has an invalid
+/// reference or state.
+pub fn parse_branch_merge_requests(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
+    const PAYLOAD: &str = "GitLab merge requests";
+    let mrs: Vec<MergeRequest> = json(PAYLOAD, body)?;
+    mrs.into_iter()
+        .filter(|mr| mr.source_project_id.is_some() && mr.source_project_id == mr.target_project_id)
+        .map(|mr| summary(PAYLOAD, mr))
+        .collect()
 }
 
 /// `GET /merge_requests?scope=reviews_for_me&…`, one page.

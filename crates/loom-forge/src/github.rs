@@ -152,7 +152,8 @@ pub fn parse_pull_summary(body: &[u8]) -> Result<MrSummary, ParseError> {
     pull_summary(PAYLOAD, json(PAYLOAD, body)?)
 }
 
-/// `GET /repos/<owner>/<repo>/pulls?head=…`, one page.
+/// `GET /repos/<owner>/<repo>/pulls?head=…`, one page: only the pull requests from a branch of
+/// the repository itself, not from a fork.
 ///
 /// # Errors
 ///
@@ -162,6 +163,10 @@ pub fn parse_pull_summaries(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
     let pulls: Vec<Pull> = json(PAYLOAD, body)?;
     pulls
         .into_iter()
+        .filter(|pull| match (&pull.head.repo, &pull.base.repo) {
+            (Some(head), Some(base)) => head.full_name.eq_ignore_ascii_case(&base.full_name),
+            _ => false,
+        })
         .map(|pull| pull_summary(PAYLOAD, pull))
         .collect()
 }

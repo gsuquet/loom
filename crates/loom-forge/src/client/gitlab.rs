@@ -10,9 +10,9 @@ use super::{
 use crate::error::ParseError;
 use crate::gitlab::request::{ApproveBody, BulkPublishBody, DraftNoteBody};
 use crate::gitlab::{
-    Approvals, DraftNote, TokenInfo, parse_approvals, parse_diffs, parse_discussions,
-    parse_draft_note, parse_draft_notes, parse_merge_request, parse_merge_request_summary,
-    parse_merge_requests, parse_token, parse_user, parse_versions,
+    Approvals, DraftNote, TokenInfo, parse_approvals, parse_branch_merge_requests, parse_diffs,
+    parse_discussions, parse_draft_note, parse_draft_notes, parse_merge_request,
+    parse_merge_request_summary, parse_merge_requests, parse_token, parse_user, parse_versions,
 };
 use crate::model::{FileDiff, Mr, MrSummary, MrVersion, Sha, Thread};
 use crate::open::{NewMr, create_request, find_request};
@@ -204,7 +204,7 @@ impl Forge for GitlabClient {
 impl OpenForge for GitlabClient {
     fn open_mrs_of_branch(&self, project: &str, head: &str) -> Result<Vec<MrSummary>, ForgeError> {
         let request = find_request(ForgeKind::Gitlab, project, head);
-        self.list(&request.path, parse_merge_requests)
+        self.list(&request.path, parse_branch_merge_requests)
     }
 
     fn create_draft_mr(&self, mr: &NewMr) -> Result<MrSummary, ForgeError> {

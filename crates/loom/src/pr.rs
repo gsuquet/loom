@@ -28,18 +28,13 @@ pub enum PrRefusal {
 }
 
 /// Checks that `branch` can be the source of an MR into `base`: not the default branch of the
-/// remote (`default`, when known), not `base`, and `ahead` commits ahead of it. Pure.
+/// remote (`default`), not `base`, and `ahead` commits ahead of it. Pure.
 ///
 /// # Errors
 ///
 /// [`PrRefusal`].
-pub fn check_branch(
-    branch: &str,
-    base: &str,
-    default: Option<&str>,
-    ahead: u64,
-) -> Result<(), PrRefusal> {
-    if default == Some(branch) {
+pub fn check_branch(branch: &str, base: &str, default: &str, ahead: u64) -> Result<(), PrRefusal> {
+    if default == branch {
         return Err(PrRefusal::DefaultBranch(branch.to_owned()));
     }
     if branch == base {
@@ -128,26 +123,26 @@ mod tests {
     #[test]
     fn the_default_branch_the_base_and_an_empty_branch_are_refused() {
         assert_eq!(
-            check_branch("main", "main", Some("main"), 3),
+            check_branch("main", "main", "main", 3),
             Err(PrRefusal::DefaultBranch("main".to_owned()))
         );
         // Even with another base.
         assert_eq!(
-            check_branch("main", "release", Some("main"), 3),
+            check_branch("main", "release", "main", 3),
             Err(PrRefusal::DefaultBranch("main".to_owned()))
         );
         assert_eq!(
-            check_branch("release", "release", Some("main"), 3),
+            check_branch("release", "release", "main", 3),
             Err(PrRefusal::SameAsBase("release".to_owned()))
         );
         assert_eq!(
-            check_branch("fix/a", "main", Some("main"), 0),
+            check_branch("fix/a", "main", "main", 0),
             Err(PrRefusal::NothingAhead {
                 branch: "fix/a".to_owned(),
                 base: "main".to_owned(),
             })
         );
-        assert_eq!(check_branch("fix/a", "main", None, 1), Ok(()));
+        assert_eq!(check_branch("fix/a", "main", "main", 1), Ok(()));
     }
 
     #[test]

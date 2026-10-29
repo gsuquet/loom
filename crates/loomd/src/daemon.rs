@@ -1050,7 +1050,13 @@ fn open_with_token(
                 if matches!(error, ForgeError::Unauthorized { .. }) {
                     resolver.invalidate(&target.source, &token);
                 }
-                return Err(forge_error(&error));
+                // The validation errors say why, such as "no commits between main and fix/a".
+                return Err(match &error {
+                    ForgeError::Unprocessable { details, .. } if !details.is_empty() => {
+                        forge_error(&format!("{error}: {}", details.join("; ")))
+                    }
+                    _ => forge_error(&error),
+                });
             }
             Ok(opened) => return Ok(opened),
         }

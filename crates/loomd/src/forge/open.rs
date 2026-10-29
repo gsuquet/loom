@@ -15,6 +15,9 @@ pub enum OpenRefusal {
     /// A field of the request is empty.
     #[error("`{0}` is empty")]
     Empty(&'static str),
+    /// The project path is not a path of the forge.
+    #[error("`{0}` is not a project path of the forge")]
+    InvalidProject(String),
     /// The source and the target branch are the same.
     #[error("the branch `{0}` is the target branch: create a branch for the change first")]
     SameBranch(String),
@@ -49,6 +52,14 @@ pub fn target_of<'a>(
         if value.trim().is_empty() {
             return Err(OpenRefusal::Empty(name));
         }
+    }
+    let segments: Vec<&str> = request.project.split('/').collect();
+    if segments.len() < 2
+        || segments
+            .iter()
+            .any(|segment| segment.is_empty() || *segment == "." || *segment == "..")
+    {
+        return Err(OpenRefusal::InvalidProject(request.project.clone()));
     }
     if request.head == request.base {
         return Err(OpenRefusal::SameBranch(request.head.clone()));
@@ -257,6 +268,16 @@ mod tests {
             target_of(&targets, &context("company-a"), &same),
             Err(OpenRefusal::SameBranch(_))
         ));
+        for project in ["shop", "acme/../shop", "acme//shop"] {
+            let invalid = MrOpenRequest {
+                project: project.to_owned(),
+                ..request()
+            };
+            assert_eq!(
+                target_of(&targets, &context("company-a"), &invalid).unwrap_err(),
+                OpenRefusal::InvalidProject(project.to_owned())
+            );
+        }
         let empty = MrOpenRequest {
             project: " ".to_owned(),
             ..request()

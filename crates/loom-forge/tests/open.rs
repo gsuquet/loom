@@ -174,3 +174,42 @@ fn gitlab_refuses_a_second_merge_request_of_a_branch_with_409() {
         .unwrap_err();
     assert!(matches!(error, ForgeError::Conflict { .. }), "{error:?}");
 }
+
+#[test]
+fn an_open_mr_from_a_fork_with_the_same_branch_name_is_not_the_branch() {
+    let forge = FakeForge::start();
+    let fork_mr = edit(&draft_merge_request(), |mr| {
+        mr["source_project_id"] = json!(991);
+        mr["iid"] = json!(87);
+        mr["references"]["full"] = json!("company-a/checkout!87");
+    });
+    let list = format!(
+        "[{},{}]",
+        String::from_utf8(fork_mr).unwrap(),
+        String::from_utf8(draft_merge_request()).unwrap()
+    );
+    forge.route(Route::get(GITLAB_FIND).body(list));
+    let client = GitlabClient::new(&base(&forge), Token::new(TOKEN.to_owned()), "loom-test");
+    let found = client
+        .open_mrs_of_branch("company-a/checkout", "auth-refactor")
+        .unwrap();
+    assert_eq!(
+        found.iter().map(|mr| mr.key.number()).collect::<Vec<_>>(),
+        [88]
+    );
+
+    let forge = FakeForge::start();
+    let fork_pull = edit(&draft_pull(), |pull| {
+        pull["head"]["repo"]["full_name"] = json!("mallory/shop");
+    });
+    forge.route(
+        Route::get(GITHUB_FIND).body(format!("[{}]", String::from_utf8(fork_pull).unwrap())),
+    );
+    let client = GithubClient::new(&base(&forge), Token::new(TOKEN.to_owned()), "loom-test");
+    assert_eq!(
+        client
+            .open_mrs_of_branch("acme/shop", "auth-refactor")
+            .unwrap(),
+        []
+    );
+}

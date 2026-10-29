@@ -56,6 +56,11 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
+        Self::with_origin(CONFIG, "https://github.com/acme/shop.git")
+    }
+
+    /// A sandbox with `config`, and the remote `origin` on `url`.
+    fn with_origin(config: &str, url: &str) -> Self {
         let loomd = loom_bin().with_file_name("loomd");
         assert!(loomd.is_file(), "{} is missing", loomd.display());
         let dir = tempfile::Builder::new()
@@ -67,21 +72,13 @@ impl Sandbox {
             forge: FakeForge::start(),
         };
         fs::create_dir_all(sandbox.loom_home()).unwrap();
-        fs::write(sandbox.loom_home().join("config.toml"), CONFIG).unwrap();
+        fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
         let repo = sandbox.repo();
         fs::create_dir_all(&repo).unwrap();
         sandbox.git(&sandbox.home(), &["init", "--bare", "-q", "remote.git"]);
         sandbox.git(&repo, &["init", "-q", "-b", "main"]);
         sandbox.commit("first");
-        sandbox.git(
-            &repo,
-            &[
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/acme/shop.git",
-            ],
-        );
+        sandbox.git(&repo, &["remote", "add", "origin", url]);
         let bare = sandbox.bare();
         sandbox.git(
             &repo,
@@ -457,12 +454,102 @@ fn a_context_without_a_credential_for_the_host_opens_nothing() {
     )
     .unwrap();
     let id = sandbox.task_on_branch();
-    let output = sandbox.loom(&["pr", "-n", &id]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).contains("context `personal` has no forge credential for `github.com`"),
-        "{}",
-        stderr(&output)
-    );
+    for args in [&["pr", "-n", &id][..], &["pr", &id]] {
+        let output = sandbox.loom(args);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            stderr(&output).contains("context `personal` has no forge credential for `github.com`"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    // Refused before the push.
+    assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
     assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
+}
+
+#[test]
+fn a_refused_token_is_resolved_again_and_the_request_sent_again_once() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.task_on_branch();
+    sandbox
+        .forge
+        .route(Route::get(FIND).times(1).status(401).body("{}"))
+        .route(Route::get(FIND).times(1).body("[]"))
+        .route(Route::post(CREATE).status(201).body(draft_pull()));
+    let text = sandbox.ok(&["pr", &id]);
+    assert!(text.contains("opened draft MR acme/shop#412"), "{text}");
+    assert_eq!(
+        sandbox.forge.lines(),
+        [
+            format!("GET {FIND}"),
+            format!("GET {FIND}"),
+            format!("POST {CREATE}")
+        ]
+    );
+    assert_eq!(delivery_keys(&sandbox.task(&id)), ["acme/shop#412"]);
+}
+
+#[test]
+fn a_forge_failure_after_the_push_leaves_the_task_unchanged() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.task_on_branch();
+    let events = sandbox.events(&id);
+    sandbox
+        .forge
+        .route(Route::get(FIND).body("[]"))
+        .route(Route::post(CREATE).status(422).body(
+            r#"{"message":"Validation Failed","errors":[{"message":"No commits between main and fix/login"}]}"#,
+        ));
+    let output = sandbox.loom(&["pr", &id]);
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(
+        error.contains("the branch is pushed, but no MR is linked"),
+        "{error}"
+    );
+    assert!(
+        error.contains("No commits between main and fix/login"),
+        "{error}"
+    );
+    assert!(sandbox.remote_branches().contains("refs/heads/fix/login"));
+    assert_eq!(delivery_keys(&sandbox.task(&id)), [] as [String; 0]);
+    assert_eq!(sandbox.events(&id), events);
+}
+
+#[test]
+fn pr_opens_a_gitlab_draft_with_the_draft_title_prefix() {
+    let config = CONFIG.replace(
+        "[forges.\"github.com\"]\nkind = \"github\"",
+        "[forges.\"gitlab.example.com\"]\nkind = \"gitlab\"",
+    );
+    let sandbox =
+        Sandbox::with_origin(&config, "https://gitlab.example.com/company-a/checkout.git");
+    let id = sandbox.task_on_branch();
+    let find = "/projects/company-a%2Fcheckout/merge_requests?source_branch=fix%2Flogin&state=opened&per_page=100";
+    let create = "/projects/company-a%2Fcheckout/merge_requests";
+    let mut created: serde_json::Value =
+        serde_json::from_slice(&fixture("gitlab/merge-request-88.v1.json")).unwrap();
+    created["draft"] = json!(true);
+    created["diff_refs"] = json!(null);
+    sandbox.forge.route(Route::get(find).body("[]")).route(
+        Route::post(create)
+            .status(201)
+            .body(serde_json::to_vec(&created).unwrap()),
+    );
+    let text = sandbox.ok(&["pr", &id]);
+    assert!(
+        text.contains("opened draft MR company-a/checkout!88"),
+        "{text}"
+    );
+    let requests = sandbox.forge.requests();
+    assert_eq!(requests[1].line(), format!("POST {create}"));
+    assert_eq!(requests[1].json()["title"], "Draft: Login timeout");
+    assert_eq!(requests[1].json()["source_branch"], "fix/login");
+    assert_eq!(requests[1].json()["target_branch"], "main");
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+    assert_eq!(delivery_keys(&sandbox.task(&id)), ["company-a/checkout!88"]);
 }

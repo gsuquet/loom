@@ -158,9 +158,10 @@ pub enum Command {
     /// not sent. If the branch has an open MR, loomd links that MR and opens no other. The MR
     /// becomes a `delivery` link of the task, and the task log gets an `mr` event.
     ///
-    /// The command refuses a detached `HEAD`, the default branch, and a branch with no commit
-    /// ahead of the base. If the push fails, the command shows the git error and opens no MR.
-    /// Starts loomd if it is stopped.
+    /// The command refuses a detached `HEAD`, the default branch, a branch with no commit ahead
+    /// of the base, and a branch whose upstream has another name. Before the push, loomd
+    /// checks the task and the forge credential. If the push fails, the command shows the git
+    /// error and opens no MR. Starts loomd if it is stopped.
     Pr(PrArgs),
     /// Show the focus task of each context, or of the context that `-c` names.
     ///

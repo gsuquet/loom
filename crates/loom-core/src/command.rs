@@ -315,6 +315,7 @@ fn apply_one(
 ) -> Result<(Task, Vec<EventRecord>), DomainError> {
     let mut task = task;
     let event = match command {
+        // `apply` sends `LinkMr` to `link_mr`: it never reaches this function.
         Command::LinkMr { .. } => None,
         Command::SetStatus { status } => set_status(&task, status)?.map(Event::StatusChanged),
         Command::Edit(edit) => {
