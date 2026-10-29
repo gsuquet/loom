@@ -604,15 +604,26 @@ pub fn find_review(
         .filter_map(|row| match &row.state {
             IndexedState::Valid { task, .. } => {
                 let (found, task_host) = review_key(&task.kind, &task.links)?;
-                (found == *key && task_host.as_deref() == Some(host))
-                    .then(|| (row.id.clone(), task.status.name(), row.location))
+                (found == *key && task_host.as_deref() == Some(host)).then(|| {
+                    (
+                        row.id.clone(),
+                        task.status.name(),
+                        row.location,
+                        task.updated,
+                    )
+                })
             }
             IndexedState::Invalid { .. } => None,
         })
-        .max_by_key(|(_, _, location)| match location {
-            TaskLocation::Active => u32::MAX,
-            TaskLocation::Archived(year) => u32::from(*year),
+        // The active task first, then the archived task of the last change: IDs are random.
+        .max_by_key(|(_, _, location, updated)| {
+            let year = match location {
+                TaskLocation::Active => u32::MAX,
+                TaskLocation::Archived(year) => u32::from(*year),
+            };
+            (year, *updated)
         })
+        .map(|(id, status, location, _)| (id, status, location))
 }
 
 /// What a failed poll of a host does to the next one.

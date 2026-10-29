@@ -802,3 +802,43 @@ fn action_names_are_read_from_the_path() {
     assert_eq!(action_name_of("archive"), None);
     assert_eq!(action_name_of("Done"), None);
 }
+
+#[test]
+fn the_review_of_an_mr_is_the_active_task_then_the_last_archived_one() {
+    use crate::review_sync::find_review;
+    use loom_forge::model::MrKey;
+
+    let review = |id: &str, updated: u64, location: TaskLocation| {
+        let mut task = task(id, "work", 100);
+        task.kind = Kind::Review;
+        task.updated = Timestamp::from_unix_secs(updated).unwrap();
+        task.links = vec![loom_api::Link::Origin(loom_api::ExternalRef {
+            provider: "github".to_owned(),
+            key: "acme/shop#412".to_owned(),
+            url: Some("https://github.com/acme/shop/pull/412".to_owned()),
+        })];
+        let mut row = row(task);
+        row.location = location;
+        row
+    };
+    let key = MrKey::parse("acme/shop#412").unwrap();
+    let context: loom_api::ContextName = "work".parse().unwrap();
+    let found = |rows: &[IndexedTask]| {
+        find_review(rows, &context, "github.com", &key).map(|(id, _, _)| id.to_string())
+    };
+    // Two archived tasks of one year: the last changed, whatever the order of their IDs.
+    let mut rows = vec![
+        review("r2000000", 100, TaskLocation::Archived(2026)),
+        review("r1000000", 200, TaskLocation::Archived(2026)),
+    ];
+    assert_eq!(found(&rows).as_deref(), Some("r1000000"));
+    rows.reverse();
+    assert_eq!(found(&rows).as_deref(), Some("r1000000"));
+    // The active task wins; another host is not this MR.
+    rows.push(review("r0000000", 50, TaskLocation::Active));
+    assert_eq!(found(&rows).as_deref(), Some("r0000000"));
+    assert_eq!(
+        find_review(&rows, &context, "github.example.com", &key),
+        None
+    );
+}
