@@ -418,14 +418,13 @@ pub enum Belongs {
     Here,
     /// To another context: not written here.
     Elsewhere,
-    /// To no context: no clone and no `match.hosts` rule, and the credential that found it is
-    /// shared by several contexts, so the finder tells nothing.
+    /// To no context: no clone and no `match.hosts` rule, and several contexts poll the host,
+    /// so the finder tells nothing.
     Unassigned,
 }
 
 /// Where the MR of `context` (from `loom_forge::mr_context`) goes, for the poll of `here`.
-/// `shared`: the credential of `here` for the host is `[forges."<host>"]`, which other held
-/// contexts use too. Pure.
+/// `shared`: other held contexts poll the host too. Pure.
 #[must_use]
 pub fn belongs(context: &MrContext, here: &ContextName, shared: bool) -> Belongs {
     match context {

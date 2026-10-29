@@ -21,8 +21,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use loom_api::{
-    ContextName, CredentialOrigin, ForgeKind, ReviewSync, ReviewSyncFailure, ReviewSyncOutcome,
-    ReviewSyncResult, Timestamp,
+    ContextName, ForgeKind, ReviewSync, ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncResult,
+    Timestamp,
 };
 use loom_config::config::Config;
 use loom_config::forges::ReviewRequests as ConfigRequests;
@@ -54,18 +54,18 @@ use tracing::{Span, debug, info, info_span, warn};
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
 
-/// For each of `targets`, whether its credential is shared: `[forges."<host>"]` gives its
-/// credential to each context without its own table.
-fn shared_credentials(targets: &[ForgeTarget]) -> Vec<bool> {
-    let host_level = |host: &str| {
-        targets
-            .iter()
-            .filter(|target| target.host == host && target.origin == CredentialOrigin::Host)
-            .count()
-    };
+/// For each of `targets`, whether other held contexts poll its host too. Then the context
+/// that found an MR tells nothing: the tokens can be of one account, or one token.
+fn shared_hosts(targets: &[ForgeTarget]) -> Vec<bool> {
     targets
         .iter()
-        .map(|target| target.origin == CredentialOrigin::Host && host_level(&target.host) > 1)
+        .map(|target| {
+            targets
+                .iter()
+                .filter(|other| other.host == target.host)
+                .count()
+                > 1
+        })
         .collect()
 }
 
@@ -144,7 +144,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     .unwrap_or(START_DELAY);
     let now = Instant::now();
     let mut hosts = Vec::new();
-    let shared = shared_credentials(&setup.targets);
+    let shared = shared_hosts(&setup.targets);
     for (target, shared) in setup.targets.into_iter().zip(shared) {
         let machines = config
             .contexts
@@ -257,7 +257,7 @@ impl ReviewHandle {
 /// One context and forge host.
 struct Host {
     target: ForgeTarget,
-    /// Its credential is `[forges."<host>"]`, shared with other held contexts.
+    /// Other held contexts poll its host too.
     shared: bool,
     api: ApiBase,
     interval: Duration,
@@ -662,7 +662,7 @@ impl Poller {
                         unassigned.push(ReviewSyncFailure {
                             key: summary.key.to_string(),
                             error: format!(
-                                "no context for {}/{}: several contexts share the credential of [forges.\"{}\"]; add a match.hosts rule or clone the project",
+                                "no context for {}/{}: several contexts poll {}; add a match.hosts rule or clone the project",
                                 target.host,
                                 summary.key.project(),
                                 target.host

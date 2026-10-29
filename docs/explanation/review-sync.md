@@ -23,9 +23,9 @@ One token can see the projects of several contexts. A context keeps only the MRs
 
 1. the context of an indexed clone of the project (when several clones exist: the most recently used one, then the shortest path);
 2. the `match.hosts` rules on `<host>/<project path>`;
-3. the context whose credential found the MR, when that credential is its own: a `[contexts.<ctx>.forges."<host>"]` table, or `[forges."<host>"]` used by no other held context.
+3. the context that found the MR, when it is the only held context with a credential for the host.
 
-When several contexts share the credential of `[forges."<host>"]`, each of them found the MR, so rule 3 tells nothing. Then the MR goes to no store: each poll reports it as failed, and asks for a `match.hosts` rule or a clone of the project.
+When several held contexts have a credential for the host, rule 3 tells nothing: they can share one token, or have two tokens of one account, and then each of them finds the MR. Then the MR goes to no store: each poll reports it as failed, and asks for a `match.hosts` rule or a clone of the project.
 
 `default_context` never applies: an MR that a client token finds must not go to your personal store. An MR of another context is not written, and the answer counts it in `other_context`.
 

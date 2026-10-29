@@ -838,9 +838,23 @@ fn an_mr_whose_web_url_is_on_another_host_gets_no_task() {
 
 #[test]
 fn an_mr_that_no_rule_assigns_goes_to_no_store_when_the_token_is_shared() {
+    an_mr_that_no_rule_assigns_goes_to_no_store(CONFIG);
+}
+
+#[test]
+fn an_mr_that_no_rule_assigns_goes_to_no_store_when_each_context_has_a_token() {
+    // Two tokens of one account find the same MRs.
+    let config = format!(
+        "{CONFIG}\n[contexts.company-a.forges.\"github.com\"]\ntoken_env = \"LOOM_TEST_GITHUB_TOKEN\"\n"
+    );
+    an_mr_that_no_rule_assigns_goes_to_no_store(&config);
+}
+
+/// `orphan/app` has no clone and no `match.hosts` rule, and both contexts poll github.com:
+/// neither is its context.
+fn an_mr_that_no_rule_assigns_goes_to_no_store(config: &str) {
     let sandbox = Sandbox::new();
-    // `orphan/app` has no clone and no `match.hosts` rule, and both contexts poll github.com
-    // with the token of `[forges."github.com"]`: neither is its context.
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
     let mut search = fixture_json("github/search-review-requested.json");
     let mut orphan = search["items"][0].clone();
     orphan["number"] = json!(5);

@@ -588,14 +588,14 @@ fn notes_name_the_mr_and_the_heads() {
 }
 
 #[test]
-fn a_shared_credential_does_not_choose_the_context_of_an_mr() {
+fn a_host_that_several_contexts_poll_does_not_choose_the_context_of_an_mr() {
     let here: ContextName = "personal".parse().unwrap();
     let other: ContextName = "company-a".parse().unwrap();
     let finder = loom_forge::MrContext::Finder {
         context: here.clone(),
     };
     assert_eq!(belongs(&finder, &here, false), Belongs::Here);
-    // Every context that shares the token is the finder: none of them is the context.
+    // Every context that polls the host can be the finder: none of them is the context.
     assert_eq!(belongs(&finder, &here, true), Belongs::Unassigned);
     let rule = loom_forge::MrContext::Host {
         context: here.clone(),
