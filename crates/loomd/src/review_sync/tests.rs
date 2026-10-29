@@ -37,6 +37,7 @@ fn seen() -> Observation {
         was_requested: Some(true),
         verdict: None,
         new_verdict: false,
+        previous_state: Some(MrState::Open),
     }
 }
 
@@ -95,6 +96,15 @@ fn decision_table() {
             },
             Decision::Create,
         ),
+        // Ignore: my verdict is already on the current head (GitLab lists approved MRs too).
+        (
+            None,
+            Observation {
+                verdict: Some(sha(V2)),
+                ..seen()
+            },
+            Decision::Ignore,
+        ),
         // Ignore: not requested, or not open.
         (None, removed.clone(), Decision::Ignore),
         (None, merged.clone(), Decision::Ignore),
@@ -120,6 +130,50 @@ fn decision_table() {
             Some(Some(Done)),
             after_review_on_v1.clone(),
             set(Ready, new_head),
+        ),
+        // A head that the mirror missed (its write failed), with my verdict on it: still done.
+        (
+            Some(Some(Done)),
+            Observation {
+                previous_head: Some(sha(V1)),
+                verdict: Some(sha(V2)),
+                ..seen()
+            },
+            Decision::Keep,
+        ),
+        // A task that I closed by hand reopens on a new head.
+        (
+            Some(Some(Done)),
+            Observation {
+                previous_head: Some(sha(V1)),
+                ..seen()
+            },
+            set(
+                Ready,
+                Reason::NewHead {
+                    from: sha(V1),
+                    to: sha(V2),
+                },
+            ),
+        ),
+        // An MR reopened on the forge reopens its cancelled task while I am requested.
+        (
+            Some(Some(Cancelled)),
+            Observation {
+                previous_state: Some(MrState::Closed),
+                ..seen()
+            },
+            set(Ready, Reason::Reopened),
+        ),
+        (
+            Some(Some(Cancelled)),
+            Observation {
+                previous_state: Some(MrState::Closed),
+                requested: false,
+                was_requested: Some(false),
+                ..seen()
+            },
+            Decision::Keep,
         ),
         // A new head of an open task changes nothing; of a cancelled one either.
         (

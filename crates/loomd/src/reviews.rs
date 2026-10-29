@@ -46,6 +46,7 @@ use loomd::review_sync::{
     MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, clone_of, github_verdict,
     gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
 };
+use loomd::shutdown::{JOIN_DEADLINE, join_within};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::{Span, debug, info, info_span, warn};
@@ -202,13 +203,12 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
 }
 
 impl ReviewPoller {
-    /// Stops the thread: a poll that runs stops before its next forge call.
+    /// Stops the thread: a poll that runs stops before its next forge call. Waits for it up to
+    /// [`JOIN_DEADLINE`]: a forge call that runs can take longer, and writes nothing.
     pub fn stop(self) {
         self.stopping.store(true, Ordering::Relaxed);
         let _ = self.requests.send(Request::Stop);
-        if self.thread.join().is_err() {
-            warn!("the review poller thread panicked");
-        }
+        join_within(self.thread, JOIN_DEADLINE, "reviews");
     }
 }
 

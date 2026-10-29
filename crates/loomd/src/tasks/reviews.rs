@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use loom_api::{ReviewSyncFailure, Status, StatusName, TaskId};
 use loom_core::{Actor, Origin};
 use loom_forge::model::{Mr, MrKey};
+use loom_store::IndexedTask;
 use loom_store::atomic::write_file;
 use loom_store::files::{TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
 use loom_store::port::TaskLocation;
@@ -21,7 +22,7 @@ use loomd::review_sync::{
     VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror, mirror_dir,
     new_review_task, next_verdict, read_mr,
 };
-use tracing::{debug, info, info_span, warn};
+use tracing::{info, info_span, warn};
 
 use super::{Worker, log_commit, now};
 
@@ -51,8 +52,23 @@ impl Worker {
         let _span =
             info_span!("tasks.reviews", context = %batch.context, host = %batch.host).entered();
         let mut applied = ReviewsApplied::default();
+        let rows = match self.tasks.index().tasks() {
+            Ok(rows) => rows,
+            Err(error) => {
+                warn!(context = %batch.context, %error, "cannot read the tasks, MRs not synced");
+                applied.failed = batch
+                    .updates
+                    .iter()
+                    .map(|update| ReviewSyncFailure {
+                        key: update.key.to_string(),
+                        error: format!("cannot read the tasks: {error}"),
+                    })
+                    .collect();
+                return applied;
+            }
+        };
         for update in &batch.updates {
-            match self.sync_review(batch, update) {
+            match self.sync_review(batch, &rows, update) {
                 Ok(Some((id, created))) => {
                     if created {
                         applied.created.push(id);
@@ -77,6 +93,7 @@ impl Worker {
     fn sync_review(
         &mut self,
         batch: &MrBatch,
+        rows: &[IndexedTask],
         update: &MrUpdate,
     ) -> Result<Option<(TaskId, bool)>, String> {
         let context = &batch.context;
@@ -85,26 +102,22 @@ impl Worker {
             .get(context)
             .ok_or_else(|| format!("no store for context `{context}`"))?
             .clone();
-        let rows = self
-            .tasks
-            .index()
-            .tasks()
-            .map_err(|error| error.to_string())?;
-        let found = find_review(&rows, context, &batch.host, &update.key);
-        if let Some((id, _, true)) = &found {
-            debug!(%id, key = %update.key, "Review task archived, left as it is");
-            return Ok(None);
-        }
+        let found = find_review(rows, context, &batch.host, &update.key);
         let previous = match &found {
-            Some((id, _, _)) => read_previous(&mirror_dir(&task_dir(&root, id), &update.key)),
+            Some((id, _)) => read_previous(&mirror_dir(&task_dir(&root, id), &update.key)),
             None => Previous::default(),
         };
         let Some(mr) = update.mr.clone().or_else(|| previous.mr.clone()) else {
             // A 304 without a mirror: nothing to compare with until the next full read.
-            return Ok(None);
+            return match found {
+                Some(_) => Err(
+                    "the mirror cannot be read: the MR is read in full at the next poll".to_owned(),
+                ),
+                None => Ok(None),
+            };
         };
         let (observation, state) = observe(&mr, &previous, update);
-        let decision = decide(found.as_ref().map(|(_, status, _)| *status), &observation);
+        let decision = decide(found.as_ref().map(|(_, status)| *status), &observation);
         let daemon = Origin {
             actor: Actor::Daemon,
             machine_id: self.user.machine_id.clone(),
@@ -125,11 +138,9 @@ impl Worker {
                     )
                     .map_err(|error| error.to_string())?;
                 info!(%context, key = %mr.key, id = %task.id, "Review task created");
-                // An MR that I already reviewed (GitLab lists approved MRs too) is done at once.
-                let then = decide(Some(Some(StatusName::Inbox)), &observation);
-                (task.id, true, 0, then)
+                (task.id, true, 0, Decision::Keep)
             }
-            (decision @ (Decision::Keep | Decision::SetStatus { .. }), Some((id, _, _))) => {
+            (decision @ (Decision::Keep | Decision::SetStatus { .. }), Some((id, _))) => {
                 let before = self.event_count(&id);
                 (id, false, before, decision)
             }
@@ -222,6 +233,7 @@ fn observe(mr: &Mr, previous: &Previous, update: &MrUpdate) -> (Observation, Syn
         state: mr.state,
         head: mr.version.head_sha.clone(),
         previous_head: previous.mr.as_ref().map(|mr| mr.version.head_sha.clone()),
+        previous_state: previous.mr.as_ref().map(|mr| mr.state),
         requested,
         was_requested,
         verdict: verdict.as_ref().map(|verdict| verdict.sha.clone()),

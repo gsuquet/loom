@@ -33,15 +33,16 @@ For the same reason, `loomd` refuses to move a Review task to another context. T
 
 | The poll sees | Task status before | Task status after |
 | --- | --- | --- |
-| An open MR where you are requested, and no task | (none) | `inbox`, new task; `done` at once if your verdict is on the current head |
+| An open MR where you are requested, and no task | (none) | `inbox`, new task. No task when your verdict is on the current head: there is nothing to review. |
 | The MR is merged | open | `done` |
 | The MR is closed | open | `cancelled` |
 | Your verdict (approve, request changes, comment) on the current head | open | `done` |
 | Your request is removed, after your verdict on the current head | open | `done` |
 | Your request is removed, after your verdict on an older head | open | no change: the new head is still to review |
 | Your request is removed, with no verdict | open | `cancelled` |
-| A new head after the head of the last poll | `done` | `ready` |
+| A new head after the head of the last poll, without your verdict on it | `done` | `ready` |
 | You are requested again (requested now, not at the last poll) | `done`, `cancelled` | `ready` |
+| The MR is open again after a close, and you are requested | `cancelled` | `ready` |
 
 An open status is `inbox`, `ready`, `active` or `waiting`. Each status change has a note before it, with the reason, for example `MR acme/shop#412: new head 84280c4 after 7ebf283, reopened`. The events have the actor `daemon`.
 
@@ -95,4 +96,6 @@ A poll writes nothing when nothing changed:
 
 - GitLab: only the approvals give a verdict. A comment without an approval is not a verdict, and a reset of the state of a reviewer is not a new request.
 - GitHub: a request to one of your teams counts as a request to you, unless `review_requests = "direct"`.
-- An archived Review task is not changed.
+- An archived Review task is not changed. If the MR asks for your review after the archive, the poll creates a new task.
+- GitHub: a new request on a head that you already reviewed, with no push, does not open the task again.
+- `loom review sync` exits with status 0 when a forge limits the rate: the answer gives the time of the reset.

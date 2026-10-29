@@ -94,6 +94,8 @@ pub struct Observation {
     pub verdict: Option<Sha>,
     /// The poll saw a verdict of mine that the last one did not, on the current head.
     pub new_verdict: bool,
+    /// The state of the MR in the mirror, `None` without a mirror.
+    pub previous_state: Option<MrState>,
 }
 
 /// Why the status of a Review task changes.
@@ -114,6 +116,8 @@ pub enum Reason {
     Merged,
     /// The MR is closed without a merge.
     Closed,
+    /// The MR is open again after a close.
+    Reopened,
     /// My review request was removed.
     RequestRemoved,
 }
@@ -132,6 +136,7 @@ impl Reason {
             Self::Verdict => format!("MR {key}: my verdict is posted on the current head"),
             Self::Merged => format!("MR {key}: merged"),
             Self::Closed => format!("MR {key}: closed without a merge"),
+            Self::Reopened => format!("MR {key}: open again after a close, reopened"),
             Self::RequestRemoved => format!("MR {key}: my review request was removed"),
         }
     }
@@ -162,21 +167,25 @@ pub enum Decision {
 /// What a poll does with the Review task of an MR, whose status is `task` (`None`: no task;
 /// `Some(None)`: a status unknown to this version of loom). Pure.
 ///
-/// - No task: one is created for an open MR where I am a requested reviewer.
+/// - No task: one is created for an open MR where I am a requested reviewer, unless my verdict
+///   is on its current head.
 /// - Merged: `done`; closed: `cancelled` (a terminal remote state closes the local task).
 /// - Open task: `done` on a new verdict of mine on the current head; my request removed:
 ///   `done` when my verdict is on the current head, `cancelled` without a verdict, unchanged
 ///   when my verdict is on an older head.
-/// - Done task: a new head reopens it (`ready`), even when the forge removed me from the
-///   reviewers after my review; so does a new request.
-/// - Cancelled task: a new request reopens it.
+/// - Done task: a new head without my verdict on it reopens it (`ready`), even when the forge
+///   removed me from the reviewers after my review; so does a new request.
+/// - Cancelled task: a new request reopens it; so does the MR open again after a close, while I
+///   am requested.
 ///
 /// A request is new, or removed, only against the last poll: a task that I close or reopen by
 /// hand stays as I set it until the MR changes.
 #[must_use]
 pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision {
+    let on_head = seen.verdict.as_ref() == Some(&seen.head);
     let Some(status) = task else {
-        return if seen.state == MrState::Open && seen.requested {
+        // An MR whose current head I already reviewed has nothing for me to do.
+        return if seen.state == MrState::Open && seen.requested && !on_head {
             Decision::Create
         } else {
             Decision::Ignore
@@ -205,7 +214,7 @@ pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision 
                 set(StatusName::Done, Reason::Verdict)
             } else if request_removed {
                 match &seen.verdict {
-                    Some(sha) if *sha == seen.head => set(StatusName::Done, Reason::RequestRemoved),
+                    Some(_) if on_head => set(StatusName::Done, Reason::RequestRemoved),
                     // My verdict is on an older head: the new head is still to review.
                     Some(_) => Decision::Keep,
                     None => set(StatusName::Cancelled, Reason::RequestRemoved),
@@ -214,8 +223,9 @@ pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision 
                 Decision::Keep
             }
         }
+        // A head that the mirror missed is no new head when my verdict is on it.
         StatusName::Done => match &seen.previous_head {
-            Some(from) if *from != seen.head => set(
+            Some(from) if *from != seen.head && !on_head => set(
                 StatusName::Ready,
                 Reason::NewHead {
                     from: from.clone(),
@@ -226,6 +236,9 @@ pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision 
             Some(_) | None => Decision::Keep,
         },
         StatusName::Cancelled if requested_again => set(StatusName::Ready, Reason::RequestedAgain),
+        StatusName::Cancelled if seen.requested && seen.previous_state == Some(MrState::Closed) => {
+            set(StatusName::Ready, Reason::Reopened)
+        }
         StatusName::Cancelled => Decision::Keep,
     }
 }
@@ -560,27 +573,22 @@ pub fn tracked_reviews(
         .collect()
 }
 
-/// The Review task of `key` on `host` in `context`, with its status (`None`: unknown to this
-/// loom), and whether it is archived (an archived task is never changed). Pure.
+/// The active Review task of `key` on `host` in `context`, with its status (`None`: unknown to
+/// this loom). An archived task is never changed: a new request gets a new task. Pure.
 #[must_use]
 pub fn find_review(
     rows: &[IndexedTask],
     context: &ContextName,
     host: &str,
     key: &MrKey,
-) -> Option<(TaskId, Option<StatusName>, bool)> {
+) -> Option<(TaskId, Option<StatusName>)> {
     rows.iter()
-        .filter(|row| row.context == *context)
+        .filter(|row| row.context == *context && row.location == TaskLocation::Active)
         .find_map(|row| match &row.state {
             IndexedState::Valid { task, .. } => {
                 let (found, task_host) = review_key(&task.kind, &task.links)?;
-                (found == *key && task_host.as_deref() == Some(host)).then(|| {
-                    (
-                        row.id.clone(),
-                        task.status.name(),
-                        row.location != TaskLocation::Active,
-                    )
-                })
+                (found == *key && task_host.as_deref() == Some(host))
+                    .then(|| (row.id.clone(), task.status.name()))
             }
             IndexedState::Invalid { .. } => None,
         })
