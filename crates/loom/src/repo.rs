@@ -6,8 +6,8 @@ use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use loom_api::{
-    ContextAssignment, MaybeKnown, PlannedAction, RepoHead, RepoState, RepoSummary, ScanResult,
-    SyncOutcome, SyncResult, UNASSIGNED, Untracked, Upstream,
+    ContextAssignment, ForgeMetadata, MaybeKnown, PlannedAction, RepoHead, RepoState, RepoSummary,
+    ScanResult, SyncOutcome, SyncResult, UNASSIGNED, Untracked, Upstream,
 };
 use thiserror::Error;
 
@@ -466,6 +466,9 @@ pub fn render_card(repo: &RepoSummary) -> String {
             .forge
             .map_or_else(|| "none".to_owned(), |forge| forge.to_string()),
     ));
+    if identity.forge.is_some() {
+        fields.extend(forge_fields(repo.forge_metadata.as_ref()));
+    }
     fields.push((
         "registered",
         if repo.registered { "yes" } else { "no" }.to_owned(),
@@ -490,6 +493,51 @@ pub fn render_card(repo: &RepoSummary) -> String {
             let _ = writeln!(text, "{label:<16}{value}");
             text
         })
+}
+
+/// The forge metadata lines: every field `unknown` without a credential, before the first
+/// forge poll, or when the forge call failed.
+fn forge_fields(metadata: Option<&ForgeMetadata>) -> Vec<(&'static str, String)> {
+    let project = metadata.and_then(|metadata| metadata.project.as_known());
+    let known = |value: Option<String>| value.unwrap_or_else(|| "unknown".to_owned());
+    let mut fields = vec![
+        (
+            "forge_id",
+            known(project.map(|project| project.id.to_string())),
+        ),
+        (
+            "forge_branch",
+            known(project.map(|project| {
+                project
+                    .default_branch
+                    .clone()
+                    .unwrap_or_else(|| "none".to_owned())
+            })),
+        ),
+        (
+            "visibility",
+            known(project.map(|project| project.visibility.to_string())),
+        ),
+        (
+            "archived",
+            known(project.map(|project| if project.archived { "yes" } else { "no" }.to_owned())),
+        ),
+        (
+            "web_url",
+            known(project.map(|project| project.web_url.clone())),
+        ),
+        (
+            "open_mrs",
+            known(project.and_then(|project| project.open_mrs.map(|count| count.to_string()))),
+        ),
+    ];
+    if let Some(metadata) = metadata {
+        fields.push(("forge_checked", metadata.refreshed_at.to_string()));
+        if let Some(error) = &metadata.error {
+            fields.push(("forge_error", error.clone()));
+        }
+    }
+    fields
 }
 
 fn state_fields(state: &RepoState) -> Vec<(&'static str, String)> {
@@ -666,8 +714,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use loom_api::{
-        ContextAssignment, MaybeKnown, RepoHead, RepoIdentity, RepoOperation, RepoState,
-        RepoSummary, ScanIssue, ScanResult, Timestamp, Untracked, Upstream,
+        ContextAssignment, ForgeKind, ForgeMetadata, ForgeProject, ForgeVisibility, MaybeKnown,
+        RepoHead, RepoIdentity, RepoOperation, RepoState, RepoSummary, ScanIssue, ScanResult,
+        Timestamp, Untracked, Upstream,
     };
 
     use super::{
@@ -707,6 +756,7 @@ mod tests {
             last_used: None,
             state: None,
             last_update: None,
+            forge_metadata: None,
         }
     }
 
@@ -1025,6 +1075,72 @@ mod tests {
             "last_fetch:     never\n",
             "refreshed_at:   2026-10-12T08:00:00Z\n",
             "error:          dirty: time budget of 2s exceeded\n",
+        ] {
+            assert!(card.contains(line), "{line:?} not in\n{card}");
+        }
+    }
+
+    #[test]
+    fn card_shows_forge_metadata_and_unknown_without_it() {
+        let mut summary = repo("personal/loom", "/p/loom");
+        // No forge: no forge lines.
+        assert!(!render_card(&summary).contains("forge_id"));
+        summary.identity.forge = Some(ForgeKind::Github);
+        let card = render_card(&summary);
+        for line in [
+            "forge:          github\n",
+            "forge_id:       unknown\n",
+            "forge_branch:   unknown\n",
+            "visibility:     unknown\n",
+            "archived:       unknown\n",
+            "web_url:        unknown\n",
+            "open_mrs:       unknown\n",
+            "registered:     no\n",
+        ] {
+            assert!(card.contains(line), "{line:?} not in\n{card}");
+        }
+        assert!(!card.contains("forge_checked"));
+
+        let at = Timestamp::from_unix_secs(1_791_792_000).unwrap();
+        summary.forge_metadata = Some(ForgeMetadata {
+            refreshed_at: at,
+            project: MaybeKnown::Known(ForgeProject {
+                id: 1_296_269,
+                default_branch: None,
+                visibility: ForgeVisibility::Private,
+                archived: true,
+                web_url: "https://github.com/acme/loom".to_owned(),
+                open_mrs: Some(3),
+            }),
+            error: None,
+        });
+        let card = render_card(&summary);
+        for line in [
+            "forge_id:       1296269\n",
+            "forge_branch:   none\n",
+            "visibility:     private\n",
+            "archived:       yes\n",
+            "web_url:        https://github.com/acme/loom\n",
+            "open_mrs:       3\n",
+            "forge_checked:  2026-10-12T08:00:00Z\n",
+        ] {
+            assert!(card.contains(line), "{line:?} not in\n{card}");
+        }
+        assert!(!card.contains("forge_error"));
+
+        // The forge is down: unknown, with the reason; the rest of the card unchanged.
+        summary.forge_metadata = Some(ForgeMetadata {
+            refreshed_at: at,
+            project: MaybeKnown::Unknown,
+            error: Some("no usable answer from the forge: connection refused".to_owned()),
+        });
+        let card = render_card(&summary);
+        for line in [
+            "forge_id:       unknown\n",
+            "archived:       unknown\n",
+            "forge_error:    no usable answer from the forge: connection refused\n",
+            "slug:           personal/loom\n",
+            "state:          not read yet\n",
         ] {
             assert!(card.contains(line), "{line:?} not in\n{card}");
         }

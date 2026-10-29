@@ -5,7 +5,7 @@
 
 pub mod request;
 
-use loom_api::ForgeKind;
+use loom_api::{ForgeKind, ForgeProject, ForgeVisibility};
 use serde::Deserialize;
 
 use crate::error::{ErrorBody, ForgeTime, ParseError, invalid, json};
@@ -557,6 +557,45 @@ struct RestError {
     message: Option<serde_json::Value>,
     error: Option<String>,
     error_description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Project {
+    id: u64,
+    default_branch: Option<String>,
+    visibility: Visibility,
+    archived: bool,
+    web_url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Visibility {
+    Public,
+    Internal,
+    Private,
+}
+
+/// `GET /projects/<id or encoded path>`: the forge metadata of a repository card, without the
+/// count of open merge requests (`open_mrs` is `None`: it comes from another call).
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a GitLab project.
+pub fn parse_project(body: &[u8]) -> Result<ForgeProject, ParseError> {
+    let project: Project = json("GitLab project", body)?;
+    Ok(ForgeProject {
+        id: project.id,
+        default_branch: project.default_branch,
+        visibility: match project.visibility {
+            Visibility::Public => ForgeVisibility::Public,
+            Visibility::Internal => ForgeVisibility::Internal,
+            Visibility::Private => ForgeVisibility::Private,
+        },
+        archived: project.archived,
+        web_url: project.web_url,
+        open_mrs: None,
+    })
 }
 
 /// The body of an error response (400, 401, 403, 404, 409…). GitLab gives `message` as a text

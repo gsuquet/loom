@@ -123,6 +123,10 @@ impl Forge for GithubClient {
 }
 
 impl GithubForge for GithubClient {
+    fn repository(&self, project: &str) -> Result<loom_api::ForgeProject, ForgeError> {
+        self.graphql_repository(project)
+    }
+
     fn review_requests(&self, requests: ReviewRequests) -> Result<SearchPage, ForgeError> {
         let mut all = SearchPage {
             total_count: 0,

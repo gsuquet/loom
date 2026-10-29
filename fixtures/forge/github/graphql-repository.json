@@ -1,0 +1,16 @@
+{
+  "data": {
+    "repository": {
+      "databaseId": 1296269,
+      "url": "https://github.com/acme/shop",
+      "isArchived": false,
+      "visibility": "PRIVATE",
+      "defaultBranchRef": {
+        "name": "main"
+      },
+      "pullRequests": {
+        "totalCount": 3
+      }
+    }
+  }
+}

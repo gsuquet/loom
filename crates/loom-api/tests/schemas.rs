@@ -20,16 +20,17 @@ use loom_api::{
     ChangeEvent, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
     ContextBackup, ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart,
     DaemonRestartReport, DiskUsage, DoctorCheck, DoctorReport, ErrorCode, FailedTaskFile,
-    ForgeCheckResult, ForgeKind, InstallReport, InvalidTaskFile, LastUpdate, MaybeKnown,
-    PendingUpgrade, PlannedAction, Profile, RegisterRequest, ReindexResult, Remote, RemoteCheck,
-    RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl, RepoHead,
-    RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RestartVia, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
-    SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
-    StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField,
-    TaskStoreHealth, Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode,
-    UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport,
-    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
+    ForgeCheckResult, ForgeKind, ForgeMetadata, ForgeProject, ForgeVisibility, InstallReport,
+    InvalidTaskFile, LastUpdate, MaybeKnown, PendingUpgrade, PlannedAction, Profile,
+    RegisterRequest, ReindexResult, Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult,
+    RemoteProblem, RemoteScheme, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoMatch,
+    RepoOperation, RepoState, RepoSummary, RepoSync, RepoUpdatePolicy, RestartVia, RollbackReport,
+    ScanIssue, ScanResult, SearchField, SearchResult, SearchResults, ServicePlatform,
+    ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse, SyncOutcome,
+    SyncRequest, SyncResult, TaskMatch, TaskSearchField, TaskStoreHealth, Timestamp, Untracked,
+    UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
+    UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream,
+    VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -616,6 +617,29 @@ fn repo_state_unknown_fields_are_rejected_unless_tagged() {
     assert!(jsonschema::is_valid(&schema, &value), "{value}");
 }
 
+/// Forge metadata: a known archived project, then a failed poll.
+fn forge_metadatas(at: Timestamp) -> Vec<ForgeMetadata> {
+    vec![
+        ForgeMetadata {
+            refreshed_at: at,
+            project: MaybeKnown::Known(ForgeProject {
+                id: 1_296_269,
+                default_branch: Some("main".to_owned()),
+                visibility: ForgeVisibility::Private,
+                archived: true,
+                web_url: "https://github.com/acme/loom".to_owned(),
+                open_mrs: Some(3),
+            }),
+            error: None,
+        },
+        ForgeMetadata {
+            refreshed_at: at,
+            project: MaybeKnown::Unknown,
+            error: Some("no usable answer from the forge: connection refused".to_owned()),
+        },
+    ]
+}
+
 #[test]
 fn repo_samples_validate_against_their_schema() {
     let mut errors = Vec::new();
@@ -647,6 +671,7 @@ fn repo_samples_validate_against_their_schema() {
             last_used: None,
             state: None,
             last_update: None,
+            forge_metadata: None,
         },
         RepoSummary {
             identity: repo_identity(ContextAssignment::Default {
@@ -656,6 +681,15 @@ fn repo_samples_validate_against_their_schema() {
             last_used: Some(used),
             state: Some(repo_states(used).remove(0)),
             last_update: Some(last_updates(used).remove(0)),
+            forge_metadata: Some(forge_metadatas(used).remove(0)),
+        },
+        RepoSummary {
+            identity: repo_identity(ContextAssignment::Unassigned),
+            registered: false,
+            last_used: None,
+            state: None,
+            last_update: None,
+            forge_metadata: Some(forge_metadatas(used).remove(1)),
         },
     ];
     for state in repo_states(used) {
@@ -986,6 +1020,7 @@ fn repo_summary_inlines_the_identity() {
         last_used: None,
         state: None,
         last_update: None,
+        forge_metadata: None,
     };
     let value = serde_json::to_value(&summary).unwrap();
     assert_eq!(value["slug"], "unassigned/loom");
@@ -995,6 +1030,7 @@ fn repo_summary_inlines_the_identity() {
     assert_eq!(value["state"], Value::Null);
     assert!(value.get("state").is_some());
     assert_eq!(value["last_update"], Value::Null);
+    assert_eq!(value["forge_metadata"], Value::Null);
     // A client reading only the identity reads a summary.
     let identity: RepoIdentity = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(identity, summary.identity);

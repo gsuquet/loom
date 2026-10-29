@@ -1,6 +1,6 @@
 //! The GitLab REST client.
 
-use loom_api::{ForgeKind, Timestamp};
+use loom_api::{ForgeKind, ForgeProject, Timestamp};
 use serde::Serialize;
 
 use super::http::{Answer, Body, Headers, Http, MAX_PAGES, next_link};
@@ -9,8 +9,8 @@ use crate::error::ParseError;
 use crate::gitlab::request::{ApproveBody, BulkPublishBody, DraftNoteBody};
 use crate::gitlab::{
     Approvals, DraftNote, TokenInfo, parse_approvals, parse_diffs, parse_discussions,
-    parse_draft_note, parse_draft_notes, parse_merge_request, parse_merge_requests, parse_token,
-    parse_user, parse_versions,
+    parse_draft_note, parse_draft_notes, parse_merge_request, parse_merge_requests, parse_project,
+    parse_token, parse_user, parse_versions,
 };
 use crate::model::{FileDiff, Mr, MrSummary, MrVersion, Sha, Thread};
 
@@ -198,7 +198,28 @@ impl Forge for GitlabClient {
     }
 }
 
+/// The count of a GitLab list from its `x-total` header; `None` when absent (GitLab leaves it
+/// out above 10,000 items) or not a number. Pure.
+fn total(headers: &Headers) -> Option<u64> {
+    headers.get("x-total")?.trim().parse().ok()
+}
+
 impl GitlabForge for GitlabClient {
+    fn project(&self, path: &str) -> Result<ForgeProject, ForgeError> {
+        let answer = self.get(&format!("/projects/{}", path_segment(path)))?;
+        let mut project = self.parse(&answer.body, parse_project)?;
+        // Merge requests disabled, or open to members only: the project is still known.
+        project.open_mrs = match self.get(&format!(
+            "/projects/{}/merge_requests?state=opened&per_page=1",
+            project.id
+        )) {
+            Ok(open) => total(&open.headers),
+            Err(ForgeError::Forbidden { .. } | ForgeError::NotFound { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(project)
+    }
+
     fn token_scopes(&self) -> Result<TokenInfo, ForgeError> {
         let answer = self.get("/personal_access_tokens/self")?;
         self.parse(&answer.body, parse_token)
@@ -323,7 +344,16 @@ impl GitlabForge for GitlabClient {
 mod tests {
     use loom_api::Timestamp;
 
-    use super::{Headers, next_page, path_segment, review_requests_query, with_page};
+    use super::{Headers, next_page, path_segment, review_requests_query, total, with_page};
+
+    #[test]
+    fn open_merge_requests_from_x_total() {
+        assert_eq!(total(&Headers::from([("x-total", "4")])), Some(4));
+        assert_eq!(total(&Headers::from([("x-total", " 0 ")])), Some(0));
+        // Left out above 10,000 items.
+        assert_eq!(total(&Headers::from([("x-total-pages", "1")])), None);
+        assert_eq!(total(&Headers::from([("x-total", "many")])), None);
+    }
 
     const URL: &str = "https://h/api/v4/projects/77/merge_requests/88/discussions?per_page=2";
 

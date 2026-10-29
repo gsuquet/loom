@@ -290,6 +290,7 @@ mod tests {
                     stderr_tail: "ERROR: Repository not found.\n".to_owned(),
                 }],
             }),
+            forge_metadata: None,
         }
     }
 
