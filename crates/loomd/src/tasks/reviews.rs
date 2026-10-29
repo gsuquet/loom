@@ -16,11 +16,12 @@ use loom_store::IndexedTask;
 use loom_store::atomic::write_file;
 use loom_store::files::{ARCHIVE_DIR, TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
 use loom_store::port::TaskLocation;
+use loom_store::tasks::IndexedState;
 use loomd::backup::commit_message;
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
     SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror,
-    mirror_dir, new_review_task, next_verdict, read_mr,
+    mirror_dir, new_review_task, next_verdict, read_mr, review_key,
 };
 use tracing::{info, info_span, warn};
 
@@ -140,7 +141,9 @@ impl Worker {
             (Decision::Create, _) => {
                 // A task that the index cannot read (a broken hand edit), or whose link names
                 // another host, may hold this MR already: never a second task.
-                if let Some(holder) = mirror_holder(&root, &update.key) {
+                if let Some(holder) = mirror_holder(&root, &update.key, |holder| {
+                    other_host_review(rows, holder, &update.key, &batch.host)
+                }) {
                     return Err(format!(
                         "task `{holder}` holds a mirror of this MR but is not its readable Review task on {}: fix or remove it",
                         batch.host
@@ -267,14 +270,31 @@ fn observe(mr: &Mr, previous: &Previous, update: &MrUpdate) -> (Observation, Syn
     (observation, state)
 }
 
-/// The active task of the store at `root` that holds a mirror of `key`, if one does.
-fn mirror_holder(root: &Path, key: &MrKey) -> Option<String> {
+/// The active task of the store at `root` that holds a mirror of `key`, if one does, except
+/// the tasks that `skip` names.
+fn mirror_holder(root: &Path, key: &MrKey, skip: impl Fn(&str) -> bool) -> Option<String> {
     let name = key.dir_name();
     fs::read_dir(root.join(TASKS_DIR))
         .ok()?
         .flatten()
-        .find(|entry| entry.path().join(MRS_DIR).join(&name).is_dir())
+        .filter(|entry| entry.path().join(MRS_DIR).join(&name).is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .find(|holder| !skip(holder))
+}
+
+/// Whether `holder` is a readable Review task of the MR `key` on a host other than `host`:
+/// two forge hosts can have the same key, and their mirrors the same directory name.
+fn other_host_review(rows: &[IndexedTask], holder: &str, key: &MrKey, host: &str) -> bool {
+    rows.iter()
+        .filter(|row| row.id.as_str() == holder)
+        .any(|row| match &row.state {
+            IndexedState::Valid { task, .. } => {
+                review_key(&task.kind, &task.links).is_some_and(|(found, task_host)| {
+                    found == *key && task_host.is_some_and(|task_host| task_host != host)
+                })
+            }
+            IndexedState::Invalid { .. } => false,
+        })
 }
 
 /// `mr(<id>): <key> mirror updated`: the message of a commit of a mirror alone.
@@ -329,14 +349,20 @@ mod tests {
     fn the_task_that_holds_a_mirror_is_found_by_its_directory() {
         let root = tempfile::tempdir().unwrap();
         let key = MrKey::parse("acme/shop#412").unwrap();
-        assert_eq!(mirror_holder(root.path(), &key), None);
+        let none = |_: &str| false;
+        assert_eq!(mirror_holder(root.path(), &key, none), None);
         let tasks = root.path().join(TASKS_DIR);
         std::fs::create_dir_all(tasks.join("k3q7zm2a").join(MRS_DIR).join("other")).unwrap();
-        assert_eq!(mirror_holder(root.path(), &key), None);
+        assert_eq!(mirror_holder(root.path(), &key, none), None);
         std::fs::create_dir_all(tasks.join("r1000000").join(MRS_DIR).join(key.dir_name())).unwrap();
         assert_eq!(
-            mirror_holder(root.path(), &key).as_deref(),
+            mirror_holder(root.path(), &key, none).as_deref(),
             Some("r1000000")
+        );
+        // A Review task of the same key on another host is not a holder.
+        assert_eq!(
+            mirror_holder(root.path(), &key, |holder| holder == "r1000000"),
+            None
         );
     }
 }

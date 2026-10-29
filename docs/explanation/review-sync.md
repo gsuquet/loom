@@ -85,7 +85,7 @@ A poll writes nothing when nothing changed:
 ## When a forge fails
 
 - A host that does not answer, or that refuses the token, stops its own poll only. The other hosts go on.
-- The mirrors keep their last snapshot. The answer of `loom review sync` and the log of `loomd` give the error. The answer also gives the time of the last poll that succeeded. `loomd` keeps this time in memory only: after a restart, it is empty until a poll succeeds.
+- The mirrors keep their last snapshot. The MRs that the stopped poll already read are read in full at the next poll, so that a `304` does not hide what changed. The answer of `loom review sync` and the log of `loomd` give the error. The answer also gives the time of the last poll that succeeded. `loomd` keeps this time in memory only: after a restart, it is empty until a poll succeeds.
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.

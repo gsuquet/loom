@@ -760,3 +760,56 @@ fn a_gitlab_approval_closes_once_a_new_head_reopens_and_a_merge_closes() {
 
     daemon.stop();
 }
+
+#[test]
+fn a_poll_that_stops_reads_its_mrs_in_full_again() {
+    const PULL_413: &str = "GET /repos/acme/shop/pulls/413";
+    let sandbox = Sandbox::new();
+    // Two MRs to review: 412 is read in full, then 413 stops the poll of the host.
+    let mut search = fixture_json("github/search-review-requested.json");
+    let mut second = search["items"][0].clone();
+    second["number"] = json!(413);
+    second["url"] = json!("https://api.github.com/repos/acme/shop/issues/413");
+    second["html_url"] = json!("https://github.com/acme/shop/pull/413");
+    second["pull_request"]["url"] = json!("https://api.github.com/repos/acme/shop/pulls/413");
+    second["pull_request"]["html_url"] = json!("https://github.com/acme/shop/pull/413");
+    search["items"].as_array_mut().unwrap().push(second);
+    search["total_count"] = json!(2);
+    sandbox
+        .github
+        .set("GET /search/issues", route(search.to_string()));
+    sandbox.github.set(
+        PULL_413,
+        Route {
+            status: 401,
+            ..route(r#"{"message":"Bad credentials"}"#)
+        },
+    );
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let result = sandbox.sync();
+    let stopped = poll(&result, "personal", "github.com");
+    assert!(
+        matches!(stopped.outcome, ReviewSyncOutcome::Failed { .. }),
+        "{stopped:?}"
+    );
+    assert_eq!(tasks(&socket, "personal").tasks.len(), 0);
+
+    // 413 is gone: only that MR fails, and 412, unchanged on the forge (its ETag matches),
+    // gets its task.
+    sandbox.github.set(
+        PULL_413,
+        Route {
+            status: 404,
+            ..route(r#"{"message":"Not Found"}"#)
+        },
+    );
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")),
+        (2, 1, 0, 0, 1)
+    );
+    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+
+    daemon.stop();
+}

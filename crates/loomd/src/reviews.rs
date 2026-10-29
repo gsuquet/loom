@@ -455,6 +455,15 @@ impl Poller {
         }
     }
 
+    /// A poll of host `index` that stops drops what it fetched: the MRs of `updates` are read
+    /// in full next time, or their cached `ETag` would hide the change with a 304.
+    fn forget(&mut self, index: usize, updates: &[MrUpdate], stopped: Stopped) -> Stopped {
+        for update in updates {
+            self.hosts[index].mrs.remove(&update.key.dir_name());
+        }
+        stopped
+    }
+
     /// Hands the MRs fetched from host `index` to the task thread.
     fn apply(&mut self, index: usize, fetched: Fetched, started: Timestamp) -> ReviewSyncOutcome {
         let host = &mut self.hosts[index];
@@ -640,7 +649,9 @@ impl Poller {
             untracked: untracked(&keys),
         };
         for (key, found, _) in keys {
-            self.go_on()?;
+            if let Err(stopped) = self.go_on() {
+                return Err(self.forget(index, &fetched.updates, stopped));
+            }
             // Missing from an incomplete search: unknown.
             let found = match found {
                 Some(_) => Some(true),
@@ -650,7 +661,9 @@ impl Poller {
             let cache = self.hosts[index].mrs.entry(key.dir_name()).or_default();
             match github_update(client, &key, found, &login, cache) {
                 Ok(update) => fetched.updates.push(update),
-                Err(error) if stops_the_host(&error) => return Err(error.into()),
+                Err(error) if stops_the_host(&error) => {
+                    return Err(self.forget(index, &fetched.updates, error.into()));
+                }
                 Err(error) => {
                     self.hosts[index].mrs.remove(&key.dir_name());
                     fetched.failed.push(failure(&key, &error));
@@ -672,7 +685,9 @@ impl Poller {
             untracked: untracked(&keys),
         };
         for (key, found, task) in keys {
-            self.go_on()?;
+            if let Err(stopped) = self.go_on() {
+                return Err(self.forget(index, &fetched.updates, stopped));
+            }
             let mirror_project = || project_of(&self.mirror_mr(index, task.as_ref()?, &key)?);
             let project_id = self.hosts[index]
                 .mrs
@@ -695,7 +710,9 @@ impl Poller {
             };
             match gitlab_update(client, &key, mr, Some(found.is_some()), &login, cache) {
                 Ok(update) => fetched.updates.push(update),
-                Err(error) if stops_the_host(&error) => return Err(error.into()),
+                Err(error) if stops_the_host(&error) => {
+                    return Err(self.forget(index, &fetched.updates, error.into()));
+                }
                 Err(error) => {
                     self.hosts[index].mrs.remove(&key.dir_name());
                     fetched.failed.push(failure(&key, &error));
