@@ -3,6 +3,7 @@
 mod archiver;
 mod daemon;
 mod disk_usage;
+mod forge_metadata;
 mod repos;
 mod reviews;
 mod schedules;

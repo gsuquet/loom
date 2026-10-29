@@ -150,7 +150,6 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     let rules = ContextRules::new(config, &setup.user_home)
         .into_diagnostic()
         .wrap_err("cannot read the context rules for the MR polls")?;
-    let bases = hooks::forge_api_hook(env::var(hooks::FORGE_API_ENV).ok().as_deref());
     let start_delay = hooks::duration_hook(
         hooks::REVIEW_START_DELAY_ENV,
         env::var(hooks::REVIEW_START_DELAY_ENV).ok().as_deref(),
@@ -191,16 +190,8 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
                 (forge.poll_interval.get(), requests)
             },
         );
-        let api = bases
-            .iter()
-            .find(|(host, _)| *host == target.host)
-            .map_or_else(
-                || target.api.clone(),
-                |(_, base)| ApiBase {
-                    rest: base.clone(),
-                    graphql: (target.kind == ForgeKind::Github).then(|| format!("{base}/graphql")),
-                },
-            );
+        // The `LOOM_TEST_FORGE_API` hook is already applied to the targets.
+        let api = target.api.clone();
         hosts.push(Host {
             peers,
             next: now + start_delay,

@@ -1,6 +1,7 @@
 //! `loom`: the CLI, later the TUI.
 
 mod on_use;
+mod pr_cmd;
 mod prompt_cmd;
 mod reindex_cmd;
 mod repo_cmd;
@@ -205,6 +206,7 @@ const fn registers_on_use(command: Option<&Command>, interactive_tui: bool) -> b
         | Command::Add(_)
         | Command::Accept(_)
         | Command::Go(_)
+        | Command::Pr(_)
         | Command::Focus(_)
         | Command::Log(_)
         | Command::Ls(_)
@@ -261,6 +263,7 @@ fn run(cli: &Cli) -> Result<Exit> {
         Command::Add(args) => task_cmd::add(args, &cli.global, &layout()?),
         Command::Accept(args) => task_cmd::accept(args, &layout()?),
         Command::Go(args) => task_cmd::go(args, &layout()?),
+        Command::Pr(args) => pr_cmd::run(args, &cli.global, &layout()?),
         Command::Focus(args) => task_cmd::focus(args, &cli.global, &layout()?),
         Command::Prompt(args) => {
             prompt_cmd::run(args, &cli.global);

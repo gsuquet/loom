@@ -12,7 +12,7 @@ mod http;
 use std::fmt;
 use std::time::Duration;
 
-use loom_api::{ForgeKind, Timestamp};
+use loom_api::{ForgeKind, ForgeProject, Timestamp};
 use thiserror::Error;
 
 use crate::error::GraphqlError;
@@ -22,6 +22,7 @@ use crate::gitlab::{Approvals, DraftNote, TokenInfo};
 use crate::model::{
     Anchor, FileDiff, ForgeUser, Mr, MrKey, MrSummary, MrVersion, Sha, Thread, VerdictKind,
 };
+use crate::open::NewMr;
 
 pub use github::GithubClient;
 pub use gitlab::GitlabClient;
@@ -270,6 +271,8 @@ pub enum GraphqlStep {
     SubmitReview,
     /// `resolveReviewThread`.
     ResolveThread,
+    /// The metadata of a repository (`repository`).
+    Repository,
 }
 
 impl fmt::Display for GraphqlStep {
@@ -282,6 +285,7 @@ impl fmt::Display for GraphqlStep {
             Self::AddReply => "addPullRequestReviewThreadReply",
             Self::SubmitReview => "submitPullRequestReview",
             Self::ResolveThread => "resolveReviewThread",
+            Self::Repository => "repository",
         })
     }
 }
@@ -340,8 +344,36 @@ pub trait Forge {
     fn user(&self) -> Result<TokenUser, ForgeError>;
 }
 
+/// The calls of `loom pr`, on both forges. Blocking.
+pub trait OpenForge: Forge {
+    /// The open MRs whose source branch is `head`, in `project` (requests of
+    /// [`find_request`](crate::open::find_request)).
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn open_mrs_of_branch(&self, project: &str, head: &str) -> Result<Vec<MrSummary>, ForgeError>;
+
+    /// Opens `mr` as a draft (request of [`create_request`](crate::open::create_request)).
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::Unprocessable`] (GitHub) or [`ForgeError::Conflict`]
+    /// (GitLab) when the forge refuses it, such as when an MR of the branch exists already.
+    fn create_draft_mr(&self, mr: &NewMr) -> Result<MrSummary, ForgeError>;
+}
+
 /// The GitHub REST reads. Blocking. Every list follows its pages.
 pub trait GithubForge: Forge {
+    /// The metadata of the repository `project` (`<owner>/<name>`), open pull requests
+    /// counted, in one GraphQL call.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::Graphql`] with [`GraphqlStep::Repository`] and the type
+    /// `NOT_FOUND` when the token cannot see the repository.
+    fn repository(&self, project: &str) -> Result<ForgeProject, ForgeError>;
+
     /// The open pull requests where I am a requested reviewer (search).
     ///
     /// # Errors
@@ -452,6 +484,15 @@ pub struct GitlabMr {
 
 /// The GitLab REST calls of the review. Blocking. Every list follows its pages.
 pub trait GitlabForge: Forge {
+    /// The metadata of the project at `path` (`<group>/<name>`, subgroups included), and the
+    /// count of its open merge requests (`x-total`; `None` when GitLab does not give it, or
+    /// refuses the list with 403 or 404: merge requests disabled or for members only).
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`]; [`ForgeError::NotFound`] when the token cannot see the project.
+    fn project(&self, path: &str) -> Result<ForgeProject, ForgeError>;
+
     /// `GET /personal_access_tokens/self`: the scopes of the token. It fails for a token that
     /// is not a personal access token, such as the OAuth token of `glab`.
     ///

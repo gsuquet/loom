@@ -5,7 +5,7 @@
 
 pub mod request;
 
-use loom_api::ForgeKind;
+use loom_api::{ForgeKind, ForgeProject, ForgeVisibility};
 use serde::Deserialize;
 
 use crate::error::{ErrorBody, ForgeTime, ParseError, invalid, json};
@@ -99,6 +99,10 @@ struct MergeRequest {
     work_in_progress: bool,
     target_branch: String,
     source_branch: String,
+    #[serde(default)]
+    source_project_id: Option<u64>,
+    #[serde(default)]
+    target_project_id: Option<u64>,
     sha: Option<Sha>,
     diff_refs: Option<DiffRefs>,
     references: References,
@@ -178,6 +182,50 @@ pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
     })
 }
 
+/// `POST /projects/<id>/merge_requests`: the created merge request, as a summary. GitLab
+/// computes the `diff_refs` after the answer: the summary does not need them.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a GitLab merge request, or its reference or state is
+/// not valid.
+pub fn parse_merge_request_summary(body: &[u8]) -> Result<MrSummary, ParseError> {
+    const PAYLOAD: &str = "GitLab merge request";
+    summary(PAYLOAD, json(PAYLOAD, body)?)
+}
+
+fn summary(payload: &'static str, mr: MergeRequest) -> Result<MrSummary, ParseError> {
+    Ok(MrSummary {
+        key: key(payload, &mr)?,
+        state: state(payload, &mr.state)?,
+        title: mr.title,
+        author: username(mr.author),
+        draft: mr.draft || mr.work_in_progress,
+        head_sha: mr.sha,
+        project_id: Some(mr.project_id),
+        web_url: mr.web_url,
+        updated_at: mr.updated_at.0,
+    })
+}
+
+/// `GET /projects/<id>/merge_requests?source_branch=…`, one page, without forks.
+///
+/// GitLab lists the merge requests from forks too, with the same source branch name: they are
+/// not the branch that `loom pr` pushed.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a list of GitLab merge requests, or one has an invalid
+/// reference or state.
+pub fn parse_branch_merge_requests(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
+    const PAYLOAD: &str = "GitLab merge requests";
+    let mrs: Vec<MergeRequest> = json(PAYLOAD, body)?;
+    mrs.into_iter()
+        .filter(|mr| mr.source_project_id.is_some() && mr.source_project_id == mr.target_project_id)
+        .map(|mr| summary(PAYLOAD, mr))
+        .collect()
+}
+
 /// `GET /merge_requests?scope=reviews_for_me&…`, one page.
 ///
 /// # Errors
@@ -187,21 +235,7 @@ pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
 pub fn parse_merge_requests(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
     const PAYLOAD: &str = "GitLab merge requests";
     let mrs: Vec<MergeRequest> = json(PAYLOAD, body)?;
-    mrs.into_iter()
-        .map(|mr| {
-            Ok(MrSummary {
-                key: key(PAYLOAD, &mr)?,
-                state: state(PAYLOAD, &mr.state)?,
-                title: mr.title,
-                author: username(mr.author),
-                draft: mr.draft || mr.work_in_progress,
-                head_sha: mr.sha,
-                project_id: Some(mr.project_id),
-                web_url: mr.web_url,
-                updated_at: mr.updated_at.0,
-            })
-        })
-        .collect()
+    mrs.into_iter().map(|mr| summary(PAYLOAD, mr)).collect()
 }
 
 #[derive(Deserialize)]
@@ -558,6 +592,45 @@ struct RestError {
     message: Option<serde_json::Value>,
     error: Option<String>,
     error_description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Project {
+    id: u64,
+    default_branch: Option<String>,
+    visibility: Visibility,
+    archived: bool,
+    web_url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Visibility {
+    Public,
+    Internal,
+    Private,
+}
+
+/// `GET /projects/<id or encoded path>`: the forge metadata of a repository card, without the
+/// count of open merge requests (`open_mrs` is `None`: it comes from another call).
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a GitLab project.
+pub fn parse_project(body: &[u8]) -> Result<ForgeProject, ParseError> {
+    let project: Project = json("GitLab project", body)?;
+    Ok(ForgeProject {
+        id: project.id,
+        default_branch: project.default_branch,
+        visibility: match project.visibility {
+            Visibility::Public => ForgeVisibility::Public,
+            Visibility::Internal => ForgeVisibility::Internal,
+            Visibility::Private => ForgeVisibility::Private,
+        },
+        archived: project.archived,
+        web_url: project.web_url,
+        open_mrs: None,
+    })
 }
 
 /// The body of an error response (400, 401, 403, 404, 409…). GitLab gives `message` as a text

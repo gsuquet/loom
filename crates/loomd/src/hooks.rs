@@ -1,4 +1,4 @@
-//! Test hooks of loomd (auto-upgrade, ADR-0011; event heartbeat; schedule interval), honoured
+//! Test hooks of loomd (auto-upgrade, ADR-0011; event heartbeat; schedule interval; forge API), honoured
 //! by debug builds only. The binary reads the environment; these functions decide.
 
 use std::path::Path;
@@ -18,11 +18,31 @@ pub const SCHEDULE_INTERVAL_ENV: &str = "LOOM_TEST_SCHEDULE_INTERVAL";
 pub const SHUTDOWN_GRACE_ENV: &str = "LOOM_TEST_SHUTDOWN_GRACE";
 /// Replaces the 30 s between the start of loomd and the first poll of each forge host.
 pub const REVIEW_START_DELAY_ENV: &str = "LOOM_TEST_REVIEW_START_DELAY";
-/// Replaces the API base of forge hosts: `<host>=<base>[,<host>=<base>…]`, such as
-/// `github.com=http://127.0.0.1:8080`. The GitHub GraphQL endpoint is `<base>/graphql`.
-pub const FORGE_API_ENV: &str = "LOOM_TEST_FORGE_API";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
+/// Replaces the API of forge hosts.
+///
+/// The value is the base URL of a fake forge for every host, or
+/// `<host>=<base>[,<host>=<base>…]`, such as `github.com=http://127.0.0.1:8080`. The GitHub
+/// GraphQL endpoint is `<base>/graphql`.
+pub const FORGE_API_ENV: &str = "LOOM_TEST_FORGE_API";
+
+/// The API base of `host` in the hook variable: `None` when unset or empty, when a list does
+/// not name the host, or in a release build.
+#[must_use]
+pub fn forge_api_hook(value: Option<&str>, host: &str) -> Option<String> {
+    let value = value.filter(|value| !value.is_empty() && cfg!(debug_assertions))?;
+    let base = if value.contains('=') {
+        value
+            .split(',')
+            .filter_map(|entry| entry.split_once('='))
+            .find(|(name, _)| name.trim() == host)?
+            .1
+    } else {
+        value
+    };
+    Some(base.trim().trim_end_matches('/').to_owned())
+}
 
 /// The duration of a hook variable: `None` when unset or empty, in a release build, or
 /// unparsable (`Err` with a message to log).
@@ -37,26 +57,6 @@ pub fn duration_hook(name: &str, value: Option<&str>) -> Result<Option<Duration>
             .map_err(|error| format!("{name} ignored: {error}")),
         _ => Ok(None),
     }
-}
-
-/// The API bases of [`FORGE_API_ENV`], by host: empty when unset or in a release build. An
-/// entry without `=` is ignored.
-#[must_use]
-pub fn forge_api_hook(value: Option<&str>) -> Vec<(String, String)> {
-    if !cfg!(debug_assertions) {
-        return Vec::new();
-    }
-    value
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|entry| entry.split_once('='))
-        .map(|(host, base)| {
-            (
-                host.trim().to_owned(),
-                base.trim().trim_end_matches('/').to_owned(),
-            )
-        })
-        .collect()
 }
 
 /// Error message when the hook prefix is set (debug build) and `home` does not start with it.
@@ -96,25 +96,25 @@ mod tests {
     }
 
     #[test]
-    fn forge_api_hook_maps_hosts_to_bases() {
-        let bases = forge_api_hook(Some(
-            "github.com=http://127.0.0.1:1/, gitlab.example.com=http://127.0.0.1:2,bad",
-        ));
+    fn forge_api_hook_in_debug_builds() {
+        assert_eq!(forge_api_hook(None, "github.com"), None);
+        assert_eq!(forge_api_hook(Some(""), "github.com"), None);
+        let one = forge_api_hook(Some("http://127.0.0.1:9/"), "github.com");
+        let list = "github.com=http://127.0.0.1:1/, gitlab.example.com=http://127.0.0.1:2,bad";
         if cfg!(debug_assertions) {
+            assert_eq!(one.as_deref(), Some("http://127.0.0.1:9"));
             assert_eq!(
-                bases,
-                [
-                    ("github.com".to_owned(), "http://127.0.0.1:1".to_owned()),
-                    (
-                        "gitlab.example.com".to_owned(),
-                        "http://127.0.0.1:2".to_owned()
-                    ),
-                ]
+                forge_api_hook(Some(list), "github.com").as_deref(),
+                Some("http://127.0.0.1:1")
             );
+            assert_eq!(
+                forge_api_hook(Some(list), "gitlab.example.com").as_deref(),
+                Some("http://127.0.0.1:2")
+            );
+            assert_eq!(forge_api_hook(Some(list), "gitlab.com"), None);
         } else {
-            assert_eq!(bases.len(), 0);
+            assert_eq!(one, None);
         }
-        assert_eq!(forge_api_hook(None).len(), 0);
     }
 
     #[test]

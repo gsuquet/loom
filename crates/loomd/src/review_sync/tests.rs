@@ -491,6 +491,7 @@ fn repo(path: &str, remote: &str, last_used: Option<u64>) -> RepoSummary {
         last_used: last_used.map(at),
         state: None,
         last_update: None,
+        forge_metadata: None,
     }
 }
 

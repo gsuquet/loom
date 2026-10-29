@@ -414,18 +414,18 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
         .into_diagnostic()
 }
 
-fn block_on<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
+pub fn block_on<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
     runtime()?.block_on(future)
 }
 
-async fn client(layout: &Layout) -> Result<Client> {
+pub async fn client(layout: &Layout) -> Result<Client> {
     Ok(connect(layout, true).await?.with_timeout(TASK_TIMEOUT))
 }
 
 /// The context of the command, from `-c`, the environment, then the current directory. Only
 /// reading the current directory fails the command; a context that no rule gives is left to
 /// the caller.
-async fn context(
+pub async fn context(
     global: &GlobalArgs,
     layout: &Layout,
     client: &Client,

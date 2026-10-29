@@ -1,0 +1,18 @@
+{
+  "id": 77,
+  "description": "Checkout service",
+  "name": "checkout",
+  "name_with_namespace": "Company A / checkout",
+  "path": "checkout",
+  "path_with_namespace": "company-a/checkout",
+  "created_at": "2025-03-04T09:12:44.000Z",
+  "default_branch": "main",
+  "ssh_url_to_repo": "git@gitlab.example.com:company-a/checkout.git",
+  "http_url_to_repo": "https://gitlab.example.com/company-a/checkout.git",
+  "web_url": "https://gitlab.example.com/company-a/checkout",
+  "visibility": "internal",
+  "archived": true,
+  "empty_repo": false,
+  "open_issues_count": 12,
+  "last_activity_at": "2026-10-27T08:41:07.000Z"
+}

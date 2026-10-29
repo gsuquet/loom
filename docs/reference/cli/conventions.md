@@ -584,7 +584,7 @@ Repositories sorted by context name, then name, then slug. `-c <NAME>` keeps the
 
 ### `loom repo show`
 
-`loom repo show` marks the repository as used, and registers it if the index does not have it. It reads the state of the repository if it has no state yet, or if `--refresh` is given (`GET /v1/repos/{context}/{name}?refresh=true`). Then it prints one `field: value` line for each field, with the names of the JSON output:
+`loom repo show` marks the repository as used, and registers it if the index does not have it. It reads the state of the repository if it has no state yet, or if `--refresh` is given (`GET /v1/repos/{context}/{name}?refresh=true`). Then it prints one `field: value` line for each field, with the names of the JSON output (the forge fields have their own names, see below):
 
 ```text
 slug:           personal/loom
@@ -592,6 +592,13 @@ path:           /home/me/perso/loom
 context:        personal (match.paths "~/perso")
 remotes:        origin git@github.com:gsuquet/loom.git (primary)
 forge:          github
+forge_id:       1296269
+forge_branch:   main
+visibility:     public
+archived:       no
+web_url:        https://github.com/gsuquet/loom
+open_mrs:       3
+forge_checked:  2026-10-13T07:58:12Z
 registered:     no
 last_used:      2026-10-13T08:00:00Z
 head:           main
@@ -611,6 +618,7 @@ error:          untracked: time budget of 2s exceeded
 | `context` | Context, then the rule that chose it: `[repos."<path>"] context`, `match.hosts "<entry>"`, `match.paths "<entry>"`, `default_context`, or `unassigned (no rule matches)`. |
 | `remotes` | One line per remote: name, URL as configured, `(primary)` for the primary remote; `none` without remote. |
 | `forge`, `last_used` | `none`, `never` when absent. |
+| Forge fields | Only for a repository with a `forge`: `forge_id`, `forge_branch` (`default_branch` on the forge, `none` for an empty project), `visibility`, `archived` (`yes` or `no`), `web_url` and `open_mrs` from `forge_metadata.project`, each `unknown` when the project is unknown, when the context has no forge credential for the host, or before the first read. `forge_checked` is `forge_metadata.refreshed_at`, and `forge_error` its `error` (only when set). |
 | State fields | `unknown` when not computed. `operation`, `upstream`, `default_branch`, `last_commit`: `none` when known to be absent; `last_fetch`: `never`. `error` only when set. Before a state exists: a single `state: not read yet` line. |
 
 `--json`: [`RepoSummary`](../schemas/repo_summary.json).

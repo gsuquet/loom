@@ -175,7 +175,7 @@ token_cmd = "op read op://company-a/github/token"
 | --- | --- | --- | --- |
 | `[forges."<host>"] token_cmd` | string: shell command | none | Not empty. `loomd` runs it with `sh -c`, with no input, and stops it after 10 s. Its standard output, trimmed, is the token. Not with `token_env`. |
 | `[forges."<host>"] token_env` | string: variable name | none | ASCII letters, digits and `_`, not starting with a digit. The variable of the environment of `loomd` that holds the token. Not with `token_cmd`. |
-| `[forges."<host>"] poll_interval` | string: duration | `"5m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. The interval of the MR poll of the host ([reviews](api.md#reviews)). |
+| `[forges."<host>"] poll_interval` | string: duration | `"5m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. Interval of the [forge metadata](api.md#forge-metadata) poll of the host, per credential, and of the MR poll of the host ([reviews](api.md#reviews)). |
 | `[forges."<host>"] review_requests` | string: `"teams"`, `"direct"` | `"teams"` | GitHub review requests that count: to me and my teams (`teams`), or to me only (`direct`). The search of the MR poll uses it. |
 | `[contexts.<name>.forges."<host>"]` | table | none | `<host>`: the rules of `[forges."<host>"]`. The host is `github.com`, `gitlab.com`, or has a `[forges."<host>"]` table: a host with no known forge is an error. |
 | `[contexts.<name>.forges."<host>"] token_cmd`, `token_env` | string | none | The rules of `[forges."<host>"]`. Exactly one of them. |
@@ -495,7 +495,7 @@ Each store is a git repository. `loomd` creates it at its first commit: when the
 
 | Change | Staged | Commit message |
 | --- | --- | --- |
-| A task created, edited, changed by an action (status, pin, note) or undone through the [API](api.md#tasks) | `tasks/<id>/` | `<event type>(<id>): <summary>` of its first event, such as `created(k3q7zm2a): Ship it`, `status_changed(k3q7zm2a): ready -> active`, `note_logged(k3q7zm2a): Asked Alice`, `undone(k3q7zm2a): event e0000003`; `(+<n> events)` when it recorded more. A request that records no event commits nothing. |
+| A task created, edited, changed by an action (status, pin, note) or undone through the [API](api.md#tasks) | `tasks/<id>/` | `<event type>(<id>): <summary>` of its first event, such as `created(k3q7zm2a): Ship it`, `status_changed(k3q7zm2a): ready -> active`, `note_logged(k3q7zm2a): Asked Alice`, `undone(k3q7zm2a): event e0000003`; `(+<n> events)` when it recorded more, such as `edited(k3q7zm2a): links (+1 events)` for `loom pr`. A request that records no event commits nothing. |
 | A hand edit recorded as an `edited` event | `tasks/<id>/`. For an archived task: `archive/<yyyy>/<id>/` and the removal of `tasks/<id>/` | `edited(<id>): <fields>`, such as `edited(k3q7zm2a): title, due`; `(+1 events)` when the same save also changed the notes |
 | A hand edit of the notes only | The same paths as an `edited` event | `notes_changed(<id>): notes` |
 | A hand edit that records no event (a new or invalid file, a move to the archive, notes with no known previous value) | The same paths as an `edited` event | `edited(<id>): changed by hand` |

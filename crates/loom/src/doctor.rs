@@ -1580,6 +1580,7 @@ mod tests {
             last_used: None,
             state: None,
             last_update: None,
+            forge_metadata: None,
         }
     }
 

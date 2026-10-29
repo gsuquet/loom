@@ -126,6 +126,7 @@ fn event_types(events: &TaskEvents) -> Vec<&'static str> {
             Event::NoteLogged { .. } => "note_logged",
             Event::NotesChanged(_) => "notes_changed",
             Event::Undone { .. } => "undone",
+            Event::Mr { .. } => "mr",
         })
         .collect()
 }
@@ -508,7 +509,8 @@ fn concurrent_changes_of_one_task_are_all_recorded() {
             Event::Created { .. }
             | Event::StatusChanged(_)
             | Event::NotesChanged(_)
-            | Event::Undone { .. } => {}
+            | Event::Undone { .. }
+            | Event::Mr { .. } => {}
         }
     }
     notes.sort();

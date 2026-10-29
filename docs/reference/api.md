@@ -38,6 +38,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `GET` | `/v1/tasks/{id}/events` | `200` | [`TaskEvents`](#taskevents) |
 | `POST` | `/v1/tasks/{id}/undo` | `200` | [`TaskDetail`](#taskdetail) after the undo; no body |
 | `POST` | `/v1/tasks/{id}/move` | `200` | [`TaskDetail`](#taskdetail) after the move; takes a [`TaskMoveRequest`](#taskmoverequest) |
+| `POST` | `/v1/tasks/{id}/mr` | `200` | [`MrOpenResult`](#mropenresult); takes a [`MrOpenRequest`](#mropenrequest) |
 | `GET` | `/v1/tasks/backup` | `200` | [`BackupReport`](#backupreport) |
 | `POST` | `/v1/tasks/sync` | `200` | [`BackupReport`](#backupreport) |
 | `GET` | `/v1/tasks/health` | `200` | [`TaskStoreHealth`](#taskstorehealth) |
@@ -117,6 +118,19 @@ Except on `?refresh=true`, `loomd` reads the states in the background. It uses a
 `POST /v1/repos/sync` takes a [`SyncRequest`](#syncrequest). It updates the repositories that the request names now, regardless of their schedule and of the backoff. If the request names no repository, it updates every repository of the index. After `loomd` stores every result, it answers with a [`SyncResult`](#syncresult), sorted by slug.
 
 If an update of a repository is in progress, `loomd` updates the repository again when that update ends. The answer can take as long as the updates (each command has its timeout). With `dry_run: true`, nothing runs: `loomd` reads each state now, and the result says what an update would do.
+
+#### Forge metadata
+
+`loomd` reads the project of each repository on its forge, for the [repo card](#forgemetadata). It stores the result as the repository's `forge_metadata`. `loomd` never uses it for updates: the git state stays the source for branches.
+
+| Property | Value |
+| --- | --- |
+| Repositories | A repository whose context has a [forge credential](configuration.md#forges) for the host of its primary remote, on a context held on this machine. The project is the path of the primary remote, such as `acme/shop`. Clones and worktrees of one project share one read. `loomd` removes the `forge_metadata` of a repository without such a credential. |
+| Schedule | Every `[forges."<host>"] poll_interval` (default 5 minutes) per credential, ±10 % at random, starting at the first read of the index after the start. `loomd` reads the index again every 10 seconds: a repository without `forge_metadata`, or with the metadata of another project (its primary remote changed), is read at once, one time per run of `loomd` until the next poll. |
+| GitHub | One GraphQL call: `POST <graphql>` with `repository(owner, name) { databaseId url isArchived visibility defaultBranchRef { name } pullRequests(states: OPEN) { totalCount } }`. |
+| GitLab | `GET <api>/projects/<encoded path>`, then `GET <api>/projects/<id>/merge_requests?state=opened&per_page=1`: `open_mrs` is its `x-total` header, `null` when GitLab answers this call with `403` or `404` (merge requests turned off, or for members only). |
+| Token | As for the [forge check](#forge-check): the same tokens in memory, resolved again once per poll after a `401`. Each call stops after 30 s. |
+| Failures | The project is unknown, with the reason in `error`. When the token cannot be resolved, the forge cannot be reached, or the forge refuses the token resolved again, the project and the next projects of that read are unknown, and `loomd` makes no other call for the credential until its next read. The `error` of a token that cannot be resolved names `loom repo doctor`, which gives the reason; the output of `token_cmd` is not stored. When the forge limits the rate, `loomd` stops the reads of the credential and keeps the `forge_metadata` that it did not read again. It reads again after the wait that the forge gives, and not before the next poll. |
 
 #### Remote check
 
@@ -246,6 +260,13 @@ A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to a
 
 `POST /v1/tasks/{id}/move` moves the task to the store of another context. The task keeps its ID, its files and its events. `loomd` appends an `edited` event with a `context` field change, after any hand edit that was not recorded yet, and answers the task in its new context. It copies the task directory to the target store, then removes it from the source store. If the removal fails, `loomd` removes the copy and answers `500` with `internal`: the message says that the task stays in its context. If that rollback fails too, the message names the two contexts that hold the task. Then the task is a duplicate ID, read-only, until one copy is removed by hand. A move to the context the task is in is refused with `400`, so a repeated move is not idempotent: compare the context first. The move needs a store for the target context on this machine. A task with a parent, or with children (archived children too), is not moved. A Review task of an MR (kind `review` with an `origin` link of provider `github` or `gitlab`) is not moved (`400 invalid_request`): the context of the MR sets its context, and the next poll would create a second task in that context. Archived tasks and read-only tasks are not moved. `loomd` commits the target store (`edited(<id>): context`) and the source store (`moved(<id>): moved to <context>`).
 
+`POST /v1/tasks/{id}/mr` (`loom pr`) opens a draft MR for a branch that the client pushed, and links it to the task. `loomd` uses the forge credential of the context of the task for `host` ([forges](configuration.md#forges)). It does not run git. It sends these requests:
+
+1. The open MRs of the branch: GitHub `GET /repos/<project>/pulls?head=<owner>:<head>&state=open`, GitLab `GET /projects/<project>/merge_requests?source_branch=<head>&state=opened` (the project path percent-encoded).
+2. Only when the branch has no open MR: GitHub `POST /repos/<project>/pulls` with `title`, `head`, `base`, `body` and `draft: true`; GitLab `POST /projects/<project>/merge_requests` with `source_branch`, `target_branch`, `description` and the title prefixed with `Draft: `.
+
+The title is the title of the task. The description is the body template of the kind of the task ([task file](task-file.md)), then a `## Links` section with the `origin` and `related` links of the task. The notes of the task are never sent. Open MRs from another project (a fork) with the same branch name are ignored. If the branch has open MRs, `loomd` links the first one and opens none. Then `loomd` appends to the log of the task an `edited` event that adds the MR as a `delivery` link, and an `mr` event. If the task has the link already, an MR found again records no event. With `dry_run: true`, `loomd` sends nothing and changes nothing: the result lists the two requests, with `outcome` `planned`. The dry run checks that the task can change and that the context has a credential for `host`; it does not resolve the token. A `401` resolves the token again, once. A refusal of the forge is a `502 forge` error, with the validation errors of the forge in the message.
+
 `GET /v1/tasks/{id}/events` answers the event log of the task as `events.jsonl` holds it, with the lines this version cannot replay listed apart.
 
 `GET /v1/tasks/backup` answers with the backup state of every context store held on this machine ([`BackupReport`](#backupreport)). `loomd` does not run git for this answer. The backup state is the last commit failure and the last sync of each store since loomd started.
@@ -328,11 +349,13 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: several task IDs start with `{id}` | `400` | `ambiguous_prefix`, `details`: [`AmbiguousPrefix`](#problem-details) |
 | Task: body not a valid `NewTask`, `TaskEdit`, `TaskActionRequest` or `TaskMoveRequest` (unknown field, absent `text` or `context`, field the action does not take); move to the context the task is in, to a context without a store on this machine, of a task with a parent or with children; empty title or note, unknown kind, format or status, no store for the `context` of a new task, invalid `status`, `ranked` or `archived`; `relations.parent` of a create or an edit that names no indexed task, a task of another context, the task itself or one of its descendants | `400` | `invalid_request` |
 | Task: unknown `{action}` | `404` | `not_found` |
-| Task: change of an archived task (any action, edit or undo), or of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
+| Task: change of an archived task (any action, edit, undo or MR, also with `dry_run`), or of a task whose kind, format or status is unknown, or whose `task.md` is invalid | `409` | `read_only`, `details`: [`TaskReadOnly`](#problem-details) |
 | Task: status change the transitions forbid | `409` | `illegal_transition`, `details`: [`IllegalTransition`](#problem-details) |
 | Task: undo of a change whose field changed since (a hand edit not recorded yet) | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) |
 | Task: undo of a task without a change | `409` | `nothing_to_undo` |
 | Task: undo of a move | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) with `field` `context` |
+| MR: body not a valid `MrOpenRequest`, an empty field, `head` equal to `base`, a `project` with fewer than 2 segments or a `.` or `..` segment, or no forge credential of the context of the task for `host` | `400` | `invalid_request` |
+| MR: the token cannot be resolved, the forge refuses a request or does not answer | `502` | `forge` |
 | Task: a move failed and was rolled back, or failed halfway and left the task in two stores | `500` | `internal` |
 | Task: the task files cannot be read or written | `500` | `internal` |
 | The index cannot be read or written | `500` | `internal` |
@@ -555,6 +578,7 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
 | `last_used` | `Timestamp` or absent | Last time the repository was used: a registration on use (`on_use`), sent by `loom` run inside it and by `loom repo show`. Kept by scans, dropped by a rebuild. |
 | `state` | [`RepoState`](#repostate) \| `null` | State of the repository, `null` until it is read for the first time (see [state refresh](#state-refresh)). |
 | `last_update` | [`LastUpdate`](#lastupdate) \| `null` | Result of the last [update](#updates), `null` until the first one. Kept across state refreshes and scans. |
+| `forge_metadata` | [`ForgeMetadata`](#forgemetadata) \| `null` | The project on the forge, read by the [forge metadata](#forge-metadata) poll. `null` when the context has no forge credential for the host of the primary remote, or before the first read. Kept across state refreshes, updates and scans. |
 
 ```json
 {
@@ -573,7 +597,8 @@ A repository of the index: the fields of [`RepoIdentity`](schemas/repo_identity.
   "forge": "github",
   "registered": false,
   "state": null,
-  "last_update": null
+  "last_update": null,
+  "forge_metadata": null
 }
 ```
 
@@ -611,6 +636,42 @@ The status walk (`dirty`), the untracked count and the ahead/behind counts share
   "default_branch": { "known": "main" },
   "last_commit": { "known": "2026-10-12T17:42:10Z" },
   "last_fetch": { "known": null },
+  "error": null
+}
+```
+
+### `ForgeMetadata`
+
+The project of a repository on its forge (in `RepoSummary`, schema in [`schemas/repo_summary.json`](schemas/repo_summary.json)).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `refreshed_at` | `Timestamp` | When `loomd` last asked the forge. |
+| `project` | `{"known": <project>}` \| `"unknown"` | The project. Unknown when the forge call failed. |
+| `error` | string \| `null` | Why `project` is unknown, in English, such as `no usable answer from the forge: …` or `not found on the forge (404): …`. `null` when `project` is known. |
+
+| Project field | Type | Content |
+| --- | --- | --- |
+| `id` | integer (u64) | Numeric ID of the project: GitHub `databaseId` (the `id` of the REST API), GitLab `id`. |
+| `default_branch` | string \| `null` | Default branch on the forge. `null` for an empty project. |
+| `visibility` | `public` \| `internal` \| `private` | Who can see the project. |
+| `archived` | boolean | The project is archived (read-only on the forge). |
+| `web_url` | string | URL of the project page. |
+| `open_mrs` | integer (u64) \| `null` | Open pull requests (GitHub) or merge requests (GitLab). `null` when GitLab does not give the count (above 10,000, merge requests turned off or for members only). |
+
+```json
+{
+  "refreshed_at": "2026-10-13T08:00:00Z",
+  "project": {
+    "known": {
+      "id": 1296269,
+      "default_branch": "main",
+      "visibility": "private",
+      "archived": false,
+      "web_url": "https://github.com/acme/shop",
+      "open_mrs": 3
+    }
+  },
   "error": null
 }
 ```
@@ -857,8 +918,34 @@ Answer of `GET /v1/tasks/{id}/events`.
 | Field | Type | Content |
 | --- | --- | --- |
 | `id` | string | Task ID. |
-| `events` | list of `EventRecord` | The events, in log order: `v`, `id`, `at`, `actor` (tagged by `type`: `user`, `file`, `daemon`, `agent` with `name`), `machine_id`, and the event tagged by `type`: `created` (`task`), `edited` (`changes`; `field` is one of `title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`, `context`), `status_changed` (`from`, `to`), `note_logged` (`text`), `notes_changed` (`from`, `to`: the SHA-256 of the notes, in hex), `undone` (`of`, `changes`). Each change has `field`, `from` and `to`. |
+| `events` | list of `EventRecord` | The events, in log order: `v`, `id`, `at`, `actor` (tagged by `type`: `user`, `file`, `daemon`, `agent` with `name`), `machine_id`, and the event tagged by `type`: `created` (`task`), `edited` (`changes`; `field` is one of `title`, `kind`, `status`, `importance`, `due`, `pinned`, `links`, `relations`, `context`), `status_changed` (`from`, `to`), `note_logged` (`text`), `notes_changed` (`from`, `to`: the SHA-256 of the notes, in hex), `undone` (`of`, `changes`), `mr` (`action`: `opened` or `linked`; `mr`: `provider`, `key`, `url`). Each change has `field`, `from` and `to`. |
 | `skipped` | list of objects | Lines not replayed (newer schema version, unknown type, invalid): `line`, `raw`, `reason`. |
+
+### `MrOpenRequest`
+
+Body of `POST /v1/tasks/{id}/mr`. Unknown fields are an `invalid_request`.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `host` | string | The forge host of the remote, such as `github.com`. |
+| `project` | string | The project path on the host, such as `acme/shop`. |
+| `head` | string | The source branch. |
+| `base` | string | The target branch. |
+| `dry_run` | boolean, optional | `true`: send nothing, change nothing. Default `false`. |
+
+### `MrOpenResult`
+
+Answer of `POST /v1/tasks/{id}/mr`.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `task` | string | Task ID. |
+| `forge` | string | `github` or `gitlab`. |
+| `outcome` | string | `opened`: a new draft MR. `linked`: an open MR of the branch. `planned`: a dry run. |
+| `mr` | object, optional | The MR as the `delivery` link holds it: `provider` (`github`, `gitlab`), `key` (`acme/shop#412`, `company-a/checkout!88`), `url`. Absent for a dry run. |
+| `requests` | list of objects | The requests sent, or planned for a dry run: `method`, `url`, `body` (JSON, absent for a `GET`). |
+
+`loom pr --json` prints a `PrReport`: `dry_run`, `push` (`remote`, `branch`, `command`, `pushed`) and `result`, an `MrOpenResult`.
 
 ### `NewTask`
 
@@ -1181,3 +1268,4 @@ Error returned instead of a response body.
 | `illegal_transition` | The task cannot move from its status to the requested one. | No. |
 | `conflict` | An undo found a field changed since the change it reverts. | After the hand edit is recorded, the undo reverts it instead. |
 | `nothing_to_undo` | The task has no change to undo. | No. |
+| `forge` | The forge refused a request, or did not answer. `message` gives the host, the forge and the reason. | After the cause is fixed (token, scopes, network). |

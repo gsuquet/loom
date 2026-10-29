@@ -48,6 +48,8 @@ pub const TASK_UNDO_PATH: &str = "/v1/tasks/{id}/undo";
 pub const TASK_MOVE_PATH: &str = "/v1/tasks/{id}/move";
 /// Route of focusing a task (`POST /v1/tasks/{id}/go`).
 pub const TASK_GO_PATH: &str = "/v1/tasks/{id}/go";
+/// Route of the MR of a task (`POST /v1/tasks/{id}/mr`, `loom pr`).
+pub const TASK_MR_PATH: &str = "/v1/tasks/{id}/mr";
 /// Path of the focus list (`GET /v1/focus`).
 pub const FOCUS_PATH: &str = "/v1/focus";
 /// Path of the backup state of the context stores.

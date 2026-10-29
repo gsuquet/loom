@@ -105,7 +105,7 @@ fn occurrence_of(links: &[Link], id: &str) -> Option<Date> {
                 .filter(|(schedule, _)| *schedule == id)
                 .map(|(_, occurrence)| occurrence)
         }
-        Link::Origin(_) | Link::Related(_) | Link::Repo { .. } => None,
+        Link::Origin(_) | Link::Related(_) | Link::Delivery(_) | Link::Repo { .. } => None,
     })
 }
 

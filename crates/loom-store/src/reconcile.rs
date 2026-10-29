@@ -117,7 +117,8 @@ fn notes_change(indexed: Option<&ContentHash>, stored: &StoredTask) -> Option<Ch
                 | Event::Edited { .. }
                 | Event::StatusChanged(_)
                 | Event::NoteLogged { .. }
-                | Event::Undone { .. } => None,
+                | Event::Undone { .. }
+                | Event::Mr { .. } => None,
             })
     })?;
     (from != to).then_some(Change { from, to })

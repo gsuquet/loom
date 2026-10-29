@@ -500,6 +500,8 @@ pub enum Link {
     Origin(ExternalRef),
     /// An item that belongs to the same done condition: an MR, a CI pipeline.
     Related(ExternalRef),
+    /// An MR that delivers the task, such as the MR that `loom pr` opens.
+    Delivery(ExternalRef),
     /// The repository to work in, a slug of the repo index.
     Repo {
         /// Repo slug, such as `company-a/checkout`.

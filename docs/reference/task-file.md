@@ -93,6 +93,7 @@ One table per link, distinguished by `role`.
 | --- | --- | --- |
 | `origin` | `provider`, `key`, `url` (optional) | Where the task came from. |
 | `related` | `provider`, `key`, `url` (optional) | An item that belongs to the same done condition: an MR, a CI pipeline. |
+| `delivery` | `provider`, `key`, `url` (optional) | An MR that delivers the task, such as the MR that `loom pr` opens: `provider` is `github` or `gitlab`, `key` is `acme/shop#412` or `company-a/checkout!88`. |
 | `repo` | `repo` | The repository to work in, a slug of the repo index. |
 
 `links` may also be written as an inline array of inline tables. loom writes it as an array of tables.
@@ -191,6 +192,7 @@ Append-only. One JSON object per line, LF line endings. CRLF is also accepted on
 | `note_logged` | `text`: string | A note was logged. |
 | `notes_changed` | `from`, `to`: SHA-256 of the notes, 64 lowercase hex characters | The notes of the task changed (the text after the frontmatter of `task.md`). The event holds the hashes, never the text. Not undone. |
 | `undone` | `of`: event ID; `changes`: array of field changes | A previous change was reverted. |
+| `mr` | `action`: `opened` or `linked`; `mr`: `provider`, `key`, `url` | `loom pr` opened a draft MR, or linked the open MR of the branch. The `edited` event just before adds the `delivery` link, so that a version of loom without this type still replays the link. Not undone: `loom undo` reverts that `edited` event. |
 
 In `created`, a task carries the frontmatter keys as JSON, plus `pinned` and `updated`. Dates and instants are strings, and `links` is an array of objects with `role`.
 

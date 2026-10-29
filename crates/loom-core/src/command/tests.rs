@@ -791,3 +791,99 @@ fn a_notes_event_changes_no_field_and_is_skipped_by_undo() {
     assert!(matches!(&command, Command::Undo { of, .. } if *of == log[1].id));
     assert_eq!(run(task, &mut log, command, 3).status, Status::Ready);
 }
+
+fn mr(key: &str) -> crate::ExternalRef {
+    crate::ExternalRef {
+        provider: "github".to_owned(),
+        key: key.to_owned(),
+        url: Some(format!("https://github.com/{key}")),
+    }
+}
+
+fn link_mr(action: crate::MrAction, key: &str) -> Command {
+    Command::LinkMr {
+        action,
+        mr: mr(key),
+    }
+}
+
+#[test]
+fn linking_an_mr_adds_the_delivery_link_then_records_an_mr_event() {
+    let (task, mut log) = task_with(Status::Active);
+    let task = run(
+        task,
+        &mut log,
+        link_mr(crate::MrAction::Opened, "acme/shop#412"),
+        10,
+    );
+    assert_eq!(task.links, [Link::Delivery(mr("acme/shop#412"))]);
+    assert_eq!(task.updated, at(10));
+    let [_, edited, opened] = log.as_slice() else {
+        panic!("{log:?}");
+    };
+    assert_eq!(
+        edited.event,
+        Event::Edited {
+            changes: vec![FieldChange::Links(Change {
+                from: Vec::new(),
+                to: vec![Link::Delivery(mr("acme/shop#412"))],
+            })],
+        }
+    );
+    assert_eq!(
+        opened.event,
+        Event::Mr {
+            action: crate::MrAction::Opened,
+            mr: mr("acme/shop#412"),
+        }
+    );
+    assert_ne!(edited.id, opened.id);
+    // The log replays into the task, and the link change is the one an undo reverts.
+    assert_eq!(replay(&log).unwrap(), task);
+    let task = undo_last(task, &mut log, 20);
+    assert_eq!(task.links, [] as [Link; 0]);
+}
+
+#[test]
+fn linking_an_mr_the_task_has_already_records_nothing() {
+    let (task, mut log) = task_with(Status::Active);
+    let task = run(
+        task,
+        &mut log,
+        link_mr(crate::MrAction::Linked, "acme/shop#412"),
+        10,
+    );
+    assert_eq!(log.len(), 3);
+    let (same, events) = exec(
+        task.clone(),
+        link_mr(crate::MrAction::Linked, "acme/shop#412"),
+        20,
+    )
+    .unwrap();
+    assert_eq!(same, task);
+    assert_eq!(events, [] as [EventRecord; 0]);
+    // A second MR is another delivery link.
+    let task = run(
+        task,
+        &mut log,
+        link_mr(crate::MrAction::Opened, "acme/shop#413"),
+        30,
+    );
+    assert_eq!(
+        task.links,
+        [
+            Link::Delivery(mr("acme/shop#412")),
+            Link::Delivery(mr("acme/shop#413"))
+        ]
+    );
+}
+
+#[test]
+fn linking_an_mr_to_a_read_only_task_is_refused() {
+    let (mut task, _) = task_with(Status::Active);
+    task.status = Status::Unknown("later".to_owned());
+    assert!(matches!(
+        exec(task, link_mr(crate::MrAction::Opened, "acme/shop#412"), 10),
+        Err(DomainError::ReadOnly(_))
+    ));
+}

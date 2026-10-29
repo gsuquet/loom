@@ -407,7 +407,7 @@ pub fn review_key(kind: &Kind, links: &[Link]) -> Option<(MrKey, Option<String>)
             (provider(key.forge()) == origin.provider)
                 .then(|| (key, origin.url.as_deref().and_then(url_host)))
         }
-        Link::Related(_) | Link::Repo { .. } => None,
+        Link::Related(_) | Link::Delivery(_) | Link::Repo { .. } => None,
     })
 }
 
