@@ -785,6 +785,49 @@ loom sync [OPTIONS]
 
 Global options apply.
 
+### `loom review`
+
+Sync the merge requests to review with their Review tasks
+
+```text
+loom review [OPTIONS] <COMMAND>
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `-h`, `--help` |  |  | Print help |
+
+Global options apply.
+
+### `loom review sync`
+
+Poll the forges now for the merge requests where I am a requested reviewer.
+
+Polls every forge host that has a credential for a context of this machine, or only the hosts of the context that `-c` names. Each MR to review gets a Review task in the inbox, with a copy of the MR in the task directory (`mrs/`). A new head after my verdict reopens the task; a merged or closed MR closes it. An MR of another context is not written to this store. The command fails if a poll fails; the copies of its MRs stay as they were. loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it is stopped.
+
+```text
+loom review sync [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the result as JSON (`ReviewSyncResult` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom review help`
+
+Print this message or the help of the given subcommand(s)
+
+```text
+loom review help [COMMAND]
+```
+
 ### `loom shell-init`
 
 Print the shell integration to evaluate in the shell's startup file: `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in `~/.bashrc`.

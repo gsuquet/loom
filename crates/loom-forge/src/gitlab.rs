@@ -196,6 +196,7 @@ pub fn parse_merge_requests(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
                 author: username(mr.author),
                 draft: mr.draft || mr.work_in_progress,
                 head_sha: mr.sha,
+                project_id: Some(mr.project_id),
                 web_url: mr.web_url,
                 updated_at: mr.updated_at.0,
             })

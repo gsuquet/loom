@@ -202,6 +202,7 @@ pub fn parse_search(body: &[u8]) -> Result<SearchPage, ParseError> {
             state: state(PAYLOAD, &item.state, pull.merged_at.is_some())?,
             draft: item.draft,
             head_sha: None,
+            project_id: None,
             web_url: item.html_url,
             updated_at: item.updated_at.0,
         });

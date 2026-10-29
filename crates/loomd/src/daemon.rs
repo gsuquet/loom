@@ -25,8 +25,8 @@ use axum::routing::{get, post};
 use futures_util::StreamExt as _;
 use loom_api::{
     ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, ForgeCheckResult,
-    RegisterRequest, RepoList, SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp,
-    UpdateState,
+    RegisterRequest, RepoList, ReviewSyncRequest, SearchKind, SearchResults, StatusResponse,
+    SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::home::{LOOM_HOME_ENV, resolve_home};
@@ -40,12 +40,12 @@ use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, FORGE_CHECK_PATH, REMOTE_CHECK_PATH, REPO_PATH,
-    REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, RepoGetQuery, RepoQuery,
-    SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH,
-    TASK_GO_PATH, TASK_MOVE_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH,
-    TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value,
-    internal, invalid_request, method_not_allowed, not_found, register_path, repo_filter,
-    search_request, slug, status_at, timestamp,
+    REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, REVIEWS_SYNC_PATH,
+    RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH,
+    TASK_EVENTS_PATH, TASK_GO_PATH, TASK_MOVE_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH,
+    TASKS_HEALTH_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error,
+    home_value, internal, invalid_request, method_not_allowed, not_found, register_path,
+    repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
@@ -69,6 +69,7 @@ use tracing::{Span, debug, info, warn};
 
 use crate::disk_usage::DiskCache;
 use crate::repos::{self, Failure, RepoHandle};
+use crate::reviews::{self, ReviewHandle};
 use crate::schedules;
 use crate::sync::{self as store_sync, SyncHandle};
 use crate::tasks::{self, TaskHandle};
@@ -116,6 +117,10 @@ pub fn load(cli: &Cli) -> Result<Setup> {
 }
 
 /// Starts the daemon and serves until `SIGTERM` or `SIGINT`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the start order of every thread, in one place"
+)]
 pub fn run(setup: Setup) -> Result<Shutdown> {
     let Setup {
         started_at,
@@ -169,6 +174,17 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     )
     .wrap_err("cannot start the task store")?;
     let schedule_thread = schedules::start(&config, &stores.held, &machine, task_handle.clone())?;
+    let (review_poller, review_handle) = reviews::start(
+        &config,
+        reviews::Setup {
+            targets: forges.targets.clone(),
+            stores: store_paths,
+            machine: machine.clone(),
+            user_home,
+            resolver: Arc::clone(&forges.resolver),
+            tasks: task_handle.clone(),
+        },
+    )?;
     let (sync_thread, sync_handle) = store_sync::start(
         store_sync::Stores {
             machine: machine.as_str().to_owned(),
@@ -210,8 +226,11 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         events,
         heartbeat: events_heartbeat(),
         forges,
+        reviews: review_handle,
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
+    // Before the task thread, which it waits for.
+    review_poller.stop();
     stop_threads(
         sync_thread,
         updater,
@@ -315,6 +334,8 @@ struct App {
     heartbeat: Duration,
     /// The forge credentials of the held contexts.
     forges: Forges,
+    /// The MR polls.
+    reviews: ReviewHandle,
 }
 
 /// The forge credentials of the held contexts, and their tokens in memory.
@@ -574,6 +595,7 @@ fn router(app: App) -> Router {
         // is no task ID prefix (`l` is not in the ID alphabet).
         .route(TASKS_HEALTH_PATH, get(task_store_health))
         .route(TASKS_SYNC_PATH, post(sync_stores))
+        .route(REVIEWS_SYNC_PATH, post(sync_reviews))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -977,6 +999,28 @@ async fn sync_stores(
 ) -> Response {
     match body {
         Ok(Json(request)) => respond(app.sync.sync(request.context).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+/// Polls the forges for the MRs to review now, then answers what each poll did.
+async fn sync_reviews(
+    State(app): State<Arc<App>>,
+    body: Result<Json<ReviewSyncRequest>, JsonRejection>,
+) -> Response {
+    match body {
+        Ok(Json(request)) => app.reviews.sync(request.context).await.map_or_else(
+            || {
+                error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    loomd::api::unavailable("loomd is stopping"),
+                )
+            },
+            |result| Json(result).into_response(),
+        ),
         Err(rejection) => error_response(
             StatusCode::BAD_REQUEST,
             invalid_request(rejection.body_text()),

@@ -71,6 +71,10 @@ use tracing::{Span, debug, info, info_span, warn};
 use crate::archiver::{self, Archiver};
 use crate::repos::Failure;
 
+mod reviews;
+
+pub use reviews::ReviewsApplied;
+
 type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 
 /// The schedules of each context held here.
@@ -143,6 +147,11 @@ enum Command {
     RunSchedules {
         schedules: Arc<Schedules>,
         today: Date,
+    },
+    /// Apply a poll of a forge: Review tasks and MR mirrors (`loomd::review_sync`).
+    SyncReviews {
+        batch: Box<loomd::review_sync::MrBatch>,
+        reply: mpsc::Sender<ReviewsApplied>,
     },
     /// Whether the file watcher runs, and the tasks that the last reconciliation could not read.
     Health {
@@ -446,6 +455,24 @@ impl TaskHandle {
         self.commands
             .send(Command::RunSchedules { schedules, today })
             .is_ok()
+    }
+
+    /// Applies the poll `batch` on the task thread, after the commands before it, and waits for
+    /// it: called by the review poller. `None` when the task thread is gone.
+    pub fn sync_reviews(&self, batch: loomd::review_sync::MrBatch) -> Option<ReviewsApplied> {
+        let (reply, answer) = mpsc::channel();
+        self.commands
+            .send(Command::SyncReviews {
+                batch: Box::new(batch),
+                reply,
+            })
+            .ok()?;
+        answer.recv().ok()
+    }
+
+    /// The path of the index, for the reads of the review poller.
+    pub fn index_db(&self) -> &Path {
+        &self.db
     }
 
     /// The problems of the task stores: invalid files, tasks that could not be read, and whether
@@ -777,6 +804,9 @@ impl Worker {
                 }
                 Command::RunSchedules { schedules, today } => {
                     self.run_schedules(&schedules, today);
+                }
+                Command::SyncReviews { batch, reply } => {
+                    let _ = reply.send(self.sync_reviews(&batch));
                 }
                 Command::Health { reply } => {
                     let failed: Vec<TaskFailure> = self.failures.values().cloned().collect();

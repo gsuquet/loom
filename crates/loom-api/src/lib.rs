@@ -14,6 +14,7 @@ mod events;
 mod repo;
 mod repo_state;
 mod repo_update;
+mod review;
 mod search;
 mod service;
 mod status;
@@ -57,6 +58,9 @@ pub use repo_state::{MaybeKnown, RepoHead, RepoOperation, RepoState, Untracked, 
 pub use repo_update::{
     LastUpdate, PlannedAction, RepoSync, SkipReason, StateField, SyncOutcome, SyncRequest,
     SyncResult, UpdateOutcome, UpdateStep,
+};
+pub use review::{
+    ReviewSync, ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncRequest, ReviewSyncResult,
 };
 pub use search::{
     DEFAULT_SEARCH_LIMIT, RepoMatch, SearchField, SearchKind, SearchResult, SearchResults,

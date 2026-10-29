@@ -20,6 +20,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::api::{internal, invalid_request};
+use crate::review_sync::review_key;
+use loom_forge::model::MrKey;
 
 /// `YYYY-MM-DD`: the date of the priority list in a debug build, instead of the local date
 /// (tests).
@@ -244,6 +246,29 @@ pub fn task_list(rows: &[IndexedTask], filter: &TaskFilter, today: Date) -> Task
 /// `ambiguous_prefix` (400) with the candidates when several do.
 pub fn resolve<'a>(prefix: &str, rows: &'a [IndexedTask]) -> Result<&'a IndexedTask, Problem> {
     let ids: Vec<TaskId> = rows.iter().map(|row| row.id.clone()).collect();
+    // An MR key (`acme/shop#412`, `company-a/checkout!88`) is never an ID prefix: it is the
+    // alias of its Review task.
+    if let Ok(key) = MrKey::parse(prefix) {
+        let mut found = rows.iter().filter(|row| match &row.state {
+            IndexedState::Valid { task, .. } => {
+                review_key(&task.kind, &task.links).is_some_and(|(alias, _)| alias == key)
+            }
+            IndexedState::Invalid { .. } => false,
+        });
+        return match (found.next(), found.next()) {
+            (Some(row), None) => Ok(row),
+            (None, _) => Err((
+                StatusCode::NOT_FOUND,
+                ApiError::new(ErrorCode::NotFound, format!("no Review task of MR `{key}`")),
+            )),
+            (Some(_), Some(_)) => Err((
+                StatusCode::BAD_REQUEST,
+                invalid_request(format!(
+                    "MR `{key}` has more than one Review task: give its ID"
+                )),
+            )),
+        };
+    }
     match resolve_prefix(prefix, &ids) {
         Ok(id) => rows.iter().find(|row| row.id == id).ok_or_else(|| {
             (
@@ -617,6 +642,7 @@ fn domain_problem(refused: &DomainError, message: String) -> Problem {
         DomainError::SameContext(_)
         | DomainError::MoveWithParent(_)
         | DomainError::MoveWithChildren(_)
+        | DomainError::MoveReview(_)
         | DomainError::UnknownValue(_)
         | DomainError::EmptyTitle
         | DomainError::EmptyNote

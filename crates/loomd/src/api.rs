@@ -56,6 +56,8 @@ pub const TASKS_BACKUP_PATH: &str = "/v1/tasks/backup";
 pub const TASKS_HEALTH_PATH: &str = "/v1/tasks/health";
 /// Path of the sync of the context stores with their backup remotes.
 pub const TASKS_SYNC_PATH: &str = "/v1/tasks/sync";
+/// Polls the forges for the MRs to review now.
+pub const REVIEWS_SYNC_PATH: &str = "/v1/reviews/sync";
 
 /// Query parameters of `POST /v1/repos/scan`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

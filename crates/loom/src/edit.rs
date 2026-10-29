@@ -115,7 +115,10 @@ fn api(error: &impl std::fmt::Display) -> EditError {
 
 async fn events(client: &Client, id: &str) -> Result<Vec<EventRecord>, EditError> {
     let log: TaskEvents = client
-        .get(&format!("/v1/tasks/{id}/events"))
+        .get(&format!(
+            "/v1/tasks/{}/events",
+            crate::repo::encode_segment(id)
+        ))
         .await
         .map_err(|error| api(&error))?;
     Ok(log.events)
@@ -123,7 +126,7 @@ async fn events(client: &Client, id: &str) -> Result<Vec<EventRecord>, EditError
 
 async fn task(client: &Client, id: &str) -> Result<TaskDetail, EditError> {
     client
-        .get(&format!("/v1/tasks/{id}"))
+        .get(&format!("/v1/tasks/{}", crate::repo::encode_segment(id)))
         .await
         .map_err(|error| api(&error))
 }

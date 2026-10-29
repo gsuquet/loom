@@ -383,6 +383,39 @@ fn a_prefix_resolves_to_one_task_or_a_typed_problem() {
 }
 
 #[test]
+fn an_mr_key_resolves_to_its_review_task() {
+    let review = |id: &str, context: &str, key: &str| {
+        let mut task = task(id, context, 100);
+        task.kind = Kind::Review;
+        task.links = vec![loom_api::Link::Origin(loom_api::ExternalRef {
+            provider: "github".to_owned(),
+            key: key.to_owned(),
+            url: Some(format!("https://github.com/{}", key.replace('#', "/pull/"))),
+        })];
+        row(task)
+    };
+    let rows = vec![
+        row(task("k3q7zm2a", "work", 100)),
+        review("r1000000", "work", "acme/shop#412"),
+        review("r2000000", "work", "acme/shop#7"),
+    ];
+    // The project is matched without case, as the forges do.
+    assert_eq!(resolve("Acme/Shop#412", &rows).unwrap().id, id("r1000000"));
+    let (status, error) = resolve("acme/shop#9", &rows).unwrap_err();
+    assert_eq!(
+        (status, error.code),
+        (StatusCode::NOT_FOUND, ErrorCode::NotFound)
+    );
+    let mut twice = rows;
+    twice.push(review("r3000000", "home", "acme/shop#412"));
+    let (status, error) = resolve("acme/shop#412", &twice).unwrap_err();
+    assert_eq!(
+        (status, error.code),
+        (StatusCode::BAD_REQUEST, ErrorCode::InvalidRequest)
+    );
+}
+
+#[test]
 fn a_detail_has_the_body_and_the_actions() {
     let rows = [
         row(task("k3q7zm2a", "work", 100)),

@@ -28,6 +28,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `GET` | `/v1/diagnostics` | `200` | [`DaemonDiagnostics`](#daemondiagnostics) |
 | `POST` | `/v1/diagnostics/remote-check` | `200` | [`RemoteCheckResult`](#remotecheckresult) |
 | `POST` | `/v1/diagnostics/forge-check` | `200` | [`ForgeCheckResult`](#forgecheckresult) |
+| `POST` | `/v1/reviews/sync` | `200` | [`ReviewSyncResult`](#reviewsyncresult); takes a [`ReviewSyncRequest`](#reviewsyncrequest) |
 | `POST` | `/v1/tasks/reindex` | `200` | [`ReindexResult`](#reindexresult) |
 | `GET` | `/v1/tasks` | `200` | [`TaskList`](#tasklist) |
 | `POST` | `/v1/tasks` | `200` | [`TaskDetail`](#taskdetail) of the new task; takes a [`NewTask`](#newtask) |
@@ -200,7 +201,7 @@ Before the rebuild, `loomd` reconciles every task: a hand edit not recorded yet 
 
 #### Task endpoints
 
-`{id}` is a task ID or a prefix of one, from 1 to 8 characters. `loomd` reads it as Crockford base32: case ignored, `i` and `l` read as `1`, `o` as `0`. `loomd` resolves it against every indexed task, of every context. If several tasks start with the prefix, the error is `ambiguous_prefix`, and the error lists these tasks. `/v1/tasks/reindex` is the reindex endpoint, never a task.
+`{id}` is a task ID or a prefix of one, from 1 to 8 characters, or the key of an MR (`acme/shop#412`, `company-a/checkout!88`, percent-encoded in the path: `acme%2Fshop%23412`). An MR key resolves to the Review task of that MR ([reviews](#reviews)). If no task has an `origin` link to that MR, the answer is `404 not_found`. If several tasks have one (in two contexts), the answer is `400 invalid_request`: give the ID. `loomd` reads it as Crockford base32: case ignored, `i` and `l` read as `1`, `o` as `0`. `loomd` resolves it against every indexed task, of every context. If several tasks start with the prefix, the error is `ambiguous_prefix`, and the error lists these tasks. `/v1/tasks/reindex` is the reindex endpoint, never a task.
 
 Reads (`GET /v1/tasks`, `GET /v1/tasks/{id}`) use a read connection to the index and never wait for a write. After `loomd` starts, a read waits for the reconciliation on start and for the first [archive](configuration.md#archive) pass. The resolution of `{id}` by every endpoint also waits for them. The wait is at most 10 s, then `loomd` answers from the tasks indexed so far. Thus a client should allow more than 10 s for its first request.
 
@@ -243,13 +244,31 @@ A task with an open status (`inbox`, `ready`, `active`, `waiting`) can move to a
 
 `POST /v1/tasks/{id}/undo` reverts the last change of the task. It appends an `undone` event with the inverse changes. A change is an edit, a status change, a pin, a hand edit or an undo, but not a note or the creation. The undo of an undo does the change again. `loomd` computes the inverse from the log of the task. The request has no body. A move is not undone: if the last change is a move, the request fails with `conflict` and the message names the context to move back to.
 
-`POST /v1/tasks/{id}/move` moves the task to the store of another context. The task keeps its ID, its files and its events. `loomd` appends an `edited` event with a `context` field change, after any hand edit that was not recorded yet, and answers the task in its new context. It copies the task directory to the target store, then removes it from the source store. If the removal fails, `loomd` removes the copy and answers `500` with `internal`: the message says that the task stays in its context. If that rollback fails too, the message names the two contexts that hold the task. Then the task is a duplicate ID, read-only, until one copy is removed by hand. A move to the context the task is in is refused with `400`, so a repeated move is not idempotent: compare the context first. The move needs a store for the target context on this machine. A task with a parent, or with children (archived children too), is not moved. Archived tasks and read-only tasks are not moved. `loomd` commits the target store (`edited(<id>): context`) and the source store (`moved(<id>): moved to <context>`).
+`POST /v1/tasks/{id}/move` moves the task to the store of another context. The task keeps its ID, its files and its events. `loomd` appends an `edited` event with a `context` field change, after any hand edit that was not recorded yet, and answers the task in its new context. It copies the task directory to the target store, then removes it from the source store. If the removal fails, `loomd` removes the copy and answers `500` with `internal`: the message says that the task stays in its context. If that rollback fails too, the message names the two contexts that hold the task. Then the task is a duplicate ID, read-only, until one copy is removed by hand. A move to the context the task is in is refused with `400`, so a repeated move is not idempotent: compare the context first. The move needs a store for the target context on this machine. A task with a parent, or with children (archived children too), is not moved. A Review task of an MR (kind `review` with an `origin` link of provider `github` or `gitlab`) is not moved (`400 invalid_request`): the context of the MR sets its context, and the next poll would put it back. Archived tasks and read-only tasks are not moved. `loomd` commits the target store (`edited(<id>): context`) and the source store (`moved(<id>): moved to <context>`).
 
 `GET /v1/tasks/{id}/events` answers the event log of the task as `events.jsonl` holds it, with the lines this version cannot replay listed apart.
 
 `GET /v1/tasks/backup` answers with the backup state of every context store held on this machine ([`BackupReport`](#backupreport)). `loomd` does not run git for this answer. The backup state is the last commit failure and the last sync of each store since loomd started.
 
 `POST /v1/tasks/sync` with a [`BackupRequest`](#backuprequest) body syncs the stores ([store backup](configuration.md#store-backup)). When every sync ended, it answers with the stores synced. The answer is `400 invalid_request` when `context` names a context without `store.backup.remote`, a context not held on this machine, or an unknown context. The answer is also `400 invalid_request` when the body is invalid. A sync that fails is in the answer, not an error status.
+
+### Reviews
+
+`loomd` polls each forge host that a held context has a credential for ([forges](configuration.md#forges)). It finds the open MRs where I am a requested reviewer, and keeps one Review task per MR. How and why: [review sync](../explanation/review-sync.md). The files of the mirror: [task files](task-file.md#mrs-mr-mirror).
+
+`POST /v1/reviews/sync` takes a [`ReviewSyncRequest`](#reviewsyncrequest). It polls now the hosts of the context that the request names, or of every context. It ignores the schedule and the backoff, but not a rate limit. When every poll ended, it answers with a [`ReviewSyncResult`](#reviewsyncresult). A context that has no credential, or that this machine does not poll, gives an empty `forges` list.
+
+| Property | Value |
+| --- | --- |
+| Hosts | Each context held on this machine, for each forge host that it has a credential for. A context with `machines` is polled only on the first machine of its list. |
+| Schedule | 30 s after the start, then every `[forges."<host>"] poll_interval` (default 5 min), with ±10 % at random. |
+| GitHub calls | `GET <api>/user` once, then `GET /search/issues` (`review-requested:@me`, or `user-review-requested:@me` when `review_requests = "direct"`). Then, for each MR found and each MR of an open Review task: `GET /repos/<project>/pulls/<n>` with `If-None-Match`. When the MR changed: its reviews, its review threads (GraphQL) and its comments. |
+| GitLab calls | `GET <api>/user` once, then `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` from the second poll. Then, for each MR listed and each MR of an open Review task: `GET /projects/<id>/merge_requests/<iid>` with `If-None-Match`. When the MR changed: its versions, its approvals and its discussions. |
+| Threads | When the MR changed, and at most one hour after the last pull of the threads. |
+| Rate limit | `429`, or `403` with no remaining requests: the host is not polled until the reset. Other hosts go on. |
+| Failures | A host that does not answer, or that refuses the token, stops its poll: its mirrors keep their last snapshot. The next poll waits 2, then 4, then 8 times the interval, never more. A failure of one MR stops only that MR. |
+| Writes | The task thread writes the Review tasks and the mirrors. A file is written only when its content changes. Each task that changed gets one commit per poll. |
+| Secrets | The answer, the logs and the traces never contain the token. |
 
 ### Change events
 
@@ -368,6 +387,8 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `TaskStoreHealth` | [`schemas/task_store_health.json`](schemas/task_store_health.json) |
 | `BackupRequest` | [`schemas/backup_request.json`](schemas/backup_request.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
+| `ReviewSyncRequest` | [`schemas/review_sync_request.json`](schemas/review_sync_request.json) |
+| `ReviewSyncResult` | [`schemas/review_sync_result.json`](schemas/review_sync_result.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
 | `RepoList` | [`schemas/repo_list.json`](schemas/repo_list.json) |
 | `RepoState` | [`schemas/repo_state.json`](schemas/repo_state.json) (in `RepoSummary`) |
@@ -1059,6 +1080,60 @@ Answer of [`POST /v1/diagnostics/forge-check`](#forge-check).
         "problem": "env_unset",
         "error": "the environment variable `GITLAB_TOKEN` is not set for loomd (a service does not see the variables of your shell: use token_cmd)"
       }
+    }
+  ]
+}
+```
+
+### `ReviewSyncRequest`
+
+Body of [`POST /v1/reviews/sync`](#reviews). An empty object polls every context.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string, optional | The context to poll. |
+
+### `ReviewSyncResult`
+
+Answer of [`POST /v1/reviews/sync`](#reviews).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `forges` | list of `ReviewSync` | One per context and forge host that this machine polls, sorted by context, then host. |
+
+`ReviewSync`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string | The context. |
+| `host` | string | The forge host, such as `github.com`. |
+| `kind` | string | `github` or `gitlab`. |
+| `last_success` | string: timestamp, optional | The start of the last poll that succeeded, since `loomd` started. |
+| `outcome` | object | Tagged by `outcome`, see below. |
+
+`outcome`:
+
+| `outcome` | Fields | When |
+| --- | --- | --- |
+| `synced` | `mrs`, `created`, `changed`, `other_context`, `failed` | The host answered. `mrs`: the MRs polled. `created`: the IDs of the new Review tasks. `changed`: the IDs of the Review tasks whose status or mirror changed. `other_context`: the MRs found that belong to another context, not written. `failed`: list of `{key, error}`, the MRs that failed. Empty lists are absent. |
+| `rate_limited` | `until` | The host limits the rate. The poll did not run. `until`: the reset. |
+| `failed` | `error` | The poll stopped. The mirrors of the host keep their last snapshot. |
+
+```json
+{
+  "forges": [
+    {
+      "context": "personal",
+      "host": "github.com",
+      "kind": "github",
+      "last_success": "2026-10-29T09:30:00Z",
+      "outcome": { "outcome": "synced", "mrs": 3, "created": ["k3m9x2ab"], "other_context": 1 }
+    },
+    {
+      "context": "company-a",
+      "host": "gitlab.company-a.example",
+      "kind": "gitlab",
+      "outcome": { "outcome": "failed", "error": "cannot reach the forge: connection refused" }
     }
   ]
 }

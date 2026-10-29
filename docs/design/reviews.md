@@ -17,10 +17,13 @@
 
 ## Review task
 
-- One Review task per MR, created in `inbox` with an `origin` link: provider, key, URL. Keys: `acme/shop#412` (GitHub), `company-a/checkout!88` (GitLab). The key is an alias of the task (storage IDs).
+- One Review task per MR, created in `inbox` with an `origin` link: provider, key, URL. Keys: `acme/shop#412` (GitHub), `company-a/checkout!88` (GitLab). The key is an alias of the task (storage IDs): `/v1/tasks/{id}` accepts an exact MR key (percent-encoded by the CLI) and resolves it to the Review task whose `origin` link names it; two tasks with that origin (two contexts) is an `invalid_request` that asks for the ID.
+- **Fields the sync owns**: title, kind and origin link at creation only; afterwards the status, only on the transitions below, each preceded by a daemon note giving the reason. Importance, due, pinned, notes and later title edits are mine and never touched. Archived Review tasks are not changed.
+- **Transitions are edges between two polls**, not levels: "request removed" is requested at the last poll and not now, "requested again" the reverse (kept in `sync.json`). Closing a task by hand while still requested therefore sticks until a new head or a new request.
 - Done (domain model): a verdict posted for the current head SHA. A new head after my verdict reopens the task (`ready`), with an event.
 - MR merged or closed: the task is `done` or `cancelled` with an event (a terminal remote state closes the local task). My review request removed: `cancelled`, unless I already posted a verdict (then `done`).
-- An MR I am asked to review again (GitHub re-request, GitLab reviewer state reset) reopens the task.
+- An MR I am asked to review again (GitHub re-request, GitLab request added again) reopens the task. A GitLab reviewer state reset without a new request is not seen in v0.4 (the reviewer states are not read).
+- Verdict: GitHub, my latest submitted review that approves, requests changes or comments, on a commit; GitLab, my approval of the current head (`approvals.user_has_approved`): a comment without approval is not a verdict. The last verdict is kept in `sync.json`, so an approval reset by a push is not forgotten.
 
 ## MR mirror
 
@@ -32,10 +35,12 @@ tasks/<id>/mrs/<provider>-<key>/       # key with every byte but [A-Za-z0-9_-] a
   description.md     # MR description, read-only
   versions.json      # every head SHA seen: SHA, base SHA, merge base, first seen, forge version ID (GitLab)
   threads.json       # snapshot of every thread and general comment, normalized, rewritten on each pull
+  sync.json          # sync state: requested at the last poll, last verdict seen (SHA, review ID)
   diffs/<sha>.patch  # diff of a version I opened or reviewed (merge base..head)
   review.json        # mine: draft comments, replies, resolves, verdict, viewed marks, last reviewed SHA, publish progress
 ```
 
+- Writes: a file is written (atomic rename) only when its bytes change, and a task whose status or mirror changed gets one store commit per poll, with the message of its events, else `mr(<id>): <key> mirror updated`. A poll that sees no change writes and commits nothing. ETags and the last threads pull time live in memory: after a restart, each MR is read in full once, which rewrites nothing if it did not change.
 - `threads.json` is a snapshot, not a log: a `jsonl` file under `merge=union` (multi-machine storage) would duplicate every rewritten line. The thread history is the forge's; what I did is in `events.jsonl` (`review` events).
 - A thread: forge ID, file-level or line anchor (path, side, start and end line, head SHA), outdated, resolved, comments (author, body, time, forge IDs). General comments are threads without anchor. GitLab system notes are dropped.
   - The anchor is the thread's position in the newest version it applies to: the current version when the thread is not outdated (GitHub `line`, GitLab moves `position` to the new version when it can), otherwise the version it was written on (GitHub `originalLine` and `originalCommit`, GitLab `position`). Both forges then give the same anchor for the same thread.

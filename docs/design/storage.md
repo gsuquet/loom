@@ -15,7 +15,7 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
       events.jsonl                  # append-only
       remote/<provider>-<key>.json  # daemon-owned snapshots (alerts, read-only sources)
       issues/<provider>-<key>/      # editable mirror of a tracker issue (see tracker-sync.md)
-      mrs/<provider>-<key>/         # MR mirror: mr.json, description.md, versions.json, threads.json, diffs/<sha>.patch, review.json (see reviews.md)
+      mrs/<provider>-<key>/         # MR mirror: mr.json, description.md, versions.json, threads.json, sync.json, diffs/<sha>.patch, review.json (see reviews.md)
       files/                        # transcripts, slides, other artifacts
       runs/<run-id>/                # context pack, stream, gate results, outputs
     archive/<yyyy>/<id>/

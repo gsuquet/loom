@@ -206,6 +206,12 @@ pub enum Command {
     /// The command fails if a store is not synced. loomd also syncs at start and at each
     /// `[tasks] sync_interval`. Starts loomd if it is stopped.
     Sync(SyncArgs),
+    /// Sync the merge requests to review with their Review tasks.
+    Review {
+        /// Review command to run.
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
     /// Print the shell integration to evaluate in the shell's startup file:
     /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in
     /// `~/.bashrc`.
@@ -307,6 +313,29 @@ pub struct ReindexArgs {
 #[derive(Debug, clap::Args)]
 pub struct SyncArgs {
     /// Print the result as JSON (`BackupReport` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Review commands.
+#[derive(Debug, clap::Subcommand)]
+pub enum ReviewCommand {
+    /// Poll the forges now for the merge requests where I am a requested reviewer.
+    ///
+    /// Polls every forge host that has a credential for a context of this machine, or only the
+    /// hosts of the context that `-c` names. Each MR to review gets a Review task in the inbox,
+    /// with a copy of the MR in the task directory (`mrs/`). A new head after my verdict reopens
+    /// the task; a merged or closed MR closes it. An MR of another context is not written to
+    /// this store. The command fails if a poll fails; the copies of its MRs stay as they were.
+    /// loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it
+    /// is stopped.
+    Sync(ReviewSyncArgs),
+}
+
+/// Options of `loom review sync`.
+#[derive(Debug, clap::Args)]
+pub struct ReviewSyncArgs {
+    /// Print the result as JSON (`ReviewSyncResult` schema).
     #[arg(long)]
     pub json: bool,
 }
@@ -937,6 +966,7 @@ mod tests {
                 | Command::Edit(_)
                 | Command::Reindex(_)
                 | Command::Sync(_)
+                | Command::Review { .. }
                 | Command::ShellInit(_)
                 | Command::UpgradeWatchdog(_),
             ) => {

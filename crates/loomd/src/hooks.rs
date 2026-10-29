@@ -16,6 +16,11 @@ pub const EVENTS_HEARTBEAT_ENV: &str = "LOOM_TEST_EVENTS_HEARTBEAT";
 pub const SCHEDULE_INTERVAL_ENV: &str = "LOOM_TEST_SCHEDULE_INTERVAL";
 /// Replaces the 10 s that API requests in flight have to finish after the first signal.
 pub const SHUTDOWN_GRACE_ENV: &str = "LOOM_TEST_SHUTDOWN_GRACE";
+/// Replaces the 30 s between the start of loomd and the first poll of each forge host.
+pub const REVIEW_START_DELAY_ENV: &str = "LOOM_TEST_REVIEW_START_DELAY";
+/// Replaces the API base of forge hosts: `<host>=<base>[,<host>=<base>…]`, such as
+/// `github.com=http://127.0.0.1:8080`. The GitHub GraphQL endpoint is `<base>/graphql`.
+pub const FORGE_API_ENV: &str = "LOOM_TEST_FORGE_API";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
 
@@ -34,6 +39,26 @@ pub fn duration_hook(name: &str, value: Option<&str>) -> Result<Option<Duration>
     }
 }
 
+/// The API bases of [`FORGE_API_ENV`], by host: empty when unset or in a release build. An
+/// entry without `=` is ignored.
+#[must_use]
+pub fn forge_api_hook(value: Option<&str>) -> Vec<(String, String)> {
+    if !cfg!(debug_assertions) {
+        return Vec::new();
+    }
+    value
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(host, base)| {
+            (
+                host.trim().to_owned(),
+                base.trim().trim_end_matches('/').to_owned(),
+            )
+        })
+        .collect()
+}
+
 /// Error message when the hook prefix is set (debug build) and `home` does not start with it.
 #[must_use]
 pub fn fail_unless_home_prefix(prefix: Option<&str>, home: &Path) -> Option<String> {
@@ -50,7 +75,7 @@ pub fn fail_unless_home_prefix(prefix: Option<&str>, home: &Path) -> Option<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_hook, fail_unless_home_prefix};
+    use super::{duration_hook, fail_unless_home_prefix, forge_api_hook};
     use std::path::Path;
     use std::time::Duration;
 
@@ -68,6 +93,28 @@ mod tests {
         } else {
             assert_eq!(duration_hook("X", Some("2s")), Ok(None));
         }
+    }
+
+    #[test]
+    fn forge_api_hook_maps_hosts_to_bases() {
+        let bases = forge_api_hook(Some(
+            "github.com=http://127.0.0.1:1/, gitlab.example.com=http://127.0.0.1:2,bad",
+        ));
+        if cfg!(debug_assertions) {
+            assert_eq!(
+                bases,
+                [
+                    ("github.com".to_owned(), "http://127.0.0.1:1".to_owned()),
+                    (
+                        "gitlab.example.com".to_owned(),
+                        "http://127.0.0.1:2".to_owned()
+                    ),
+                ]
+            );
+        } else {
+            assert_eq!(bases.len(), 0);
+        }
+        assert_eq!(forge_api_hook(None).len(), 0);
     }
 
     #[test]

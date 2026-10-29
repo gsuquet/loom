@@ -152,6 +152,8 @@ pub struct MrSummary {
     pub draft: bool,
     /// The head SHA, when the forge gives it in the list (GitLab).
     pub head_sha: Option<Sha>,
+    /// The ID of the target project, which the GitLab REST paths take (GitLab only).
+    pub project_id: Option<u64>,
     /// The page of the MR on the forge.
     pub web_url: String,
     /// The time of the last change of the MR on the forge.

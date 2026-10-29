@@ -216,3 +216,17 @@ A field change is `{"field":"<field>","from":<value>,"to":<value>}`, with `field
 A line that is not replayed is never an error for the rest of the log. Lines are never rewritten.
 
 A line reported as `newer_version` stops the recording of hand edits of the task: `loomd` indexes the file without an `edited` event, and logs a warning. A line reported as `unknown_type` or `invalid` does not stop it: `loomd` replays the other lines. `loom show` lists the lines that are not replayed as a warning on standard error.
+
+## `mrs/`: MR mirror
+
+A Review task of an MR has a copy of the MR in `<store>/tasks/<id>/mrs/<provider>-<key>/`. `loomd` writes these files: do not change them. `<provider>` is `github` or `gitlab`. `<key>` is the MR key in lowercase, with each byte other than `A-Z`, `a-z`, `0-9`, `_` and `-` as `%XX` (for example `github-acme%2Fshop%23412` for `acme/shop#412`).
+
+| File | Content |
+| --- | --- |
+| `mr.json` | The MR at the last poll: `key`, `forge_ids`, `title`, `author`, `state` (`open`, `merged`, `closed`), `draft`, `labels`, `reviewers`, `base_ref`, `head_ref`, `version` (the current version, see `versions.json`), `web_url`, `created_at`, `updated_at`. |
+| `description.md` | The description of the MR, as the forge gives it. |
+| `versions.json` | Each version (head) seen, oldest first: `head_sha`, `base_sha`, `merge_base` (optional), `forge_version_id` (GitLab), `created_at` (optional), `first_seen` (the time of the poll that saw it first). |
+| `threads.json` | Each review thread and general comment of the MR, at the last pull of the threads, sorted. A thread has `id`, `anchor` (absent for a general comment), `resolved`, `outdated` and `comments`. |
+| `sync.json` | The state of the sync: `v` (`1`), `requested` (I was a requested reviewer at the last poll), `verdict` (optional: `sha` and `id` of my last review with a verdict). |
+
+The files are JSON with two-space indentation and a final newline, except `description.md`. `loomd` writes a file only when its content changes, with an atomic rename. A change of the files of a task gives one commit of the store per poll: the message of its events (for example `status(<id>): done`), otherwise `mr(<id>): <key> mirror updated`. How the sync uses these files: [review sync](../explanation/review-sync.md).
