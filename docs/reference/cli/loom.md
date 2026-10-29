@@ -805,7 +805,7 @@ Global options apply.
 
 Poll the forges now for the merge requests where I am a requested reviewer.
 
-Polls every forge host that has a credential for a context of this machine, or only the hosts of the context that `-c` names. Each MR to review gets a Review task in the inbox, with a copy of the MR in the task directory (`mrs/`). A new head after my verdict reopens the task; a merged or closed MR closes it. An MR of another context is not written to this store. The command fails if a poll fails; the copies of its MRs stay as they were. A rate limit of a forge is not a failure. loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it is stopped.
+Polls every forge host that has a credential for a context of this machine, or only the hosts of the context that `-c` names. Each MR to review gets a Review task in the inbox, with a copy of the MR in the task directory (`mrs/`). A new head after my verdict reopens the task; a merged or closed MR closes it. An MR of another context is not written to this store. The command fails if a poll or an MR fails; the copies of its MRs stay as they were. A rate limit of a forge is not a failure. loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it is stopped.
 
 ```text
 loom review sync [OPTIONS]

@@ -27,7 +27,7 @@ One token can see the projects of several contexts. A context keeps only the MRs
 
 `default_context` never applies: an MR that a client token finds must not go to your personal store. An MR of another context is not written, and the answer counts it in `other_context`.
 
-For the same reason, `loomd` refuses to move a Review task to another context. The context of the MR sets the context of the task, and the next poll would put it back.
+For the same reason, `loomd` refuses to move a Review task to another context. The context of the MR sets the context of the task, and the next poll would create a second task in that context.
 
 ## When a task opens and closes
 
@@ -96,8 +96,11 @@ A poll writes nothing when nothing changed:
 
 - GitLab: only the approvals give a verdict. A comment without an approval is not a verdict, and a reset of the state of a reviewer is not a new request.
 - GitHub: a request to one of your teams counts as a request to you, unless `review_requests = "direct"`.
-- An archived Review task is not changed. After the archive, a new task comes only from a new head or a new request, against what the last poll saw.
+- An archived Review task is not changed. After the archive, a new task comes only when you are requested, on a new head or by a new request, against what the last poll saw.
 - A review and a new request that both occur between two polls are not seen as a new request.
 - GitLab, without a task: your approval is taken as a verdict on each new head. Thus, an MR that you approved before the first poll gets no task, even after a push, in a project that keeps the approvals.
 - An MR that the forge no longer shows (deleted project, lost access) fails at each poll until you close its task.
+- GitLab, in a project that keeps the approvals: after a push opens the task again, the approval that stays does not close it. Approve again after a reset, or close the task.
+- If a task that `loomd` cannot read (a broken hand edit) holds the mirror of an MR, the poll creates no second task: it reports the MR as failed until you fix the file.
+- When an MR without a task fails, GitLab lists the MRs from the same time again at the next poll.
 - `loom review sync` exits with status 0 when a forge limits the rate: the answer gives the time of the reset.

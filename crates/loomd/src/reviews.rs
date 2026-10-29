@@ -625,6 +625,7 @@ impl Poller {
     }
 
     fn poll_github(&mut self, index: usize, client: &GithubClient) -> Result<Fetched, Stopped> {
+        self.go_on()?;
         let login = self.login(index, client)?;
         let page = client.review_requests(self.hosts[index].requests)?;
         if page.incomplete_results {
@@ -660,6 +661,7 @@ impl Poller {
     }
 
     fn poll_gitlab(&mut self, index: usize, client: &GitlabClient) -> Result<Fetched, Stopped> {
+        self.go_on()?;
         let login = self.login(index, client)?;
         let listed = client.review_requests(self.hosts[index].updated_after)?;
         let (keys, other_context) = self.keys(index, listed)?;

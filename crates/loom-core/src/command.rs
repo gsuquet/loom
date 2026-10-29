@@ -60,9 +60,9 @@ pub enum DomainError {
     )]
     MoveWithChildren(usize),
     /// A Review task of an MR cannot move: its context comes from the MR, and the next poll
-    /// would put it back.
+    /// would create a second task in that context.
     #[error(
-        "a Review task of an MR cannot move: its context comes from the MR (`{0}`), and the next poll of the forge would put it back"
+        "a Review task of an MR cannot move: its context comes from the MR (`{0}`), and the next poll of the forge would create a second task in that context"
     )]
     MoveReview(String),
     /// The last change is a move: it is undone by moving the task back.

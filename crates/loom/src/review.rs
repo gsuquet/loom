@@ -11,7 +11,7 @@ pub const SYNC_PATH: &str = "/v1/reviews/sync";
 #[must_use]
 pub fn render_sync(result: &ReviewSyncResult) -> String {
     if result.forges.is_empty() {
-        return "No context polls a forge: add a forge credential (`token_cmd` or `token_env`).\n"
+        return "No forge is polled here: add a forge credential (`token_cmd` or `token_env`), or poll on the first machine of the context.\n"
             .to_owned();
     }
     let mut text = String::new();
@@ -121,6 +121,9 @@ mod tests {
             "company-a github.com: 2 MR(s), 1 new Review task(s), 0 changed, 1 of another context, 1 failed\n  acme/shop#412: not found on the forge (404): Not Found\ncompany-a gitlab.example.com: rate limited until 1970-01-01T00:00:00Z\ncompany-a gitlab.company-a.example: failed: no usable answer from the forge: timeout\n"
         );
         assert_eq!(failures(&result), 2);
-        assert!(render_sync(&ReviewSyncResult { forges: Vec::new() }).starts_with("No context"));
+        assert!(
+            render_sync(&ReviewSyncResult { forges: Vec::new() })
+                .starts_with("No forge is polled here")
+        );
     }
 }

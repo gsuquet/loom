@@ -18,9 +18,9 @@ use loom_store::files::{ARCHIVE_DIR, TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
 use loom_store::port::TaskLocation;
 use loomd::backup::commit_message;
 use loomd::review_sync::{
-    DESCRIPTION_FILE, Decision, MR_FILE, MrBatch, MrUpdate, Observation, SYNC_FILE, SyncState,
-    VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror, mirror_dir,
-    new_review_task, next_verdict, read_mr,
+    DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
+    SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror,
+    mirror_dir, new_review_task, next_verdict, read_mr,
 };
 use tracing::{info, info_span, warn};
 
@@ -138,6 +138,14 @@ impl Worker {
                 return Ok(None);
             }
             (Decision::Create, _) => {
+                // A task that the index cannot read (a broken hand edit), or whose link names
+                // another host, may hold this MR already: never a second task.
+                if let Some(holder) = mirror_holder(&root, &update.key) {
+                    return Err(format!(
+                        "task `{holder}` holds a mirror of this MR but is not its readable Review task on {}: fix or remove it",
+                        batch.host
+                    ));
+                }
                 let task = self
                     .tasks
                     .create(
@@ -259,6 +267,16 @@ fn observe(mr: &Mr, previous: &Previous, update: &MrUpdate) -> (Observation, Syn
     (observation, state)
 }
 
+/// The active task of the store at `root` that holds a mirror of `key`, if one does.
+fn mirror_holder(root: &Path, key: &MrKey) -> Option<String> {
+    let name = key.dir_name();
+    fs::read_dir(root.join(TASKS_DIR))
+        .ok()?
+        .flatten()
+        .find(|entry| entry.path().join(MRS_DIR).join(&name).is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+}
+
 /// `mr(<id>): <key> mirror updated`: the message of a commit of a mirror alone.
 fn mirror_message(id: &TaskId, key: &MrKey) -> String {
     format!("mr({id}): {key} mirror updated")
@@ -299,4 +317,26 @@ fn write_mirror(dir: &Path, files: &[(&str, &[u8])]) -> io::Result<bool> {
         wrote = true;
     }
     Ok(wrote)
+}
+
+#[cfg(test)]
+mod tests {
+    use loom_forge::model::MrKey;
+
+    use super::{MRS_DIR, TASKS_DIR, mirror_holder};
+
+    #[test]
+    fn the_task_that_holds_a_mirror_is_found_by_its_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let key = MrKey::parse("acme/shop#412").unwrap();
+        assert_eq!(mirror_holder(root.path(), &key), None);
+        let tasks = root.path().join(TASKS_DIR);
+        std::fs::create_dir_all(tasks.join("k3q7zm2a").join(MRS_DIR).join("other")).unwrap();
+        assert_eq!(mirror_holder(root.path(), &key), None);
+        std::fs::create_dir_all(tasks.join("r1000000").join(MRS_DIR).join(key.dir_name())).unwrap();
+        assert_eq!(
+            mirror_holder(root.path(), &key).as_deref(),
+            Some("r1000000")
+        );
+    }
 }
