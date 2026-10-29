@@ -314,7 +314,10 @@ fn a_field_and_notes_edit_records_both_and_undo_skips_the_notes() {
             Event::Created { .. } => "created",
             Event::Edited { .. } => "edited",
             Event::NotesChanged(_) => "notes_changed",
-            Event::StatusChanged(_) | Event::NoteLogged { .. } | Event::Undone { .. } => "other",
+            Event::StatusChanged(_)
+            | Event::NoteLogged { .. }
+            | Event::Undone { .. }
+            | Event::Mr { .. } => "other",
         })
         .collect();
     assert_eq!(types, ["created", "edited", "notes_changed"]);

@@ -147,6 +147,25 @@ pub enum Command {
     /// the shell changes to that directory. If the task has no repository, the directory does
     /// not change. Starts loomd if it is stopped.
     Go(GoArgs),
+    /// Push the current branch and open a draft MR for it, linked to a task.
+    ///
+    /// The task is `ID`, or the focus task of the context, resolved as for `loom add`. The
+    /// command runs `git push -u -- <remote> refs/heads/<branch>:refs/heads/<branch>` with your
+    /// own git credentials. The remote
+    /// is the upstream remote of the branch, or the primary remote of the repository. Then
+    /// loomd opens a draft MR from the branch into the base with the forge credential of the
+    /// context of the task: the title is the task title, the description is the template of
+    /// the task kind and the origin and related links of the task. The notes of the task are
+    /// not sent. If the branch has an open MR, loomd links that MR and opens no other. The MR
+    /// becomes a `delivery` link of the task, and the task log gets an `mr` event.
+    ///
+    /// The command refuses a detached `HEAD`, the default branch, and a branch with no commit
+    /// ahead of the base. It also refuses a branch whose upstream is a local branch, a URL, or
+    /// a branch with another name. Before the push, loomd checks that the task can change and
+    /// that the context has a forge credential for the host. loomd does not run `token_cmd`
+    /// for this check. If the push fails, the command shows the git error and opens no MR.
+    /// Starts loomd if it is stopped.
+    Pr(PrArgs),
     /// Show the focus task of each context, or of the context that `-c` names.
     ///
     /// The focus is stored in `index.db` on this machine, never in the context store. Starts
@@ -436,6 +455,25 @@ pub struct GoArgs {
     #[arg(value_name = "ID", value_parser = task_prefix)]
     pub id: String,
     /// Print the result as JSON (`GoResult` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom pr`.
+#[derive(Debug, clap::Args)]
+pub struct PrArgs {
+    /// Task ID, or a unique prefix of one. The default is the focus task of the context.
+    #[arg(value_name = "ID", value_parser = task_prefix)]
+    pub id: Option<String>,
+    /// Target branch of the MR. The default is the default branch of the remote:
+    /// `refs/remotes/<remote>/HEAD`, or else the default branch in the repository index. The
+    /// command must know the default branch also when you give this option.
+    #[arg(long, value_name = "BRANCH")]
+    pub base: Option<String>,
+    /// Print the push and the forge requests, push nothing, send nothing, change no task.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Print the result as JSON (`PrReport` schema).
     #[arg(long)]
     pub json: bool,
 }
@@ -927,6 +965,7 @@ mod tests {
                 | Command::Show(_)
                 | Command::Set(_)
                 | Command::Go(_)
+                | Command::Pr(_)
                 | Command::Focus(_)
                 | Command::Prompt(_)
                 | Command::Log(_)

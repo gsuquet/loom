@@ -2,17 +2,18 @@
 
 use loom_api::ForgeKind;
 
-use super::http::{Answer, Http, MAX_PAGES, next_link};
+use super::http::{Answer, Body, Http, MAX_PAGES, next_link};
 use super::{
-    ApiBase, Conditional, Forge, ForgeError, GithubForge, NewThread, ReviewRequests, ReviewThreads,
-    Token, TokenUser,
+    ApiBase, Conditional, Forge, ForgeError, GithubForge, NewThread, OpenForge, ReviewRequests,
+    ReviewThreads, Token, TokenUser,
 };
 use crate::error::ParseError;
 use crate::github::{
     PendingReview, Review, SearchPage, SubmittedReview, parse_files, parse_issue_comments,
-    parse_pull, parse_reviews, parse_search, parse_user,
+    parse_pull, parse_pull_summaries, parse_pull_summary, parse_reviews, parse_search, parse_user,
 };
-use crate::model::{FileDiff, Mr, MrKey, Sha, Thread, VerdictKind};
+use crate::model::{FileDiff, Mr, MrKey, MrSummary, Sha, Thread, VerdictKind};
+use crate::open::{NewMr, create_request, find_request};
 
 /// A GitHub client: one token on one host.
 #[derive(Debug)]
@@ -119,6 +120,32 @@ impl Forge for GithubClient {
             user: parse_user(&answer.body).map_err(|error| self.http.parse_error(&error))?,
             scopes_header: answer.headers.get("x-oauth-scopes").map(str::to_owned),
         })
+    }
+}
+
+impl OpenForge for GithubClient {
+    fn open_mrs_of_branch(&self, project: &str, head: &str) -> Result<Vec<MrSummary>, ForgeError> {
+        let request = find_request(ForgeKind::Github, project, head);
+        self.list(&request.path, parse_pull_summaries)
+    }
+
+    fn create_draft_mr(&self, mr: &NewMr) -> Result<MrSummary, ForgeError> {
+        let request = create_request(ForgeKind::Github, mr);
+        let bytes = serde_json::to_vec(&request.body)
+            .map_err(|error| ForgeError::Unexpected(format!("request body: {error}")))?;
+        let answer = self.http.send(
+            request.method,
+            &self.http.url(&request.path),
+            &[],
+            Some(Body {
+                content_type: "application/json",
+                bytes: &bytes,
+            }),
+        )?;
+        if !(200..300).contains(&answer.status) {
+            return Err(self.http.error(&answer));
+        }
+        parse_pull_summary(&answer.body).map_err(|error| self.http.parse_error(&error))
     }
 }
 

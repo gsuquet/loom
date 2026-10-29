@@ -1,5 +1,5 @@
 //! MR review (ADR-0016): the provider-neutral model of an MR, the parsers of the GitHub and
-//! GitLab payloads, MR keys and the context of an MR.
+//! GitLab payloads, MR keys and the context of an MR; the requests of `loom pr`.
 //!
 //! Every module is pure (no I/O, no clock, no async runtime), except [`client`], the HTTP
 //! clients of the forges.
@@ -11,6 +11,7 @@ pub mod github;
 pub mod gitlab;
 mod key;
 pub mod model;
+pub mod open;
 
 pub use context::{MrContext, MrContexts, mr_context};
 pub use error::{ErrorBody, GraphqlError, ParseError};

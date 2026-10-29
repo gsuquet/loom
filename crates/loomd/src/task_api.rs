@@ -316,7 +316,7 @@ fn unique_prefix<'a>(target: &'a TaskId, ids: &'a [TaskId]) -> &'a str {
 pub fn linked_repo_slug(task: &Task) -> Option<&str> {
     task.links.iter().find_map(|link| match link {
         Link::Repo { repo } => Some(repo.as_str()),
-        Link::Origin(_) | Link::Related(_) => None,
+        Link::Origin(_) | Link::Related(_) | Link::Delivery(_) => None,
     })
 }
 
@@ -571,6 +571,33 @@ pub fn task_problem(error: &TaskError) -> Problem {
             (StatusCode::INTERNAL_SERVER_ERROR, internal(message))
         }
     }
+}
+
+/// The `409 read_only` problem of a task that `loomd` cannot change, before any change is
+/// tried.
+#[must_use]
+pub fn read_only_problem(id: &TaskId, reason: &TaskReadOnly) -> Problem {
+    let why = match reason {
+        TaskReadOnly::UnknownKind(name) => format!("its kind `{name}` is from a newer loom"),
+        TaskReadOnly::UnknownContentFormat(name) => {
+            format!("its content format `{name}` is from a newer loom")
+        }
+        TaskReadOnly::UnknownStatus(name) => format!("its status `{name}` is from a newer loom"),
+        TaskReadOnly::InvalidFile(error) => {
+            format!("its task.md is invalid ({error}): fix it first")
+        }
+        TaskReadOnly::Archived(year) => format!("it is archived in {year}"),
+    };
+    (
+        StatusCode::CONFLICT,
+        with_details(
+            ApiError::new(
+                ErrorCode::ReadOnly,
+                format!("task {id} is read-only: {why}"),
+            ),
+            reason,
+        ),
+    )
 }
 
 fn domain_problem(refused: &DomainError, message: String) -> Problem {

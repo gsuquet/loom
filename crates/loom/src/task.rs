@@ -397,7 +397,7 @@ pub fn new_task(request: AddRequest) -> NewTask {
 pub fn linked_repo(task: &Task) -> Option<&str> {
     task.links.iter().find_map(|link| match link {
         Link::Repo { repo } => Some(repo.as_str()),
-        Link::Origin(_) | Link::Related(_) => None,
+        Link::Origin(_) | Link::Related(_) | Link::Delivery(_) => None,
     })
 }
 

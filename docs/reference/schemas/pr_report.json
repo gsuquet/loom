@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PrReport",
+  "description": "Output of `loom pr --json`.",
+  "type": "object",
+  "properties": {
+    "dry_run": {
+      "description": "True for `loom pr -n`: nothing was pushed or sent.",
+      "type": "boolean"
+    },
+    "push": {
+      "description": "The push.",
+      "$ref": "#/$defs/PushPlan"
+    },
+    "result": {
+      "description": "The MR.",
+      "$ref": "#/$defs/MrOpenResult"
+    }
+  },
+  "required": [
+    "dry_run",
+    "push",
+    "result"
+  ],
+  "$defs": {
+    "ExternalRef": {
+      "description": "An item of a forge or tracker.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key at the provider, such as `CORE-1042` or `!88`.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider, such as `jira` or `gitlab`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Web URL, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "key"
+      ]
+    },
+    "ForgeKind": {
+      "description": "Forge that hosts a remote (`[forges.\"<host>\"] kind`).",
+      "oneOf": [
+        {
+          "description": "GitHub or GitHub Enterprise.",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "GitLab, hosted or self-managed.",
+          "type": "string",
+          "const": "gitlab"
+        }
+      ]
+    },
+    "ForgeRequestPlan": {
+      "description": "A request to the forge API.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "description": "The JSON body. Absent for a `GET`."
+        },
+        "method": {
+          "description": "The HTTP method.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ]
+    },
+    "MrOpenResult": {
+      "description": "Result of `POST /v1/tasks/{prefix}/mr`.",
+      "type": "object",
+      "properties": {
+        "forge": {
+          "description": "The forge of the host.",
+          "$ref": "#/$defs/ForgeKind"
+        },
+        "mr": {
+          "description": "The MR, now a `delivery` link of the task. Absent for a dry run.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExternalRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "description": "What loomd did.",
+          "$ref": "#/$defs/MrOutcome"
+        },
+        "requests": {
+          "description": "The requests to the forge: sent, or planned for a dry run. A dry run lists the creation\nrequest, which loomd sends only when the branch has no open MR.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ForgeRequestPlan"
+          }
+        },
+        "task": {
+          "description": "The task.",
+          "$ref": "#/$defs/TaskId"
+        }
+      },
+      "required": [
+        "task",
+        "forge",
+        "outcome",
+        "requests"
+      ]
+    },
+    "MrOutcome": {
+      "description": "What loomd did for a [`MrOpenRequest`].",
+      "oneOf": [
+        {
+          "description": "It opened a draft MR and linked it to the task.",
+          "type": "string",
+          "const": "opened"
+        },
+        {
+          "description": "It found an open MR of the branch and linked it to the task.",
+          "type": "string",
+          "const": "linked"
+        },
+        {
+          "description": "Dry run: it sent nothing and changed nothing.",
+          "type": "string",
+          "const": "planned"
+        }
+      ]
+    },
+    "PushPlan": {
+      "description": "The `git push` of `loom pr`.",
+      "type": "object",
+      "properties": {
+        "branch": {
+          "description": "The branch.",
+          "type": "string"
+        },
+        "command": {
+          "description": "The command, one argument per item.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pushed": {
+          "description": "True when the push ran and succeeded; false for a dry run.",
+          "type": "boolean"
+        },
+        "remote": {
+          "description": "The remote.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "remote",
+        "branch",
+        "command",
+        "pushed"
+      ]
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    }
+  }
+}

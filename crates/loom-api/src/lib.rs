@@ -11,6 +11,7 @@ mod disk;
 mod doctor;
 mod error;
 mod events;
+mod mr;
 mod repo;
 mod repo_state;
 mod repo_update;
@@ -46,9 +47,10 @@ pub use loom_core::{
 pub use events::{ChangeEvent, EventCursor, EventCursorError};
 pub use loom_core::{
     Action, Actor, Change, ContentFormat, Date, Event, EventId, EventRecord, ExternalRef,
-    FieldChange, Importance, Kind, Link, MachineId, NewTask, NotesHash, RankReason, Relations,
-    SkippedLine, Status, StatusName, Task, TaskEdit,
+    FieldChange, Importance, Kind, Link, MachineId, MrAction, NewTask, NotesHash, RankReason,
+    Relations, SkippedLine, Status, StatusName, Task, TaskEdit,
 };
+pub use mr::{ForgeRequestPlan, MrOpenRequest, MrOpenResult, MrOutcome, PrReport, PushPlan};
 pub use repo::{
     ForgeKind, ForgeMetadata, ForgeProject, ForgeVisibility, RegisterRequest, Remote, RemoteUrl,
     RepoIdentity, RepoList, RepoSummary, RepoUpdatePolicy, ScanIssue, ScanResult,

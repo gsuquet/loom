@@ -86,7 +86,7 @@ pub async fn fetch_relations(client: &Client, id: &TaskId) -> Result<RelationsDa
             .iter()
             .filter_map(|link| match link {
                 Link::Repo { repo } => Some(repo.clone()),
-                Link::Origin(_) | Link::Related(_) => None,
+                Link::Origin(_) | Link::Related(_) | Link::Delivery(_) => None,
             })
             .collect();
     }

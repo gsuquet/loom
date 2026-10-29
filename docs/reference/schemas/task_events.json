@@ -431,6 +431,29 @@
             "of",
             "changes"
           ]
+        },
+        {
+          "description": "An MR became a `delivery` link of the task. The link itself is added by an `edited`\nevent just before, so that a version of loom without this event still replays it.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "description": "What `loom pr` did on the forge.",
+              "$ref": "#/$defs/MrAction"
+            },
+            "mr": {
+              "description": "The MR: provider, key and web URL.",
+              "$ref": "#/$defs/ExternalRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "mr"
+            }
+          },
+          "required": [
+            "type",
+            "action",
+            "mr"
+          ]
         }
       ],
       "required": [
@@ -674,6 +697,20 @@
           ]
         },
         {
+          "description": "An MR that delivers the task, such as the MR that `loom pr` opens.",
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "string",
+              "const": "delivery"
+            }
+          },
+          "$ref": "#/$defs/ExternalRef",
+          "required": [
+            "role"
+          ]
+        },
+        {
           "description": "The repository to work in, a slug of the repo index.",
           "type": "object",
           "properties": {
@@ -696,6 +733,21 @@
     "MachineId": {
       "description": "Name of the machine an event was recorded on, from `~/.loom/machine.toml`.",
       "type": "string"
+    },
+    "MrAction": {
+      "description": "What `loom pr` did on the forge for an [`Event::Mr`].",
+      "oneOf": [
+        {
+          "description": "It opened a new draft MR.",
+          "type": "string",
+          "const": "opened"
+        },
+        {
+          "description": "It found an open MR of the branch and linked it.",
+          "type": "string",
+          "const": "linked"
+        }
+      ]
     },
     "NotesHash": {
       "description": "SHA-256 of the notes of a task, in lowercase hex.",

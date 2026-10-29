@@ -38,7 +38,7 @@ pub fn closed_at(task: &Task, events: &[EventRecord]) -> Option<Timestamp> {
                 | FieldChange::Context(_) => false,
             })
         }
-        Event::NoteLogged { .. } | Event::NotesChanged(_) => false,
+        Event::NoteLogged { .. } | Event::NotesChanged(_) | Event::Mr { .. } => false,
     });
     closing.map(|record| record.at)
 }

@@ -5,11 +5,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::Date;
 use crate::context::ContextName;
-use crate::event::{Change, Event, EventRecord, FieldChange, Origin};
+use crate::event::{Change, Event, EventRecord, FieldChange, MrAction, Origin};
 use crate::id::{EventId, IdError, RandomSource, TaskId};
 use crate::relations::ParentProblem;
 use crate::task::{
-    Importance, Kind, Link, ReadOnlyReason, Relations, Status, StatusName, Task,
+    ExternalRef, Importance, Kind, Link, ReadOnlyReason, Relations, Status, StatusName, Task,
     is_legal_transition,
 };
 use crate::timestamp::Timestamp;
@@ -117,6 +117,16 @@ pub enum Command {
             deserialize_with = "present"
         )]
         due: Option<Option<Date>>,
+    },
+    /// Link an MR that delivers the task (`loom pr`), as computed by loomd from the answer of
+    /// the forge. Never read from input: only loomd builds it.
+    #[serde(skip_deserializing)]
+    #[schemars(skip)]
+    LinkMr {
+        /// What loomd did on the forge.
+        action: MrAction,
+        /// The MR.
+        mr: ExternalRef,
     },
 }
 
@@ -288,8 +298,25 @@ pub fn apply(
     if let Some(reason) = task.read_only_reason() {
         return Err(DomainError::ReadOnly(reason));
     }
+    match command {
+        Command::LinkMr { action, mr } => link_mr(task, action, mr, log, now, origin, random),
+        command => apply_one(task, command, log, now, origin, random),
+    }
+}
+
+/// [`apply`] of a command that produces at most one event, on a task that is not read-only.
+fn apply_one(
+    task: Task,
+    command: Command,
+    log: &[EventRecord],
+    now: Timestamp,
+    origin: &Origin,
+    random: &mut impl RandomSource,
+) -> Result<(Task, Vec<EventRecord>), DomainError> {
     let mut task = task;
     let event = match command {
+        // `apply` sends `LinkMr` to `link_mr`: it never reaches this function.
+        Command::LinkMr { .. } => None,
         Command::SetStatus { status } => set_status(&task, status)?.map(Event::StatusChanged),
         Command::Edit(edit) => {
             let changes = edit_changes(&task, edit)?;
@@ -382,6 +409,53 @@ pub fn apply(
     let taken: Vec<EventId> = log.iter().map(|record| record.id.clone()).collect();
     let id = EventId::generate(random, &taken)?;
     Ok((task, vec![EventRecord::new(id, event, now, origin)]))
+}
+
+/// [`Command::LinkMr`]: an `edited` event that adds the `delivery` link when the task does not
+/// have it, then an `mr` event. Linking again an MR the task has already links nothing and
+/// produces no event; opening one is always recorded.
+fn link_mr(
+    task: Task,
+    action: MrAction,
+    mr: ExternalRef,
+    log: &[EventRecord],
+    now: Timestamp,
+    origin: &Origin,
+    random: &mut impl RandomSource,
+) -> Result<(Task, Vec<EventRecord>), DomainError> {
+    let mut task = task;
+    let linked = task.links.iter().any(|link| match link {
+        Link::Delivery(existing) => existing.provider == mr.provider && existing.key == mr.key,
+        Link::Origin(_) | Link::Related(_) | Link::Repo { .. } => false,
+    });
+    let mut events = Vec::new();
+    if !linked {
+        let mut links = task.links.clone();
+        links.push(Link::Delivery(mr.clone()));
+        let change = FieldChange::Links(Change {
+            from: task.links.clone(),
+            to: links,
+        });
+        write(&mut task, change.clone())?;
+        events.push(Event::Edited {
+            changes: vec![change],
+        });
+    }
+    if !linked || action == MrAction::Opened {
+        events.push(Event::Mr { action, mr });
+    }
+    if events.is_empty() {
+        return Ok((task, Vec::new()));
+    }
+    task.updated = now;
+    let mut taken: Vec<EventId> = log.iter().map(|record| record.id.clone()).collect();
+    let mut records = Vec::with_capacity(events.len());
+    for event in events {
+        let id = EventId::generate(random, &taken)?;
+        taken.push(id.clone());
+        records.push(EventRecord::new(id, event, now, origin));
+    }
+    Ok((task, records))
 }
 
 /// Moves `task` to the context `to` at `now`: the moved task and the event to append to `log`,
@@ -512,7 +586,7 @@ pub fn replay(events: &[EventRecord]) -> Result<Task, ReplayError> {
             Event::StatusChanged(change) => {
                 replay_change(&mut task, FieldChange::Status(change.clone()))?;
             }
-            Event::NoteLogged { .. } | Event::NotesChanged(_) => {}
+            Event::NoteLogged { .. } | Event::NotesChanged(_) | Event::Mr { .. } => {}
         }
         task.updated = record.at;
     }

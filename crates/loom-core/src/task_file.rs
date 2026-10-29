@@ -43,7 +43,7 @@ const ROOT_KEYS: [&str; 14] = [
 const RELATION_KEYS: [&str; 3] = ["parent", "spawned_from", "blocks"];
 
 /// Link roles this version knows; a link of another role is kept as is and not decoded.
-const LINK_ROLES: [&str; 3] = ["origin", "related", "repo"];
+const LINK_ROLES: [&str; 4] = ["origin", "related", "delivery", "repo"];
 
 /// A `task.md` file: the frontmatter as an editable TOML document, the task it describes and the
 /// free notes that follow.
@@ -718,15 +718,9 @@ fn datetime_value(text: String) -> Value {
 fn link_table(link: &Link) -> Table {
     let mut table = Table::new();
     match link {
-        Link::Origin(external) | Link::Related(external) => {
-            let role = if matches!(link, Link::Origin(_)) {
-                "origin"
-            } else {
-                "related"
-            };
-            set(&mut table, "role", Some(role.into()));
-            write_external(&mut table, external);
-        }
+        Link::Origin(external) => external_link(&mut table, "origin", external),
+        Link::Related(external) => external_link(&mut table, "related", external),
+        Link::Delivery(external) => external_link(&mut table, "delivery", external),
         Link::Repo { repo } => {
             set(&mut table, "role", Some("repo".into()));
             set(&mut table, "repo", Some(repo.as_str().into()));
@@ -734,6 +728,11 @@ fn link_table(link: &Link) -> Table {
     }
     table.decor_mut().set_prefix("\n");
     table
+}
+
+fn external_link(table: &mut Table, role: &str, external: &ExternalRef) {
+    set(table, "role", Some(role.into()));
+    write_external(table, external);
 }
 
 fn write_external(table: &mut Table, external: &ExternalRef) {

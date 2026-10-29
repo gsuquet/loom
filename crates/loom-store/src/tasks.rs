@@ -172,7 +172,9 @@ pub fn link_keys(links: &[Link]) -> String {
     links
         .iter()
         .filter_map(|link| match link {
-            Link::Origin(external) | Link::Related(external) => Some(external.key.as_str()),
+            Link::Origin(external) | Link::Related(external) | Link::Delivery(external) => {
+                Some(external.key.as_str())
+            }
             Link::Repo { .. } => None,
         })
         .collect::<Vec<_>>()
