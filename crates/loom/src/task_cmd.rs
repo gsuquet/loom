@@ -192,7 +192,7 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
         }
         if edit != TaskEdit::default() {
             detail = client
-                .patch(&format!("{TASKS_PATH}/{id}"), &edit)
+                .patch(&task_path(&id), &edit)
                 .await
                 .map_err(|error| api_error(&error))?;
         }
@@ -209,7 +209,7 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
         {
             detail = client
                 .post(
-                    &format!("{TASKS_PATH}/{id}/move"),
+                    &format!("{}/move", task_path(&id)),
                     Some(&TaskMoveRequest { context }),
                 )
                 .await
@@ -231,7 +231,7 @@ pub fn go(args: &GoArgs, layout: &Layout) -> Result<()> {
     block_on(async {
         let client = client(layout).await?;
         let result: GoResult = client
-            .post(&format!("{TASKS_PATH}/{}/go", args.id), None::<&()>)
+            .post(&format!("{}/go", task_path(&args.id)), None::<&()>)
             .await
             .map_err(|error| api_error(&error))?;
         if let Err(error) =
@@ -349,7 +349,7 @@ pub fn undo(args: &TaskArgs, layout: &Layout) -> Result<()> {
     block_on(async {
         let client = client(layout).await?;
         let detail: TaskDetail = client
-            .post(&format!("{TASKS_PATH}/{}/undo", args.id), None::<&()>)
+            .post(&format!("{}/undo", task_path(&args.id)), None::<&()>)
             .await
             .map_err(|error| api_error(&error))?;
         output(&detail, args.json, || render_change(&detail))
@@ -388,7 +388,7 @@ pub fn edit(args: &EditArgs, layout: &Layout) -> Result<()> {
 /// `GET /v1/tasks/{id}/events`: the event log of the task.
 async fn event_log(client: &Client, id: &str) -> Result<TaskEvents> {
     client
-        .get(&format!("{TASKS_PATH}/{id}/events"))
+        .get(&format!("{}/events", task_path(id)))
         .await
         .map_err(|error| api_error(&error))
 }
@@ -401,7 +401,7 @@ async fn action(
     body: Option<&TaskActionRequest>,
 ) -> Result<TaskDetail> {
     client
-        .post(&format!("{TASKS_PATH}/{prefix}/actions/{name}"), body)
+        .post(&format!("{}/actions/{name}", task_path(prefix)), body)
         .await
         .map_err(|error| api_error(&error))
 }
@@ -450,10 +450,16 @@ pub async fn context(
     Ok(resolved)
 }
 
+/// `/v1/tasks/{task}`: `task` is an ID prefix or an MR key such as `acme/shop#412`, which is
+/// percent-encoded.
+fn task_path(task: &str) -> String {
+    format!("{TASKS_PATH}/{}", loom::repo::encode_segment(task))
+}
+
 /// `GET /v1/tasks/{prefix}`.
 async fn get(client: &Client, prefix: &str) -> Result<TaskDetail> {
     client
-        .get(&format!("{TASKS_PATH}/{prefix}"))
+        .get(&task_path(prefix))
         .await
         .map_err(|error| api_error(&error))
 }

@@ -14,6 +14,7 @@ pub mod forge;
 pub mod hooks;
 pub mod recurring;
 pub mod repo_update;
+pub mod review_sync;
 pub mod schedule;
 pub mod shutdown;
 pub mod store_git;

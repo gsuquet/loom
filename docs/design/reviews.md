@@ -10,17 +10,22 @@
 - **Which MRs**: open MRs where I am a requested reviewer.
   - GitHub: `GET /search/issues?q=is:pr is:open archived:false review-requested:@me`. `review-requested` includes requests to my teams; `user-review-requested` is direct requests only. Default: `review-requested`, configurable per forge host (`review_requests = "direct" | "teams"`).
   - GitLab: `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` set to the last successful poll minus a margin.
-- **Context of an MR**, first match wins: the context of an indexed clone of the target project (so `match.paths` and repo overrides count); the `match.hosts` rules of [Repositories](repos.md#contexts) on `<host>/<project path>`; otherwise the context whose credential found it. Never `default_context`: a client MR found by a client token must not land in the personal store. A context never stores an MR that belongs to another context, even when its token sees it.
-- **Moving a Review task** to another context (ADR-0015) is refused: its context comes from the MR, and the next poll would put it back.
+- **Context of an MR**, first match wins: the context of an indexed clone of the target project (so `match.paths` and repo overrides count); the `match.hosts` rules of [Repositories](repos.md#contexts) on `<host>/<project path>`; otherwise the context whose token found it, when each other context with a credential for the host (held here or not) is polled on this machine with a token of another account (the logins differ). One token, or two tokens of one account, find the same MRs, so then the finder tells nothing: the MR goes to no store and each poll reports it as failed, asking for a `match.hosts` rule. Never `default_context`: a client MR found by a client token must not land in the personal store. A context never stores an MR that belongs to another context, even when its token sees it.
+- **Moving a Review task** to another context (ADR-0015) is refused: its context comes from the MR, and the next poll would create a second task in that context.
 - **Poll**: every `[forges."<host>"] poll_interval` (default 5 min, jittered ±10 %), and on `loom review sync`. GitHub search is limited to 30 requests per minute; one search per host and context per poll stays far below.
 - **Open Review tasks are polled too**, one by one with their ETag, not only the search results: GitHub removes me from `requested_reviewers` once I submit a review, and GitLab `updated_after` does not show a removed request. Without this, a new head after my verdict would never reopen the task.
 
 ## Review task
 
-- One Review task per MR, created in `inbox` with an `origin` link: provider, key, URL. Keys: `acme/shop#412` (GitHub), `company-a/checkout!88` (GitLab). The key is an alias of the task (storage IDs).
+- One Review task per MR, created in `inbox` with an `origin` link: provider, key, URL. Keys: `acme/shop#412` (GitHub), `company-a/checkout!88` (GitLab). The key is an alias of the task (storage IDs): `/v1/tasks/{id}` accepts an exact MR key (percent-encoded by the CLI) and resolves it to the Review task whose `origin` link names it; two tasks with that origin (two contexts) is an `invalid_request` that asks for the ID.
+- **Fields the sync owns**: title, kind and origin link at creation only; afterwards the status, only on the transitions below, each preceded by a daemon note giving the reason. Importance, due, pinned, notes and later title edits are mine and never touched. Archived Review tasks are not changed.
+- **Transitions are edges between two polls**, not levels: "request removed" is requested at the last poll and not now, "requested again" the reverse (kept in `sync.json`). Closing a task by hand while still requested therefore sticks until a new head or a new request.
 - Done (domain model): a verdict posted for the current head SHA. A new head after my verdict reopens the task (`ready`), with an event.
 - MR merged or closed: the task is `done` or `cancelled` with an event (a terminal remote state closes the local task). My review request removed: `cancelled`, unless I already posted a verdict (then `done`).
-- An MR I am asked to review again (GitHub re-request, GitLab reviewer state reset) reopens the task.
+- An MR I am asked to review again (GitHub re-request, GitLab request added again) reopens the task. A GitLab reviewer state reset without a new request is not seen in v0.4 (the reviewer states are not read).
+- Verdict: GitHub, my latest submitted review that approves, requests changes or comments, on a commit (a new review ID is a new verdict); GitLab, my approval (`approvals.user_has_approved`), dated to the head of the poll that first shows it: an approval still shown after a push is not a new verdict (projects that do not reset approvals), one shown again after a reset is. A comment without approval is not a verdict. The last verdict is kept in `sync.json`, so an approval reset by a push is not forgotten.
+- A request removed after a verdict on an older head (I reviewed, the author pushed before the poll) leaves the task open: the new head is still to review. No task is created for an MR whose current head already has my verdict (GitLab lists approved MRs): nothing to review. A done task reopens on a new head only when my verdict is not on it, so a head that a failed mirror write missed does not reopen it. A cancelled task reopens when the MR is open again after a close and I am requested. An archived Review task is never changed: its mirror is the previous state, and only a new head or a new request creates a new task. Merged and closed are edges too: a task I reopen by hand on a closed MR stays open.
+- An incomplete GitHub search does not count as a removed request: an MR missing from it keeps the request state of the last poll. A `done` or `cancelled` task of a merged or closed MR is not polled any more.
 
 ## MR mirror
 
@@ -32,10 +37,12 @@ tasks/<id>/mrs/<provider>-<key>/       # key with every byte but [A-Za-z0-9_-] a
   description.md     # MR description, read-only
   versions.json      # every head SHA seen: SHA, base SHA, merge base, first seen, forge version ID (GitLab)
   threads.json       # snapshot of every thread and general comment, normalized, rewritten on each pull
+  sync.json          # sync state: requested at the last poll, last verdict seen (SHA, review ID), verdict shown at the last read
   diffs/<sha>.patch  # diff of a version I opened or reviewed (merge base..head)
   review.json        # mine: draft comments, replies, resolves, verdict, viewed marks, last reviewed SHA, publish progress
 ```
 
+- Writes: a file is written (atomic rename) only when its bytes change, and a task whose status or mirror changed gets one store commit per poll, with the message of its events, else `mr(<id>): <key> mirror updated`. A poll that sees no change writes and commits nothing. ETags and the last threads pull time live in memory: after a restart, each MR is read in full once, which rewrites nothing if it did not change.
 - `threads.json` is a snapshot, not a log: a `jsonl` file under `merge=union` (multi-machine storage) would duplicate every rewritten line. The thread history is the forge's; what I did is in `events.jsonl` (`review` events).
 - A thread: forge ID, file-level or line anchor (path, side, start and end line, head SHA), outdated, resolved, comments (author, body, time, forge IDs). General comments are threads without anchor. GitLab system notes are dropped.
   - The anchor is the thread's position in the newest version it applies to: the current version when the thread is not outdated (GitHub `line`, GitLab moves `position` to the new version when it can), otherwise the version it was written on (GitHub `originalLine` and `originalCommit`, GitLab `position`). Both forges then give the same anchor for the same thread.

@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewSyncResult",
+  "description": "Answer of `POST /v1/reviews/sync`: one poll per context and forge host that has a\ncredential, sorted by context, then host.",
+  "type": "object",
+  "properties": {
+    "forges": {
+      "description": "The polls.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ReviewSync"
+      }
+    }
+  },
+  "required": [
+    "forges"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "ForgeKind": {
+      "description": "Forge that hosts a remote (`[forges.\"<host>\"] kind`).",
+      "oneOf": [
+        {
+          "description": "GitHub or GitHub Enterprise.",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "GitLab, hosted or self-managed.",
+          "type": "string",
+          "const": "gitlab"
+        }
+      ]
+    },
+    "ReviewSync": {
+      "description": "The poll of one forge host for one context.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "The context.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "host": {
+          "description": "The forge host.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Its forge.",
+          "$ref": "#/$defs/ForgeKind"
+        },
+        "last_success": {
+          "description": "The time of the last poll that succeeded, by this loomd.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "description": "What the poll did.",
+          "$ref": "#/$defs/ReviewSyncOutcome"
+        }
+      },
+      "required": [
+        "context",
+        "host",
+        "kind",
+        "outcome"
+      ]
+    },
+    "ReviewSyncFailure": {
+      "description": "An MR whose sync failed.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "Why, for humans. Never contains the token.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The key of the MR, such as `acme/shop#412`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "error"
+      ]
+    },
+    "ReviewSyncOutcome": {
+      "description": "What a poll of a forge host did.",
+      "oneOf": [
+        {
+          "description": "The host answered. An MR that failed is in `failed`: the others are synced.",
+          "type": "object",
+          "properties": {
+            "changed": {
+              "description": "The Review tasks whose status or mirror changed.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "created": {
+              "description": "The Review tasks created.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "failed": {
+              "description": "The MRs whose sync failed: their last snapshot is kept.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReviewSyncFailure"
+              }
+            },
+            "mrs": {
+              "description": "The MRs polled: the MRs to review and the MRs of the Review tasks.",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "other_context": {
+              "description": "The MRs to review that belong to another context: not written to this store.",
+              "type": "integer",
+              "format": "uint",
+              "default": 0,
+              "minimum": 0
+            },
+            "outcome": {
+              "type": "string",
+              "const": "synced"
+            }
+          },
+          "required": [
+            "outcome",
+            "mrs"
+          ]
+        },
+        {
+          "description": "The host was not polled: it limits the rate of requests until `until`.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "rate_limited"
+            },
+            "until": {
+              "description": "When the next poll can run.",
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "required": [
+            "outcome",
+            "until"
+          ]
+        },
+        {
+          "description": "The poll failed: every MR of the host keeps its last snapshot.",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "Why, for humans. Never contains the token.",
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "const": "failed"
+            }
+          },
+          "required": [
+            "outcome",
+            "error"
+          ]
+        }
+      ]
+    },
+    "TaskId": {
+      "description": "Task ID: 8 lowercase Crockford base32 characters, such as k3q7zm2a.",
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{8}$"
+    },
+    "Timestamp": {
+      "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

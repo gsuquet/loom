@@ -202,6 +202,7 @@ fn summary(payload: &'static str, mr: MergeRequest) -> Result<MrSummary, ParseEr
         author: username(mr.author),
         draft: mr.draft || mr.work_in_progress,
         head_sha: mr.sha,
+        project_id: Some(mr.project_id),
         web_url: mr.web_url,
         updated_at: mr.updated_at.0,
     })

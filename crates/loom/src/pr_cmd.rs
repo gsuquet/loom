@@ -77,7 +77,7 @@ pub fn run(args: &PrArgs, global: &GlobalArgs, layout: &Layout) -> Result<()> {
             dry_run: args.dry_run,
         };
         let command = push_command(&remote, &branch);
-        let path = format!("/v1/tasks/{id}/mr");
+        let path = format!("/v1/tasks/{}/mr", loom::repo::encode_segment(&id));
         let client = client.with_timeout(MR_TIMEOUT);
         // A dry run first: loomd checks the task and the credential, and sends nothing. A
         // refusal comes before the push.

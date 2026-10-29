@@ -715,6 +715,25 @@ fn a_move_changes_only_the_context_and_records_it() {
 }
 
 #[test]
+fn a_review_task_of_an_mr_does_not_move() {
+    let (mut task, log) = task_with(Status::Ready);
+    task.kind = Kind::Review;
+    task.links = vec![crate::Link::Origin(crate::ExternalRef {
+        provider: "github".to_owned(),
+        key: "acme/shop#412".to_owned(),
+        url: None,
+    })];
+    assert_eq!(
+        move_to(task.clone(), "company-b", 0, &log).unwrap_err(),
+        DomainError::MoveReview("acme/shop#412".to_owned())
+    );
+    // A Review task written by hand, without an MR, moves.
+    let mut manual = task;
+    manual.links.clear();
+    assert!(move_to(manual, "company-b", 0, &log).is_ok());
+}
+
+#[test]
 fn a_move_is_refused_in_the_same_context_for_a_read_only_task_and_with_relatives() {
     let (task, log) = task_with(Status::Ready);
     assert_eq!(

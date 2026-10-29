@@ -6,6 +6,7 @@ mod prompt_cmd;
 mod reindex_cmd;
 mod repo_cmd;
 mod restart_cmd;
+mod review_cmd;
 mod search_cmd;
 mod service_cmd;
 mod start;
@@ -23,7 +24,8 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory as _, FromArgMatches as _};
 use loom::cli::{
-    Cli, Command, GlobalArgs, RepoCommand, ServiceCommand, VERSION_INFO, command_path,
+    Cli, Command, GlobalArgs, RepoCommand, ReviewCommand, ServiceCommand, VERSION_INFO,
+    command_path,
 };
 use loom::conventions::{Exit, use_color, write_out};
 use loom::loomd_path::loomd_candidates;
@@ -217,6 +219,7 @@ const fn registers_on_use(command: Option<&Command>, interactive_tui: bool) -> b
         | Command::Edit(_)
         | Command::Reindex(_)
         | Command::Sync(_)
+        | Command::Review { .. }
         | Command::Version { .. }
         | Command::Status { .. }
         | Command::Service { .. }
@@ -277,6 +280,9 @@ fn run(cli: &Cli) -> Result<Exit> {
         Command::Edit(args) => task_cmd::edit(args, &layout()?),
         Command::Reindex(args) => reindex_cmd::run(args, &layout()?),
         Command::Sync(args) => sync_cmd::run(args, &cli.global, &layout()?),
+        Command::Review { command } => match command {
+            ReviewCommand::Sync(args) => review_cmd::sync(args, &cli.global, &layout()?),
+        },
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;
             let supervisor = watchdog_supervisor(&layout);

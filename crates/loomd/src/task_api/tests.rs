@@ -383,6 +383,58 @@ fn a_prefix_resolves_to_one_task_or_a_typed_problem() {
 }
 
 #[test]
+fn an_mr_key_resolves_to_its_review_task() {
+    let review = |id: &str, context: &str, key: &str| {
+        let mut task = task(id, context, 100);
+        task.kind = Kind::Review;
+        task.links = vec![loom_api::Link::Origin(loom_api::ExternalRef {
+            provider: "github".to_owned(),
+            key: key.to_owned(),
+            url: Some(format!("https://github.com/{}", key.replace('#', "/pull/"))),
+        })];
+        row(task)
+    };
+    let rows = vec![
+        row(task("k3q7zm2a", "work", 100)),
+        review("r1000000", "work", "acme/shop#412"),
+        review("r2000000", "work", "acme/shop#7"),
+    ];
+    // The project is matched without case, as the forges do.
+    assert_eq!(resolve("Acme/Shop#412", &rows).unwrap().id, id("r1000000"));
+    let (status, error) = resolve("acme/shop#9", &rows).unwrap_err();
+    assert_eq!(
+        (status, error.code),
+        (StatusCode::NOT_FOUND, ErrorCode::NotFound)
+    );
+    // An archived task of the same MR: the active one is the alias.
+    let mut archived = rows.clone();
+    let mut old = review("r0000000", "work", "acme/shop#412");
+    old.location = TaskLocation::Archived(2025);
+    archived.push(old);
+    assert_eq!(
+        resolve("acme/shop#412", &archived).unwrap().id,
+        id("r1000000")
+    );
+    // Only archived tasks: the last changed one.
+    let mut older = review("r4000000", "work", "acme/shop#99");
+    older.location = TaskLocation::Archived(2025);
+    let mut newer = review("r5000000", "work", "acme/shop#99");
+    newer.location = TaskLocation::Archived(2025);
+    if let IndexedState::Valid { task, .. } = &mut newer.state {
+        task.updated = Timestamp::from_unix_secs(500).unwrap();
+    }
+    let both = vec![newer, older];
+    assert_eq!(resolve("acme/shop#99", &both).unwrap().id, id("r5000000"));
+    let mut twice = rows;
+    twice.push(review("r3000000", "home", "acme/shop#412"));
+    let (status, error) = resolve("acme/shop#412", &twice).unwrap_err();
+    assert_eq!(
+        (status, error.code),
+        (StatusCode::BAD_REQUEST, ErrorCode::InvalidRequest)
+    );
+}
+
+#[test]
 fn a_detail_has_the_body_and_the_actions() {
     let rows = [
         row(task("k3q7zm2a", "work", 100)),
@@ -759,4 +811,44 @@ fn action_names_are_read_from_the_path() {
     assert_eq!(action_name_of("accept"), Some(TaskActionName::Accept));
     assert_eq!(action_name_of("archive"), None);
     assert_eq!(action_name_of("Done"), None);
+}
+
+#[test]
+fn the_review_of_an_mr_is_the_active_task_then_the_last_archived_one() {
+    use crate::review_sync::find_review;
+    use loom_forge::model::MrKey;
+
+    let review = |id: &str, updated: u64, location: TaskLocation| {
+        let mut task = task(id, "work", 100);
+        task.kind = Kind::Review;
+        task.updated = Timestamp::from_unix_secs(updated).unwrap();
+        task.links = vec![loom_api::Link::Origin(loom_api::ExternalRef {
+            provider: "github".to_owned(),
+            key: "acme/shop#412".to_owned(),
+            url: Some("https://github.com/acme/shop/pull/412".to_owned()),
+        })];
+        let mut row = row(task);
+        row.location = location;
+        row
+    };
+    let key = MrKey::parse("acme/shop#412").unwrap();
+    let context: loom_api::ContextName = "work".parse().unwrap();
+    let found = |rows: &[IndexedTask]| {
+        find_review(rows, &context, "github.com", &key).map(|(id, _, _)| id.to_string())
+    };
+    // Two archived tasks of one year: the last changed, whatever the order of their IDs.
+    let mut rows = vec![
+        review("r2000000", 100, TaskLocation::Archived(2026)),
+        review("r1000000", 200, TaskLocation::Archived(2026)),
+    ];
+    assert_eq!(found(&rows).as_deref(), Some("r1000000"));
+    rows.reverse();
+    assert_eq!(found(&rows).as_deref(), Some("r1000000"));
+    // The active task wins; another host is not this MR.
+    rows.push(review("r0000000", 50, TaskLocation::Active));
+    assert_eq!(found(&rows).as_deref(), Some("r0000000"));
+    assert_eq!(
+        find_review(&rows, &context, "github.example.com", &key),
+        None
+    );
 }

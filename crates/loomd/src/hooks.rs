@@ -16,17 +16,32 @@ pub const EVENTS_HEARTBEAT_ENV: &str = "LOOM_TEST_EVENTS_HEARTBEAT";
 pub const SCHEDULE_INTERVAL_ENV: &str = "LOOM_TEST_SCHEDULE_INTERVAL";
 /// Replaces the 10 s that API requests in flight have to finish after the first signal.
 pub const SHUTDOWN_GRACE_ENV: &str = "LOOM_TEST_SHUTDOWN_GRACE";
+/// Replaces the 30 s between the start of loomd and the first poll of each forge host.
+pub const REVIEW_START_DELAY_ENV: &str = "LOOM_TEST_REVIEW_START_DELAY";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
-/// Replaces the API of every forge host: the base URL of a fake forge.
+/// Replaces the API of forge hosts.
+///
+/// The value is the base URL of a fake forge for every host, or
+/// `<host>=<base>[,<host>=<base>…]`, such as `github.com=http://127.0.0.1:8080`. The GitHub
+/// GraphQL endpoint is `<base>/graphql`.
 pub const FORGE_API_ENV: &str = "LOOM_TEST_FORGE_API";
 
-/// The forge API base of the hook variable: `None` when unset or empty, or in a release build.
+/// The API base of `host` in the hook variable: `None` when unset or empty, when a list does
+/// not name the host, or in a release build.
 #[must_use]
-pub fn forge_api_hook(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|value| !value.is_empty() && cfg!(debug_assertions))
-        .map(|value| value.trim_end_matches('/').to_owned())
+pub fn forge_api_hook(value: Option<&str>, host: &str) -> Option<String> {
+    let value = value.filter(|value| !value.is_empty() && cfg!(debug_assertions))?;
+    let base = if value.contains('=') {
+        value
+            .split(',')
+            .filter_map(|entry| entry.split_once('='))
+            .find(|(name, _)| name.trim() == host)?
+            .1
+    } else {
+        value
+    };
+    Some(base.trim().trim_end_matches('/').to_owned())
 }
 
 /// The duration of a hook variable: `None` when unset or empty, in a release build, or
@@ -60,7 +75,7 @@ pub fn fail_unless_home_prefix(prefix: Option<&str>, home: &Path) -> Option<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_hook, fail_unless_home_prefix};
+    use super::{duration_hook, fail_unless_home_prefix, forge_api_hook};
     use std::path::Path;
     use std::time::Duration;
 
@@ -82,13 +97,23 @@ mod tests {
 
     #[test]
     fn forge_api_hook_in_debug_builds() {
-        assert_eq!(super::forge_api_hook(None), None);
-        assert_eq!(super::forge_api_hook(Some("")), None);
-        let hooked = super::forge_api_hook(Some("http://127.0.0.1:9/"));
+        assert_eq!(forge_api_hook(None, "github.com"), None);
+        assert_eq!(forge_api_hook(Some(""), "github.com"), None);
+        let one = forge_api_hook(Some("http://127.0.0.1:9/"), "github.com");
+        let list = "github.com=http://127.0.0.1:1/, gitlab.example.com=http://127.0.0.1:2,bad";
         if cfg!(debug_assertions) {
-            assert_eq!(hooked.as_deref(), Some("http://127.0.0.1:9"));
+            assert_eq!(one.as_deref(), Some("http://127.0.0.1:9"));
+            assert_eq!(
+                forge_api_hook(Some(list), "github.com").as_deref(),
+                Some("http://127.0.0.1:1")
+            );
+            assert_eq!(
+                forge_api_hook(Some(list), "gitlab.example.com").as_deref(),
+                Some("http://127.0.0.1:2")
+            );
+            assert_eq!(forge_api_hook(Some(list), "gitlab.com"), None);
         } else {
-            assert_eq!(hooked, None);
+            assert_eq!(one, None);
         }
     }
 

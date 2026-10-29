@@ -13,6 +13,7 @@ pub mod pr;
 pub mod prompt;
 pub mod reindex;
 pub mod repo;
+pub mod review;
 pub mod search;
 pub mod service;
 pub mod shell;

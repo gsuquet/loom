@@ -25,12 +25,12 @@ use loom_api::{
     PlannedAction, PrReport, Profile, RegisterRequest, ReindexResult, Remote, RemoteCheck,
     RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl, RepoHead,
     RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RestartVia, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
-    SearchResults, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
-    StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField,
-    TaskStoreHealth, Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode,
-    UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport,
-    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
+    RepoUpdatePolicy, RestartVia, ReviewSyncRequest, ReviewSyncResult, RollbackReport, ScanIssue,
+    ScanResult, SearchField, SearchResult, SearchResults, ServicePlatform, ServiceStatus,
+    SkipReason, SshAgentSocket, StateField, StatusResponse, SyncOutcome, SyncRequest, SyncResult,
+    TaskMatch, TaskSearchField, TaskStoreHealth, Timestamp, Untracked, UpdateChannel,
+    UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpdateStep,
+    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -68,6 +68,8 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("repo_list", schema_for!(RepoList)),
         ("repo_state", schema_for!(RepoState)),
         ("repo_summary", schema_for!(RepoSummary)),
+        ("review_sync_request", schema_for!(ReviewSyncRequest)),
+        ("review_sync_result", schema_for!(ReviewSyncResult)),
         ("rollback_report", schema_for!(RollbackReport)),
         ("scan_result", schema_for!(ScanResult)),
         ("search_results", schema_for!(SearchResults)),

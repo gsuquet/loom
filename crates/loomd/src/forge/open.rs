@@ -331,6 +331,7 @@ mod tests {
             state: MrState::Open,
             draft: true,
             head_sha: None,
+            project_id: None,
             web_url: format!("https://gitlab.com/company-a/checkout/-/merge_requests/{number}"),
             updated_at: Timestamp::from_unix_secs(1_760_000_000).unwrap(),
         }

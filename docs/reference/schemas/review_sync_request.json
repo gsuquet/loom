@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewSyncRequest",
+  "description": "Body of `POST /v1/reviews/sync`.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "description": "The context to poll. If absent: every context that this machine polls.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    }
+  }
+}

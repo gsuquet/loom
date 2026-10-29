@@ -59,6 +59,12 @@ pub enum DomainError {
         "the task has {0} child task(s): move or detach them first, a parent is in the context of its children"
     )]
     MoveWithChildren(usize),
+    /// A Review task of an MR cannot move: its context comes from the MR, and the next poll
+    /// would create a second task in that context.
+    #[error(
+        "a Review task of an MR cannot move: its context comes from the MR (`{0}`), and the next poll of the forge would create a second task in that context"
+    )]
+    MoveReview(String),
     /// The last change is a move: it is undone by moving the task back.
     #[error("cannot undo a move: move the task back to context `{0}`")]
     UndoMove(ContextName),
@@ -490,6 +496,9 @@ pub fn move_task(
     if children > 0 {
         return Err(DomainError::MoveWithChildren(children));
     }
+    if let Some(key) = review_origin(&task) {
+        return Err(DomainError::MoveReview(key.to_owned()));
+    }
     let mut task = task;
     let event = Event::Edited {
         changes: vec![FieldChange::Context(Change {
@@ -504,6 +513,19 @@ pub fn move_task(
     let taken: Vec<EventId> = log.iter().map(|record| record.id.clone()).collect();
     let id = EventId::generate(random, &taken)?;
     Ok((task, EventRecord::new(id, event, now, origin)))
+}
+
+/// The key of the MR a Review task comes from: its `origin` link, when it is of a forge.
+fn review_origin(task: &Task) -> Option<&str> {
+    if task.kind != Kind::Review {
+        return None;
+    }
+    task.links.iter().find_map(|link| match link {
+        Link::Origin(origin) if matches!(origin.provider.as_str(), "github" | "gitlab") => {
+            Some(origin.key.as_str())
+        }
+        Link::Origin(_) | Link::Related(_) | Link::Delivery(_) | Link::Repo { .. } => None,
+    })
 }
 
 /// The command that reverts the last change recorded in `events`, the log of `task`.
@@ -607,6 +629,7 @@ fn replay_change(task: &mut Task, change: FieldChange) -> Result<(), ReplayError
         | DomainError::SameContext(_)
         | DomainError::MoveWithParent(_)
         | DomainError::MoveWithChildren(_)
+        | DomainError::MoveReview(_)
         | DomainError::UndoMove(_)
         | DomainError::InvalidParent { .. } => ReplayError::Conflict("task"),
     })
