@@ -150,7 +150,8 @@ pub enum Command {
     /// Push the current branch and open a draft MR for it, linked to a task.
     ///
     /// The task is `ID`, or the focus task of the context, resolved as for `loom add`. The
-    /// command runs `git push -u <remote> <branch>` with your own git credentials. The remote
+    /// command runs `git push -u -- <remote> refs/heads/<branch>:refs/heads/<branch>` with your
+    /// own git credentials. The remote
     /// is the upstream remote of the branch, or the primary remote of the repository. Then
     /// loomd opens a draft MR from the branch into the base with the forge credential of the
     /// context of the task: the title is the task title, the description is the template of
@@ -158,10 +159,12 @@ pub enum Command {
     /// not sent. If the branch has an open MR, loomd links that MR and opens no other. The MR
     /// becomes a `delivery` link of the task, and the task log gets an `mr` event.
     ///
-    /// The command refuses a detached `HEAD`, the default branch, a branch with no commit ahead
-    /// of the base, and a branch whose upstream has another name. Before the push, loomd
-    /// checks the task and the forge credential. If the push fails, the command shows the git
-    /// error and opens no MR. Starts loomd if it is stopped.
+    /// The command refuses a detached `HEAD`, the default branch, and a branch with no commit
+    /// ahead of the base. It also refuses a branch whose upstream is a local branch, a URL, or
+    /// a branch with another name. Before the push, loomd checks that the task can change and
+    /// that the context has a forge credential for the host. loomd does not run `token_cmd`
+    /// for this check. If the push fails, the command shows the git error and opens no MR.
+    /// Starts loomd if it is stopped.
     Pr(PrArgs),
     /// Show the focus task of each context, or of the context that `-c` names.
     ///
@@ -462,8 +465,9 @@ pub struct PrArgs {
     /// Task ID, or a unique prefix of one. The default is the focus task of the context.
     #[arg(value_name = "ID", value_parser = task_prefix)]
     pub id: Option<String>,
-    /// Target branch of the MR. The default is the default branch of the remote
-    /// (`refs/remotes/<remote>/HEAD`).
+    /// Target branch of the MR. The default is the default branch of the remote:
+    /// `refs/remotes/<remote>/HEAD`, or else the default branch in the repository index. The
+    /// command must know the default branch also when you give this option.
     #[arg(long, value_name = "BRANCH")]
     pub base: Option<String>,
     /// Print the push and the forge requests, push nothing, send nothing, change no task.

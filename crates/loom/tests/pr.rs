@@ -292,7 +292,14 @@ fn pr_pushes_the_branch_and_opens_a_draft_linked_to_the_focus_task() {
     assert!(report.push.pushed);
     assert_eq!(
         report.push.command,
-        ["git", "push", "-u", "origin", "fix/login"]
+        [
+            "git",
+            "push",
+            "-u",
+            "--",
+            "origin",
+            "refs/heads/fix/login:refs/heads/fix/login"
+        ]
     );
     assert_eq!(report.result.outcome, MrOutcome::Opened);
     assert_eq!(report.result.task.to_string(), id);
@@ -367,7 +374,9 @@ fn a_dry_run_prints_the_push_and_the_requests_and_does_neither() {
     let id = sandbox.task_on_branch();
     let text = sandbox.ok(&["pr", "-n", "--base", "main"]);
     assert!(
-        text.starts_with("would run: git push -u origin fix/login\n"),
+        text.starts_with(
+            "would run: git push -u -- origin refs/heads/fix/login:refs/heads/fix/login\n"
+        ),
         "{text}"
     );
     let base = sandbox.forge.base();
@@ -435,7 +444,10 @@ fn a_refused_push_shows_the_git_error_and_opens_no_mr() {
     let output = sandbox.loom(&["pr", &id]);
     assert_eq!(output.status.code(), Some(1));
     let error = stderr(&output);
-    assert!(error.contains("git push -u origin fix/login"), "{error}");
+    assert!(
+        error.contains("git push -u -- origin refs/heads/fix/login:refs/heads/fix/login"),
+        "{error}"
+    );
     assert!(error.contains("no MR opened"), "{error}");
     assert!(
         error.contains("pushes to fix/* are closed today"),
@@ -552,4 +564,57 @@ fn pr_opens_a_gitlab_draft_with_the_draft_title_prefix() {
         Some(format!("Bearer {TOKEN}").as_str())
     );
     assert_eq!(delivery_keys(&sandbox.task(&id)), ["company-a/checkout!88"]);
+}
+
+#[test]
+fn a_read_only_task_is_refused_before_the_push() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.task_on_branch();
+    // A kind from a newer loom makes the task read-only, as an archived task is.
+    let mut found = Vec::new();
+    find_files(&sandbox.loom_home(), "task.md", &mut found);
+    let path = found
+        .into_iter()
+        .find(|path| path.parent().is_some_and(|dir| dir.ends_with(&id)))
+        .unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, text.replace("kind = \"bug\"", "kind = \"saga\"")).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while sandbox.task(&id).summary.read_only.is_none() {
+        assert!(Instant::now() < deadline, "the hand edit is not read");
+        thread::sleep(POLL);
+    }
+
+    let output = sandbox.loom(&["pr", &id]);
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(
+        error.contains(&format!("task {id} is read-only")),
+        "{error}"
+    );
+    assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
+}
+
+#[test]
+fn an_upstream_with_another_branch_name_is_refused() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.task_on_branch();
+    sandbox.git(
+        &sandbox.repo(),
+        &["config", "branch.fix/login.remote", "origin"],
+    );
+    sandbox.git(
+        &sandbox.repo(),
+        &["config", "branch.fix/login.merge", "refs/heads/main"],
+    );
+    let output = sandbox.loom(&["pr", &id]);
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(
+        error.contains("`fix/login` tracks `refs/heads/main`, another name"),
+        "{error}"
+    );
+    assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
 }

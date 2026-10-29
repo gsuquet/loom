@@ -25,6 +25,58 @@ pub enum PrRefusal {
         /// The target branch.
         base: String,
     },
+    /// The upstream of the branch is a local branch (remote `.`).
+    #[error(
+        "the upstream of `{0}` is a local branch: set a remote with `git branch --set-upstream-to <remote>/<branch>`"
+    )]
+    LocalUpstream(String),
+    /// The upstream remote of the branch is a URL, not the name of a remote.
+    #[error(
+        "the upstream remote of `{branch}` is the URL `{remote}`, not a remote name: add it with `git remote add` and set it with `git branch --set-upstream-to`"
+    )]
+    UrlUpstream {
+        /// The branch.
+        branch: String,
+        /// The `branch.<b>.remote` value.
+        remote: String,
+    },
+    /// The upstream of the branch has another name: the push goes to the same name.
+    #[error(
+        "`{branch}` tracks `{merge}`, another name: rename the branch, or unset its upstream with `git branch --unset-upstream`"
+    )]
+    OtherUpstreamName {
+        /// The branch.
+        branch: String,
+        /// The `branch.<b>.merge` value.
+        merge: String,
+    },
+}
+
+/// Checks the upstream of `branch`: `remote` is the name of a remote, and `merge`
+/// (`branch.<b>.merge`, when set) is `refs/heads/<branch>`, where the push goes. Pure.
+///
+/// # Errors
+///
+/// [`PrRefusal`].
+pub fn check_upstream(branch: &str, remote: &str, merge: Option<&str>) -> Result<(), PrRefusal> {
+    if remote == "." {
+        return Err(PrRefusal::LocalUpstream(branch.to_owned()));
+    }
+    if remote.contains(['/', ':']) {
+        return Err(PrRefusal::UrlUpstream {
+            branch: branch.to_owned(),
+            remote: remote.to_owned(),
+        });
+    }
+    if let Some(merge) = merge
+        && merge != format!("refs/heads/{branch}")
+    {
+        return Err(PrRefusal::OtherUpstreamName {
+            branch: branch.to_owned(),
+            merge: merge.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Checks that `branch` can be the source of an MR into `base`: not the default branch of the
@@ -49,12 +101,21 @@ pub fn check_branch(branch: &str, base: &str, default: &str, ahead: u64) -> Resu
     Ok(())
 }
 
-/// The push of `branch` to `remote`, with its upstream set. Pure.
+/// The push of `branch` to the branch of the same name on `remote`, with its upstream set. Pure.
+///
+/// `--` keeps a remote that starts with `-` from being an option, and the full refspec keeps a
+/// tag with the name of the branch from making it ambiguous.
 #[must_use]
 pub fn push_command(remote: &str, branch: &str) -> Vec<String> {
-    ["git", "push", "-u", remote, branch]
-        .map(str::to_owned)
-        .to_vec()
+    let reference = format!("refs/heads/{branch}");
+    vec![
+        "git".to_owned(),
+        "push".to_owned(),
+        "-u".to_owned(),
+        "--".to_owned(),
+        remote.to_owned(),
+        format!("{reference}:{reference}"),
+    ]
 }
 
 /// The default branch of `remote` from the output of
@@ -118,7 +179,7 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::{PrRefusal, check_branch, default_branch, push_command, render};
+    use super::{PrRefusal, check_branch, check_upstream, default_branch, push_command, render};
 
     #[test]
     fn the_default_branch_the_base_and_an_empty_branch_are_refused() {
@@ -146,10 +207,50 @@ mod tests {
     }
 
     #[test]
+    fn an_upstream_must_be_a_remote_name_and_the_same_branch_name() {
+        assert_eq!(check_upstream("fix/a", "origin", None), Ok(()));
+        assert_eq!(
+            check_upstream("fix/a", "origin", Some("refs/heads/fix/a")),
+            Ok(())
+        );
+        assert_eq!(
+            check_upstream("fix/a", ".", Some("refs/heads/main")),
+            Err(PrRefusal::LocalUpstream("fix/a".to_owned()))
+        );
+        for url in [
+            "https://github.com/acme/shop.git",
+            "git@github.com:acme/shop.git",
+            "../shop",
+        ] {
+            assert_eq!(
+                check_upstream("fix/a", url, None),
+                Err(PrRefusal::UrlUpstream {
+                    branch: "fix/a".to_owned(),
+                    remote: url.to_owned(),
+                })
+            );
+        }
+        assert_eq!(
+            check_upstream("fix/a", "origin", Some("refs/heads/main")),
+            Err(PrRefusal::OtherUpstreamName {
+                branch: "fix/a".to_owned(),
+                merge: "refs/heads/main".to_owned(),
+            })
+        );
+    }
+
+    #[test]
     fn push_and_default_branch() {
         assert_eq!(
-            push_command("origin", "fix/a"),
-            ["git", "push", "-u", "origin", "fix/a"]
+            push_command("-x", "fix/a"),
+            [
+                "git",
+                "push",
+                "-u",
+                "--",
+                "-x",
+                "refs/heads/fix/a:refs/heads/fix/a"
+            ]
         );
         assert_eq!(
             default_branch("origin", "origin/main\n").as_deref(),
@@ -202,7 +303,7 @@ mod tests {
     fn a_dry_run_prints_the_push_and_the_requests() {
         assert_eq!(
             render(&report(true, MrOutcome::Planned)),
-            "would run: git push -u origin fix/a\n\
+            "would run: git push -u -- origin refs/heads/fix/a:refs/heads/fix/a\n\
              would send: GET https://api.github.com/repos/acme/shop/pulls?head=acme%3Afix%2Fa\n  \
              (an open MR of the branch is linked instead of the request below)\n\
              would send: POST https://api.github.com/repos/acme/shop/pulls\n  \

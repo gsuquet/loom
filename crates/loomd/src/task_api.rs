@@ -573,6 +573,33 @@ pub fn task_problem(error: &TaskError) -> Problem {
     }
 }
 
+/// The `409 read_only` problem of a task that `loomd` cannot change, before any change is
+/// tried.
+#[must_use]
+pub fn read_only_problem(id: &TaskId, reason: &TaskReadOnly) -> Problem {
+    let why = match reason {
+        TaskReadOnly::UnknownKind(name) => format!("its kind `{name}` is from a newer loom"),
+        TaskReadOnly::UnknownContentFormat(name) => {
+            format!("its content format `{name}` is from a newer loom")
+        }
+        TaskReadOnly::UnknownStatus(name) => format!("its status `{name}` is from a newer loom"),
+        TaskReadOnly::InvalidFile(error) => {
+            format!("its task.md is invalid ({error}): fix it first")
+        }
+        TaskReadOnly::Archived(year) => format!("it is archived in {year}"),
+    };
+    (
+        StatusCode::CONFLICT,
+        with_details(
+            ApiError::new(
+                ErrorCode::ReadOnly,
+                format!("task {id} is read-only: {why}"),
+            ),
+            reason,
+        ),
+    )
+}
+
 fn domain_problem(refused: &DomainError, message: String) -> Problem {
     match refused {
         DomainError::ReadOnly(reason) => (

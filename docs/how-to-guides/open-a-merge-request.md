@@ -49,10 +49,11 @@ The MR is a `delivery` link of the task (`loom show k3q --json`). The task log h
 ## If the command fails
 
 - `is the default branch` or `has no commit ahead`: create a branch and commit the change first.
+- `is read-only`: the task is archived, or a newer version of loom wrote it. `loom pr` does this check before the push. Give another task.
 - `tracks … another name`: the upstream of the branch has another name. `loom pr` pushes to a branch of the same name only. Rename the branch, or remove its upstream with `git branch --unset-upstream`.
 - `the default branch of … is unknown`: run `git remote set-head origin --auto`.
 - `git push … failed`: git refused the push, for example a hook of the remote or your git credentials. The command shows the git error and opens no MR. Fix the cause, then run `loom pr` again.
-- `has no forge credential`: add a token for the host to the context ([connect a forge](connect-a-forge.md)), then restart `loomd`. `loom pr` does this check before the push: the branch is not pushed.
+- `has no forge credential`: add a token for the host to the context ([connect a forge](connect-a-forge.md)), then restart `loomd`. `loom pr` does this check before the push: the branch is not pushed. If the token command fails, the error comes after the push, with `the branch is pushed`.
 - `the branch is pushed, but no MR is linked`: the push succeeded, but the forge refused the MR. The message gives the reason of the forge. Fix the cause, then run `loom pr` again: it pushes nothing new and opens the MR.
 
 The draft MR is ready for review only when you mark it ready on the forge. `loom pr` does not request reviewers or set labels.

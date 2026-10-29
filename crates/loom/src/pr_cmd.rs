@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use loom::cli::{GlobalArgs, PrArgs};
-use loom::pr::{PrRefusal, check_branch, default_branch, push_command, render};
+use loom::pr::{PrRefusal, check_branch, check_upstream, default_branch, push_command, render};
 use loom::task::focus_api_path;
 use loom_api::{FocusList, MrOpenRequest, MrOpenResult, PrReport, PushPlan, RepoSummary};
 use loom_config::layout::Layout;
@@ -177,24 +177,8 @@ fn push_remote(cwd: &Path, branch: &str, repo: &RepoSummary) -> Result<String> {
     )
     .or_else(|| repo.identity.primary_remote.clone())
     .unwrap_or_else(|| "origin".to_owned());
-    if remote == "." {
-        return Err(miette!(
-            "the upstream of `{branch}` is a local branch: set a remote with `git branch --set-upstream-to <remote>/<branch>`"
-        ));
-    }
-    if remote.contains(['/', ':']) {
-        return Err(miette!(
-            "the upstream remote of `{branch}` is the URL `{remote}`, not a remote name: add it with `git remote add` and set it with `git branch --set-upstream-to`"
-        ));
-    }
-    // `git push -u <remote> <branch>` pushes to the branch of the same name.
-    if let Some(merge) = git_stdout(cwd, &["config", "--get", &format!("branch.{branch}.merge")])
-        && merge != format!("refs/heads/{branch}")
-    {
-        return Err(miette!(
-            "`{branch}` tracks `{merge}` of `{remote}`, another name: rename the branch, or unset its upstream with `git branch --unset-upstream`"
-        ));
-    }
+    let merge = git_stdout(cwd, &["config", "--get", &format!("branch.{branch}.merge")]);
+    check_upstream(branch, &remote, merge.as_deref()).map_err(|refusal| miette!("{refusal}"))?;
     Ok(remote)
 }
 

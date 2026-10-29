@@ -60,7 +60,7 @@ use loomd::hooks;
 use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, SHUTDOWN_GRACE};
 use loomd::task_api::{
     FocusQuery, TEST_TODAY_ENV, TaskListQuery, action_command, action_name_of, action_request,
-    focus_context, new_task, task_edit, task_filter, today,
+    focus_context, new_task, read_only_problem, task_edit, task_filter, today,
 };
 use loomd::trace::request_span;
 use miette::{Context as _, IntoDiagnostic as _, Result, miette};
@@ -943,6 +943,10 @@ async fn open_mr_of(
 ) -> Result<MrOpenResult, Failure> {
     let detail = app.tasks.get(prefix).await?;
     let id = detail.summary.id.clone();
+    // Refused before the push: an MR opened for an archived task could never be linked.
+    if let Some(reason) = &detail.summary.read_only {
+        return Err(read_only_problem(&id, reason));
+    }
     let task = detail.summary.task.ok_or_else(|| {
         (
             StatusCode::CONFLICT,
