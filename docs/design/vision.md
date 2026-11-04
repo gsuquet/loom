@@ -28,4 +28,4 @@ Loom replaces the git inventory scripts in my dotfiles. The previous loom implem
 - No automatic git conflict resolution.
 - Nothing tightly coupled to one user's setup: tools, accounts and rules are configuration.
 - No legal or provider-approval feature. Users are responsible for their own usage; loom offers multiple contexts.
-- The desktop app is macOS only for now. The CLI and `loomd` keep their current platforms.
+- The desktop app is macOS only for now, and will likely need to install on Linux at some point. The CLI and `loomd` keep their current platforms.
