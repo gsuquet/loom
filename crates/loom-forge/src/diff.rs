@@ -14,8 +14,10 @@ use crate::model::{FileChange, FileDiff};
 pub struct FileHash {
     /// The path in the head.
     pub path: String,
-    /// The SHA-256 of the normalized patch, in lowercase hexadecimal digits.
-    pub hash: String,
+    /// The SHA-256 of the normalized patch, in lowercase hexadecimal digits. `None` when the
+    /// forge gave no patch: nothing tells the versions of the file apart, so it never counts
+    /// as unchanged.
+    pub hash: Option<String>,
 }
 
 /// The part of a patch for one file.
@@ -30,18 +32,18 @@ struct Section<'a> {
 const DIFF_GIT: &[u8] = b"diff --git ";
 /// The header lines that describe a change of their own: the rest of a header (`---`, `+++`,
 /// `similarity index`) repeats the path, or follows from the hunks.
-const CHANGE_LINES: [&[u8]; 10] = [
+const CHANGE_LINES: [&[u8]; 7] = [
     b"old mode ",
     b"new mode ",
-    b"new file mode ",
-    b"deleted file mode ",
     b"rename from ",
     b"rename to ",
     b"copy from ",
     b"copy to ",
     b"Binary files ",
-    NO_PATCH_PREFIX,
 ];
+/// These count only for a file without hunks: the forges do not give them, and the hunks of a
+/// new or deleted file already say that the whole file changed.
+const WHOLE_FILE_LINES: [&[u8]; 2] = [b"new file mode ", b"deleted file mode "];
 /// What a reduced patch says of a file that the forge gives no patch for.
 const NO_PATCH_PREFIX: &[u8] = b"# ";
 
@@ -78,15 +80,24 @@ fn sections(patch: &[u8]) -> Vec<Section<'_>> {
 
 /// The hash of a section: its hunks, and what its header says of the change. The blobs of the
 /// `index` line count only for a file without hunks: they alone tell two binary diffs apart.
-fn section_hash(section: &Section<'_>) -> String {
+fn section_hash(section: &Section<'_>) -> Option<String> {
+    if section
+        .header
+        .iter()
+        .any(|line| line.starts_with(NO_PATCH_PREFIX))
+    {
+        return None;
+    }
     let mut hasher = Sha256::new();
     let mut add = |line: &[u8]| {
         hasher.update(line);
         hasher.update(b"\n");
     };
     for line in &section.header {
-        let index = section.hunks.is_empty() && line.starts_with(b"index ");
-        if index || CHANGE_LINES.iter().any(|prefix| line.starts_with(prefix)) {
+        let no_hunks = section.hunks.is_empty();
+        let index = no_hunks && line.starts_with(b"index ");
+        let whole = no_hunks && WHOLE_FILE_LINES.iter().any(|prefix| line.starts_with(prefix));
+        if index || whole || CHANGE_LINES.iter().any(|prefix| line.starts_with(prefix)) {
             add(line);
         }
     }
@@ -99,7 +110,7 @@ fn section_hash(section: &Section<'_>) -> String {
         // Writing to a `String` does not fail.
         let _ = write!(hex, "{byte:02x}");
     }
-    hex
+    Some(hex)
 }
 
 /// A path as git writes it: C-quoted when it has special bytes.
@@ -218,21 +229,21 @@ pub fn file_hashes(patch: &[u8]) -> Vec<FileHash> {
 
 /// The files whose diff differs between the patches `reviewed` and `head`, sorted. Pure.
 ///
-/// A file counts when it changed, is new, or left the MR. A plain
+/// A file counts when it changed, is new, left the MR, or has no patch from the forge on either
+/// side, since nothing then tells its versions apart. A plain
 /// `git diff <old head> <new head>` is wrong after a rebase: it also shows what came from the
 /// base branch.
 #[must_use]
 pub fn since_last_review(reviewed: &[u8], head: &[u8]) -> Vec<String> {
     let reviewed = file_hashes(reviewed);
     let head = file_hashes(head);
+    let same = |file: &FileHash, others: &[FileHash]| {
+        file.hash.is_some() && others.contains(file)
+    };
     let mut paths: Vec<String> = head
         .iter()
-        .filter(|file| !reviewed.contains(file))
-        .chain(
-            reviewed
-                .iter()
-                .filter(|file| !head.iter().any(|other| other.path == file.path)),
-        )
+        .filter(|file| !same(file, &reviewed))
+        .chain(reviewed.iter().filter(|file| !same(file, &head)))
         .map(|file| file.path.clone())
         .collect();
     paths.sort();
@@ -240,61 +251,110 @@ pub fn since_last_review(reviewed: &[u8], head: &[u8]) -> Vec<String> {
     paths
 }
 
+/// `path` after `side` as git writes it: C-quoted when it has a byte that would break the line.
+/// A path comes from the forge, and a newline in it must not write a new section.
+fn git_path(side: &str, path: &str) -> String {
+    let full = format!("{side}{path}");
+    if !full.bytes().any(|byte| byte.is_ascii_control() || matches!(byte, b'"' | b'\\')) {
+        return full;
+    }
+    let mut out = String::with_capacity(full.len() + 2);
+    out.push('"');
+    for char in full.chars() {
+        match char {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            char if char.is_ascii_control() => {
+                let _ = write!(out, "\\{:03o}", u32::from(char));
+            }
+            char => out.push(char),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// The patch of a version from the per-file patches of the forge. Pure.
 ///
 /// One `diff --git` section per file, read by [`file_hashes`] as the same diff from git. A file
-/// without a patch from the forge (binary or too large) has a `# ` line that says so.
+/// without a patch from the forge (binary or too large) has a `# ` line that says so, and so has
+/// no hash. A rename or a copy that the forge did not cut needs no patch: its header tells all.
 #[must_use]
 pub fn reduced_patch(files: &[FileDiff]) -> Vec<u8> {
     let mut out = String::new();
     for file in files {
         let path = &file.path;
         let old = file.old_path.as_deref().unwrap_or(path);
-        let _ = writeln!(out, "diff --git a/{old} b/{path}");
-        match file.change {
+        let (old_a, new_b) = (git_path("a/", old), git_path("b/", path));
+        let _ = writeln!(out, "diff --git {old_a} {new_b}");
+        let (old_bare, new_bare) = (git_path("", old), git_path("", path));
+        let moved = match file.change {
             FileChange::Renamed => {
-                let _ = writeln!(out, "rename from {old}\nrename to {path}");
+                let _ = writeln!(out, "rename from {old_bare}\nrename to {new_bare}");
+                true
             }
             FileChange::Copied => {
-                let _ = writeln!(out, "copy from {old}\ncopy to {path}");
+                let _ = writeln!(out, "copy from {old_bare}\ncopy to {new_bare}");
+                true
             }
             FileChange::Added
             | FileChange::Modified
             | FileChange::Deleted
-            | FileChange::Changed => {}
-        }
+            | FileChange::Changed => false,
+        };
         if let Some(body) = file.patch.as_deref().filter(|body| !body.is_empty()) {
             let from = match file.change {
-                FileChange::Added => "/dev/null".to_owned(),
+                FileChange::Added => "/dev/null",
                 FileChange::Modified
                 | FileChange::Deleted
                 | FileChange::Renamed
                 | FileChange::Copied
-                | FileChange::Changed => format!("a/{old}"),
+                | FileChange::Changed => old_a.as_str(),
             };
             let to = match file.change {
-                FileChange::Deleted => "/dev/null".to_owned(),
+                FileChange::Deleted => "/dev/null",
                 FileChange::Added
                 | FileChange::Modified
                 | FileChange::Renamed
                 | FileChange::Copied
-                | FileChange::Changed => format!("b/{path}"),
+                | FileChange::Changed => new_b.as_str(),
             };
             let _ = writeln!(out, "--- {from}\n+++ {to}");
             out.push_str(body);
             if !body.ends_with('\n') {
                 out.push('\n');
             }
-        } else {
+        } else if !moved || file.too_large {
             let why = if file.too_large {
                 ": the file is too large"
             } else {
                 ""
             };
-            let _ = writeln!(out, "# {path}: the forge gives no patch{why}");
+            let _ = writeln!(out, "# {new_bare}: the forge gives no patch{why}");
         }
     }
     out.into_bytes()
+}
+
+/// [`reduced_patch`], or its list of files without hunks when it is over `limit` bytes. Pure.
+#[must_use]
+pub fn reduced_patch_within(files: &[FileDiff], limit: usize) -> Vec<u8> {
+    let patch = reduced_patch(files);
+    if patch.len() <= limit {
+        return patch;
+    }
+    let listed: Vec<FileDiff> = files
+        .iter()
+        .map(|file| FileDiff {
+            patch: None,
+            too_large: true,
+            ..file.clone()
+        })
+        .collect();
+    reduced_patch(&listed)
 }
 
 #[cfg(test)]

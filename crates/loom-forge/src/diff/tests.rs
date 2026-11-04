@@ -1,4 +1,4 @@
-use super::{file_hashes, reduced_patch, since_last_review};
+use super::{file_hashes, reduced_patch, reduced_patch_within, since_last_review};
 use crate::model::{FileChange, FileDiff};
 
 const JWT_V1: &str = "\
@@ -34,6 +34,7 @@ fn hash_of(text: &str, path: &str) -> String {
         .find(|file| file.path == path)
         .unwrap_or_else(|| panic!("no {path} in {text}"))
         .hash
+        .unwrap_or_else(|| panic!("no hash of {path} in {text}"))
 }
 
 #[test]
@@ -44,7 +45,7 @@ fn each_file_of_a_patch_has_its_hash_in_order() {
     let files = file_hashes(patch.as_bytes());
     let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
     assert_eq!(paths, ["src/auth/jwt.rs", "x.rs"]);
-    assert_eq!(files[0].hash.len(), 64);
+    assert_eq!(files[0].hash.as_ref().unwrap().len(), 64);
     assert_ne!(files[0].hash, files[1].hash);
 }
 
@@ -317,4 +318,111 @@ fn the_forge_patches_of_the_fixture_are_read_on_both_forges() {
     let paths: Vec<&str> = github.iter().map(|file| file.path.as_str()).collect();
     assert_eq!(paths, ["Cargo.lock", "src/api/login.rs", "src/auth/jwt.rs"]);
     assert_eq!(github, file_hashes(&reduced_patch(&gitlab)));
+}
+
+#[test]
+fn a_file_without_a_patch_has_no_hash_and_always_counts_as_changed() {
+    let mut large = file("big.json", FileChange::Modified, None);
+    large.too_large = true;
+    let binary = file("logo.png", FileChange::Modified, None);
+    let same = reduced_patch(&[large, binary]);
+    let files = file_hashes(&same);
+    assert_eq!(files[0].hash, None);
+    assert_eq!(files[1].hash, None);
+    // Nothing says that the two versions are the same.
+    assert_eq!(since_last_review(&same, &same), ["big.json", "logo.png"]);
+    // On one side only: a local binary diff against the forge's silence.
+    let local = b"diff --git a/logo.png b/logo.png\nindex 1..2 100644\nBinary files a/logo.png and b/logo.png differ\n";
+    let reduced = reduced_patch(&[file("logo.png", FileChange::Modified, None)]);
+    assert_eq!(since_last_review(local, &reduced), ["logo.png"]);
+    assert_eq!(since_last_review(&reduced, local), ["logo.png"]);
+}
+
+#[test]
+fn added_deleted_and_renamed_files_hash_the_same_from_git_and_from_the_forge() {
+    let added = "diff --git a/n.rs b/n.rs\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/n.rs\n@@ -0,0 +1 @@\n+a\n";
+    let deleted = "diff --git a/d.rs b/d.rs\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/d.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
+    let edited = "diff --git a/o.rs b/n2.rs\nsimilarity index 80%\nrename from o.rs\nrename to n2.rs\nindex 1..2 100644\n--- a/o.rs\n+++ b/n2.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    let pure = "diff --git a/p.rs b/q.rs\nsimilarity index 100%\nrename from p.rs\nrename to q.rs\n";
+    let git = [added, deleted, edited, pure].concat();
+
+    let renamed = |path: &str, old: &str, body: Option<&str>| FileDiff {
+        old_path: Some(old.to_owned()),
+        ..file(path, FileChange::Renamed, body)
+    };
+    let forge = reduced_patch(&[
+        file("n.rs", FileChange::Added, Some("@@ -0,0 +1 @@\n+a")),
+        file("d.rs", FileChange::Deleted, Some("@@ -1 +0,0 @@\n-a")),
+        renamed("n2.rs", "o.rs", Some("@@ -1 +1 @@\n-a\n+b")),
+        // A rename alone has no patch, and is not cut: nothing is unknown about it.
+        renamed("q.rs", "p.rs", None),
+    ]);
+    assert_eq!(file_hashes(&forge), file_hashes(git.as_bytes()));
+    assert_eq!(
+        since_last_review(git.as_bytes(), &forge),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_rename_from_another_file_or_a_cut_rename_counts_as_changed() {
+    let renamed = |old: &str, too_large: bool| FileDiff {
+        old_path: Some(old.to_owned()),
+        too_large,
+        ..file("q.rs", FileChange::Renamed, None)
+    };
+    let from_p = reduced_patch(&[renamed("p.rs", false)]);
+    let from_r = reduced_patch(&[renamed("r.rs", false)]);
+    assert_eq!(since_last_review(&from_p, &from_r), ["q.rs"]);
+    let cut = reduced_patch(&[renamed("p.rs", true)]);
+    assert_eq!(since_last_review(&cut, &cut), ["q.rs"]);
+}
+
+#[test]
+fn a_new_file_with_hunks_ignores_its_mode_but_a_file_without_hunks_does_not() {
+    let added = |mode: &str| {
+        format!("diff --git a/n b/n\nnew file mode {mode}\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+a\n")
+    };
+    assert_eq!(
+        hash_of(&added("100644"), "n"),
+        hash_of(&added("100755"), "n")
+    );
+    let empty = |mode: &str| format!("diff --git a/n b/n\nnew file mode {mode}\nindex 0..e69de\n");
+    assert_ne!(
+        hash_of(&empty("100644"), "n"),
+        hash_of(&empty("100755"), "n")
+    );
+}
+
+#[test]
+fn a_special_byte_in_a_forge_path_cannot_forge_a_section() {
+    let body = Some("@@ -1 +1 @@\n-a\n+b");
+    let evil = "x\ndiff --git a/fake b/fake";
+    let patch = reduced_patch(&[file(evil, FileChange::Modified, body)]);
+    let files = file_hashes(&patch);
+    assert_eq!(files.len(), 1, "{}", String::from_utf8_lossy(&patch));
+    assert_eq!(files[0].path, evil);
+    let spaced = reduced_patch(&[file("a b\tc\"d", FileChange::Modified, body)]);
+    assert_eq!(file_hashes(&spaced)[0].path, "a b\tc\"d");
+    let none = reduced_patch(&[file(evil, FileChange::Modified, None)]);
+    assert_eq!(file_hashes(&none).len(), 1);
+    assert_eq!(file_hashes(&none)[0].path, evil);
+}
+
+#[test]
+fn a_reduced_patch_over_the_limit_only_lists_its_files() {
+    let body = Some("@@ -1 +1 @@\n-a\n+b");
+    let files = [
+        file("a.rs", FileChange::Modified, body),
+        file("b.rs", FileChange::Modified, body),
+    ];
+    let full = reduced_patch(&files);
+    assert_eq!(reduced_patch_within(&files, full.len()), full);
+    let cut = reduced_patch_within(&files, full.len() - 1);
+    let text = String::from_utf8(cut.clone()).unwrap();
+    assert!(!text.contains("@@"), "{text}");
+    assert!(text.contains("# a.rs: the forge gives no patch: the file is too large\n"), "{text}");
+    let hashes = file_hashes(&cut);
+    assert_eq!(hashes.len(), 2);
+    assert!(hashes.iter().all(|file| file.hash.is_none()));
 }
