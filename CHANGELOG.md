@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The TUI. `loom` with no command now prints the help and exits 0 on a terminal too. The CLI commands are the interface. `[contexts.<name>] color` stays valid in `config.toml`, and no command uses it.
+- `crossterm` and `ratatui`.
+
 ## [0.3.0] - 2026-10-27
 
 Tasks core and TUI (v0.3): loom keeps the tasks of every context in a git-backed store, ranks them, and shows them in a terminal user interface to start the day from.

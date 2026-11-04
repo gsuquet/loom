@@ -102,8 +102,6 @@ loom set k3q8 parent=none context=company-b
 
 `loom set` stops before it changes anything when the task has a parent that the same command does not clear. A task with children is refused by `loomd` after the other changes of the same command. Move such a task alone. An archived task, and a task that is read-only, do not move. The target context needs a store on this machine.
 
-In the TUI, open the task page and press `c`, choose a context, then press `Enter`. This does the same as `loom set`.
-
 `loom undo` does not undo a move. To go back, move the task again.
 
 If a move fails, `loom` prints why. In almost every case the task stays in its first context. If the message says that the task is in two stores, remove the task directory from the store that you do not want, then run `loom reindex`.
@@ -117,8 +115,6 @@ loom edit k3q8
 ```
 
 `loom edit` uses `VISUAL`, then `EDITOR`. If the saved file is not valid, `loom` gives the reason and keeps the file as you saved it. To correct it, run `loom edit` again.
-
-In the TUI, press `e` on the task page to do the same. The TUI gives the terminal to the editor and takes it back when the editor ends.
 
 ## Wait on someone
 

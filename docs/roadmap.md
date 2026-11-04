@@ -2,7 +2,7 @@
 
 > Versions, content and acceptance criteria. Only the next version is broken down into tasks.
 
-Versions up to v0.3 are released. The backend of v0.4 goes on; TUI issues are on hold. The delivery order from here replaces the later versions:
+Versions up to v0.3 are released. The backend of v0.4 goes on; the TUI is removed ([#215](https://github.com/gsuquet/loom/issues/215)), and its open issues are dropped. The delivery order from here replaces the later versions:
 
 | Step | Content | Done when |
 | --- | --- | --- |
@@ -127,14 +127,14 @@ Each task is a GitHub issue in the `v0.4` milestone, written with the [agent tas
 | 12 | [#188](https://github.com/gsuquet/loom/issues/188) | Publish to GitHub: GraphQL steps, `loom review publish`, verified once on a real test repository | Story | 7, 11 | Agent + me (test repo, token) |
 | 13 | [#189](https://github.com/gsuquet/loom/issues/189) | Publish to GitLab: draft notes, `bulk_publish` with `reviewer_state`, approve with `sha`, verified once on a real test project | Story | 6, 11 | Agent + me (test project, token) |
 | 14 | [#190](https://github.com/gsuquet/loom/issues/190) | `ui-style.md`: review components (file tree row, diff hunk, inline thread and finding, publish modal) and their Web mapping | Research | 1 | Agent |
-| 15 | [#191](https://github.com/gsuquet/loom/issues/191) | TUI Review queue: list, preview (changed files, threads), `enter` opens the Review page | Story | 8, 14 | Agent |
-| 16 | [#192](https://github.com/gsuquet/loom/issues/192) | TUI Review page: file tree, unified diff, `]`/`[` `}`/`{`, `v` viewed, "since last review", inline threads, reduced mode without clone | Story | 9, 15 | Agent |
-| 17 | [#193](https://github.com/gsuquet/loom/issues/193) | TUI Review page: side-by-side diff, highlighting, context expansion, lazy rendering, collapsed generated files | Story | 16 | Agent |
-| 18 | [#194](https://github.com/gsuquet/loom/issues/194) | TUI review gestures: `c`/`V` comment with the Conventional Comments picker, `s` suggestion, `r` reply, `R` resolve, `P` publish modal with verdict, `w` worktree, `o` editor | Story | 10, 12, 13, 16 | Agent |
+| 15 | [#191](https://github.com/gsuquet/loom/issues/191) | **Dropped by [#215](https://github.com/gsuquet/loom/issues/215).** TUI Review queue: list, preview (changed files, threads), `enter` opens the Review page | Story | 8, 14 | Agent |
+| 16 | [#192](https://github.com/gsuquet/loom/issues/192) | **Dropped by [#215](https://github.com/gsuquet/loom/issues/215).** TUI Review page: file tree, unified diff, `]`/`[` `}`/`{`, `v` viewed, "since last review", inline threads, reduced mode without clone | Story | 9, 15 | Agent |
+| 17 | [#193](https://github.com/gsuquet/loom/issues/193) | **Dropped by [#215](https://github.com/gsuquet/loom/issues/215).** TUI Review page: side-by-side diff, highlighting, context expansion, lazy rendering, collapsed generated files | Story | 16 | Agent |
+| 18 | [#194](https://github.com/gsuquet/loom/issues/194) | **Dropped by [#215](https://github.com/gsuquet/loom/issues/215).** TUI review gestures: `c`/`V` comment with the Conventional Comments picker, `s` suggestion, `r` reply, `R` resolve, `P` publish modal with verdict, `w` worktree, `o` editor | Story | 10, 12, 13, 16 | Agent |
 | 19 | [#195](https://github.com/gsuquet/loom/issues/195) | Repo forge metadata on the repo card: project ID, forge default branch, visibility, archived, web URL, open MRs | Story | 4, 6 | Agent |
 | 20 | [#196](https://github.com/gsuquet/loom/issues/196) | `loom pr`: push the branch, draft MR linked to the task (`delivery` link, `mr` event), existing MR linked | Story | 4, 6 | Agent |
-| 21 | [#155](https://github.com/gsuquet/loom/issues/155) | TUI task detail: Files tab (moved from v0.3) | Story | v0.3 task 15 (done) | Agent |
+| 21 | [#155](https://github.com/gsuquet/loom/issues/155) | **Dropped by [#215](https://github.com/gsuquet/loom/issues/215).** TUI task detail: Files tab (moved from v0.3) | Story | v0.3 task 15 (done) | Agent |
 | 22 | [#197](https://github.com/gsuquet/loom/issues/197) | Review safety suite: force push, rebase, removed and renamed files, line gone, 409 and 422 from the forge, loomd stopped after each forge write before its record, revoked token | Chore | 12, 13, 18 | Agent |
 | 23 | – | A week of reviews from loom, without the forge inbox | Chore | 18, 20 | Me |
 
-Parallel tracks once 1 is merged: {2 -> 4 -> {5 -> 7}, {6}}, {3}, {14}. Once 5 and 6 are merged: {19, 20} and 8 -> 9 -> 10 -> 11 -> {12, 13}; after 8 and 14, {15 -> 16 -> 17}; 18 joins them. 21 at any time.
+Parallel tracks once 1 is merged: {2 -> 4 -> {5 -> 7}, {6}}, {3}, {14}. Once 5 and 6 are merged: {19, 20} and 8 -> 9 -> 10 -> 11 -> {12, 13}; after 8 and 14, {15 -> 16 -> 17}; 18 joins them. 21 at any time. Tasks 15 to 18 and 21 are dropped: the TUI is removed ([#215](https://github.com/gsuquet/loom/issues/215)).
