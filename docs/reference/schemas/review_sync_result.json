@@ -102,15 +102,15 @@
           "description": "The host answered. An MR that failed is in `failed`: the others are synced.",
           "type": "object",
           "properties": {
-            "changed": {
-              "description": "The Review tasks whose status or mirror changed.",
+            "added": {
+              "description": "The keys of the MRs that this poll added to the queue.",
               "type": "array",
               "items": {
-                "$ref": "#/$defs/TaskId"
+                "type": "string"
               }
             },
-            "created": {
-              "description": "The Review tasks created.",
+            "changed": {
+              "description": "The Review tasks whose status or mirror changed.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/TaskId"
@@ -124,7 +124,7 @@
               }
             },
             "mrs": {
-              "description": "The MRs polled: the MRs to review and the MRs of the Review tasks.",
+              "description": "The MRs polled: the MRs to review, the MRs of the queue and the MRs of the Review\ntasks.",
               "type": "integer",
               "format": "uint",
               "minimum": 0
@@ -139,6 +139,13 @@
             "outcome": {
               "type": "string",
               "const": "synced"
+            },
+            "removed": {
+              "description": "The keys of the MRs that this poll removed from the queue.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "required": [

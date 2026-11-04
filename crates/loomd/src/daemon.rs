@@ -26,8 +26,8 @@ use futures_util::StreamExt as _;
 use loom_api::{
     ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, ErrorCode,
     ForgeCheckResult, ForgeKind, MrAction, MrOpenRequest, MrOpenResult, MrOutcome, RegisterRequest,
-    RepoList, ReviewSyncRequest, SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp,
-    UpdateState,
+    RepoList, ReviewStartRequest, ReviewStartResult, ReviewSyncRequest, SearchKind, SearchResults,
+    StatusResponse, SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::forges::DEFAULT_POLL_INTERVAL;
@@ -39,16 +39,18 @@ use loom_config::layout::{
 use loom_config::machine::{MachineName, parse_machine, render_machine};
 use loom_core::MachineId;
 use loom_forge::client::{ForgeError, GithubClient, GitlabClient};
+use loom_forge::model::MrKey;
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, FORGE_CHECK_PATH, REMOTE_CHECK_PATH, REPO_PATH,
-    REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, REVIEWS_SYNC_PATH,
-    RepoGetQuery, RepoQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH,
-    TASK_EVENTS_PATH, TASK_GO_PATH, TASK_MOVE_PATH, TASK_MR_PATH, TASK_PATH, TASK_UNDO_PATH,
-    TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH,
-    agent_socket, clock_error, home_value, internal, invalid_request, method_not_allowed,
-    not_found, register_path, repo_filter, search_request, slug, status_at, timestamp,
+    REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, REVIEWS_QUEUE_PATH,
+    REVIEWS_QUEUE_START_PATH, REVIEWS_SYNC_PATH, RepoGetQuery, RepoQuery, ReviewQueueQuery,
+    SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH,
+    TASK_GO_PATH, TASK_MOVE_PATH, TASK_MR_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH,
+    TASKS_HEALTH_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error,
+    home_value, internal, invalid_request, method_not_allowed, not_found, register_path,
+    repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
@@ -647,6 +649,8 @@ fn router(app: App) -> Router {
         .route(TASKS_HEALTH_PATH, get(task_store_health))
         .route(TASKS_SYNC_PATH, post(sync_stores))
         .route(REVIEWS_SYNC_PATH, post(sync_reviews))
+        .route(REVIEWS_QUEUE_PATH, get(review_queue))
+        .route(REVIEWS_QUEUE_START_PATH, post(start_review))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -1229,6 +1233,51 @@ async fn sync_reviews(
             invalid_request(rejection.body_text()),
         ),
     }
+}
+
+/// The MRs that wait on me.
+async fn review_queue(
+    State(app): State<Arc<App>>,
+    query: Result<Query<ReviewQueueQuery>, QueryRejection>,
+) -> Response {
+    match query {
+        Ok(Query(query)) => respond(app.tasks.review_queue(query.context).await),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+/// Starts on an MR of the queue: answers with its Review task.
+async fn start_review(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+    body: Result<Json<ReviewStartRequest>, JsonRejection>,
+) -> Response {
+    let request = path
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|UrlPath(key)| {
+            let body = body.map_err(|rejection| invalid_request(rejection.body_text()))?;
+            let key = MrKey::parse(&key)
+                .map_err(|error| invalid_request(format!("invalid MR key `{key}`: {error}")))?;
+            Ok((key, body.0))
+        });
+    let (key, request) = match request {
+        Ok(request) => request,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    respond(start_review_of(&app, key, request).await)
+}
+
+async fn start_review_of(
+    app: &Arc<App>,
+    key: MrKey,
+    request: ReviewStartRequest,
+) -> Result<ReviewStartResult, Failure> {
+    let (id, created) = app.reviews.start(request.context, key).await?;
+    let task = app.tasks.get(id.to_string()).await?;
+    Ok(ReviewStartResult { created, task })
 }
 
 /// `git ls-remote` of each remote endpoint of the index, in loomd's environment.

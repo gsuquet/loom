@@ -22,15 +22,17 @@ use loom_api::{
     DaemonRestartReport, DiskUsage, DoctorCheck, DoctorReport, ErrorCode, FailedTaskFile,
     ForgeCheckResult, ForgeKind, ForgeMetadata, ForgeProject, ForgeVisibility, InstallReport,
     InvalidTaskFile, LastUpdate, MaybeKnown, MrOpenRequest, MrOpenResult, PendingUpgrade,
-    PlannedAction, PrReport, Profile, RegisterRequest, ReindexResult, Remote, RemoteCheck,
-    RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl, RepoHead,
-    RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RestartVia, ReviewSyncRequest, ReviewSyncResult, RollbackReport, ScanIssue,
-    ScanResult, SearchField, SearchResult, SearchResults, ServicePlatform, ServiceStatus,
-    SkipReason, SshAgentSocket, StateField, StatusResponse, SyncOutcome, SyncRequest, SyncResult,
-    TaskMatch, TaskSearchField, TaskStoreHealth, Timestamp, Untracked, UpdateChannel,
-    UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus, UpdateStep,
-    UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
+    PlannedAction, PrReport, Profile, QueueReason, RegisterRequest, ReindexResult, Remote,
+    RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl,
+    RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
+    RepoUpdatePolicy, RestartVia, ReviewQueue, ReviewQueueEntry, ReviewStartRequest,
+    ReviewStartResult, ReviewSyncOutcome, ReviewSyncRequest, ReviewSyncResult, RollbackReport,
+    ScanIssue, ScanResult, SearchField, SearchResult, SearchResults, ServicePlatform,
+    ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse, SyncOutcome,
+    SyncRequest, SyncResult, TaskMatch, TaskSearchField, TaskStoreHealth, Timestamp, Untracked,
+    UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState, UpdateStatus,
+    UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource, Upstream,
+    VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -68,6 +70,9 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("repo_list", schema_for!(RepoList)),
         ("repo_state", schema_for!(RepoState)),
         ("repo_summary", schema_for!(RepoSummary)),
+        ("review_queue", schema_for!(ReviewQueue)),
+        ("review_start_request", schema_for!(ReviewStartRequest)),
+        ("review_start_result", schema_for!(ReviewStartResult)),
         ("review_sync_request", schema_for!(ReviewSyncRequest)),
         ("review_sync_result", schema_for!(ReviewSyncResult)),
         ("rollback_report", schema_for!(RollbackReport)),
@@ -243,6 +248,38 @@ fn update_states(at: Timestamp) -> Vec<UpdateState> {
         ..full.clone()
     }));
     states
+}
+
+#[test]
+fn review_queue_samples_validate_and_an_older_sync_answer_can_be_read() {
+    let queue = ReviewQueue {
+        entries: vec![ReviewQueueEntry {
+            context: "work".parse().unwrap(),
+            key: "acme/shop#412".to_owned(),
+            title: "Auth refactor".to_owned(),
+            author: "alice".to_owned(),
+            web_url: "https://github.com/acme/shop/pull/412".to_owned(),
+            head_sha: "7ebf283bfee25ab48f95c0c55181a4ca66b4c990".to_owned(),
+            updated_at: Timestamp::from_unix_secs(1_791_792_000).unwrap(),
+            reasons: vec![QueueReason::ReviewRequested],
+            seen_at: None,
+        }],
+    };
+    assert_eq!(violations(&queue).unwrap().len(), 0);
+    let request = ReviewStartRequest {
+        context: Some("work".parse().unwrap()),
+    };
+    assert_eq!(violations(&request).unwrap().len(), 0);
+    assert!(serde_json::from_str::<ReviewStartRequest>(r#"{"x":1}"#).is_err());
+    // `created` is gone without a new API version: it was optional, and an answer that still
+    // has it can be read, as an answer without `added` and `removed`.
+    let older = r#"{"forges":[{"context":"work","host":"github.com","kind":"github",
+        "outcome":{"outcome":"synced","mrs":1,"created":["k3q7zm2a"],"other_context":0}}]}"#;
+    let older: ReviewSyncResult = serde_json::from_str(older).unwrap();
+    assert!(matches!(
+        &older.forges[0].outcome,
+        ReviewSyncOutcome::Synced { added, removed, .. } if added.is_empty() && removed.is_empty()
+    ));
 }
 
 #[test]

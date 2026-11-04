@@ -2,7 +2,8 @@
 //! task and to its MR mirror. Pure: the poller (`reviews.rs`) calls the forge, the task thread
 //! writes the files.
 //!
-//! - [`decide`]: create, reopen, close, cancel or leave the Review task of one MR.
+//! - [`decide`]: reopen, close, cancel or leave the Review task of one MR. An MR without a task
+//!   is a queue entry until I start on it (`review_queue`).
 //! - [`SyncState`]: what loomd remembers of an MR between polls (`sync.json`): whether I am a
 //!   requested reviewer, and my last verdict.
 //! - [`Mirror`]: the bytes of the daemon-owned mirror files; a file is written only when its
@@ -150,9 +151,7 @@ fn short(sha: &Sha) -> &str {
 /// What to do with the Review task of an MR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// No task, and none to create: the mirror is not written.
-    Ignore,
-    /// Create the task, in `inbox`.
+    /// Create the task, in `active`: I start on the MR. `decide` never answers this.
     Create,
     /// Keep the status; the mirror is updated.
     Keep,
@@ -165,12 +164,9 @@ pub enum Decision {
     },
 }
 
-/// What a poll does with the Review task of an MR, whose status is `task` (`None`: no active
-/// task; `Some(None)`: a status unknown to this version of loom). Pure.
+/// What a poll does with the Review task of an MR, whose status is `status` (`None`: a status
+/// unknown to this version of loom). Pure.
 ///
-/// - No task: one is created for an open MR where I am a requested reviewer, unless my verdict
-///   is on its current head. When an archived task left a mirror, only a new head or a new
-///   request creates one.
 /// - Merged: `done`; closed: `cancelled` (a terminal remote state closes the local task), when
 ///   the last poll saw the MR open.
 /// - Open task: `done` on a new verdict of mine on the current head; my request removed:
@@ -184,27 +180,9 @@ pub enum Decision {
 /// A request is new, or removed, only against the last poll: a task that I close or reopen by
 /// hand stays as I set it until the MR changes.
 #[must_use]
-pub fn decide(task: Option<Option<StatusName>>, seen: &Observation) -> Decision {
+pub fn decide(status: Option<StatusName>, seen: &Observation) -> Decision {
     let on_head = seen.verdict.as_ref() == Some(&seen.head);
     let requested_again = seen.requested && seen.was_requested == Some(false);
-    let Some(status) = task else {
-        // The mirror of an archived task: only a new head or a new request is new.
-        let new = seen
-            .previous_head
-            .as_ref()
-            .is_none_or(|previous| *previous != seen.head)
-            || requested_again;
-        // An MR whose current head I already reviewed has nothing for me to do.
-        // A new request counts even on a head that I reviewed, as for a done task.
-        return if seen.state == MrState::Open
-            && seen.requested
-            && ((!on_head && new) || requested_again)
-        {
-            Decision::Create
-        } else {
-            Decision::Ignore
-        };
-    };
     // Written by a newer loom: read-only.
     let Some(status) = status else {
         return Decision::Keep;
@@ -367,15 +345,15 @@ pub fn merge_versions(
     versions
 }
 
-/// The Review task of `mr`, found by the context `context`: `inbox`, kind `review`, with an
-/// `origin` link to the MR. Pure.
+/// The Review task of `mr`, that I start on in the context `context`: `active`, kind `review`,
+/// with an `origin` link to the MR. Pure.
 #[must_use]
 pub fn new_review_task(mr: &Mr, context: &ContextName) -> NewTask {
     NewTask {
         title: format!("Review {}: {}", mr.key, mr.title),
         kind: Kind::Review,
         context: context.clone(),
-        status: Status::Inbox,
+        status: Status::Active,
         importance: None,
         due: None,
         pinned: false,
@@ -598,6 +576,10 @@ pub struct MrUpdate {
     pub threads: Option<Vec<Thread>>,
     /// My last verdict as the forge shows it, when this poll read it.
     pub verdict: Option<Option<SeenVerdict>>,
+    /// I am the author of the MR, at its full read.
+    pub own: bool,
+    /// I start on this MR: create its Review task when it has none. A poll never sets it.
+    pub start: bool,
 }
 
 /// One poll of a context and forge host, for the task thread.

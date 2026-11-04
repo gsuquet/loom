@@ -1,5 +1,6 @@
-//! The Review tasks and MR mirrors of a poll, written on the task thread (ADR-0016, decisions 1
-//! and 2): the decisions are in `loomd::review_sync`.
+//! The Review tasks, MR mirrors and queue entries of a poll, written on the task thread
+//! (ADR-0016, decisions 1 and 2): the decisions are in `loomd::review_sync` and
+//! `loomd::review_queue`.
 //!
 //! A mirror file is written (atomically) only when its bytes change, and a task whose status
 //! or mirror changed is committed once: a poll that sees no change writes and commits nothing.
@@ -27,11 +28,19 @@ use tracing::{info, info_span, warn};
 
 use super::{Worker, log_commit, now};
 
+mod queue;
+
+pub use queue::{read_entry, read_queue};
+
 /// What the task thread did with a batch.
 #[derive(Debug, Default)]
 pub struct ReviewsApplied {
-    /// The Review tasks created.
+    /// The Review tasks created: only a start creates one.
     pub created: Vec<TaskId>,
+    /// The keys of the MRs added to the queue.
+    pub added: Vec<String>,
+    /// The keys of the MRs removed from the queue.
+    pub removed: Vec<String>,
     /// The Review tasks whose status or mirror changed.
     pub changed: Vec<TaskId>,
     /// The MRs whose task or mirror could not be written.
@@ -47,8 +56,9 @@ struct Previous {
 }
 
 impl Worker {
-    /// Applies the poll `batch`: creates, reopens and closes Review tasks, and writes their MR
-    /// mirrors. Events are of the actor `daemon`.
+    /// Applies the poll `batch`: reopens and closes Review tasks, writes their MR mirrors and
+    /// the queue entries. A start also creates its Review task. One commit of the queue, none
+    /// when no entry changes. Events of a poll are of the actor `daemon`.
     pub(super) fn sync_reviews(&mut self, batch: &MrBatch) -> ReviewsApplied {
         let _span =
             info_span!("tasks.reviews", context = %batch.context, host = %batch.host).entered();
@@ -68,6 +78,7 @@ impl Worker {
                 return applied;
             }
         };
+        let mut updated = 0;
         for update in &batch.updates {
             match self.sync_review(batch, &rows, update) {
                 Ok(Some((id, created))) => {
@@ -84,8 +95,26 @@ impl Worker {
                         key: update.key.to_string(),
                         error,
                     });
+                    // The entry stays: the next start or poll sees what was written.
+                    continue;
                 }
             }
+            if let Err(error) = self.sync_entry(batch, &rows, update, &mut applied, &mut updated) {
+                warn!(context = %batch.context, key = %update.key, %error, "cannot sync a queue entry");
+                applied.failed.push(ReviewSyncFailure {
+                    key: update.key.to_string(),
+                    error,
+                });
+            }
+        }
+        if !applied.added.is_empty() || !applied.removed.is_empty() || updated > 0 {
+            let message = loomd::review_queue::queue_message(
+                applied.added.len(),
+                updated,
+                applied.removed.len(),
+            );
+            let result = self.commits.commit_queue(&batch.context, &message);
+            log_commit(&batch.context, None, result);
         }
         applied
     }
@@ -109,6 +138,7 @@ impl Worker {
                 (Some((id, status)), previous)
             }
             // What the poll saw before the archive: a new task needs a new head or request.
+            Some((_, _, TaskLocation::Archived(_))) | None if !update.start => return Ok(None),
             Some((id, _, TaskLocation::Archived(year))) => {
                 let dir = root
                     .join(ARCHIVE_DIR)
@@ -128,24 +158,28 @@ impl Worker {
             };
         };
         let (observation, state) = observe(&mr, &previous, update);
-        let decision = decide(found.as_ref().map(|(_, status)| *status), &observation);
+        // Without a task, only a start comes here: see above.
+        let decision = found.as_ref().map_or(Decision::Create, |(_, status)| {
+            decide(*status, &observation)
+        });
         let daemon = Origin {
             actor: Actor::Daemon,
             machine_id: self.user.machine_id.clone(),
         };
         let (id, created, before, decision) = match (decision, found) {
-            // `decide` creates when there is no task.
-            (Decision::Ignore, _) | (Decision::Keep | Decision::SetStatus { .. }, None) => {
+            // `decide` answers only for a task.
+            (Decision::Keep | Decision::SetStatus { .. }, None) => {
                 return Ok(None);
             }
             (Decision::Create, _) => {
                 can_create(&root, rows, batch, &mr)?;
+                // A start is my act, not the daemon's.
                 let task = self
                     .tasks
                     .create(
                         new_review_task(&mr, context),
                         now(),
-                        &daemon,
+                        &self.user,
                         &mut self.random,
                     )
                     .map_err(|error| error.to_string())?;

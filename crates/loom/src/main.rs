@@ -282,6 +282,8 @@ fn run(cli: &Cli) -> Result<Exit> {
         Command::Sync(args) => sync_cmd::run(args, &cli.global, &layout()?),
         Command::Review { command } => match command {
             ReviewCommand::Sync(args) => review_cmd::sync(args, &cli.global, &layout()?),
+            ReviewCommand::Queue(args) => review_cmd::queue(args, &cli.global, &layout()?),
+            ReviewCommand::Start(args) => review_cmd::start(args, &cli.global, &layout()?),
         },
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;

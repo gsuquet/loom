@@ -37,6 +37,8 @@ pub const TASK_FILE: &str = "task.md";
 pub const EVENTS_FILE: &str = "events.jsonl";
 /// `tasks/`, in each context store.
 pub const TASKS_DIR: &str = "tasks";
+/// `queue/`, in each context store: what waits on me and has no task yet.
+pub const QUEUE_DIR: &str = "queue";
 /// `archive/`, in each context store: one directory per year of closure.
 pub const ARCHIVE_DIR: &str = "archive";
 

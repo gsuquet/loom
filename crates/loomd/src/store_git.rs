@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_api::{BackupOutcome, BackupStep, ContextName, TaskId};
-use loom_store::files::{ARCHIVE_DIR, TASKS_DIR};
+use loom_store::files::{ARCHIVE_DIR, QUEUE_DIR, TASKS_DIR};
 use loom_store::port::TaskLocation;
 use tracing::{debug, info_span, warn};
 
@@ -178,6 +178,31 @@ impl StoreCommits {
         self.record(context, &scope, result)
     }
 
+    /// Commits the queue of the store of `context` with `message`, or every change of the store
+    /// when an earlier commit failed or the repository is new. The repository is created first
+    /// when the store has none.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] when a git command fails; the store is then pending, and its next commit
+    /// takes every change.
+    pub fn commit_queue(
+        &mut self,
+        context: &ContextName,
+        message: &str,
+    ) -> Result<Committed, GitError> {
+        let Some(root) = self.roots.get(context) else {
+            return Ok(Committed::Nothing);
+        };
+        let scope = if self.pending.contains_key(context) || !is_repository(root) {
+            Scope::All
+        } else {
+            Scope::Queue
+        };
+        let result = commit(&self.runner, root, &scope, message);
+        self.record(context, &scope, result)
+    }
+
     /// Creates the repository of the store of `context` when it has none (without a commit,
     /// so that a fast-forward can fill an empty store), then commits every change with
     /// `message`: what a sync does before it fetches.
@@ -269,9 +294,10 @@ impl StoreCommits {
     }
 }
 
-/// Whether `<root>/tasks` or `<root>/archive` holds an entry other than a hidden one.
+/// Whether `<root>/tasks`, `<root>/archive` or `<root>/queue` holds an entry other than a hidden
+/// one.
 fn has_tasks(root: &Path) -> bool {
-    [TASKS_DIR, ARCHIVE_DIR].into_iter().any(|dir| {
+    [TASKS_DIR, ARCHIVE_DIR, QUEUE_DIR].into_iter().any(|dir| {
         fs::read_dir(root.join(dir)).is_ok_and(|mut entries| {
             entries.any(|entry| {
                 entry.is_ok_and(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
@@ -362,6 +388,9 @@ fn commit(
                     ],
                 )?;
             }
+        }
+        Scope::Queue => {
+            run(&git, "add", &["add", "-A", "--", QUEUE_DIR])?;
         }
         Scope::All => {
             run(&git, "add", &["add", "-A", "--", "."])?;

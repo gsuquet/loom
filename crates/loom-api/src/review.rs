@@ -1,9 +1,10 @@
-//! MR review sync: the body and the answer of `POST /v1/reviews/sync` (ADR-0016).
+//! MR review sync and the queue of MRs that wait on me: the bodies and answers of
+//! `POST /v1/reviews/sync`, `GET /v1/reviews/queue` and `POST /v1/reviews/queue/{key}/start`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContextName, ForgeKind, TaskId, Timestamp};
+use crate::{ContextName, ForgeKind, TaskDetail, TaskId, Timestamp};
 
 /// Body of `POST /v1/reviews/sync`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -44,11 +45,15 @@ pub struct ReviewSync {
 pub enum ReviewSyncOutcome {
     /// The host answered. An MR that failed is in `failed`: the others are synced.
     Synced {
-        /// The MRs polled: the MRs to review and the MRs of the Review tasks.
+        /// The MRs polled: the MRs to review, the MRs of the queue and the MRs of the Review
+        /// tasks.
         mrs: usize,
-        /// The Review tasks created.
+        /// The keys of the MRs that this poll added to the queue.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        created: Vec<TaskId>,
+        added: Vec<String>,
+        /// The keys of the MRs that this poll removed from the queue.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<String>,
         /// The Review tasks whose status or mirror changed.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changed: Vec<TaskId>,
@@ -78,4 +83,61 @@ pub struct ReviewSyncFailure {
     pub key: String,
     /// Why, for humans. Never contains the token.
     pub error: String,
+}
+
+/// Why an MR waits on me.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueReason {
+    /// I am a requested reviewer, and my verdict is not on the current head.
+    ReviewRequested,
+}
+
+/// An MR that waits on me and has no Review task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewQueueEntry {
+    /// The context of the MR.
+    pub context: ContextName,
+    /// The key of the MR, such as `acme/shop#412`.
+    pub key: String,
+    /// The title of the MR.
+    pub title: String,
+    /// The login of the author.
+    pub author: String,
+    /// The page of the MR on the forge.
+    pub web_url: String,
+    /// The head SHA at the last read of the MR.
+    pub head_sha: String,
+    /// The time of the last change of the MR on the forge.
+    pub updated_at: Timestamp,
+    /// Why the MR waits on me. Always at least one reason.
+    pub reasons: Vec<QueueReason>,
+    /// The time when I last opened the entry. If absent: I did not open it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<Timestamp>,
+}
+
+/// Answer of `GET /v1/reviews/queue`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewQueue {
+    /// The entries, sorted by context, then key.
+    pub entries: Vec<ReviewQueueEntry>,
+}
+
+/// Body of `POST /v1/reviews/queue/{key}/start`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewStartRequest {
+    /// The context of the MR. Necessary only when two contexts have this key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextName>,
+}
+
+/// Answer of `POST /v1/reviews/queue/{key}/start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewStartResult {
+    /// True when this request created the Review task. False when the task existed before.
+    pub created: bool,
+    /// The Review task of the MR.
+    pub task: TaskDetail,
 }

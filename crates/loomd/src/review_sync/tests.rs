@@ -84,84 +84,24 @@ fn decision_table() {
         ..seen()
     };
     // (task status, observation, decision)
-    let table: Vec<(Option<Option<StatusName>>, Observation, Decision)> = vec![
-        // Create: an open MR where I am requested, without a task.
-        (
-            None,
-            Observation {
-                previous_head: None,
-                was_requested: None,
-                previous_state: None,
-                ..seen()
-            },
-            Decision::Create,
-        ),
-        // The mirror of an archived task: a new task only on a new head or a new request.
-        (None, seen(), Decision::Ignore),
-        (
-            None,
-            Observation {
-                previous_head: Some(sha(V1)),
-                ..seen()
-            },
-            Decision::Create,
-        ),
-        (
-            None,
-            Observation {
-                was_requested: Some(false),
-                ..seen()
-            },
-            Decision::Create,
-        ),
-        // A new request after the archive, on a head that I reviewed: a new task.
-        (
-            None,
-            Observation {
-                was_requested: Some(false),
-                verdict: Some(sha(V2)),
-                ..seen()
-            },
-            Decision::Create,
-        ),
-        // Ignore: my verdict is already on the current head (GitLab lists approved MRs too).
-        (
-            None,
-            Observation {
-                verdict: Some(sha(V2)),
-                ..seen()
-            },
-            Decision::Ignore,
-        ),
-        // Ignore: not requested, or not open.
-        (None, removed.clone(), Decision::Ignore),
-        (None, merged.clone(), Decision::Ignore),
-        (None, closed.clone(), Decision::Ignore),
+    let table: Vec<(Option<StatusName>, Observation, Decision)> = vec![
         // Nothing new.
-        (Some(Some(Inbox)), seen(), Decision::Keep),
-        (Some(Some(Done)), seen(), Decision::Keep),
-        (Some(Some(Cancelled)), seen(), Decision::Keep),
+        (Some(Inbox), seen(), Decision::Keep),
+        (Some(Done), seen(), Decision::Keep),
+        (Some(Cancelled), seen(), Decision::Keep),
         // My verdict on the current head closes an open task.
+        (Some(Inbox), verdict_now.clone(), set(Done, Reason::Verdict)),
         (
-            Some(Some(Inbox)),
+            Some(Waiting),
             verdict_now.clone(),
             set(Done, Reason::Verdict),
         ),
-        (
-            Some(Some(Waiting)),
-            verdict_now.clone(),
-            set(Done, Reason::Verdict),
-        ),
-        (Some(Some(Done)), verdict_now, Decision::Keep),
+        (Some(Done), verdict_now, Decision::Keep),
         // A new head after the verdict reopens, even when the forge dropped my request.
-        (
-            Some(Some(Done)),
-            after_review_on_v1.clone(),
-            set(Ready, new_head),
-        ),
+        (Some(Done), after_review_on_v1.clone(), set(Ready, new_head)),
         // A head that the mirror missed (its write failed), with my verdict on it: still done.
         (
-            Some(Some(Done)),
+            Some(Done),
             Observation {
                 previous_head: Some(sha(V1)),
                 verdict: Some(sha(V2)),
@@ -171,7 +111,7 @@ fn decision_table() {
         ),
         // A task that I closed by hand reopens on a new head.
         (
-            Some(Some(Done)),
+            Some(Done),
             Observation {
                 previous_head: Some(sha(V1)),
                 ..seen()
@@ -186,7 +126,7 @@ fn decision_table() {
         ),
         // An MR reopened on the forge reopens its cancelled task while I am requested.
         (
-            Some(Some(Cancelled)),
+            Some(Cancelled),
             Observation {
                 previous_state: Some(MrState::Closed),
                 ..seen()
@@ -194,7 +134,7 @@ fn decision_table() {
             set(Ready, Reason::Reopened),
         ),
         (
-            Some(Some(Cancelled)),
+            Some(Cancelled),
             Observation {
                 previous_state: Some(MrState::Closed),
                 requested: false,
@@ -204,20 +144,16 @@ fn decision_table() {
             Decision::Keep,
         ),
         // A new head of an open task changes nothing; of a cancelled one either.
-        (
-            Some(Some(Ready)),
-            after_review_on_v1.clone(),
-            Decision::Keep,
-        ),
-        (Some(Some(Cancelled)), after_review_on_v1, Decision::Keep),
+        (Some(Ready), after_review_on_v1.clone(), Decision::Keep),
+        (Some(Cancelled), after_review_on_v1, Decision::Keep),
         // Request removed: cancelled, or done after a verdict.
         (
-            Some(Some(Active)),
+            Some(Active),
             removed.clone(),
             set(Cancelled, Reason::RequestRemoved),
         ),
         (
-            Some(Some(Ready)),
+            Some(Ready),
             Observation {
                 verdict: Some(sha(V2)),
                 ..removed.clone()
@@ -227,7 +163,7 @@ fn decision_table() {
         // Request removed after a verdict on an older head (GitHub drops me when I review, and
         // the author pushed before the poll): the new head is still to review.
         (
-            Some(Some(Ready)),
+            Some(Ready),
             Observation {
                 previous_head: Some(sha(V1)),
                 verdict: Some(sha(V1)),
@@ -237,7 +173,7 @@ fn decision_table() {
         ),
         // Not requested at either poll: no change (the task reopened by a new head stays).
         (
-            Some(Some(Ready)),
+            Some(Ready),
             Observation {
                 was_requested: Some(false),
                 ..removed.clone()
@@ -246,7 +182,7 @@ fn decision_table() {
         ),
         // Without a sync state, no edge.
         (
-            Some(Some(Ready)),
+            Some(Ready),
             Observation {
                 was_requested: None,
                 ..removed
@@ -255,27 +191,23 @@ fn decision_table() {
         ),
         // Requested again.
         (
-            Some(Some(Done)),
+            Some(Done),
             requested_again.clone(),
             set(Ready, Reason::RequestedAgain),
         ),
         (
-            Some(Some(Cancelled)),
+            Some(Cancelled),
             requested_again.clone(),
             set(Ready, Reason::RequestedAgain),
         ),
-        (Some(Some(Ready)), requested_again, Decision::Keep),
+        (Some(Ready), requested_again, Decision::Keep),
         // A terminal remote state closes an open task, and leaves a closed one.
-        (Some(Some(Ready)), merged.clone(), set(Done, Reason::Merged)),
-        (
-            Some(Some(Inbox)),
-            closed.clone(),
-            set(Cancelled, Reason::Closed),
-        ),
-        (Some(Some(Cancelled)), merged.clone(), Decision::Keep),
+        (Some(Ready), merged.clone(), set(Done, Reason::Merged)),
+        (Some(Inbox), closed.clone(), set(Cancelled, Reason::Closed)),
+        (Some(Cancelled), merged.clone(), Decision::Keep),
         // Closed on the forge at the last poll already: a task that I reopened by hand stays.
         (
-            Some(Some(Ready)),
+            Some(Ready),
             Observation {
                 previous_state: Some(MrState::Merged),
                 ..merged
@@ -283,7 +215,7 @@ fn decision_table() {
             Decision::Keep,
         ),
         (
-            Some(Some(Active)),
+            Some(Active),
             Observation {
                 previous_state: Some(MrState::Closed),
                 ..closed.clone()
@@ -292,7 +224,7 @@ fn decision_table() {
         ),
         // Without a mirror, a merged MR closes its open task.
         (
-            Some(Some(Inbox)),
+            Some(Inbox),
             Observation {
                 previous_state: None,
                 state: MrState::Merged,
@@ -300,9 +232,9 @@ fn decision_table() {
             },
             set(Done, Reason::Merged),
         ),
-        (Some(Some(Done)), closed, Decision::Keep),
+        (Some(Done), closed, Decision::Keep),
         // A status of a newer loom: read-only.
-        (Some(None), seen(), Decision::Keep),
+        (None, seen(), Decision::Keep),
     ];
     for (task, observation, expected) in table {
         assert_eq!(
@@ -447,7 +379,7 @@ fn a_review_task_links_its_mr_and_is_found_by_it() {
     let new = new_review_task(&mr, &context);
     assert_eq!(new.title, "Review acme/shop#412: Auth refactor");
     assert_eq!(new.kind, Kind::Review);
-    assert_eq!(new.status, Status::Inbox);
+    assert_eq!(new.status, Status::Active);
     assert_eq!(new.context, context);
     let (key, host) = review_key(&new.kind, &new.links).unwrap();
     assert_eq!(key, mr.key);

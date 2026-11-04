@@ -65,7 +65,7 @@
           "const": "illegal_transition"
         },
         {
-          "description": "An undo found a field changed since the change it reverts.",
+          "description": "An undo found a field changed since the change it reverts, or a start found the MR merged,\nclosed or written by me.",
           "type": "string",
           "const": "conflict"
         },

@@ -1,7 +1,11 @@
 //! The review poller of loomd (ADR-0016, decisions 1 and 8): one thread polls, for each held
-//! context and forge host with a credential, the MRs where I am a requested reviewer and the
-//! MRs of its Review tasks, then hands what it fetched to the task thread, which writes the
-//! tasks and the mirrors (`tasks::reviews`). The decisions are in `loomd::review_sync`.
+//! context and forge host with a credential, the MRs where I am a requested reviewer, the MRs of
+//! its queue and the MRs of its Review tasks, then hands what it fetched to the task thread,
+//! which writes the tasks, the mirrors and the queue entries (`tasks::reviews`). The decisions
+//! are in `loomd::review_sync` and `loomd::review_queue`.
+//!
+//! A start (`POST /v1/reviews/queue/{key}/start`) runs on this thread too: it never runs during
+//! a poll, so a poll cannot hand over what it read before the start.
 //!
 //! - Every `[forges."<host>"] poll_interval`, jittered by ±10 %, and on `POST /v1/reviews/sync`.
 //! - GitHub: the search, then each MR with its `ETag`: a 304 costs nothing and changes nothing.
@@ -45,6 +49,7 @@ use loomd::recurring::{Runner, runner};
 use loomd::review_sync::{
     Belongs, MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, belongs, clone_of,
     finder_tells, github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
+    url_host,
 };
 use loomd::shutdown::{JOIN_DEADLINE, join_within};
 use miette::{Context as _, IntoDiagnostic as _, Result};
@@ -53,6 +58,8 @@ use tracing::{Span, debug, info, info_span, warn};
 
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
+
+mod start;
 
 /// How many other contexts have a credential for the host of `target`, held here or not:
 /// another machine can poll them with the same account.
@@ -73,6 +80,8 @@ struct ToRead {
     other_context: usize,
     /// The MRs of no context.
     unassigned: Vec<ReviewSyncFailure>,
+    /// The queue entries of MRs that now belong to another context.
+    moved: Vec<MrKey>,
 }
 
 /// The first poll of each host, after the start: the task store reconciles first.
@@ -87,6 +96,13 @@ enum Request {
     Sync {
         context: Option<ContextName>,
         reply: oneshot::Sender<ReviewSyncResult>,
+        parent: Span,
+    },
+    /// Start on the MR `key`: its Review task, and whether this request created it.
+    Start {
+        context: Option<ContextName>,
+        key: MrKey,
+        reply: oneshot::Sender<Result<(loom_api::TaskId, bool), crate::repos::Failure>>,
         parent: Span,
     },
     Stop,
@@ -122,7 +138,7 @@ pub struct Setup {
 }
 
 /// Whether this machine polls `target`: the first of `machines`, or any machine without them.
-/// As for schedules: two machines would both create each Review task.
+/// As for schedules: two machines would both write each entry, and both could start on it.
 fn polled_here(
     target: &ForgeTarget,
     machines: Option<&[MachineName]>,
@@ -138,7 +154,7 @@ fn polled_here(
             warn!(
                 context = %target.context,
                 host = %target.host,
-                "MRs are polled on every machine holding the context: set `machines` so that only its first machine creates their Review tasks"
+                "MRs are polled on every machine holding the context: set `machines` so that only its first machine writes their queue entries"
             );
             true
         }
@@ -398,6 +414,15 @@ impl Poller {
                     }
                     let _ = reply.send(ReviewSyncResult { forges });
                 }
+                Ok(Request::Start {
+                    context,
+                    key,
+                    reply,
+                    parent,
+                }) => {
+                    let _span = info_span!(parent: &parent, "reviews.start", %key).entered();
+                    let _ = reply.send(self.start_review(context.as_ref(), &key));
+                }
                 Ok(Request::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => {
                     for index in 0..self.hosts.len() {
@@ -524,6 +549,12 @@ impl Poller {
                 host.mrs.remove(&key.dir_name());
             }
         }
+        // An MR that comes back is read in full: a 304 would hide it, as it has no entry to read.
+        for removed in &applied.removed {
+            if let Ok(key) = MrKey::parse(removed) {
+                host.mrs.remove(&key.dir_name());
+            }
+        }
         Some(applied)
     }
 
@@ -554,14 +585,16 @@ impl Poller {
         host.rate_limited = None;
         info!(
             mrs,
-            created = applied.created.len(),
+            added = applied.added.len(),
+            removed = applied.removed.len(),
             changed = applied.changed.len(),
             failed = failed.len(),
             "MRs polled"
         );
         ReviewSyncOutcome::Synced {
             mrs,
-            created: applied.created,
+            added: applied.added,
+            removed: applied.removed,
             changed: applied.changed,
             other_context: fetched.other_context,
             failed,
@@ -712,10 +745,34 @@ impl Poller {
             }
             keys.push((key, None, Some(id)));
         }
+        // The entries too: GitHub and GitLab do not list an MR whose request was removed, or
+        // that is merged or closed.
+        let mut moved = Vec::new();
+        let stored = self
+            .stores
+            .get(&target.context)
+            .map(|root| crate::tasks::read_queue(root))
+            .unwrap_or_default();
+        for entry in stored {
+            if url_host(&entry.web_url).as_deref() != Some(target.host.as_str())
+                || keys.iter().any(|(known, _, _)| *known == entry.key)
+                // No context for now (maybe a login not read yet): the entry stays.
+                || unassigned
+                    .iter()
+                    .any(|failure: &ReviewSyncFailure| failure.key == entry.key.to_string())
+            {
+                continue;
+            }
+            match self.ours(index, &entry.key, &repos) {
+                Belongs::Elsewhere => moved.push(entry.key),
+                Belongs::Here | Belongs::Unassigned => keys.push((entry.key, None, None)),
+            }
+        }
         Ok(ToRead {
             mrs: keys,
             other_context,
             unassigned,
+            moved,
         })
     }
 
@@ -731,17 +788,18 @@ impl Poller {
             mrs: keys,
             other_context,
             unassigned,
+            moved,
         } = self.keys(index, page.items)?;
         let mut untracked = untracked(&keys);
         untracked.extend(unassigned.iter().map(|failure| failure.key.clone()));
         let mut fetched = Fetched {
-            updates: Vec::new(),
+            updates: moved.into_iter().map(moved_update).collect(),
             other_context,
             failed: unassigned,
             untracked,
             stopped: None,
         };
-        for (key, found, _) in keys {
+        for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
                 fetched.stopped = Some(stopped);
                 break;
@@ -753,7 +811,7 @@ impl Poller {
                 None => Some(false),
             };
             let cache = self.hosts[index].mrs.entry(key.dir_name()).or_default();
-            match github_update(client, &key, found, &login, cache) {
+            match github_update(client, &key, found, &login, cache, task.is_some()) {
                 Ok(update) => fetched.updates.push(update),
                 Err(error) if stops_the_host(&error) => {
                     fetched.stopped = Some(error.into());
@@ -776,11 +834,12 @@ impl Poller {
             mrs: keys,
             other_context,
             unassigned,
+            moved,
         } = self.keys(index, listed)?;
         let mut untracked = untracked(&keys);
         untracked.extend(unassigned.iter().map(|failure| failure.key.clone()));
         let mut fetched = Fetched {
-            updates: Vec::new(),
+            updates: moved.into_iter().map(moved_update).collect(),
             other_context,
             failed: unassigned,
             untracked,
@@ -797,7 +856,11 @@ impl Poller {
                 .get(&key.dir_name())
                 .and_then(|cache| cache.project_id)
                 .or_else(|| found.as_ref().and_then(|summary| summary.project_id))
-                .or_else(mirror_project);
+                .or_else(mirror_project)
+                .or_else(|| {
+                    let root = self.stores.get(&self.hosts[index].target.context)?;
+                    project_id(&crate::tasks::read_entry(root, &key)?.forge_ids)
+                });
             let Some(project_id) = project_id else {
                 fetched.failed.push(ReviewSyncFailure {
                     key: key.to_string(),
@@ -811,7 +874,16 @@ impl Poller {
                 project_id,
                 iid: key.number(),
             };
-            match gitlab_update(client, &key, mr, Some(found.is_some()), &login, cache) {
+            let mirrored = task.is_some();
+            match gitlab_update(
+                client,
+                &key,
+                mr,
+                Some(found.is_some()),
+                &login,
+                cache,
+                mirrored,
+            ) {
                 Ok(update) => fetched.updates.push(update),
                 Err(error) if stops_the_host(&error) => {
                     fetched.stopped = Some(error.into());
@@ -827,10 +899,26 @@ impl Poller {
     }
 }
 
-/// The keys of the MRs of `keys` without a Review task.
+/// What removes the entry of an MR that now belongs to another context: not a read of the
+/// forge, and nothing that a task uses.
+const fn moved_update(key: MrKey) -> MrUpdate {
+    MrUpdate {
+        key,
+        requested: Some(false),
+        mr: None,
+        versions: Vec::new(),
+        threads: None,
+        verdict: None,
+        own: false,
+        start: false,
+    }
+}
+
+/// The keys of the MRs of `keys` that a list found, without a Review task: only a later list
+/// shows them again. An entry alone is read one by one anyway.
 fn untracked(keys: &[Key]) -> Vec<String> {
     keys.iter()
-        .filter(|(_, _, task)| task.is_none())
+        .filter(|(_, found, task)| found.is_some() && task.is_none())
         .map(|(key, _, _)| key.to_string())
         .collect()
 }
@@ -854,8 +942,13 @@ fn failure(key: &MrKey, error: &ForgeError) -> ReviewSyncFailure {
 
 /// The project of a GitLab merge request.
 const fn project_of(mr: &Mr) -> Option<u64> {
-    match mr.forge_ids {
-        MrForgeIds::Gitlab { project_id, .. } => Some(project_id),
+    project_id(&mr.forge_ids)
+}
+
+/// The project in the identifiers of a GitLab merge request.
+const fn project_id(ids: &MrForgeIds) -> Option<u64> {
+    match ids {
+        MrForgeIds::Gitlab { project_id, .. } => Some(*project_id),
         MrForgeIds::Github { .. } => None,
     }
 }
@@ -867,24 +960,33 @@ fn threads_due(cache: &MrCache) -> bool {
         .is_none_or(|at| at.elapsed() >= THREADS_REFRESH)
 }
 
+fn is_author(mr: &Mr, login: &str) -> bool {
+    mr.author.eq_ignore_ascii_case(login)
+}
+
 fn is_reviewer(mr: &Mr, login: &str) -> bool {
     mr.reviewers
         .iter()
         .any(|reviewer| reviewer.eq_ignore_ascii_case(login))
 }
 
-/// The GitHub pull request `key`: in full when it changed since the `ETag` of `cache`.
+/// The GitHub pull request `key`: in full when it changed since the `ETag` of `cache`. Only an
+/// MR with a mirror (`mirrored`) needs its threads: an entry does not hold them.
 fn github_update(
     client: &GithubClient,
     key: &MrKey,
     found: Option<bool>,
     login: &str,
     cache: &mut MrCache,
+    mirrored: bool,
 ) -> Result<MrUpdate, ForgeError> {
-    let threads = |client: &GithubClient| -> Result<Vec<Thread>, ForgeError> {
+    let threads = |client: &GithubClient| -> Result<Option<Vec<Thread>>, ForgeError> {
+        if !mirrored {
+            return Ok(None);
+        }
         let mut threads = client.review_threads(key)?.threads;
         threads.extend(client.issue_comments(key)?);
-        Ok(threads)
+        Ok(Some(threads))
     };
     match client.pull(key, cache.etag.as_deref())? {
         Conditional::Modified { value: mr, etag } => {
@@ -898,9 +1000,11 @@ fn github_update(
                 key: key.clone(),
                 requested: requested(found, cache.direct),
                 versions: vec![mr.version.clone()],
+                own: is_author(&mr, login),
                 mr: Some(mr),
-                threads: Some(threads),
+                threads,
                 verdict: Some(verdict),
+                start: false,
             })
         }
         Conditional::NotModified => {
@@ -909,7 +1013,7 @@ fn github_update(
                 let threads = threads(client)?;
                 let verdict = github_verdict(&client.reviews(key)?, login);
                 cache.threads_at = Some(Instant::now());
-                (Some(threads), Some(verdict))
+                (threads, Some(verdict))
             } else {
                 (None, None)
             };
@@ -920,12 +1024,15 @@ fn github_update(
                 versions: Vec::new(),
                 threads,
                 verdict,
+                own: false,
+                start: false,
             })
         }
     }
 }
 
-/// The GitLab merge request `key`: in full when it changed since the `ETag` of `cache`.
+/// The GitLab merge request `key`: in full when it changed since the `ETag` of `cache`. Only an
+/// MR with a mirror (`mirrored`) needs its versions and threads: an entry does not hold them.
 fn gitlab_update(
     client: &GitlabClient,
     key: &MrKey,
@@ -933,13 +1040,22 @@ fn gitlab_update(
     found: Option<bool>,
     login: &str,
     cache: &mut MrCache,
+    mirrored: bool,
 ) -> Result<MrUpdate, ForgeError> {
     match client.merge_request(reference, cache.etag.as_deref())? {
         Conditional::Modified { value: mr, etag } => {
             let head = mr.version.head_sha.clone();
-            let versions = client.versions(reference)?;
+            let versions = if mirrored {
+                client.versions(reference)?
+            } else {
+                Vec::new()
+            };
             let approvals = client.approvals(reference)?;
-            let threads = client.discussions(reference, &head)?;
+            let threads = if mirrored {
+                Some(client.discussions(reference, &head)?)
+            } else {
+                None
+            };
             cache.etag = etag;
             cache.direct = is_reviewer(&mr, login);
             cache.threads_at = Some(Instant::now());
@@ -947,21 +1063,27 @@ fn gitlab_update(
             Ok(MrUpdate {
                 key: key.clone(),
                 requested: requested(found, cache.direct),
+                own: is_author(&mr, login),
                 mr: Some(mr),
                 versions,
-                threads: Some(threads),
+                threads,
                 verdict: Some(gitlab_verdict(approvals.user_has_approved, &head)),
+                start: false,
             })
         }
         Conditional::NotModified => {
             // Hourly, the threads and my approval, in case they changed without the MR.
             let (threads, verdict) = match &cache.head {
                 Some(head) if threads_due(cache) => {
-                    let threads = client.discussions(reference, head)?;
+                    let threads = if mirrored {
+                        Some(client.discussions(reference, head)?)
+                    } else {
+                        None
+                    };
                     let approvals = client.approvals(reference)?;
                     cache.threads_at = Some(Instant::now());
                     (
-                        Some(threads),
+                        threads,
                         Some(gitlab_verdict(approvals.user_has_approved, head)),
                     )
                 }
@@ -974,6 +1096,8 @@ fn gitlab_update(
                 versions: Vec::new(),
                 threads,
                 verdict,
+                own: false,
+                start: false,
             })
         }
     }

@@ -29,6 +29,8 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `POST` | `/v1/diagnostics/remote-check` | `200` | [`RemoteCheckResult`](#remotecheckresult) |
 | `POST` | `/v1/diagnostics/forge-check` | `200` | [`ForgeCheckResult`](#forgecheckresult) |
 | `POST` | `/v1/reviews/sync` | `200` | [`ReviewSyncResult`](#reviewsyncresult); takes a [`ReviewSyncRequest`](#reviewsyncrequest) |
+| `GET` | `/v1/reviews/queue` | `200` | [`ReviewQueue`](#reviewqueue); with `?context=<name>`, of one context |
+| `POST` | `/v1/reviews/queue/{key}/start` | `200` | [`ReviewStartResult`](#reviewstartresult); takes a [`ReviewStartRequest`](#reviewstartrequest) |
 | `POST` | `/v1/tasks/reindex` | `200` | [`ReindexResult`](#reindexresult) |
 | `GET` | `/v1/tasks` | `200` | [`TaskList`](#tasklist) |
 | `POST` | `/v1/tasks` | `200` | [`TaskDetail`](#taskdetail) of the new task; takes a [`NewTask`](#newtask) |
@@ -275,20 +277,24 @@ The title is the title of the task. The description is the body template of the 
 
 ### Reviews
 
-`loomd` polls each forge host that a held context has a credential for ([forges](configuration.md#forges)). It finds the open MRs where I am a requested reviewer, and keeps one Review task per MR. How and why: [review sync](../explanation/review-sync.md). The files of the mirror: [task files](task-file.md#mrs-mr-mirror).
+`loomd` polls each forge host that a held context has a credential for ([forges](configuration.md#forges)). It finds the open MRs where I am a requested reviewer, and writes one queue entry per MR. An MR that I start on has one Review task. How and why: [review sync](../explanation/review-sync.md). The files: [queue entry](task-file.md#queuemrs-queue-entry), [mirror](task-file.md#mrs-mr-mirror).
 
 `POST /v1/reviews/sync` takes a [`ReviewSyncRequest`](#reviewsyncrequest). It polls now the hosts of the context that the request names, or of every context. It ignores the schedule and the backoff, but not a rate limit. When every poll ended, it answers with a [`ReviewSyncResult`](#reviewsyncresult). A context that has no credential, or that this machine does not poll, gives an empty `forges` list.
+
+`GET /v1/reviews/queue` answers with the entries of the stores held on this machine. It does not call a forge, and it does not wait for a poll. `context` with a context not held on this machine gives an empty list. An invalid `context` or an unknown parameter is `400 invalid_request`.
+
+`POST /v1/reviews/queue/{key}/start` starts on an MR. `{key}` is the MR key, percent-encoded (`acme%2Fshop%23412`), as for `/v1/tasks/{id}`. It reads the MR on the forge, creates the Review task in `active` with its mirror, deletes the entry, and answers with the task. If the MR has a Review task that is not archived, it answers with that task, `created` is `false`, and it does not call the forge. A second start never creates a second task. It waits for a poll that runs. The errors are in [errors](#errors).
 
 | Property | Value |
 | --- | --- |
 | Hosts | Each context held on this machine, for each forge host that it has a credential for. A context with `machines` is polled only on the first machine of its list. |
 | Schedule | 30 s after the start, then every `[forges."<host>"] poll_interval` (default 5 min), with ±10 % at random. |
-| GitHub calls | `GET <api>/user` once, then `GET /search/issues` (`review-requested:@me`, or `user-review-requested:@me` when `review_requests = "direct"`). Then, for each MR found and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /repos/<project>/pulls/<n>` with `If-None-Match`. When the MR changed: its reviews, its review threads (GraphQL) and its comments. |
-| GitLab calls | `GET <api>/user` once, then `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` from the second poll. Then, for each MR listed and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /projects/<id>/merge_requests/<iid>` with `If-None-Match`. When the MR changed: its versions, its approvals and its discussions. |
-| Threads | When the MR changed, and at most one hour after the last pull of the threads. The hourly pull also reads my verdict (GitHub reviews, GitLab approvals). |
+| GitHub calls | `GET <api>/user` once, then `GET /search/issues` (`review-requested:@me`, or `user-review-requested:@me` when `review_requests = "direct"`). Then, for each MR found, each MR of the queue and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /repos/<project>/pulls/<n>` with `If-None-Match`. When the MR changed: its reviews. For an MR with a Review task, also its review threads (GraphQL) and its comments. |
+| GitLab calls | `GET <api>/user` once, then `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` from the second poll. Then, for each MR listed, each MR of the queue and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /projects/<id>/merge_requests/<iid>` with `If-None-Match`. When the MR changed: its approvals. For an MR with a Review task, also its versions and its discussions. |
+| Threads | For an MR with a Review task: when the MR changed, and at most one hour after the last pull of the threads. The hourly read also reads my verdict (GitHub reviews, GitLab approvals), also for an MR of the queue. |
 | Rate limit | `429`, or `403` with no remaining requests: the host is not polled until the reset. Other hosts go on. |
-| Failures | A host that does not answer, or that refuses the token, stops its poll: its mirrors keep their last snapshot. The next poll waits 2, then 4, then 8 times the interval, never more. A failure of one MR stops only that MR. When a failure of one MR stops the host, the MRs read before it are applied. When `loomd` stops, a poll stops before its next forge call. |
-| Writes | The task thread writes the Review tasks and the mirrors. A file is written only when its content changes. Each task that changed gets one commit per poll. |
+| Failures | A host that does not answer, or that refuses the token, stops its poll: its entries do not change, and its mirrors keep their last snapshot. The next poll waits 2, then 4, then 8 times the interval, never more. A failure of one MR stops only that MR. When a failure of one MR stops the host, the MRs read before it are applied. When `loomd` stops, a poll stops before its next forge call. |
+| Writes | The task thread writes the Review tasks, the mirrors and the entries. A file is written only when its content changes. Each task that changed gets one commit per poll. The entries that changed get one commit per poll. A poll with no change makes no commit. |
 | Secrets | The answer, the logs and the traces never contain the token. |
 
 ### Change events
@@ -356,6 +362,10 @@ Every error response has an [`ApiError`](#apierror) body.
 | Task: undo of a move | `409` | `conflict`, `details`: [`UndoConflict`](#problem-details) with `field` `context` |
 | MR: body not a valid `MrOpenRequest`, an empty field, `head` equal to `base`, a `project` with fewer than 2 segments or a `.` or `..` segment, or no forge credential of the context of the task for `host` | `400` | `invalid_request` |
 | MR: the token cannot be resolved, the forge refuses a request or does not answer | `502` | `forge` |
+| Start: `{key}` not an MR key, body not a valid `ReviewStartRequest`, a key in several contexts and no `context`, or an entry of a context and host that this machine does not poll | `400` | `invalid_request` |
+| Start: the MR has no entry and no Review task | `404` | `not_found` |
+| Start: the token cannot be resolved, the forge refuses a request, does not answer or limits the rate. The entry stays, and no task is created. | `502` | `forge` |
+| Start: the MR is merged or closed, or I am its author. No task, and the entry is deleted. | `409` | `conflict`, no `details` |
 | Task: a move failed and was rolled back, or failed halfway and left the task in two stores | `500` | `internal` |
 | Task: the task files cannot be read or written | `500` | `internal` |
 | The index cannot be read or written | `500` | `internal` |
@@ -410,6 +420,9 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `TaskStoreHealth` | [`schemas/task_store_health.json`](schemas/task_store_health.json) |
 | `BackupRequest` | [`schemas/backup_request.json`](schemas/backup_request.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
+| `ReviewQueue` | [`schemas/review_queue.json`](schemas/review_queue.json) |
+| `ReviewStartRequest` | [`schemas/review_start_request.json`](schemas/review_start_request.json) |
+| `ReviewStartResult` | [`schemas/review_start_result.json`](schemas/review_start_result.json) |
 | `ReviewSyncRequest` | [`schemas/review_sync_request.json`](schemas/review_sync_request.json) |
 | `ReviewSyncResult` | [`schemas/review_sync_result.json`](schemas/review_sync_result.json) |
 | `RepoIdentity` | [`schemas/repo_identity.json`](schemas/repo_identity.json) (inlined in `RepoSummary`) |
@@ -447,7 +460,7 @@ A change to any API type that breaks compatibility adds a new value. Compatible 
 
 | Message | Unknown fields |
 | --- | --- |
-| Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan` and `GET /v1/tasks`. |
+| Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, `ReviewSyncRequest`, `ReviewStartRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan`, `GET /v1/tasks` and `GET /v1/reviews/queue`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
 Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
@@ -1003,7 +1016,7 @@ Body of `POST /v1/tasks/{id}/actions/{action}`, optional.
 | `ambiguous_prefix` | `AmbiguousPrefix` | `prefix` (normalized), `candidates`: `id`, `context` and `title` (empty for an invalid file) of every task whose ID starts with it, sorted by ID. |
 | `read_only` | `TaskReadOnly` | See [`TaskList`](#tasklist). |
 | `illegal_transition` | `IllegalTransition` | `from` and `to`, status names. |
-| `conflict` | `UndoConflict` | `field`: the field that no longer has the value the undo expects. |
+| `conflict` | `UndoConflict` | `field`: the field that no longer has the value the undo expects. A start that the MR refuses has no `details`. |
 
 ```json
 {
@@ -1172,6 +1185,45 @@ Answer of [`POST /v1/diagnostics/forge-check`](#forge-check).
 }
 ```
 
+### `ReviewQueue`
+
+Answer of [`GET /v1/reviews/queue`](#reviews).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `entries` | list of `ReviewQueueEntry` | The MRs that wait on me and have no Review task, sorted by context, then key. |
+
+`ReviewQueueEntry`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string | The context of the MR. |
+| `key` | string | The key of the MR, such as `acme/shop#412`. |
+| `title` | string | The title of the MR. |
+| `author` | string | The login of the author. |
+| `web_url` | string | The page of the MR on the forge. |
+| `head_sha` | string | The head SHA at the last read of the MR. |
+| `updated_at` | string: timestamp | The time of the last change of the MR on the forge. |
+| `reasons` | list of strings | Why the MR waits on me. Always at least one. Values: `review_requested`. |
+| `seen_at` | string: timestamp, optional | The time when I last opened the entry. No command sets it now. |
+
+### `ReviewStartRequest`
+
+Body of [`POST /v1/reviews/queue/{key}/start`](#reviews). An empty object is valid.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string, optional | The context of the MR. Necessary only when two contexts have this key. |
+
+### `ReviewStartResult`
+
+Answer of [`POST /v1/reviews/queue/{key}/start`](#reviews).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `created` | boolean | `true` when this request created the Review task. `false` when the task existed before. |
+| `task` | [`TaskDetail`](#taskdetail) | The Review task of the MR. |
+
 ### `ReviewSyncRequest`
 
 Body of [`POST /v1/reviews/sync`](#reviews). An empty object polls every context.
@@ -1202,9 +1254,9 @@ Answer of [`POST /v1/reviews/sync`](#reviews).
 
 | `outcome` | Fields | When |
 | --- | --- | --- |
-| `synced` | `mrs`, `created`, `changed`, `other_context`, `failed` | The host answered. `mrs`: the MRs polled. `created`: the IDs of the new Review tasks. `changed`: the IDs of the Review tasks whose status or mirror changed. `other_context`: the MRs found that belong to another context, not written. `failed`: list of `{key, error}`, the MRs that failed. Empty lists are absent. |
+| `synced` | `mrs`, `added`, `removed`, `changed`, `other_context`, `failed` | The host answered. `mrs`: the MRs polled. `added`: the keys of the MRs added to the queue. `removed`: the keys of the MRs removed from the queue. `changed`: the IDs of the Review tasks whose status or mirror changed. `other_context`: the MRs found that belong to another context, not written. `failed`: list of `{key, error}`, the MRs that failed. Empty lists are absent. |
 | `rate_limited` | `until` | The host limits the rate. The poll did not run. `until`: the reset. |
-| `failed` | `error` | The poll stopped. The mirrors of the host keep their last snapshot. |
+| `failed` | `error` | The poll stopped. The entries of the host do not change, and its mirrors keep their last snapshot. |
 
 ```json
 {
@@ -1214,7 +1266,7 @@ Answer of [`POST /v1/reviews/sync`](#reviews).
       "host": "github.com",
       "kind": "github",
       "last_success": "2026-10-29T09:30:00Z",
-      "outcome": { "outcome": "synced", "mrs": 3, "created": ["k3m9x2ab"], "other_context": 1 }
+      "outcome": { "outcome": "synced", "mrs": 3, "added": ["acme/shop#412"], "other_context": 1 }
     },
     {
       "context": "company-a",
@@ -1266,6 +1318,6 @@ Error returned instead of a response body.
 | `ambiguous_prefix` | A task ID prefix matches several tasks; `details` lists them. | With a longer prefix. |
 | `read_only` | The task cannot be changed: archived, unknown kind, format or status, or an invalid `task.md`. | No. An archived task stays read-only. For the other reasons, fix the file or upgrade loom. |
 | `illegal_transition` | The task cannot move from its status to the requested one. | No. |
-| `conflict` | An undo found a field changed since the change it reverts. | After the hand edit is recorded, the undo reverts it instead. |
+| `conflict` | An undo found a field changed since the change it reverts, or a start found the MR merged, closed or written by me. | Undo: after the hand edit is recorded, the undo reverts it instead. Start: no. |
 | `nothing_to_undo` | The task has no change to undo. | No. |
 | `forge` | The forge refused a request, or did not answer. `message` gives the host, the forge and the reason. | After the cause is fixed (token, scopes, network). |

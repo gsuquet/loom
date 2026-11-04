@@ -441,6 +441,7 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 
 | Path | Mode | Content |
 | --- | --- | --- |
+| `queue/mrs/<provider>-<key>.json` | `0600` | An MR that waits on me and has no task ([format](task-file.md#queuemrs-queue-entry)). `loomd` creates the directories (mode `0700`) at the first entry. |
 | `tasks/<id>/` | `0700` | One directory per task, named by its ID (8 lowercase Crockford base32 characters). Other names in `tasks/` are ignored. |
 | `tasks/<id>/task.md` | `0600` | The task: TOML frontmatter between `+++` lines, then free notes ([format](task-file.md)). Replaced atomically: written to `.task.md.tmp` beside it, synced, renamed over it, and the directory synced. |
 | `tasks/<id>/events.jsonl` | `0600` | The task's events, one JSON object per line, appended and synced, never rewritten. If a crash cuts the last line, `loomd` adds a line ending to it before the next append. |

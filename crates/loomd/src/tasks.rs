@@ -36,7 +36,7 @@ use std::time::{Duration, SystemTime};
 use axum::http::StatusCode;
 use loom_api::{
     ChangeEvent, ContextName, Date, FailedTaskFile, FocusList, GoResult, NewTask, ReindexResult,
-    TaskDetail, TaskEvents, TaskId, TaskList, TaskStoreHealth, Timestamp,
+    ReviewQueue, TaskDetail, TaskEvents, TaskId, TaskList, TaskStoreHealth, Timestamp,
 };
 use loom_config::schedules::Schedule;
 use loom_core::{Actor, Event, MachineId, Origin, RandomSource};
@@ -73,7 +73,7 @@ use crate::repos::Failure;
 
 mod reviews;
 
-pub use reviews::ReviewsApplied;
+pub use reviews::{ReviewsApplied, read_entry, read_queue};
 
 type Reply<T> = oneshot::Sender<Result<T, Failure>>;
 
@@ -147,6 +147,11 @@ enum Command {
     RunSchedules {
         schedules: Arc<Schedules>,
         today: Date,
+    },
+    /// The queue of MRs that wait on me (`loomd::review_queue`).
+    ReviewQueue {
+        context: Option<ContextName>,
+        reply: Reply<ReviewQueue>,
     },
     /// Apply a poll of a forge: Review tasks and MR mirrors (`loomd::review_sync`).
     SyncReviews {
@@ -455,6 +460,12 @@ impl TaskHandle {
         self.commands
             .send(Command::RunSchedules { schedules, today })
             .is_ok()
+    }
+
+    /// The entries of the queue of `context`, or of every context.
+    pub async fn review_queue(&self, context: Option<ContextName>) -> Result<ReviewQueue, Failure> {
+        self.send(|reply, _| Command::ReviewQueue { context, reply })
+            .await
     }
 
     /// Applies the poll `batch` on the task thread, after the commands before it, and waits for
@@ -804,6 +815,9 @@ impl Worker {
                 }
                 Command::RunSchedules { schedules, today } => {
                     self.run_schedules(&schedules, today);
+                }
+                Command::ReviewQueue { context, reply } => {
+                    let _ = reply.send(Ok(self.review_queue(context.as_ref())));
                 }
                 Command::SyncReviews { batch, reply } => {
                     let _ = reply.send(self.sync_reviews(&batch));

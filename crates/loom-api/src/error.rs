@@ -52,7 +52,8 @@ pub enum ErrorCode {
     ReadOnly,
     /// The task cannot move from its status to the requested one.
     IllegalTransition,
-    /// An undo found a field changed since the change it reverts.
+    /// An undo found a field changed since the change it reverts, or a start found the MR merged,
+    /// closed or written by me.
     Conflict,
     /// The task has no change to undo.
     NothingToUndo,
