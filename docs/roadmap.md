@@ -9,7 +9,7 @@ Versions up to v0.3 are released. The backend of v0.4 goes on; TUI issues are on
 | 1. Desk | Desktop app, Today, Inbox, task page, palette, global hotkey, MR queue, connector status, GitLab | For one working week, I start the day in loom and do not open the forge to find MRs |
 | 2. References | Sources, Reading, phone capture, knowledge pages, glossary, out-of-scope records, pruning agent, the rule on text loaded into agents | Set when the step starts |
 | 3. Connectors | Datadog, Jira, Freshservice | Set when the step starts |
-| 4. Review | Diff, reviewer agent, multi-repo worktrees, run leases | Set when the step starts |
+| 4. Review | Diff, reviewer agent, multi-repo worktrees, stage scope, profiles, language detection, run leases | Set when the step starts |
 | 5. Later | Other specialists, pipelines, opt-in rules, read-only Kubernetes, GitHub, Google Calendar | Set per item when it starts |
 
 Multi-repo tasks, the Source entity, the conception kind, links, pipelines and the adapter ports change the core model. They are designed in the docs before step 1. The toolkit of the app is chosen before step 1. Spikes: the toolkit, the Android share target and Worker authentication, and local transcription after step 2.
