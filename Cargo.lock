@@ -2328,6 +2328,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1dc",
+ "sha2",
  "thiserror",
  "tokio",
  "ureq",

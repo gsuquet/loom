@@ -18,6 +18,8 @@ schemars.workspace = true
 serde.workspace = true
 # The forge payloads.
 serde_json.workspace = true
+# The normalized hash of the diff of a file; already in the tree through loom-update.
+sha2.workspace = true
 # The SHA-1 of the GitLab line codes (`<sha1 of the path>_<old>_<new>`); already in the tree
 # through gix-hash.
 sha1dc.workspace = true
