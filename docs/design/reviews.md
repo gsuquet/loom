@@ -1,6 +1,8 @@
 # Code review
 
-> Merge requests to review (v0.4): discovery, the MR mirror, fetched refs and diffs, drafts, publish through the forge APIs, credentials. Decisions in [ADR-0016](../adr/0016-mr-review-mirror.md). The TUI view is in [User workflow](user-workflow.md#code-review).
+> Merge requests to review (v0.4): discovery, the MR mirror, fetched refs and diffs, drafts, publish through the forge APIs, credentials. Decisions in [ADR-0016](../adr/0016-mr-review-mirror.md). The page is in [User workflow](user-workflow.md#review).
+
+> The data, git and forge sides below stand. The flow and keys of the page are in [User workflow](user-workflow.md#review), which overrides any TUI gesture named here. Multi-repo MRs show as a group, and a task can hold one worktree per repo.
 
 "MR" means a GitLab merge request or a GitHub pull request. The forge facts below come from the v0.4 spike (2026-10-27); the requests and responses are recorded in [`fixtures/forge/`](../../fixtures/forge/README.md).
 
@@ -141,7 +143,7 @@ The repo card gets, from the forge, for repos of a host with a credential: proje
 
 ## `loom pr`
 
-`loom pr [<task>]` opens a draft MR for the current branch, linked to the task (default: the focus of the current context): `git push -u -- <remote> refs/heads/<b>:refs/heads/<b>` (git CLI, user's credentials), then the forge API (`POST /repos/<o>/<r>/pulls` with `draft: true`, GitLab `POST /projects/<id>/merge_requests` with `Draft:` title). Title and body from the task (title, kind template, links). The MR becomes a `mr` link of the task (role `delivery`) and a `mr` event. Refuses on the default branch and on a branch with no commit ahead of the base. When an MR already exists for the branch, it links it instead.
+`loom pr [<task>]` opens a draft MR for the current branch, linked to the task (default: the task of the current branch): `git push -u -- <remote> refs/heads/<b>:refs/heads/<b>` (git CLI, user's credentials), then the forge API (`POST /repos/<o>/<r>/pulls` with `draft: true`, GitLab `POST /projects/<id>/merge_requests` with `Draft:` title). Title and body from the task (title, kind template, links). The MR becomes a `mr` link of the task (role `delivery`) and a `mr` event. Refuses on the default branch and on a branch with no commit ahead of the base. When an MR already exists for the branch, it links it instead.
 
 - **Who does what**: `loom` reads the branch and checks it; a `dry_run` request to `POST /v1/tasks/{id}/mr` has loomd check that the task can change (not archived, not read-only) and that the context has a credential for the host, sending nothing and not running `token_cmd` (it could prompt); then `loom` pushes (the user's terminal and git credentials), and the same request without `dry_run` asks loomd, which holds the forge credential of the context of the task, to search the open MRs of the branch and open the draft. A refused push sends nothing to the forge.
 - **Remote and base**: the upstream remote of the branch, otherwise the primary remote; the project is the host and path of its URL. The base is `--base`, otherwise the default branch: `refs/remotes/<remote>/HEAD`, otherwise the default branch of the repo index; unknown is a refusal, also with `--base` (the check "not the default branch" needs it). A branch whose upstream is `.` (a local branch), a URL, or a branch with another name (`branch.<b>.merge`) is refused, since the push goes to `<b>` of a named remote. Commits ahead are counted against `<remote>/<base>`, otherwise the local `<base>`. The head is a branch of the same project: an MR from a fork is out of v0.4, and an open MR of a fork with the same branch name is not linked.

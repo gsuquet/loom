@@ -1,8 +1,20 @@
 # UI style
 
-How loom looks on every surface: the TUI now, the web UI (and a desktop shell of it) later. The rules are written as **semantic tokens** and **components**; each surface maps them to what it can draw. A new view uses these components; a new component is added here first.
+How loom looks: the desktop app, and the TUI until its removal. The rules are written as **semantic tokens** and **components**; each surface maps them to what it can draw. A new view uses these components; a new component is added here first.
 
-The TUI mapping is normative from v0.3; the review components (sections 4.9 to 4.16) are normative from v0.4. The web mapping is a direction, settled when the web UI is designed (v0.11, see [vision](vision.md)).
+The TUI mapping is normative from v0.3; the review components (sections 4.9 to 4.16) are normative from v0.4. The web columns below are drafts from the prototype and are not normative.
+
+## Desktop app target
+
+The desktop app is as native to macOS as possible, following the design system of macOS 26 and 27 (Liquid Glass). The toolkit is still open, see [Architecture](architecture.md#desktop-app).
+
+- **Glass** is only for the sidebar, the toolbar and floating controls. Rows, diffs and text sit on solid backgrounds.
+- **Theme** follows the system, light or dark. The system's transparency settings apply.
+- **Density** comes from the native controls. There is no density setting.
+- **Context signal:** colour and shape on every row, plus a solid band on pages about one item, such as a review or a dialog.
+- **Sizes:** one column in a narrow window, where `Enter` opens an item and `Esc` returns. List and task side by side on a 24 to 27 inch screen. The agent panel can also stay open on a 34 inch screen.
+
+The sections below describe the TUI, which is removed, and stay until the app has its own tokens. Principles 1, 2, 4, 5 and 6 carry over to the app.
 
 ## 1. Principles
 
@@ -136,7 +148,7 @@ The web UI shows toasts in a corner stack with the same lifetime rules, and erro
 
 ### 4.9 Review page
 
-The object page of a Review task (v0.4, [Code review](user-workflow.md#code-review), [MR review](reviews.md)). It uses the components 4.10 to 4.14.
+The object page of a Review task (v0.4, [Code review](user-workflow.md#review), [MR review](reviews.md)). It uses the components 4.10 to 4.14.
 
 - **Line 1, title**: `Review <MR key> <MR title>`, then the context badge, the head SHA (7 characters) and the totals, in `muted` except the title (`text-strong`) and the badge. At 160 columns the author and the base branch follow. Fields that do not fit are dropped from the right; the title is cut with `…` before the badge is dropped.
 - **Banner lines**: the "since last review" banner (section 4.13), then the reduced-view notice when there is no local clone (`No local clone: no context expansion, no worktree. Clone <remote URL>` in `muted`). Each takes one line when it applies; with none, the panes start on line 2.

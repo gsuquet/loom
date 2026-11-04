@@ -2,20 +2,19 @@
 
 > Versions, content and acceptance criteria. Only the next version is broken down into tasks.
 
-| Version | Content | Done when |
+Versions up to v0.3 are released. The backend of v0.4 goes on; TUI issues are on hold. The delivery order from here replaces the later versions:
+
+| Step | Content | Done when |
 | --- | --- | --- |
-| v0.1 | Install, auto-upgrade, `dev` channel + `loom upgrade --from <path>`, rollback, loomd as launchd/systemd service, otel diagnostics, `loom version` / `loom status` | Clean install on macOS and Linux; a release is picked up in N h without action; a local build installs and rolls back; traces visible locally |
-| v0.2 | Repo index (scan roots + register on use), contexts of repos, freshness, clean/dirty, fetch + ff-only on clean trees, repo cards, `loom search` | Dotfiles inventory scripts deleted; search < 100 ms; one week of auto-update with zero lost local changes |
-| v0.3 | Tasks core: store, contexts, cron, archive, priority, backup of each context store, TUI Today + Inbox + triage + task detail (pickers, `$EDITOR`), `loom go` shell integration, `loom search` over tasks, disk usage | I start my day with `loom` instead of anything else |
-| v0.4 | Forge MRs: MRs to review (fetch `refs/*/head`, diff per SHA, MR mirror, TUI review view with drafts and batch publish), repo metadata, `loom pr` (draft, task-linked) | Reviews handled from loom without opening the forge inbox |
-| v0.5 | Forge issues (GitLab, GitHub): two-way sync, creation with lint, TUI drafts view | A GitLab issue created and another edited in the TUI, both pushed with no change on untouched fields |
-| v0.6 | Observation: events, Claude Code hooks, transcripts, calendar | A day of work reconstructable from the ledger |
-| v0.7 | Delegation v1: one template (reviewer), versioned and measured from its first run, typed contract, readiness gate, context pack with preview, `needs_clarification`, agent findings inline in the review view, gates, proposed actions, loom MCP server, TUI run view + approval queue, desktop notifications | A review delegated, watched live, approved from the TUI |
-| v0.8 | Jira two-way sync: ADF/wiki conversion with placeholders, transitions, ticket creation with lint | A Jira ticket edited and transitioned from loom, with no formatting damage on untouched content |
-| v0.9 | Specialists (including the ticket writer), context packs, Datadog tools for agents (shaped results, spill to file) | An Investigation delegated with Datadog access, no credentials given to the agent |
-| v0.10 | Factory on local runners: pipelines, intake rules, scheduler, autonomy policy, direct API runtime, replay evaluation | A Story labelled `loom:auto` reaches a draft MR overnight on my machine with no action from me, and I approve it in the morning |
-| v0.11 | Central instance: StorePort over HTTP, central runner with one container per run, night windows, web UI | Long runs leave my laptop; a client context restricted to local runners never runs centrally |
-| later | Multi-machine (poller per context, leases, `task.md` conflicts as inbox tasks) once a second machine exists; triage merge and split; embedded text editor; Freshservice, Slack, Datadog ingestion; learnings extraction; other harness adapters (Codex, Antigravity) | |
+| 1. Desk | Desktop app, Today, Inbox, task page, palette, global hotkey, MR queue, connector status, GitLab | For one working week, I start the day in loom and do not open the forge to find MRs |
+| 2. References | Sources, Reading, phone capture, knowledge pages, glossary, out-of-scope records, pruning agent, the rule on text loaded into agents | Set when the step starts |
+| 3. Connectors | Datadog, Jira, Freshservice | Set when the step starts |
+| 4. Review | Diff, reviewer agent, multi-repo worktrees, run leases | Set when the step starts |
+| 5. Later | Other specialists, pipelines, opt-in rules, read-only Kubernetes, GitHub, Google Calendar | Set per item when it starts |
+
+Multi-repo tasks, the Source entity, the conception kind, links, pipelines and the adapter ports change the core model. They are designed in the docs before step 1. The toolkit of the app is chosen before step 1. Spikes: the toolkit, the Android share target and Worker authentication, and local transcription after step 2.
+
+The central instance and unattended delivery stay later options with no date. Unattended delivery needs my go-ahead, see [Autonomy policy](design/agents.md#autonomy-policy).
 
 ## v0.1 tasks
 
@@ -101,7 +100,7 @@ Parallel tracks: 18 and 20 from the start; after 2, {3} and {4, 5}; after 5, {11
 
 ## v0.4 tasks
 
-Each task is a GitHub issue in the `v0.4` milestone, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md). Design: [Code review](design/reviews.md), [User workflow](design/user-workflow.md#code-review), [ADR-0016](adr/0016-mr-review-mirror.md). Forge fixtures: [`fixtures/forge/`](../fixtures/forge/README.md).
+Each task is a GitHub issue in the `v0.4` milestone, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md). Design: [Code review](design/reviews.md), [User workflow](design/user-workflow.md#review), [ADR-0016](adr/0016-mr-review-mirror.md). Forge fixtures: [`fixtures/forge/`](../fixtures/forge/README.md).
 
 | # | Issue | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- | --- |
