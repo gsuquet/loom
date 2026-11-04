@@ -1,4 +1,4 @@
-//! Editing a task file in the editor: the steps that `loom edit` and the TUI share.
+//! Editing a task file in the editor: the steps of `loom edit`.
 //!
 //! The steps are `begin` (read the task and the file), `run_editor` (blocking), and `finish`
 //! (check the file, then wait for loomd to record it). None of them writes to the terminal: the
