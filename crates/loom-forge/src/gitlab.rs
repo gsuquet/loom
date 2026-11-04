@@ -297,7 +297,7 @@ struct Diff {
 /// `GET /projects/<id>/merge_requests/<iid>/diffs`, one page.
 ///
 /// The patch has no final newline, as on GitHub. A file that GitLab marks `too_large` or
-/// `collapsed` has no patch and is `too_large`.
+/// `collapsed` has no patch and is `too_large`. A body that does not start with `@@` is no patch.
 ///
 /// # Errors
 ///
@@ -309,7 +309,8 @@ pub fn parse_diffs(body: &[u8]) -> Result<Vec<FileDiff>, ParseError> {
         .map(|diff| {
             let cut = diff.too_large || diff.collapsed;
             let text = diff.diff.strip_suffix('\n').unwrap_or(&diff.diff);
-            let patch = (!cut && !text.is_empty()).then(|| text.to_owned());
+            // Any other body is a message, such as the one of a binary file: no patch.
+            let patch = (!cut && text.starts_with("@@")).then(|| text.to_owned());
             let change = if diff.new_file {
                 FileChange::Added
             } else if diff.deleted_file {

@@ -9,9 +9,8 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use loom_api::{RemoteProblem, RepoSummary, RepoUpdatePolicy};
+use loom_api::{RemoteProblem, RepoSummary};
 use loom_forge::model::{MrKey, MrVersion, Sha};
-use loom_repo::update::UpdatePolicies;
 use loom_repo::{classify_remote_failure, git_dirs, is_busy};
 use tracing::debug;
 
@@ -48,8 +47,8 @@ fn step(result: Result<(), Failure>) -> Step {
         Err(failure) => {
             let problem = match &failure {
                 Failure::Exit { stderr_tail, .. } => classify_remote_failure(stderr_tail),
-                Failure::Timeout { .. } => RemoteProblem::Network,
-                Failure::Run(_) => RemoteProblem::Other,
+                // A timeout is often a large or slow project, not the host: of this MR alone.
+                Failure::Timeout { .. } | Failure::Run(_) => RemoteProblem::Other,
             };
             Step::Failed {
                 error: describe(failure),
@@ -81,19 +80,17 @@ fn describe(failure: Failure) -> String {
 
 /// The repositories of `repos` that can hold the refs of the project.
 ///
-/// Each comes with its common directory. A repository with the policy `off` gets no git command,
-/// so it is no candidate. A repository that cannot be read (gone from the disk) is none either.
+/// Each comes with its common directory. A repository that cannot be read (gone from the disk)
+/// is no candidate. The `update` policy is not read: it governs automatic updates only.
 #[must_use]
 pub fn clone_candidates<'a>(
     repos: &'a [RepoSummary],
     host: &str,
     project: &str,
-    policies: &UpdatePolicies,
 ) -> Vec<CloneCandidate<'a>> {
     repos
         .iter()
         .filter(|repo| project_remote(&repo.identity, host, project).is_some())
-        .filter(|repo| !is_off(repo, policies))
         .filter_map(|repo| {
             let (git_dir, common_dir) = git_dirs(&repo.identity.path)
                 .inspect_err(|error| debug!(%error, "not a clone of the MR"))
@@ -106,15 +103,6 @@ pub fn clone_candidates<'a>(
             })
         })
         .collect()
-}
-
-/// Whether the repository has the update policy `off`: "no git command".
-#[must_use]
-pub fn is_off(repo: &RepoSummary, policies: &UpdatePolicies) -> bool {
-    match policies.policy(&repo.identity.path, &repo.identity.context) {
-        RepoUpdatePolicy::Off => true,
-        RepoUpdatePolicy::Ff | RepoUpdatePolicy::Fetch => false,
-    }
 }
 
 /// Fetches the head of the MR `key` and its base branch into `refs/loom/mr/<remote>/<n>/`.

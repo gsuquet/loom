@@ -29,6 +29,7 @@ use tempfile::TempDir;
 mod common;
 
 use common::{Daemon, ok, request};
+use loom_store::mr_clones::MrClones;
 
 const GITHUB_TOKEN: &str = "fake-github-token-0123";
 const GITLAB_TOKEN: &str = "fake-gitlab-token-4567";
@@ -201,6 +202,10 @@ impl Server {
     fn requests(&self) -> Vec<String> {
         self.seen.lock().unwrap().clone()
     }
+
+    fn body(&self, key: &str) -> String {
+        self.routes.lock().unwrap()[key].body.clone()
+    }
 }
 
 fn github() -> Server {
@@ -352,6 +357,7 @@ impl Sandbox {
         command
             .env("PATH", path)
             .env("LOOM_TEST_GIT_LOG", self.git_log())
+            .env("LOOM_TEST_GIT_FAIL", self.git_fail())
             .env("LOOM_TEST_MR_PASS_FILE", self.pass_file())
             .env("LOOM_HOME", self.loom_home())
             .env("HOME", self.user_home())
@@ -394,6 +400,11 @@ impl Sandbox {
         self.dir.path().join("mr-passes")
     }
 
+    /// A file with the message of a failure of the fetches of MR 500, when it exists.
+    fn git_fail(&self) -> PathBuf {
+        self.dir.path().join("git-fail")
+    }
+
     fn git_log(&self) -> PathBuf {
         self.dir.path().join("git.log")
     }
@@ -409,7 +420,7 @@ impl Sandbox {
                 .unwrap();
             let real = String::from_utf8(which.stdout).unwrap();
             let script = format!(
-                "#!/bin/sh\nprintf '%s|%s\\n' \"$PWD\" \"$*\" >> \"$LOOM_TEST_GIT_LOG\"\nexec '{}' \"$@\"\n",
+                "#!/bin/sh\nprintf '%s|%s\\n' \"$PWD\" \"$*\" >> \"$LOOM_TEST_GIT_LOG\"\ncase \"$*\" in *--no-write-fetch-head*) if [ -f \"$LOOM_TEST_GIT_FAIL.all\" ]; then cat \"$LOOM_TEST_GIT_FAIL.all\" >&2; exit 128; fi;; esac\ncase \"$*\" in *refs/pull/500/head*) if [ -f \"$LOOM_TEST_GIT_FAIL\" ]; then cat \"$LOOM_TEST_GIT_FAIL\" >&2; exit 128; fi;; esac\nexec '{}' \"$@\"\n",
                 real.trim()
             );
             let program = dir.join("git");
@@ -1145,6 +1156,25 @@ fn wait_for(what: &str, done: impl Fn() -> bool) {
     }
 }
 
+fn clones_of(sandbox: &Sandbox, id: &str) -> MrClones {
+    let reader = loom_store::Reader::open(&sandbox.loom_home().join("index.db")).unwrap();
+    reader
+        .mr_clones(&id.parse().unwrap(), "acme/shop#412")
+        .unwrap()
+}
+
+fn assert_no_path_in_the_store(sandbox: &Sandbox, path: &Path) {
+    let text = path.to_str().unwrap();
+    for (file, _) in files(&sandbox.store("personal")) {
+        let bytes = fs::read(&file).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(text),
+            "{} holds {text}",
+            file.display()
+        );
+    }
+}
+
 fn the_review_id(sandbox: &Sandbox) -> String {
     let list: TaskList = ok(&request(
         &sandbox.socket(),
@@ -1206,9 +1236,11 @@ fn a_review_task_gets_the_refs_and_a_diff_per_version_of_its_mr() {
         fs::read(mirror.join("versions.json"))
             .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("\"diff\": \"local\""))
     });
-    let mr = json_file(&mirror.join("mr.json"));
-    assert_eq!(mr["clone"]["remote"], "upstream");
-    assert_eq!(mr["clone"]["path"], clone.to_str().unwrap());
+    let chosen = clones_of(&sandbox, &id).clone.unwrap();
+    assert_eq!(chosen.remote, "upstream");
+    assert_eq!(chosen.path, clone);
+    // A path of this machine: never in the store.
+    assert_no_path_in_the_store(&sandbox, &clone);
     let versions = json_file(&mirror.join("versions.json"));
     assert_eq!(versions[0]["merge_base"], M1);
     assert_eq!(git(&["rev-parse", "refs/loom/mr/upstream/412/head"]), V1);
@@ -1415,8 +1447,8 @@ fn without_a_clone_the_diff_comes_from_the_forge_and_is_reduced_until_a_clone_co
     wait_for("the reduced diff on GitHub", || reduced(&github));
     let versions = json_file(&github.join("versions.json"));
     assert!(versions[0]["merge_base"].is_null(), "{versions}");
-    let mr = json_file(&github.join("mr.json"));
-    assert!(mr.get("clone").is_none(), "{mr}");
+    let id = the_review_id(&sandbox);
+    assert_eq!(clones_of(&sandbox, &id), MrClones::default());
     let patch = fs::read(github.join("diffs").join(format!("{V2}.patch"))).unwrap();
     let paths: Vec<String> = loom_forge::diff::file_hashes(&patch)
         .into_iter()
@@ -1465,8 +1497,7 @@ fn without_a_clone_the_diff_comes_from_the_forge_and_is_reduced_until_a_clone_co
         fs::read(github.join("versions.json"))
             .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("\"diff\": \"local\""))
     });
-    let mr = json_file(&github.join("mr.json"));
-    assert_eq!(mr["clone"]["path"], clone.to_str().unwrap());
+    assert_eq!(clones_of(&sandbox, &id).clone.unwrap().path, clone);
     assert_eq!(
         json_file(&github.join("versions.json"))[0]["merge_base"],
         M2
@@ -1533,6 +1564,10 @@ fn one_mr_that_fails_costs_the_others_nothing_and_backs_off() {
             (416, "main"),
         ],
     );
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/416/files",
+        route(fixture("github/pull-412-files.v2.json")),
+    );
     let daemon = sandbox.start();
     scan(&sandbox);
     sandbox.sync_and_settle();
@@ -1562,7 +1597,10 @@ fn one_mr_that_fails_costs_the_others_nothing_and_backs_off() {
     };
     // Whatever the order of the tasks: each MR with a head has its diff after the first poll.
     assert!([412, 413, 414, 415].into_iter().all(patch_of));
-    assert!(!patch_of(416));
+    // 416 has the patches of the forge.
+    assert!(patch_of(416));
+    let versions = json_file(&mirror_of(416).unwrap().join("versions.json"));
+    assert_eq!(versions[0]["diff"], "reduced");
 
     // 416 is not fetched at each poll: of polls 2 to 4, only 2 and 4 try it.
     let tries = || sandbox.git_commands("refs/pull/416/head");
@@ -1571,11 +1609,19 @@ fn one_mr_that_fails_costs_the_others_nothing_and_backs_off() {
         sandbox.sync_and_settle();
     }
     assert_eq!(tries(), 3);
+    // Its tries do not read the forge again: it has these patches.
+    let reads = sandbox
+        .github
+        .requests()
+        .iter()
+        .filter(|request| request.ends_with("/pulls/416/files"))
+        .count();
+    assert_eq!(reads, 1);
     daemon.stop();
 }
 
 #[test]
-fn a_repository_with_the_policy_off_gets_no_git_command_and_a_reduced_diff() {
+fn the_policy_off_stops_updates_and_not_the_refs_of_an_mr() {
     let sandbox = Sandbox::new();
     let roots = format!(
         "roots = [\"{}\"]",
@@ -1587,10 +1633,6 @@ fn a_repository_with_the_policy_off_gets_no_git_command_and_a_reduced_diff() {
     );
     fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
     let (home, _forge, clone) = clone_of_the_scenario(&sandbox);
-    sandbox.github.set(
-        "GET /repos/acme/shop/pulls/412/files",
-        route(fixture("github/pull-412-files.v2.json")),
-    );
     let daemon = sandbox.start();
     scan(&sandbox);
     sandbox.sync_and_settle();
@@ -1600,15 +1642,15 @@ fn a_repository_with_the_policy_off_gets_no_git_command_and_a_reduced_diff() {
         .join(the_review_id(&sandbox))
         .join(MIRROR);
     let versions = fs::read_to_string(mirror.join("versions.json")).unwrap();
-    assert!(versions.contains("\"diff\": \"reduced\""), "{versions}");
-    let mr = json_file(&mirror.join("mr.json"));
-    assert!(mr.get("clone").is_none(), "{mr}");
-    assert_eq!(
-        common::git(&home, &clone, &["for-each-ref", "refs/loom/"]),
-        ""
+    assert!(versions.contains("\"diff\": \"local\""), "{versions}");
+    let head = common::git(
+        &home,
+        &clone,
+        &["rev-parse", "refs/loom/mr/upstream/412/head"],
     );
-    let in_clone = format!("{}|", fs::canonicalize(&clone).unwrap().display());
-    assert_eq!(sandbox.git_commands(&in_clone), 0);
+    assert_eq!(head.trim(), V1);
+    // Automatic updates still run nothing: the only fetch is the one of the MR.
+    assert_eq!(sandbox.git_commands("fetch "), 1);
     daemon.stop();
 }
 
@@ -1625,10 +1667,9 @@ fn a_new_clone_gets_the_refs_and_the_old_one_loses_them() {
         .join("tasks")
         .join(the_review_id(&sandbox))
         .join(MIRROR);
-    assert_eq!(
-        json_file(&mirror.join("mr.json"))["clone"]["path"],
-        first.to_str().unwrap()
-    );
+    let id = the_review_id(&sandbox);
+    assert_eq!(clones_of(&sandbox, &id).clone.unwrap().path, first);
+    let mr_file = fs::read(mirror.join("mr.json")).unwrap();
     let head = "refs/loom/mr/upstream/412/head";
     assert_eq!(common::git(&home, &first, &["rev-parse", head]).trim(), V1);
 
@@ -1668,21 +1709,16 @@ fn a_new_clone_gets_the_refs_and_the_old_one_loses_them() {
     scan(&sandbox);
     sandbox.sync_and_settle();
 
-    assert_eq!(
-        json_file(&mirror.join("mr.json"))["clone"]["path"],
-        second.to_str().unwrap()
-    );
+    assert_eq!(clones_of(&sandbox, &id).clone.unwrap().path, second);
+    // The store does not change with the clone.
+    assert_eq!(fs::read(mirror.join("mr.json")).unwrap(), mr_file);
     // The patch is local already: only the refs had to come.
     assert_eq!(common::git(&home, &second, &["rev-parse", head]).trim(), V1);
     assert_eq!(
         common::git(&home, &first, &["for-each-ref", "refs/loom/"]),
         ""
     );
-    assert!(
-        json_file(&mirror.join("mr.json"))
-            .get("retired_clones")
-            .is_none()
-    );
+    assert_eq!(clones_of(&sandbox, &id).retired, []);
     daemon.stop();
 }
 
@@ -1856,5 +1892,454 @@ fn a_diff_over_the_cap_falls_back_to_the_forge_and_says_so() {
     let diffs = sandbox.git_commands(" diff -M ");
     sandbox.sync_and_settle();
     assert_eq!(sandbox.git_commands(" diff -M "), diffs);
+    daemon.stop();
+}
+
+/// A second clone of the forge, whose remote names `github.com/acme/private`.
+fn clone_of_the_private_project(sandbox: &Sandbox, home: &Path, forge: &Path) -> PathBuf {
+    let clone = sandbox.dir.path().join("work/private");
+    common::git(
+        home,
+        sandbox.dir.path(),
+        &[
+            "clone",
+            "-q",
+            "-o",
+            "upstream",
+            forge.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let project = "git@github.com:acme/private.git";
+    common::git(home, &clone, &["remote", "set-url", "upstream", project]);
+    let rewrite = format!("url.{}.insteadOf", forge.display());
+    common::git(home, &clone, &["config", &rewrite, project]);
+    clone
+}
+
+/// The search lists `acme/private#500` with the MRs of `more_mrs`.
+fn private_mr(sandbox: &Sandbox, numbers: &[(u64, &str)]) {
+    more_mrs(sandbox, numbers);
+    let mut search = fixture_json("github/search-review-requested.json");
+    let as_private = |text: String| {
+        text.replace("acme/shop", "acme/private")
+            .replace("/412", "/500")
+            .replace("\"number\":412", "\"number\":500")
+    };
+    let item: Value = serde_json::from_str(&as_private(search["items"][0].to_string())).unwrap();
+    search = serde_json::from_str(&sandbox.github.body("GET /search/issues")).unwrap();
+    search["items"].as_array_mut().unwrap().push(item);
+    sandbox
+        .github
+        .set("GET /search/issues", route(search.to_string()));
+    let pull: Value =
+        serde_json::from_str(&as_private(fixture("github/pull-412.v1.json"))).unwrap();
+    let mut pull = pull;
+    pull["number"] = json!(500);
+    let path = "/repos/acme/private";
+    sandbox
+        .github
+        .set(&format!("GET {path}/pulls/500"), route(pull.to_string()));
+    sandbox.github.set(
+        &format!("GET {path}/pulls/500/reviews"),
+        route(fixture("github/pull-412-reviews.json")),
+    );
+    sandbox.github.set(
+        &format!("GET {path}/issues/500/comments"),
+        route(fixture("github/issue-412-comments.json")),
+    );
+    sandbox.github.set(
+        &format!("GET {path}/pulls/500/files"),
+        route(fixture("github/pull-412-files.v2.json")),
+    );
+}
+
+/// The directories of the mirror of each task, by the number of its MR.
+fn mirrors(sandbox: &Sandbox) -> HashMap<u64, PathBuf> {
+    let list: TaskList = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        "/v1/tasks?context=personal",
+        None,
+    ));
+    let mut found = HashMap::new();
+    for summary in &list.tasks {
+        let dir = sandbox
+            .store("personal")
+            .join("tasks")
+            .join(summary.id.as_str())
+            .join("mrs");
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let number = name.rsplit("%23").next().unwrap().parse().unwrap();
+            found.insert(number, entry.path());
+        }
+    }
+    found
+}
+
+fn fetches_of_500(sandbox: &Sandbox) -> usize {
+    sandbox.git_commands("refs/pull/500/head")
+}
+
+#[test]
+fn an_http_refusal_for_one_project_stops_only_its_clone() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    clone_of_the_private_project(&sandbox, &home, &forge);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
+    for number in [413, 414] {
+        common::git(
+            &home,
+            &forge,
+            &["update-ref", &format!("refs/pull/{number}/head"), V1],
+        );
+    }
+    private_mr(&sandbox, &[(413, "main"), (414, "main")]);
+    fs::write(
+        sandbox.git_fail(),
+        "fatal: unable to access 'https://github.com/acme/private.git/': The requested URL returned error: 403\n",
+    )
+    .unwrap();
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+
+    // Whatever the order of the tasks: the same endpoint serves the others in the same poll.
+    let mirrors = mirrors(&sandbox);
+    assert_eq!(mirrors.len(), 4);
+    for number in [412, 413, 414] {
+        assert_eq!(
+            json_file(&mirrors[&number].join("versions.json"))[0]["diff"],
+            "local",
+            "{number}"
+        );
+    }
+    // 500 has the patches of the forge, and backs off.
+    assert_eq!(
+        json_file(&mirrors[&500].join("versions.json"))[0]["diff"],
+        "reduced"
+    );
+    for _ in 0..5 {
+        sandbox.sync_and_settle();
+    }
+    // Polls 1, 2 and 4 of 6.
+    assert_eq!(fetches_of_500(&sandbox), 3);
+    daemon.stop();
+}
+
+#[test]
+fn a_network_failure_stops_its_endpoint_for_one_poll_and_its_mr_cannot_hold_the_others() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    clone_of_the_private_project(&sandbox, &home, &forge);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
+    private_mr(&sandbox, &[]);
+    fs::write(
+        sandbox.git_fail(),
+        "fatal: unable to access 'https://github.com/': Could not resolve host: github.com\n",
+    )
+    .unwrap();
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    // Poll 1 and 2 may try 500 first, and stop 412 behind it. At poll 3, 500 waits.
+    for _ in 0..3 {
+        sandbox.sync_and_settle();
+    }
+    let mirrors = mirrors(&sandbox);
+    assert_eq!(
+        json_file(&mirrors[&412].join("versions.json"))[0]["diff"],
+        "local"
+    );
+    assert_eq!(
+        json_file(&mirrors[&500].join("versions.json"))[0]["diff"],
+        "reduced"
+    );
+    assert!(fetches_of_500(&sandbox) <= 2);
+    daemon.stop();
+}
+
+#[test]
+fn a_remote_that_is_gone_is_tried_once_for_all_the_mrs_of_its_clone() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (_home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    fs::rename(&forge, forge.with_extension("moved")).unwrap();
+    more_mrs(&sandbox, &[(413, "main"), (414, "main")]);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    assert_eq!(
+        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
+        1
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_forge_that_refuses_the_token_is_read_once_for_all_the_mrs_without_a_clone() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    fs::create_dir_all(sandbox.dir.path().join("work")).unwrap();
+    more_mrs(&sandbox, &[(413, "main"), (414, "main")]);
+    for number in [412, 413, 414] {
+        sandbox.github.set(
+            &format!("GET /repos/acme/shop/pulls/{number}/files"),
+            Route {
+                status: 401,
+                ..route(r#"{"message":"Bad credentials"}"#)
+            },
+        );
+    }
+    let daemon = sandbox.start();
+    sandbox.sync_and_settle();
+    let reads = sandbox
+        .github
+        .requests()
+        .iter()
+        .filter(|request| request.ends_with("/files"))
+        .count();
+    assert_eq!(reads, 1);
+    daemon.stop();
+}
+
+#[test]
+fn the_cleanup_leaves_the_refs_of_a_remote_that_now_names_another_project() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, _forge, clone) = clone_of_the_scenario(&sandbox);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    let id = the_review_id(&sandbox);
+    approve_v1(&sandbox);
+    sandbox.sync_and_settle();
+    assert_eq!(
+        task(&sandbox.socket(), &id).summary.task.unwrap().status,
+        Status::Done
+    );
+    common::git(
+        &home,
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "upstream",
+            "git@github.com:acme/other.git",
+        ],
+    );
+    daemon.stop();
+    let daemon = sandbox.start_on(Some("2099-01-01"));
+    wait_for("the archive of the task", || {
+        !sandbox.store("personal").join("tasks").join(&id).exists()
+    });
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    let refs = common::git(
+        &home,
+        &clone,
+        &["rev-parse", "refs/loom/mr/upstream/412/head"],
+    );
+    assert_eq!(refs.trim(), V1);
+    daemon.stop();
+}
+
+#[test]
+fn a_new_index_chooses_the_clone_again_and_the_cleanup_still_finds_the_refs() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, _forge, clone) = clone_of_the_scenario(&sandbox);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    let id = the_review_id(&sandbox);
+    let mirror = sandbox
+        .store("personal")
+        .join("tasks")
+        .join(&id)
+        .join(MIRROR);
+    let before = files(&mirror);
+
+    // A reindex rebuilds the tasks, and leaves the choice.
+    let answer = request(&sandbox.socket(), "POST", "/v1/tasks/reindex", None);
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(clones_of(&sandbox, &id).clone.unwrap().path, clone);
+    daemon.stop();
+
+    // A new `index.db`: the same rule gives the same clone, and the store does not change.
+    for name in ["index.db", "index.db-wal", "index.db-shm"] {
+        let _ = fs::remove_file(sandbox.loom_home().join(name));
+    }
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    wait_for("the task in the new index", || {
+        let list: TaskList = ok(&request(
+            &sandbox.socket(),
+            "GET",
+            "/v1/tasks?context=personal",
+            None,
+        ));
+        !list.tasks.is_empty()
+    });
+    sandbox.sync_and_settle();
+    assert_eq!(clones_of(&sandbox, &id).clone.unwrap().path, clone);
+    assert_eq!(files(&mirror), before);
+    approve_v1(&sandbox);
+    sandbox.sync_and_settle();
+    daemon.stop();
+
+    // A new `index.db` again, then the archive: no row knows the clone.
+    for name in ["index.db", "index.db-wal", "index.db-shm"] {
+        let _ = fs::remove_file(sandbox.loom_home().join(name));
+    }
+    let daemon = sandbox.start_on(Some("2099-01-01"));
+    wait_for("the archive of the task", || {
+        !sandbox.store("personal").join("tasks").join(&id).exists()
+    });
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    assert_eq!(
+        common::git(&home, &clone, &["for-each-ref", "refs/loom/"]),
+        ""
+    );
+    daemon.stop();
+}
+
+#[test]
+fn an_older_version_over_the_cap_keeps_a_note_and_the_head_its_diff() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, clone) = clone_of_the_scenario(&sandbox);
+    let git = |args: &[&str]| common::git(&home, &clone, args).trim().to_owned();
+    // The project is the one of the GitLab merge request.
+    let project = "git@gitlab.example.com:company-a/checkout.git";
+    git(&["remote", "set-url", "upstream", project]);
+    git(&[
+        "config",
+        &format!("url.{}.insteadOf", forge.display()),
+        project,
+    ]);
+    common::git(&home, &forge, &["update-ref", "refs/heads/main", M2]);
+    let big = clone.join("big.txt");
+    fs::write(&big, "line\n".repeat(1_200_000)).unwrap();
+    git(&["checkout", "-q", "-b", "big", M1]);
+    git(&["add", "big.txt"]);
+    git(&[
+        "-c",
+        "user.name=a",
+        "-c",
+        "user.email=a@a",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "big",
+    ]);
+    let old_head = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-q", "main"]);
+    let mut listed = fixture_json("gitlab/merge-request-88-versions.json");
+    for version in listed.as_array_mut().unwrap() {
+        if version["head_commit_sha"] == V1 {
+            version["head_commit_sha"] = json!(old_head);
+            version["base_commit_sha"] = json!(M1);
+        }
+    }
+    sandbox.gitlab.set(
+        "GET /projects/77/merge_requests/88/versions",
+        route(listed.to_string()),
+    );
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    let list: TaskList = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        "/v1/tasks?context=company-a",
+        None,
+    ));
+    let mirror = sandbox
+        .store("company-a")
+        .join("tasks")
+        .join(list.tasks[0].id.to_string())
+        .join("mrs/gitlab-company-a%2Fcheckout%2188");
+    let versions = json_file(&mirror.join("versions.json"));
+    let diff_of = |head: &str| {
+        versions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|version| version["head_sha"] == head)
+            .unwrap()["diff"]
+            .clone()
+    };
+    assert_eq!(diff_of(V2), "local");
+    assert_eq!(diff_of(&old_head), "reduced_too_large");
+    let note = fs::read(mirror.join("diffs").join(format!("{old_head}.patch"))).unwrap();
+    assert!(note.starts_with(b"# loom: the local diff is over the limit"));
+    assert_eq!(loom_forge::diff::file_hashes(&note), []);
+    daemon.stop();
+}
+
+#[test]
+fn a_merged_mr_keeps_its_local_diff_when_its_base_moves() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (_home, _forge, _clone) = clone_of_the_scenario(&sandbox);
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412/files",
+        route(fixture("github/pull-412-files.v2.json")),
+    );
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    let mirror = sandbox
+        .store("personal")
+        .join("tasks")
+        .join(the_review_id(&sandbox))
+        .join(MIRROR);
+    let before = fs::read(mirror.join("diffs").join(format!("{V1}.patch"))).unwrap();
+    let mut merged = fixture_json("github/pull-412.v1.json");
+    merged["state"] = json!("closed");
+    merged["merged"] = json!(true);
+    merged["merged_at"] = json!("2026-10-22T09:00:00Z");
+    merged["base"]["sha"] = json!(V1);
+    merged["updated_at"] = json!("2026-10-22T09:00:00Z");
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412",
+        with_etag(merged.to_string(), "\"merged\""),
+    );
+    sandbox.sync_and_settle();
+    let versions = json_file(&mirror.join("versions.json"));
+    assert_eq!(versions[0]["diff"], "local");
+    assert_eq!(versions[0]["merge_base"], M1);
+    assert_eq!(
+        fs::read(mirror.join("diffs").join(format!("{V1}.patch"))).unwrap(),
+        before
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_host_that_cannot_be_reached_is_tried_once_for_all_its_clones() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    clone_of_the_private_project(&sandbox, &home, &forge);
+    private_mr(&sandbox, &[]);
+    fs::write(
+        format!("{}.all", sandbox.git_fail().display()),
+        "fatal: unable to access 'https://github.com/': Could not resolve host: github.com\n",
+    )
+    .unwrap();
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    assert_eq!(
+        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
+        1
+    );
     daemon.stop();
 }

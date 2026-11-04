@@ -12,6 +12,7 @@ use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -561,7 +562,8 @@ impl<'a> Git<'a> {
     }
 
     /// Runs `git <args>` in the working tree; its standard output, as git wrote it, when it
-    /// exits with 0. With a `limit`, only that many bytes stay in memory, and git still ends.
+    /// exits with 0. With a `limit`, git is stopped when its output reaches it, and the answer
+    /// has that many bytes.
     pub(crate) fn output_bytes(
         &self,
         args: &[&OsStr],
@@ -588,6 +590,9 @@ impl<'a> Git<'a> {
             command.env_remove(name);
         }
         command.env("GIT_TERMINAL_PROMPT", "0");
+        // `is_busy` and the other readers of git's messages read English.
+        command.env("LC_ALL", "C");
+        command.env_remove("LANGUAGE");
         // git never looks above the working tree for a repository.
         if let Some(parent) = self.workdir.parent() {
             command.env("GIT_CEILING_DIRECTORIES", parent);
@@ -641,10 +646,21 @@ pub(crate) fn wait(
     grace: Duration,
     limit: Option<usize>,
 ) -> Result<Vec<u8>, Failure> {
-    let stdout = child.stdout.take().map(|pipe| reader(pipe, limit));
+    let reached = Arc::new(AtomicBool::new(false));
+    let stdout = child
+        .stdout
+        .take()
+        .map(|pipe| reader(pipe, limit.map(|limit| (limit, Arc::clone(&reached)))));
     let stderr = child.stderr.take().map(|pipe| reader(pipe, None));
     let deadline = Instant::now() + timeout;
     let status = loop {
+        if reached.load(Ordering::Relaxed) {
+            // The rest would be dropped: a slow diff must not hold its caller until the timeout.
+            stop_group(&mut child, grace);
+            return Ok(stdout
+                .and_then(|received| received.recv_timeout(grace).ok())
+                .unwrap_or_default());
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
@@ -684,11 +700,11 @@ pub(crate) fn wait(
     }
 }
 
-/// Reads `pipe` to its end on a thread; the bytes arrive on the channel, at most `limit` of them.
-/// The rest is read and dropped: a writer stops only at the end of its output.
+/// Reads `pipe` to its end on a thread; the bytes arrive on the channel. With a limit, at most
+/// that many are kept: reaching it sets its flag, and the rest is read and dropped.
 fn reader(
     mut pipe: impl io::Read + Send + 'static,
-    limit: Option<usize>,
+    limit: Option<(usize, Arc<AtomicBool>)>,
 ) -> mpsc::Receiver<Vec<u8>> {
     let (send, received) = mpsc::channel();
     let spawned = thread::Builder::new()
@@ -696,10 +712,13 @@ fn reader(
         .spawn(move || {
             let mut bytes = Vec::new();
             match limit {
-                Some(limit) => {
+                Some((limit, reached)) => {
                     let keep = u64::try_from(limit).unwrap_or(u64::MAX);
                     let mut kept = io::Read::take(io::Read::by_ref(&mut pipe), keep);
                     let _ = io::Read::read_to_end(&mut kept, &mut bytes);
+                    if bytes.len() >= limit {
+                        reached.store(true, Ordering::Relaxed);
+                    }
                     let _ = io::copy(&mut pipe, &mut io::sink());
                 }
                 None => {

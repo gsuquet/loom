@@ -15,7 +15,6 @@ use loom_api::{ContextAssignment, Remote, RemoteUrl, RepoIdentity, RepoSummary};
 use loom_forge::diff::{file_hashes, reduced_patch, since_last_review};
 use loom_forge::model::{MrKey, MrVersion, Sha};
 use loom_forge::{github, gitlab};
-use loom_repo::update::UpdatePolicies;
 use loomd::mr_refs::git::{
     LocalDiff, Reviewed, Step, clone_candidates, delete_refs, fetch_mr, has_head_ref, set_reviewed,
     version_diff,
@@ -494,12 +493,7 @@ fn a_fork_as_origin_and_the_project_as_upstream_uses_upstream() {
         &scenario.clone,
         &[("origin", "me/shop"), ("upstream", "acme/shop")],
     )];
-    let candidates = clone_candidates(
-        &repos,
-        "github.com",
-        "acme/shop",
-        &UpdatePolicies::default(),
-    );
+    let candidates = clone_candidates(&repos, "github.com", "acme/shop");
     let clone = choose_clone(None, &candidates, "github.com", "acme/shop").unwrap();
     assert_eq!(clone.remote, "upstream");
 
@@ -536,12 +530,7 @@ fn the_worktrees_of_a_clone_are_told_apart_and_a_gone_clone_is_no_candidate() {
         summary(&scenario.clone, &project),
         summary(&scenario.clone, &[("origin", "acme/other")]),
     ];
-    let candidates = clone_candidates(
-        &repos,
-        "github.com",
-        "acme/shop",
-        &UpdatePolicies::default(),
-    );
+    let candidates = clone_candidates(&repos, "github.com", "acme/shop");
     assert_eq!(candidates.len(), 2);
     assert_eq!(candidates[0].repo.identity.path, linked);
     assert!(!candidates[0].main);
@@ -707,7 +696,7 @@ fn logging_git(scenario: &Scenario, refuse: Option<&str>) -> (GitRunner, PathBuf
     fs::write(
         &program,
         format!(
-            "#!/bin/sh\nprintf '%s|%s\\n' \"$GIT_SSH_COMMAND\" \"$*\" >> '{}'\n{refusal}exec git \"$@\"\n",
+            "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$GIT_SSH_COMMAND\" \"$GIT_ATTR_NOSYSTEM\" \"$*\" >> '{}'\n{refusal}exec git \"$@\"\n",
             log.display()
         ),
     )
@@ -793,43 +782,6 @@ fn a_base_branch_that_the_forge_no_longer_has_does_not_stop_the_head() {
             }
         ),
         "{missing:?}"
-    );
-}
-
-#[test]
-fn a_repository_with_the_policy_off_is_no_candidate() {
-    let scenario = Scenario::new();
-    let config = loom_config::config::parse_config(
-        "[contexts.client]\nupdate = \"off\"\n[contexts.other]\nupdate = \"fetch\"\n",
-        Path::new("config.toml"),
-    )
-    .unwrap();
-    let policies = UpdatePolicies::new(&config, &scenario.home());
-    let mut repo = summary(&scenario.clone, &[("origin", "acme/shop")]);
-    repo.identity.context = ContextAssignment::Override {
-        context: "client".parse().unwrap(),
-    };
-    assert!(
-        clone_candidates(
-            std::slice::from_ref(&repo),
-            "github.com",
-            "acme/shop",
-            &policies
-        )
-        .is_empty()
-    );
-    repo.identity.context = ContextAssignment::Override {
-        context: "other".parse().unwrap(),
-    };
-    assert_eq!(
-        clone_candidates(
-            std::slice::from_ref(&repo),
-            "github.com",
-            "acme/shop",
-            &policies
-        )
-        .len(),
-        1
     );
 }
 
@@ -976,6 +928,13 @@ fn a_partial_clone_is_not_asked_for_a_commit_and_its_diff_can_fetch_blobs_in_bat
     // `git diff` read blobs through the remote: it cannot ask for a passphrase.
     let log = fs::read_to_string(log).unwrap();
     let line = log.lines().find(|line| line.contains(" diff ")).unwrap();
+    // No attributes file of the system either.
+    assert!(line.starts_with("ssh -o BatchMode=yes|1|"), "{line}");
+    // The check of a commit: on a git that ignores `GIT_NO_LAZY_FETCH`, it can reach the remote.
+    let line = log
+        .lines()
+        .find(|line| line.contains("cat-file -e"))
+        .unwrap();
     assert!(line.starts_with("ssh -o BatchMode=yes|"), "{line}");
 }
 
@@ -1081,4 +1040,76 @@ fn a_real_submodule_is_not_fetched_and_its_diff_does_not_depend_on_the_configura
     scenario.git(&["config", "diff.submodule", "log"]);
     scenario.git(&["config", "diff.ignoreSubmodules", "all"]);
     assert_eq!(scenario.diff(&version), plain);
+}
+
+/// Whether this machine has a French locale.
+fn has_french_locale() -> bool {
+    Command::new("locale")
+        .arg("-a")
+        .output()
+        .is_ok_and(|locales| {
+            String::from_utf8_lossy(&locales.stdout)
+                .lines()
+                .any(|locale| locale.eq_ignore_ascii_case("fr_FR.UTF-8"))
+        })
+}
+
+#[test]
+fn the_messages_of_git_are_read_in_any_locale_of_the_user() {
+    let scenario = Scenario::new();
+    if !has_french_locale() {
+        eprintln!("skipped: no fr_FR.UTF-8 locale on this machine");
+        return;
+    }
+    let mut french = runner(&scenario.home());
+    french
+        .env
+        .push(("LC_ALL".into(), Some("fr_FR.UTF-8".into())));
+    french.env.push(("LANGUAGE".into(), Some("fr".into())));
+    // A base branch that the forge no longer has.
+    assert_eq!(
+        fetch_mr(&french, &scenario.origin(), &github_key(), "gone"),
+        Step::Done
+    );
+    // A lock.
+    let lock = scenario.git_dir().join("refs/loom/mr/origin/412/head.lock");
+    fs::write(&lock, "").unwrap();
+    scenario.force_push();
+    let step = fetch_mr(&french, &scenario.origin(), &github_key(), "main");
+    assert!(matches!(step, Step::Busy(_)), "{step:?}");
+}
+
+#[test]
+fn a_diff_over_its_limit_stops_git_at_once() {
+    let scenario = Scenario::new();
+    assert_eq!(scenario.fetch(), Step::Done);
+    // A slow diff: it passes the limit, then would run for longer than the test can wait.
+    let program = scenario.dir.path().join("slow-git");
+    fs::write(
+        &program,
+        "#!/bin/sh\ncase \"$*\" in\n*\" diff \"*) head -c 100 /dev/zero; sleep 60;;\n*) exec git \"$@\";;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let slow = GitRunner {
+        program,
+        kill_grace: std::time::Duration::from_secs(1),
+        ..runner(&scenario.home())
+    };
+    let started = std::time::Instant::now();
+    let diff = version_diff(
+        &slow,
+        &scenario.clone,
+        &github_version("github/pull-412.v1.json"),
+        10,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(diff.over_limit);
+    assert_eq!(diff.patch, Vec::<u8>::new());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
 }

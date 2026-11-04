@@ -912,7 +912,7 @@ fn version_7_database_migrates_to_8_with_its_repositories_and_no_forge_metadata(
     drop(conn);
 
     let mut store = Store::open(&path).unwrap();
-    assert_eq!(user_version(&store.conn).unwrap(), 8);
+    assert_eq!(user_version(&store.conn).unwrap(), SCHEMA_VERSION);
     let repo = store.get("unassigned/a").unwrap().unwrap();
     assert_eq!(repo.state.unwrap().dirty, MaybeKnown::Known(0));
     assert_eq!(repo.forge_metadata, None);
@@ -1344,4 +1344,68 @@ fn registration_on_use_sets_last_used_in_the_same_write() {
         .register(repo("/elsewhere/w", "p", "p/w", &[]), at(8), false)
         .unwrap();
     assert_eq!(plain.last_used, None);
+}
+
+#[test]
+fn the_clones_of_an_mr_round_trip_and_an_empty_set_leaves_no_row() {
+    use std::path::PathBuf;
+
+    use loom_core::TaskId;
+
+    use crate::mr_clones::{MrClone, MrClones};
+    use crate::tasks::TaskIndex;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.db");
+    let index = TaskIndex::open(&path).unwrap();
+    let reader = Reader::open(&path).unwrap();
+    let id: TaskId = "k3q7zm2a".parse().unwrap();
+    let key = "acme/shop#412";
+    assert_eq!(reader.mr_clones(&id, key).unwrap(), MrClones::default());
+    let clone = |path: &str, remote: &str| MrClone {
+        path: PathBuf::from(path),
+        remote: remote.to_owned(),
+    };
+    let clones = MrClones {
+        clone: Some(clone("/work/shop", "upstream")),
+        retired: vec![clone("/old/b", "origin"), clone("/old/a", "origin")],
+    };
+    index.set_mr_clones(&id, key, &clones).unwrap();
+    let mut sorted = clones;
+    sorted.retired.reverse();
+    assert_eq!(reader.mr_clones(&id, key).unwrap(), sorted);
+    // Another MR of the task, or another task, is apart.
+    assert_eq!(
+        reader.mr_clones(&id, "acme/shop#413").unwrap(),
+        MrClones::default()
+    );
+    // A retired clone that comes back is one row.
+    let back = MrClones {
+        clone: Some(clone("/old/a", "origin")),
+        retired: vec![clone("/work/shop", "upstream")],
+    };
+    index.set_mr_clones(&id, key, &back).unwrap();
+    assert_eq!(reader.mr_clones(&id, key).unwrap(), back);
+    index.set_mr_clones(&id, key, &MrClones::default()).unwrap();
+    assert_eq!(reader.mr_clones(&id, key).unwrap(), MrClones::default());
+    let rows: i64 = reader
+        .conn
+        .query_row("SELECT count(*) FROM mr_clones", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+#[test]
+fn a_database_of_the_last_version_gets_the_table_of_the_clones() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_with(&mut conn, Path::new("mem"), migrations_up_to(8)).unwrap();
+    let missing = conn.query_row("SELECT count(*) FROM mr_clones", [], |row| {
+        row.get::<_, i64>(0)
+    });
+    assert!(missing.is_err());
+    migrate_with(&mut conn, Path::new("mem"), migrations_up_to(9)).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM mr_clones", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
 }

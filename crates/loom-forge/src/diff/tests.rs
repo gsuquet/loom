@@ -432,3 +432,18 @@ fn a_reduced_patch_over_the_limit_only_lists_its_files() {
     assert_eq!(hashes.len(), 2);
     assert!(hashes.iter().all(|file| file.hash.is_none()));
 }
+
+#[test]
+fn a_gitlab_diff_that_is_not_a_patch_has_no_hash() {
+    let parsed = crate::gitlab::parse_diffs(include_bytes!(
+        "../../../../fixtures/forge/gitlab/merge-request-diffs.binary.json"
+    ))
+    .unwrap();
+    assert_eq!(parsed[0].patch, None);
+    assert!(!parsed[0].too_large);
+    // A text diff next to it keeps its patch.
+    assert!(parsed[1].patch.is_some());
+    let reduced = reduced_patch(&parsed);
+    assert_eq!(file_hashes(&reduced)[0].hash, None);
+    assert_eq!(since_last_review(&reduced, &reduced), ["logo.png"]);
+}

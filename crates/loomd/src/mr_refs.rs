@@ -21,10 +21,6 @@ use crate::review_sync::{VersionRecord, review_key};
 
 /// The directory of the patches in an MR mirror.
 pub const DIFFS_DIR: &str = "diffs";
-/// The field of `mr.json` that keeps the clone chosen.
-const CLONE_FIELD: &str = "clone";
-/// The field of `mr.json` that lists the clones whose refs may still be there.
-const RETIRED_FIELD: &str = "retired_clones";
 /// The largest patch that a mirror keeps. The store and its backup hold each patch, in a git
 /// history that keeps it: over this, the version falls back to the patches of the forge.
 pub const PATCH_CAP: usize = 5 * 1024 * 1024;
@@ -34,14 +30,7 @@ pub const MR_CAP: usize = 50 * 1024 * 1024;
 /// limit of the backoff of automatic updates, 8 times the interval.
 const MAX_SKIPPED_POLLS: u32 = 7;
 
-/// The clone that holds the refs of an MR (`clone` in `mr.json`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MrClone {
-    /// The working tree where git runs.
-    pub path: PathBuf,
-    /// The remote that names the target project of the MR.
-    pub remote: String,
-}
+pub use loom_store::mr_clones::{MrClone, MrClones};
 
 /// Where the patch of a version comes from (`diff` in `versions.json`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,16 +44,6 @@ pub enum DiffKind {
     /// the forge (or their list) after a note; an older version has the note alone.
     #[serde(rename = "reduced_too_large")]
     TooLarge,
-}
-
-/// The clones of an MR in `mr.json`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MrClones {
-    /// The clone chosen.
-    pub clone: Option<MrClone>,
-    /// The clones that held its refs before. Each stays listed until its refs are deleted, so
-    /// that the cleanup still knows the path when no clone replaces it.
-    pub retired: Vec<MrClone>,
 }
 
 /// The clones after the choice of `chosen`. Pure.
@@ -99,9 +78,44 @@ pub const fn needs_refs(plan: DiffPlan, same_clone: bool, head_ref_present: bool
 #[must_use]
 pub const fn stops_the_endpoint(problem: RemoteProblem) -> bool {
     match problem {
-        RemoteProblem::SshAuth | RemoteProblem::HttpsAuth | RemoteProblem::Network => true,
-        RemoteProblem::NotFound | RemoteProblem::Other => false,
+        RemoteProblem::SshAuth | RemoteProblem::Network => true,
+        // An HTTP 401 or 403 can be of one project on a host that serves the others.
+        RemoteProblem::HttpsAuth | RemoteProblem::NotFound | RemoteProblem::Other => false,
     }
+}
+
+/// Whether a failure of git with `problem` is one that the next MRs of its clone would meet too:
+/// they fetch from the same remote. Pure.
+#[must_use]
+pub const fn stops_the_clone(problem: RemoteProblem) -> bool {
+    match problem {
+        RemoteProblem::HttpsAuth | RemoteProblem::NotFound => true,
+        RemoteProblem::SshAuth | RemoteProblem::Network | RemoteProblem::Other => false,
+    }
+}
+
+/// Where the cleanup of an MR looks: its `known` clones, then each indexed clone of the project.
+/// So a choice that a new `index.db` lost still finds the refs of a clone in the index. Pure.
+#[must_use]
+pub fn clones_to_clean(
+    known: &MrClones,
+    candidates: &[CloneCandidate<'_>],
+    host: &str,
+    project: &str,
+) -> Vec<MrClone> {
+    let mut clones: Vec<MrClone> = known.clone.iter().chain(&known.retired).cloned().collect();
+    for candidate in candidates {
+        if let Some(remote) = project_remote(&candidate.repo.identity, host, project) {
+            let clone = MrClone {
+                path: candidate.repo.identity.path.clone(),
+                remote: remote.to_owned(),
+            };
+            if !clones.contains(&clone) {
+                clones.push(clone);
+            }
+        }
+    }
+    clones
 }
 
 /// The backoff of one MR after a failure that is its own, counted in polls: no clock, and it
@@ -391,6 +405,8 @@ pub const fn diff_plan(
 pub struct VersionDiff {
     /// The head of the version.
     pub head: Sha,
+    /// The base of the version that this diff was made for.
+    pub base: Sha,
     /// The merge base that git computed; `None` for a patch of the forge.
     pub merge_base: Option<Sha>,
     /// Where the patch comes from.
@@ -414,11 +430,28 @@ pub struct DiffRecord {
     pub diffs: Vec<VersionDiff>,
 }
 
+/// The `diffs` whose version is in `versions` with the same base: a retarget during the work of
+/// a diff makes it a diff of the old base, and the next poll makes the right one. Pure.
+#[must_use]
+pub fn diffs_to_write<'a>(
+    versions: &[VersionRecord],
+    diffs: &'a [VersionDiff],
+) -> Vec<&'a VersionDiff> {
+    diffs
+        .iter()
+        .filter(|diff| {
+            versions.iter().any(|record| {
+                record.version.head_sha == diff.head && record.version.base_sha == diff.base
+            })
+        })
+        .collect()
+}
+
 /// `versions` with each of `diffs` recorded on its version. Pure.
 #[must_use]
 pub fn record_diffs(versions: &[VersionRecord], diffs: &[VersionDiff]) -> Vec<VersionRecord> {
     let mut versions = versions.to_vec();
-    for diff in diffs {
+    for diff in diffs_to_write(&versions.clone(), diffs) {
         if let Some(record) = versions
             .iter_mut()
             .find(|record| record.version.head_sha == diff.head)
@@ -431,66 +464,6 @@ pub fn record_diffs(versions: &[VersionRecord], diffs: &[VersionDiff]) -> Vec<Ve
         }
     }
     versions
-}
-
-/// The clones in the bytes of an `mr.json`. Pure.
-#[must_use]
-pub fn read_clones(mr_json: &[u8]) -> MrClones {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(mr_json) else {
-        return MrClones::default();
-    };
-    MrClones {
-        clone: value
-            .get(CLONE_FIELD)
-            .and_then(|clone| serde_json::from_value(clone.clone()).ok()),
-        retired: value
-            .get(RETIRED_FIELD)
-            .and_then(|retired| serde_json::from_value(retired.clone()).ok())
-            .unwrap_or_default(),
-    }
-}
-
-/// `snapshot`, a JSON object, with `clones` set: a field without a value is removed.
-///
-/// # Errors
-///
-/// The error of `serde_json`, which the model types never give.
-pub fn set_clones(
-    snapshot: &mut serde_json::Value,
-    clones: &MrClones,
-) -> Result<(), serde_json::Error> {
-    if let Some(object) = snapshot.as_object_mut() {
-        match &clones.clone {
-            Some(clone) => {
-                object.insert(CLONE_FIELD.to_owned(), serde_json::to_value(clone)?);
-            }
-            None => {
-                object.remove(CLONE_FIELD);
-            }
-        }
-        if clones.retired.is_empty() {
-            object.remove(RETIRED_FIELD);
-        } else {
-            object.insert(
-                RETIRED_FIELD.to_owned(),
-                serde_json::to_value(&clones.retired)?,
-            );
-        }
-    }
-    Ok(())
-}
-
-/// The bytes of an `mr.json` with `clones` set. Pure.
-///
-/// # Errors
-///
-/// The error of `serde_json` when the bytes are not a JSON object.
-pub fn with_clones(mr_json: &[u8], clones: &MrClones) -> Result<Vec<u8>, serde_json::Error> {
-    let mut snapshot: serde_json::Value = serde_json::from_slice(mr_json)?;
-    set_clones(&mut snapshot, clones)?;
-    let mut bytes = serde_json::to_vec_pretty(&snapshot)?;
-    bytes.push(b'\n');
-    Ok(bytes)
 }
 
 /// The name of the patch of the version whose head is `head`.

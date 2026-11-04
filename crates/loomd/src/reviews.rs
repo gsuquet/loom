@@ -35,7 +35,6 @@ use loom_forge::client::{
 use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, MrSummary, Sha, Thread};
 use loom_forge::{MrContexts, mr_context};
 use loom_repo::ContextRules;
-use loom_repo::update::UpdatePolicies;
 use loom_store::files::TASKS_DIR;
 use loom_store::{Reader, RepoFilter};
 use loomd::api::timestamp;
@@ -238,7 +237,6 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     let user_agent = format!("loomd/{}", VERSION_INFO.version);
     let (refs, refs_handle) = mr_worker::start(
         refs_runner(&credentials, &setup.children),
-        UpdatePolicies::new(config, &setup.user_home),
         setup.stores.clone(),
         Arc::clone(&setup.resolver),
         setup.tasks.clone(),

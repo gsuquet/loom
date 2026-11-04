@@ -8,7 +8,7 @@ use loom_forge::gitlab::parse_versions;
 use loom_forge::model::{MrKey, MrState, MrVersion, Sha};
 
 use super::*;
-use crate::mr_refs::{DiffKind, MrClones};
+use crate::mr_refs::DiffKind;
 
 const V1: &str = "7ebf283bfee25ab48f95c0c55181a4ca66b4c990";
 const V2: &str = "84280c47b6aa128c645b1fbea54aded8b32e8463";
@@ -407,7 +407,7 @@ fn a_new_github_review_is_new_even_while_the_last_one_is_shown() {
 fn versions_are_kept_oldest_first_and_completed() {
     let gitlab = parse_versions(&fixture("gitlab/merge-request-88-versions.json")).unwrap();
     assert_eq!(gitlab.len(), 2);
-    let versions = merge_versions(&[], &gitlab, at(100));
+    let versions = merge_versions(&[], &gitlab, MrState::Open, at(100));
     let heads: Vec<&str> = versions
         .iter()
         .map(|record| record.version.head_sha.as_str())
@@ -415,7 +415,10 @@ fn versions_are_kept_oldest_first_and_completed() {
     assert_eq!(heads, [V1, V2]);
     assert!(versions.iter().all(|record| record.first_seen == at(100)));
     // Seen again later: unchanged.
-    assert_eq!(merge_versions(&versions, &gitlab, at(200)), versions);
+    assert_eq!(
+        merge_versions(&versions, &gitlab, MrState::Open, at(200)),
+        versions
+    );
 
     // GitHub: one version per poll, without a merge base.
     let v1 = parse_pull(&fixture("github/pull-412.v1.json"))
@@ -424,8 +427,8 @@ fn versions_are_kept_oldest_first_and_completed() {
     let v2 = parse_pull(&fixture("github/pull-412.v2.json"))
         .unwrap()
         .version;
-    let first = merge_versions(&[], std::slice::from_ref(&v1), at(100));
-    let both = merge_versions(&first, std::slice::from_ref(&v2), at(200));
+    let first = merge_versions(&[], std::slice::from_ref(&v1), MrState::Open, at(100));
+    let both = merge_versions(&first, std::slice::from_ref(&v2), MrState::Open, at(200));
     assert_eq!(both.len(), 2);
     assert_eq!(both[0].first_seen, at(100));
     assert_eq!(both[1].version.head_sha, sha(V2));
@@ -435,8 +438,8 @@ fn versions_are_kept_oldest_first_and_completed() {
     let mut bare = gitlab[1].clone();
     bare.merge_base = None;
     bare.forge_version_id = None;
-    let known = merge_versions(&[], &[bare], at(100));
-    let completed = merge_versions(&known, &gitlab, at(200));
+    let known = merge_versions(&[], &[bare], MrState::Open, at(100));
+    let completed = merge_versions(&known, &gitlab, MrState::Open, at(200));
     assert_eq!(completed[0].version, gitlab[1]);
     assert_eq!(completed[0].first_seen, at(100));
 }
@@ -516,14 +519,19 @@ fn the_clone_of_a_project_is_the_most_recently_used_then_the_shortest_path() {
 #[test]
 fn the_mirror_round_trips_and_keeps_the_description_apart() {
     let mr = parse_pull(&fixture("github/pull-412.v2.json")).unwrap();
-    let versions = merge_versions(&[], std::slice::from_ref(&mr.version), at(100));
+    let versions = merge_versions(
+        &[],
+        std::slice::from_ref(&mr.version),
+        MrState::Open,
+        at(100),
+    );
     let state = SyncState {
         v: SyncState::VERSION,
         requested: true,
         verdict: None,
         shown: false,
     };
-    let files = mirror(&mr, &MrClones::default(), &versions, None, &state).unwrap();
+    let files = mirror(&mr, &versions, None, &state).unwrap();
     let snapshot: serde_json::Value = serde_json::from_slice(&files.mr).unwrap();
     assert!(snapshot.get("description").is_none());
     assert_eq!(files.description, mr.description.as_bytes());
@@ -533,29 +541,9 @@ fn the_mirror_round_trips_and_keeps_the_description_apart() {
     assert_eq!(read_mr(&files.mr, &mr.description), Some(mr.clone()));
     assert_eq!(read_mr(b"{", ""), None);
     // The same input gives the same bytes: an unchanged MR writes nothing.
-    assert_eq!(
-        mirror(&mr, &MrClones::default(), &versions, None, &state).unwrap(),
-        files
-    );
+    assert_eq!(mirror(&mr, &versions, None, &state).unwrap(), files);
     let read: SyncState = serde_json::from_slice(&files.sync).unwrap();
     assert_eq!(read, state);
-
-    // A poll keeps the clone that the worker chose, byte for byte.
-    let clone = crate::mr_refs::MrClone {
-        path: PathBuf::from("/work/shop"),
-        remote: "upstream".to_owned(),
-    };
-    let clones = MrClones {
-        clone: Some(clone),
-        retired: Vec::new(),
-    };
-    let with = mirror(&mr, &clones, &versions, None, &state).unwrap();
-    assert_eq!(
-        crate::mr_refs::with_clones(&files.mr, &clones).unwrap(),
-        with.mr
-    );
-    assert_eq!(crate::mr_refs::read_clones(&with.mr), clones);
-    assert_eq!(read_mr(&with.mr, &mr.description), Some(mr.clone()));
 
     let key = MrKey::parse("acme/shop#412").unwrap();
     assert_eq!(
@@ -656,15 +644,15 @@ fn base_version(head: &str, base: &str, merge_base: Option<&str>) -> MrVersion {
 
 #[test]
 fn a_new_base_with_the_same_head_asks_for_a_new_diff() {
-    let mut known = merge_versions(&[], &[base_version(V1, V2, Some(V2))], at(1));
+    let mut known = merge_versions(&[], &[base_version(V1, V2, Some(V2))], MrState::Open, at(1));
     known[0].diff = Some(DiffKind::Local);
     // The same base: nothing changes.
     assert_eq!(
-        merge_versions(&known, &[base_version(V1, V2, None)], at(2)),
+        merge_versions(&known, &[base_version(V1, V2, None)], MrState::Open, at(2)),
         known
     );
     // Retargeted: the record of the diff and its merge base are of the old base.
-    let moved = merge_versions(&known, &[base_version(V1, V1, None)], at(3));
+    let moved = merge_versions(&known, &[base_version(V1, V1, None)], MrState::Open, at(3));
     assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].version.base_sha, sha(V1));
     assert_eq!(moved[0].version.merge_base, None);
@@ -683,18 +671,18 @@ fn two_forge_versions_of_one_head_count_as_the_newest_one() {
         ..base_version(V1, V1, Some(V1))
     };
     let seen = [newer, older];
-    let first = merge_versions(&[], &seen, at(1));
+    let first = merge_versions(&[], &seen, MrState::Open, at(1));
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].version.base_sha, sha(V1));
     let mut done = first;
     done[0].diff = Some(DiffKind::Local);
     // A poll that lists both again keeps the record of the diff.
-    assert_eq!(merge_versions(&done, &seen, at(2)), done);
+    assert_eq!(merge_versions(&done, &seen, MrState::Open, at(2)), done);
 }
 
 #[test]
 fn the_current_version_is_added_when_the_forge_list_lacks_it() {
-    let known = merge_versions(&[], &[base_version(V1, V2, None)], at(1));
+    let known = merge_versions(&[], &[base_version(V1, V2, None)], MrState::Open, at(1));
     // GitLab lists the versions after a background job: the head comes first.
     let added = merge_current(known.clone(), &base_version(V2, V1, Some(V1)), at(2));
     assert_eq!(added.len(), 2);
@@ -704,5 +692,26 @@ fn the_current_version_is_added_when_the_forge_list_lacks_it() {
     assert_eq!(
         merge_current(known.clone(), &base_version(V1, V1, Some(V1)), at(3)),
         known
+    );
+}
+
+#[test]
+fn a_merged_or_closed_mr_keeps_the_diff_of_its_last_base() {
+    let mut known = merge_versions(&[], &[base_version(V1, V2, Some(V2))], MrState::Open, at(1));
+    known[0].diff = Some(DiffKind::Local);
+    // A merge moves the base that the forge shows, and nothing diffs a merged MR again.
+    let moved = [base_version(V1, V1, Some(V1))];
+    assert_eq!(
+        merge_versions(&known, &moved, MrState::Merged, at(2)),
+        known
+    );
+    assert_eq!(
+        merge_versions(&known, &moved, MrState::Closed, at(2)),
+        known
+    );
+    // Open again: the new base counts.
+    assert_eq!(
+        merge_versions(&known, &moved, MrState::Open, at(3))[0].diff,
+        None
     );
 }

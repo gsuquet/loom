@@ -21,7 +21,7 @@ use loom_store::port::TaskLocation;
 use loom_store::tasks::IndexedState;
 use serde::{Deserialize, Serialize};
 
-use crate::mr_refs::{DiffKind, MrClones, set_clones};
+use crate::mr_refs::DiffKind;
 use crate::schedule::{backoff, jittered};
 
 /// The directory of the MR mirrors in a task directory.
@@ -337,12 +337,14 @@ pub struct VersionRecord {
 ///
 /// A known version gets the merge base and the forge version ID that it lacked (GitLab gives
 /// them); the rest of it is kept. A known head with a new base (the MR is retargeted) gets that
-/// base, and loses its merge base and the record of its diff: they are of the old base. Two
+/// base, and loses its merge base and the record of its diff: they are of the old base, except
+/// on a merged or closed MR, whose base moves without a new diff. Two
 /// versions of one head count as the newest. Pure.
 #[must_use]
 pub fn merge_versions(
     known: &[VersionRecord],
     seen: &[MrVersion],
+    state: MrState,
     now: Timestamp,
 ) -> Vec<VersionRecord> {
     let mut versions = known.to_vec();
@@ -364,7 +366,12 @@ pub fn merge_versions(
             .iter_mut()
             .find(|record| record.version.head_sha == version.head_sha)
         {
-            if record.version.base_sha != version.base_sha {
+            // A merged or closed MR gets no new diff, so the record of the last one stays.
+            let open = match state {
+                MrState::Open => true,
+                MrState::Merged | MrState::Closed => false,
+            };
+            if open && record.version.base_sha != version.base_sha {
                 record.version.base_sha = version.base_sha.clone();
                 record.version.merge_base.clone_from(&version.merge_base);
                 record.diff = None;
@@ -570,15 +577,14 @@ impl Mirror {
     }
 }
 
-/// The mirror files of `mr`, with the `clones` that the worker chose, its `versions`, its
-/// `threads` when pulled (sorted) and the sync `state`. Pure.
+/// The mirror files of `mr`, with its `versions`, its `threads` when pulled (sorted) and the
+/// sync `state`. Pure.
 ///
 /// # Errors
 ///
 /// The serialization error, which the model types never give.
 pub fn mirror(
     mr: &Mr,
-    clones: &MrClones,
     versions: &[VersionRecord],
     threads: Option<&[Thread]>,
     state: &SyncState,
@@ -588,8 +594,6 @@ pub fn mirror(
         // In `description.md`.
         object.remove("description");
     }
-    // The poll knows nothing of the clone: without this, each poll would undo the choice.
-    set_clones(&mut snapshot, clones)?;
     let threads = threads
         .map(|threads| {
             let mut threads = threads.to_vec();

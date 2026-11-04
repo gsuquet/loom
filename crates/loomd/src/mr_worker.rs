@@ -8,15 +8,13 @@
 //! nothing new starts no git command.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::OpenOptions;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use loom_api::{ContextName, ForgeKind, RemoteProblem, RepoSummary, TaskId};
+use loom_api::{ContextName, ForgeKind, RepoSummary, TaskId};
 use loom_forge::client::{
     Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient, GitlabForge as _,
     GitlabMr,
@@ -24,21 +22,22 @@ use loom_forge::client::{
 use loom_forge::diff::reduced_patch_within;
 use loom_forge::model::{FileDiff, Mr, MrForgeIds, MrKey, MrState, Sha};
 use loom_repo::remote_endpoint;
-use loom_repo::update::UpdatePolicies;
-use loom_store::files::{ARCHIVE_DIR, TASKS_DIR};
-use loom_store::port::TaskLocation;
+use loom_store::files::TASKS_DIR;
 use loom_store::{Reader, RepoFilter};
 use loomd::forge::check::ForgeTarget;
 use loomd::forge::token::TokenResolver;
+#[cfg(debug_assertions)]
 use loomd::hooks;
+use loomd::mr_refs::ReviewRow;
 use loomd::mr_refs::git::{
-    Reviewed, Step, clone_candidates, delete_refs, fetch_mr, has_head_ref, is_off, set_reviewed,
+    Reviewed, Step, clone_candidates, delete_refs, fetch_mr, has_head_ref, set_reviewed,
     version_diff,
 };
 use loomd::mr_refs::{
     DIFFS_DIR, DiffKind, DiffPlan, DiffRecord, MrClone, MrClones, Retry, VersionDiff, choose_clone,
-    diff_plan, needs_refs, next_clones, patch_budget, patch_name, patch_path, read_clones,
-    refs_to_clean, remote_names_other_project, review_rows, stops_the_endpoint, too_large_note,
+    clones_to_clean, diff_plan, needs_refs, next_clones, patch_budget, patch_name, patch_path,
+    refs_to_clean, remote_names_other_project, review_rows, stops_the_clone, stops_the_endpoint,
+    too_large_note,
 };
 use loomd::repo_update::GitRunner;
 use loomd::review_sync::{
@@ -91,7 +90,6 @@ impl MrWorker {
 /// Starts the worker thread.
 pub fn start(
     runner: GitRunner,
-    policies: UpdatePolicies,
     stores: BTreeMap<ContextName, PathBuf>,
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
@@ -102,7 +100,6 @@ pub fn start(
     let worker = Worker {
         stopping: Arc::clone(&stopping),
         runner,
-        policies,
         stores,
         resolver,
         tasks,
@@ -110,11 +107,6 @@ pub fn start(
         reviewed: HashMap::new(),
         cleaned: HashSet::new(),
         retries: HashMap::new(),
-        pass_file: std::env::var(hooks::MR_PASS_FILE_ENV)
-            .ok()
-            .as_deref()
-            .and_then(|value| hooks::mr_pass_file(Some(value)))
-            .map(Path::to_path_buf),
     };
     let thread = thread::Builder::new()
         .name("mr-refs".to_owned())
@@ -134,8 +126,6 @@ pub fn start(
 struct Worker {
     stopping: Arc<AtomicBool>,
     runner: GitRunner,
-    /// A repository with the policy `off` gets no git command.
-    policies: UpdatePolicies,
     stores: BTreeMap<ContextName, PathBuf>,
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
@@ -148,8 +138,6 @@ struct Worker {
     cleaned: HashSet<TaskId>,
     /// The MRs whose last work failed. In memory: a restart tries each once more.
     retries: HashMap<TaskId, Backoff>,
-    /// The file of the test hook.
-    pass_file: Option<PathBuf>,
 }
 
 /// What is known not to work for the rest of a pass, since each try could wait for a timeout.
@@ -165,7 +153,6 @@ struct Down {
 struct MirrorRead {
     dir: PathBuf,
     mr: Mr,
-    clones: MrClones,
     versions: Vec<VersionRecord>,
     state: Option<SyncState>,
 }
@@ -175,7 +162,6 @@ fn read_mirror(dir: PathBuf) -> Option<MirrorRead> {
     let read_json = |name: &str| std::fs::read(dir.join(name)).ok();
     Some(MirrorRead {
         mr: read_mr(&mr_json, "")?,
-        clones: read_clones(&mr_json),
         versions: read_json(VERSIONS_FILE)
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default(),
@@ -220,12 +206,19 @@ impl Worker {
         }
     }
 
-    /// The test hook: one line for each poll that the pass served.
+    /// The test hook: one line for each poll that the pass served. Not in a release build.
+    #[cfg(debug_assertions)]
+    #[expect(
+        clippy::unused_self,
+        reason = "the release build has it as a method too"
+    )]
     fn signal_pass(&self, polls: usize) {
-        let Some(path) = &self.pass_file else {
+        use std::io::Write as _;
+
+        let Some(path) = std::env::var_os(hooks::MR_PASS_FILE_ENV) else {
             return;
         };
-        let written = OpenOptions::new()
+        let written = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
@@ -235,6 +228,9 @@ impl Worker {
         }
     }
 
+    #[cfg(not(debug_assertions))]
+    const fn signal_pass(&self, _polls: usize) {}
+
     /// One pass over the Review tasks of `target`.
     fn pass(&mut self, target: &ForgeTarget) {
         let span = info_span!("reviews.refs", context = %target.context, host = %target.host);
@@ -243,62 +239,73 @@ impl Worker {
             let repos = reader.list(&RepoFilter::default())?;
             // Each context: refs are per clone, and another context can have a task of the MR.
             let rows = reader.tasks(None)?;
-            Ok((repos, rows))
+            Ok((reader, repos, rows))
         });
-        let (repos, rows) = match read {
+        let (reader, repos, rows) = match read {
             Ok(read) => read,
             Err(error) => {
                 warn!(%error, "cannot read the index, MR refs wait for the next poll");
                 return;
             }
         };
-        self.clean(target, &repos, &review_rows(&rows));
+        self.clean(target, &reader, &repos, &review_rows(&rows));
         let mut down = Down::default();
         for (id, key, _) in tracked_reviews(&rows, &target.context, &target.host) {
             if self.stopping() {
                 return;
             }
-            self.review(target, &repos, &id, &key, &mut down);
+            self.review(target, &reader, &repos, &id, &key, &mut down);
         }
     }
 
-    /// Deletes the refs of the archived tasks of `target`.
+    /// Deletes the refs of the archived tasks of `target`, then forgets their clones.
     fn clean(
         &mut self,
         target: &ForgeTarget,
+        reader: &Reader,
         repos: &[RepoSummary],
-        rows: &[loomd::mr_refs::ReviewRow],
+        rows: &[ReviewRow],
     ) {
-        let Some(root) = self.stores.get(&target.context).cloned() else {
-            return;
-        };
         for row in refs_to_clean(rows, &target.context, &target.host) {
             if self.cleaned.contains(&row.id) || self.stopping() {
                 continue;
             }
-            let TaskLocation::Archived(year) = row.location else {
-                continue;
+            let key = row.key.to_string();
+            let known = match reader.mr_clones(&row.id, &key) {
+                Ok(known) => known,
+                Err(error) => {
+                    warn!(key, %error, "cannot read the clones of an MR");
+                    continue;
+                }
             };
-            let task_dir = root
-                .join(ARCHIVE_DIR)
-                .join(format!("{year:04}"))
-                .join(row.id.as_str());
-            let clones = std::fs::read(mirror_dir(&task_dir, &row.key).join(MR_FILE))
-                .map(|bytes| read_clones(&bytes))
-                .unwrap_or_default();
+            let project = row.key.project();
+            let candidates = clone_candidates(repos, &target.host, project);
+            let clones = clones_to_clean(&known, &candidates, &target.host, project);
             let mut done = true;
-            for clone in clones.clone.iter().chain(&clones.retired) {
+            for clone in &clones {
                 done &= self.drop_refs(repos, clone, &row.key, &target.host);
             }
-            if done {
-                self.cleaned.insert(row.id.clone());
+            if !done {
+                continue;
+            }
+            self.cleaned.insert(row.id.clone());
+            if known != MrClones::default() {
+                let forget = DiffRecord {
+                    context: row.context.clone(),
+                    id: row.id.clone(),
+                    key: row.key.clone(),
+                    clones: MrClones::default(),
+                    diffs: Vec::new(),
+                };
+                if let Some(Err(error)) = self.tasks.record_mr_diffs(forget) {
+                    warn!(key, %error, "cannot forget the clones of an archived task");
+                }
             }
         }
     }
 
     /// Deletes the refs of `key` in `clone`, which no longer uses them. `true` when nothing is
-    /// left to do: otherwise the next poll tries again. A repository with the policy `off` gets
-    /// no git command, so its refs wait until the policy changes.
+    /// left to do: otherwise the next poll tries again.
     fn drop_refs(
         &mut self,
         repos: &[RepoSummary],
@@ -306,14 +313,7 @@ impl Worker {
         key: &MrKey,
         host: &str,
     ) -> bool {
-        if !clone.path.is_dir() {
-            return true;
-        }
-        let indexed = repos.iter().find(|repo| repo.identity.path == clone.path);
-        if indexed.is_some_and(|repo| is_off(repo, &self.policies)) {
-            return false;
-        }
-        if remote_names_other_project(repos, clone, host, key.project()) {
+        if !clone.path.is_dir() || remote_names_other_project(repos, clone, host, key.project()) {
             return true;
         }
         let number = key.number();
@@ -338,6 +338,7 @@ impl Worker {
     fn review(
         &mut self,
         target: &ForgeTarget,
+        reader: &Reader,
         repos: &[RepoSummary],
         id: &TaskId,
         key: &MrKey,
@@ -355,6 +356,13 @@ impl Worker {
         if mirror.mr.state != MrState::Open {
             return;
         }
+        let known = match reader.mr_clones(id, &key.to_string()) {
+            Ok(known) => known,
+            Err(error) => {
+                warn!(%key, %error, "cannot read the clones of an MR");
+                return;
+            }
+        };
         let head = mirror.mr.version.head_sha.clone();
         let recorded = mirror
             .versions
@@ -362,14 +370,14 @@ impl Worker {
             .find(|record| record.version.head_sha == head)
             .and_then(|record| record.diff);
         let patch_exists = patch_path(&mirror.dir, &head).is_file();
-        let candidates = clone_candidates(repos, &target.host, key.project(), &self.policies);
+        let candidates = clone_candidates(repos, &target.host, key.project());
         let chosen = choose_clone(
-            mirror.clones.clone.as_ref(),
+            known.clone.as_ref(),
             &candidates,
             &target.host,
             key.project(),
         );
-        let mut clones = next_clones(&mirror.clones, chosen);
+        let mut clones = next_clones(&known, chosen);
         let mut retired = std::mem::take(&mut clones.retired);
         retired.retain(|old| !self.drop_refs(repos, old, key, &target.host));
         clones.retired = retired;
@@ -379,7 +387,7 @@ impl Worker {
             patch_exists,
             clones.clone.is_some(),
         );
-        let same_clone = clones.clone == mirror.clones.clone;
+        let same_clone = clones.clone == known.clone;
         let refs_only = clones.clone.as_ref().is_some_and(|clone| {
             // A read for each open MR at each poll: refs can go without loom knowing.
             let present = plan != DiffPlan::Keep
@@ -416,7 +424,7 @@ impl Worker {
         if let Some(clone) = &clones.clone {
             self.keep_reviewed(clone, key, mirror.state.as_ref());
         }
-        if clones == mirror.clones && diffs.is_empty() {
+        if clones == known && diffs.is_empty() {
             return;
         }
         let record = DiffRecord {
@@ -500,16 +508,15 @@ impl Worker {
                 debug!(%key, "a git process holds a lock, the MR is fetched at the next poll");
                 Fetched::Waits
             }
-            Step::Failed { error, problem } if stops_the_endpoint(problem) => {
-                warn!(%key, %error, problem = problem.as_str(), "cannot fetch an MR, the other MRs of its endpoint wait for the next poll");
-                down.git.insert(endpoint);
-                Fetched::Waits
-            }
             Step::Failed { error, problem } => {
                 warn!(%key, %error, problem = problem.as_str(), "cannot fetch an MR, tried again later");
-                if matches!(problem, RemoteProblem::NotFound) {
+                if stops_the_endpoint(problem) {
+                    down.git.insert(endpoint);
+                } else if stops_the_clone(problem) {
                     down.git.insert(clone_key);
                 }
+                // Also for a failure of its host: it can be of this project alone, and with no
+                // backoff this MR would come first at each poll and hold back the ones after it.
                 self.failed(work);
                 Fetched::Failed
             }
@@ -554,6 +561,7 @@ impl Worker {
                     used = used.saturating_add(diff.patch.len() as u64);
                     diffs.push(VersionDiff {
                         head: version.head_sha.clone(),
+                        base: version.base_sha.clone(),
                         merge_base: Some(diff.merge_base),
                         kind: DiffKind::Local,
                         patch: diff.patch,
@@ -567,6 +575,7 @@ impl Worker {
                         // The forge gives only its current head: a note says why no patch.
                         diffs.push(VersionDiff {
                             head: version.head_sha.clone(),
+                            base: version.base_sha.clone(),
                             merge_base: Some(diff.merge_base),
                             kind: DiffKind::TooLarge,
                             patch: too_large_note(limit),
@@ -588,6 +597,7 @@ impl Worker {
                     noted.extend(patch);
                     diffs.push(VersionDiff {
                         head: head.clone(),
+                        base: work.head_base().clone(),
                         merge_base: Some(merge_base),
                         kind: DiffKind::TooLarge,
                         patch: noted,
@@ -615,7 +625,7 @@ impl Worker {
 
     /// The patch of an MR without a clone.
     fn reduced_diff(&mut self, work: &Work<'_>, down: &mut Down) -> Vec<VersionDiff> {
-        if down.forge || !self.due(work) {
+        if !self.due(work) {
             return Vec::new();
         }
         let version = self.reduced_version(work, down);
@@ -633,6 +643,7 @@ impl Worker {
         let limit = patch_budget(patches_size(dir, head));
         Some(VersionDiff {
             head: head.clone(),
+            base: work.head_base().clone(),
             merge_base: None,
             kind: DiffKind::Reduced,
             patch: self.forge_patch(work, limit, down)?,
@@ -701,6 +712,18 @@ struct Work<'a> {
     mirror: &'a MirrorRead,
     recorded: Option<DiffKind>,
     patch_exists: bool,
+}
+
+impl Work<'_> {
+    /// The base of the current head, as `versions.json` has it: a list of the forge decides.
+    fn head_base(&self) -> &Sha {
+        let current = &self.mirror.mr.version;
+        self.mirror
+            .versions
+            .iter()
+            .find(|record| record.version.head_sha == current.head_sha)
+            .map_or(&current.base_sha, |record| &record.version.base_sha)
+    }
 }
 
 /// The backoff of the head and the base of one MR.

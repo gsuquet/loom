@@ -18,7 +18,7 @@ If several clones or worktrees have such a remote, `loomd` uses this order:
 2. The main worktree of that clone.
 3. The shortest path.
 
-`loomd` keeps the choice in the `clone` field of `mr.json`. The choice changes only when that clone is gone from the disk or from the index, or no longer has a remote of the project.
+`loomd` keeps the choice in `index.db`, on this machine. It is a path of this machine, so it is never in a context store. The choice changes only when that clone is gone from the disk or from the index, or no longer has a remote of the project. `loom reindex` keeps the choice. If you delete `index.db`, the next poll makes the choice again by the same rule.
 
 ## When loomd fetches
 
@@ -28,15 +28,16 @@ This step has its own failures:
 
 - A git failure does not fail, delay or change the mirror sync. `loomd` writes the failure to its log.
 - A lock of another git process is not a failure. `loomd` does not remove the lock, and the next poll does the work again.
-- An authentication or network failure stops the other MRs of that endpoint until the next poll. Each of them could wait for the full timeout. A remote that is gone stops the other MRs of that clone in the same way.
-- Any other failure, such as a head that the remote does not have, stops only its MR. That MR uses the patches of the forge. Its next tries occur less frequently: the wait doubles, to a maximum of 8 polls.
+- An SSH authentication failure or a network failure stops the other MRs of that endpoint until the next poll. Each of them could wait for the full timeout.
+- An HTTP refusal (`401`, `403`) or a remote that is gone stops the other MRs of that clone until the next poll. Other projects on the same host can still answer.
+- After any of these failures, and after any other failure such as a timeout or a head that the remote does not have, the MR uses the patches of the forge. Its next tries occur less frequently: the wait doubles, to a maximum of 8 polls. Thus, one MR cannot hold back the MRs after it at each poll.
 - If the remote no longer has the base branch, the head comes alone. The diff uses the base commit of the version.
 
 A poll that finds no new head starts no fetch and no diff. It starts one `git rev-parse` for each open MR, because you can delete the refs. If the refs are not there, or the clone changed, the next poll fetches them again. `loomd` fetches only for tasks that exist. The merged and closed MRs get no new diff.
 
-## Repositories with the policy `off`
+## The `update` policy
 
-The `update = "off"` policy means no git command. A repository with this policy is not a choice for an MR. If no other clone is available, the MR uses the patches of the forge. Refs that the repository already has stay until you change the policy.
+The `update` policy governs automatic updates only. Thus, `update = "off"` stops the updates of a repository and does not stop the fetches of MR refs. These fetches move no branch, and they run only for tasks that exist.
 
 ## What the fetch writes in your clone
 
@@ -105,15 +106,17 @@ If a clone comes later, the next poll replaces the reduced patch of the current 
 
 ## Cleanup
 
-After a task is archived, the next poll of its context and host deletes its refs with `git update-ref -d`. Only the three refs of that MR go. The patches stay in the archived task. If the remote now names another project, its refs stay, because they can be of another MR. A repository with the policy `off` keeps its refs.
+After a task is archived, the next poll of its context and host deletes its refs with `git update-ref -d`. Only the three refs of that MR go. The patches stay in the archived task. If the remote now names another project, its refs stay, because they can be of another MR.
 
-When another clone replaces the clone of an MR, the old clone loses its refs. Until then, `retired_clones` in `mr.json` keeps its path.
+When another clone replaces the clone of an MR, the old clone loses its refs. Until then, `index.db` keeps its path.
+
+The cleanup also looks in each clone of the project in the index. Thus, a task archived after you deleted `index.db` still loses its refs in these clones.
 
 The refs stay when an active Review task of any context has the same MR, because a clone has one set of refs for each MR. If a lock or a failure stops the deletion, the next poll does it again. After a restart, `loomd` looks at each archived task one more time.
 
 ## Limits
 
-- A clone that this machine does not have is not a choice. If two machines poll one context, each one can write its own clone to `mr.json`. Set `machines` on the context, so that one machine polls it.
+- If you delete `index.db`, or a clone leaves the index, refs in a clone that is not in the index stay. Delete them with `git update-ref -d`.
 - Your last verdict gives the `reviewed` ref. If you never gave a verdict on a version, `git gc` can remove its commit after a force push. Its patch stays.
 - `.git/info/attributes` still changes a patch: git has no option to ignore it.
 - The mode of a new or deleted file with hunks does not count in the hash, because the forges do not give it. For the same reason, a mode change next to hunks counts as a change between a local and a reduced patch.

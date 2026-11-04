@@ -35,6 +35,8 @@ One merge request, the same on both forges, with a force push between two versio
 
 `github/pull-files.moves.json` and `gitlab/merge-request-diffs.moves.json` hold the per-file patches of one more diff, on M1: `src/new.rs` added, `src/auth/mod.rs` deleted, `README.md` renamed to `docs/README.md` without a change, `src/api/login.rs` renamed to `src/api/signin.rs` with one changed line. `crates/loomd/tests/mr_refs.rs` makes the same commit and compares the hashes.
 
+`gitlab/merge-request-diffs.binary.json` has a body that is not a patch, next to one that is. The text of the first is composed, not captured: loom only reads whether the body starts with `@@`.
+
 ## GitHub (`github/`)
 
 Host `github.com`, API `https://api.github.com`, repository `acme/shop`, pull request #412 (node `PR_kwDOAAATic4AA9-c`).

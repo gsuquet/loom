@@ -29,14 +29,6 @@ pub const MR_PASS_FILE_ENV: &str = "LOOM_TEST_MR_PASS_FILE";
 /// GraphQL endpoint is `<base>/graphql`.
 pub const FORGE_API_ENV: &str = "LOOM_TEST_FORGE_API";
 
-/// The file of [`MR_PASS_FILE_ENV`]: `None` when unset or empty, or in a release build.
-#[must_use]
-pub fn mr_pass_file(value: Option<&str>) -> Option<&Path> {
-    value
-        .filter(|value| !value.is_empty() && cfg!(debug_assertions))
-        .map(Path::new)
-}
-
 /// The API base of `host` in the hook variable: `None` when unset or empty, when a list does
 /// not name the host, or in a release build.
 #[must_use]

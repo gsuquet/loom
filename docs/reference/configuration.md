@@ -128,7 +128,7 @@ kind = "gitlab"
 | `[contexts.<name>] color` | string: ANSI color | none | Color of the context badge in the [TUI](tui.md#context-colors). `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `bright_black`, `bright_red`, `bright_green`, `bright_yellow`, `bright_blue`, `bright_magenta`, `bright_cyan`, `bright_white`. |
 | `[contexts.<name>] match.paths` | array of strings: paths | none | At least one entry when given. Each entry is absolute, `~` or starts with `~/`; `..` is not allowed. |
 | `[contexts.<name>] match.hosts` | array of strings | none | At least one entry when given. Each entry is `host` or `host/path-prefix`: a lowercase host name (ASCII letters, digits, `-`, `.`) without scheme, user or port, then path segments that are not empty and contain no space. A `/` at the end is ignored. |
-| `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no git command. |
+| `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no automatic update runs a git command. The fetches of MR refs do not read this key: see [MR refs and diffs](../explanation/mr-refs.md). |
 | `[contexts.<name>] store.path` | string: path | `<loom home>/contexts/<name>` | Root of the context's task store. Same path rules as `match.paths`; `~` is the user's home, not the loom home. Two contexts cannot have the same `store.path`. |
 | `[contexts.<name>] store.backup.remote` | string: git URL or path | none | Repository the context store is pushed to and pulled from (see [store backup](#store-backup)). Not empty, no whitespace or control characters, first character not `-`. Two contexts cannot have the same remote: their stores would diverge at once. |
 | `[contexts.<name>] machines` | array of strings: machine names | none (every machine) | The machines that hold the context's store, by their [`machine.toml`](#machinetoml) `id`. At least one entry when given; each entry follows the rules of `id`. On a machine it does not name, `loomd` does not load the store: no `tasks/` is created, its tasks are not indexed. The repositories of the context are matched as usual. |
@@ -392,7 +392,7 @@ Spans:
 
 ## `index.db`
 
-Index of the git repositories, in `<loom home>/index.db`: SQLite, machine-local, written by `loomd` only and read through the [API](api.md#repositories).
+Index of the git repositories, and of the clone of each MR of a Review task, in `<loom home>/index.db`: SQLite, machine-local, written by `loomd` only and read through the [API](api.md#repositories).
 
 | Path | Mode | Content |
 | --- | --- | --- |

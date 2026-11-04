@@ -350,13 +350,14 @@ fn version(head: &str, merge_base: Option<&str>) -> MrVersion {
 
 #[test]
 fn a_diff_is_recorded_on_its_version_and_the_rest_stays() {
-    let known = merge_versions(&[], &[version(V1, None)], at(1));
-    let known = merge_versions(&known, &[version(V2, Some(M1))], at(2));
+    let known = merge_versions(&[], &[version(V1, None)], MrState::Open, at(1));
+    let known = merge_versions(&known, &[version(V2, Some(M1))], MrState::Open, at(2));
     let recorded = record_diffs(
         &known,
         &[
             VersionDiff {
                 head: sha(V1),
+                base: sha(M1),
                 merge_base: Some(sha(M2)),
                 kind: DiffKind::Local,
                 patch: b"p".to_vec(),
@@ -364,6 +365,7 @@ fn a_diff_is_recorded_on_its_version_and_the_rest_stays() {
             // The merge base of the forge stays: it decides the hunks of the forge.
             VersionDiff {
                 head: sha(V2),
+                base: sha(M1),
                 merge_base: Some(sha(M2)),
                 kind: DiffKind::Reduced,
                 patch: b"q".to_vec(),
@@ -371,6 +373,7 @@ fn a_diff_is_recorded_on_its_version_and_the_rest_stays() {
             // The poll does not know this head: nothing to record it on.
             VersionDiff {
                 head: sha(M2),
+                base: sha(M1),
                 merge_base: None,
                 kind: DiffKind::Local,
                 patch: Vec::new(),
@@ -387,13 +390,14 @@ fn a_diff_is_recorded_on_its_version_and_the_rest_stays() {
 
 #[test]
 fn the_diff_kind_is_written_only_when_known_and_a_poll_keeps_it() {
-    let known = merge_versions(&[], &[version(V1, None)], at(1));
+    let known = merge_versions(&[], &[version(V1, None)], MrState::Open, at(1));
     let text = serde_json::to_string(&known).unwrap();
     assert!(!text.contains("\"diff\""), "{text}");
     let recorded = record_diffs(
         &known,
         &[VersionDiff {
             head: sha(V1),
+            base: sha(M1),
             merge_base: None,
             kind: DiffKind::Reduced,
             patch: Vec::new(),
@@ -404,35 +408,10 @@ fn the_diff_kind_is_written_only_when_known_and_a_poll_keeps_it() {
     let read: Vec<VersionRecord> = serde_json::from_str(&text).unwrap();
     assert_eq!(read, recorded);
     // The next poll merges over what is recorded: the same bytes.
-    assert_eq!(merge_versions(&read, &[version(V1, None)], at(9)), recorded);
-}
-
-#[test]
-fn the_clones_in_mr_json_are_read_set_and_removed_without_other_changes() {
-    let bytes = b"{\n  \"key\": \"acme/shop#412\",\n  \"title\": \"x\"\n}\n";
-    assert_eq!(read_clones(bytes), MrClones::default());
-    let clones = MrClones {
-        clone: Some(clone_at("/work/shop", "upstream")),
-        retired: vec![clone_at("/old/shop", "origin")],
-    };
-    let set = with_clones(bytes, &clones).unwrap();
-    assert_eq!(read_clones(&set), clones);
-    assert_eq!(with_clones(&set, &clones).unwrap(), set);
-    assert_eq!(with_clones(&set, &MrClones::default()).unwrap(), bytes);
-    let text = String::from_utf8(
-        with_clones(
-            bytes,
-            &MrClones {
-                retired: Vec::new(),
-                ..clones
-            },
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(!text.contains("retired_clones"), "{text}");
-    assert!(with_clones(b"{", &MrClones::default()).is_err());
-    assert_eq!(read_clones(b"{"), MrClones::default());
+    assert_eq!(
+        merge_versions(&read, &[version(V1, None)], MrState::Open, at(9)),
+        recorded
+    );
 }
 
 #[test]
@@ -472,11 +451,18 @@ fn refs_are_fetched_again_for_a_new_clone_or_a_missing_head_ref() {
 #[test]
 fn a_host_wide_failure_stops_the_endpoint_and_another_stops_one_mr() {
     use loom_api::RemoteProblem::{HttpsAuth, Network, NotFound, Other, SshAuth};
-    for problem in [SshAuth, HttpsAuth, Network] {
+    for problem in [SshAuth, Network] {
         assert!(stops_the_endpoint(problem), "{problem:?}");
     }
-    for problem in [NotFound, Other] {
+    // An HTTP 401 or 403 can be of one project: its clone stops, not its host.
+    for problem in [HttpsAuth, NotFound, Other] {
         assert!(!stops_the_endpoint(problem), "{problem:?}");
+    }
+    for problem in [HttpsAuth, NotFound] {
+        assert!(stops_the_clone(problem), "{problem:?}");
+    }
+    for problem in [SshAuth, Network, Other] {
+        assert!(!stops_the_clone(problem), "{problem:?}");
     }
 }
 
@@ -599,4 +585,67 @@ fn the_refs_of_an_archived_task_go_unless_an_active_task_has_the_mr() {
         .map(|row| row.id.to_string())
         .collect();
     assert_eq!(ids, ["r1000000"]);
+}
+
+#[test]
+fn a_diff_of_a_base_that_changed_during_its_work_is_not_recorded() {
+    let known = merge_versions(&[], &[version(V1, None)], MrState::Open, at(1));
+    let old_base = VersionDiff {
+        head: sha(V1),
+        base: sha(M2),
+        merge_base: Some(sha(M2)),
+        kind: DiffKind::Local,
+        patch: b"p".to_vec(),
+    };
+    assert_eq!(record_diffs(&known, std::slice::from_ref(&old_base)), known);
+    assert_eq!(
+        diffs_to_write(&known, std::slice::from_ref(&old_base)),
+        Vec::<&VersionDiff>::new()
+    );
+    let current = VersionDiff {
+        base: sha(M1),
+        ..old_base
+    };
+    assert_eq!(
+        diffs_to_write(&known, std::slice::from_ref(&current)),
+        [&current]
+    );
+    assert_eq!(
+        record_diffs(&known, std::slice::from_ref(&current))[0].diff,
+        Some(DiffKind::Local)
+    );
+}
+
+#[test]
+fn the_cleanup_looks_in_the_known_clones_and_in_each_indexed_clone_of_the_project() {
+    let (known, other) = (project("/known", None), project("/other", None));
+    let unrelated = repo(
+        "/unrelated",
+        vec![remote("origin", Some(("github.com", "acme/else")))],
+        "origin",
+        None,
+    );
+    let clones = MrClones {
+        clone: Some(clone_at("/known", "origin")),
+        retired: vec![clone_at("/gone", "fork")],
+    };
+    let candidates = [main_of(&known), main_of(&other), main_of(&unrelated)];
+    assert_eq!(
+        clones_to_clean(&clones, &candidates, "github.com", "acme/shop"),
+        [
+            clone_at("/known", "origin"),
+            clone_at("/gone", "fork"),
+            clone_at("/other", "origin"),
+        ]
+    );
+    // A lost choice (a new `index.db`) still finds the refs of a clone in the index.
+    assert_eq!(
+        clones_to_clean(
+            &MrClones::default(),
+            &[main_of(&other)],
+            "github.com",
+            "acme/shop"
+        ),
+        [clone_at("/other", "origin")]
+    );
 }
