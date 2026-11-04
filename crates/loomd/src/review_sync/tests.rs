@@ -522,7 +522,7 @@ fn the_mirror_round_trips_and_keeps_the_description_apart() {
         verdict: None,
         shown: false,
     };
-    let files = mirror(&mr, &versions, None, &state).unwrap();
+    let files = mirror(&mr, None, &versions, None, &state).unwrap();
     let snapshot: serde_json::Value = serde_json::from_slice(&files.mr).unwrap();
     assert!(snapshot.get("description").is_none());
     assert_eq!(files.description, mr.description.as_bytes());
@@ -532,9 +532,22 @@ fn the_mirror_round_trips_and_keeps_the_description_apart() {
     assert_eq!(read_mr(&files.mr, &mr.description), Some(mr.clone()));
     assert_eq!(read_mr(b"{", ""), None);
     // The same input gives the same bytes: an unchanged MR writes nothing.
-    assert_eq!(mirror(&mr, &versions, None, &state).unwrap(), files);
+    assert_eq!(mirror(&mr, None, &versions, None, &state).unwrap(), files);
     let read: SyncState = serde_json::from_slice(&files.sync).unwrap();
     assert_eq!(read, state);
+
+    // A poll keeps the clone that the worker chose, byte for byte.
+    let clone = MrClone {
+        path: PathBuf::from("/work/shop"),
+        remote: "upstream".to_owned(),
+    };
+    let with = mirror(&mr, Some(&clone), &versions, None, &state).unwrap();
+    assert_eq!(
+        crate::mr_refs::with_clone(&files.mr, Some(&clone)).unwrap(),
+        with.mr
+    );
+    assert_eq!(crate::mr_refs::read_clone(&with.mr), Some(clone));
+    assert_eq!(read_mr(&with.mr, &mr.description), Some(mr.clone()));
 
     let key = MrKey::parse("acme/shop#412").unwrap();
     assert_eq!(

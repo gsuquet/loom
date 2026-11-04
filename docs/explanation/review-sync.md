@@ -1,6 +1,6 @@
 # How loomd syncs the MRs to review
 
-> This page tells how `loomd` finds the merge requests (MRs) where you are a requested reviewer, and how it keeps one Review task for each. It tells when the task opens and closes, which fields the sync changes, and what a poll writes. Endpoint: [`POST /v1/reviews/sync`](../reference/api.md#reviews). Command: [`loom review sync`](../reference/cli/loom.md#loom-review-sync). Files: [MR mirror](../reference/task-file.md#mrs-mr-mirror). Keys: [forges](../reference/configuration.md#forges). Decision: [ADR-0016](../adr/0016-mr-review-mirror.md).
+> This page tells how `loomd` finds the merge requests (MRs) where you are a requested reviewer, and how it keeps one Review task for each. It tells when the task opens and closes, which fields the sync changes, and what a poll writes. Endpoint: [`POST /v1/reviews/sync`](../reference/api.md#reviews). Command: [`loom review sync`](../reference/cli/loom.md#loom-review-sync). Files: [MR mirror](../reference/task-file.md#mrs-mr-mirror). Keys: [forges](../reference/configuration.md#forges). Refs and diffs of an MR: [MR refs and diffs](mr-refs.md). Decision: [ADR-0016](../adr/0016-mr-review-mirror.md).
 
 ## The problem
 
@@ -84,6 +84,7 @@ A poll writes nothing when nothing changed:
 - The threads and your verdict are also read again one hour after their last read, because a resolved thread or a review does not always change the MR.
 - A `done` or `cancelled` task of a merged or closed MR is not read again. Only the archive moves it.
 - `loomd` writes a file only when its bytes change, with an atomic rename.
+- The refs and the patches come after the poll, in a separate step. A failure of that step does not change the result of the poll. See [MR refs and diffs](mr-refs.md).
 - Each task that changed gets one commit of its store per poll. The message is the message of its events, otherwise `mr(<id>): <key> mirror updated`.
 
 `loomd` keeps the `ETag`s in memory. After a restart, the first poll reads each MR in full. The files do not change if the MR did not change.

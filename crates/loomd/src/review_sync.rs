@@ -21,6 +21,7 @@ use loom_store::port::TaskLocation;
 use loom_store::tasks::IndexedState;
 use serde::{Deserialize, Serialize};
 
+use crate::mr_refs::{DiffKind, MrClone, set_clone};
 use crate::schedule::{backoff, jittered};
 
 /// The directory of the MR mirrors in a task directory.
@@ -327,6 +328,9 @@ pub struct VersionRecord {
     pub version: MrVersion,
     /// When a poll first saw this head.
     pub first_seen: Timestamp,
+    /// Where the patch of this version comes from; absent without a patch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffKind>,
 }
 
 /// `known` (oldest first) with each version of `seen` whose head is new, first seen at `now`.
@@ -361,6 +365,7 @@ pub fn merge_versions(
             versions.push(VersionRecord {
                 version: version.clone(),
                 first_seen: now,
+                diff: None,
             });
         }
     }
@@ -525,14 +530,15 @@ impl Mirror {
     }
 }
 
-/// The mirror files of `mr`, with its `versions`, its `threads` when pulled (sorted) and the
-/// sync `state`. Pure.
+/// The mirror files of `mr`, with the `clone` that the worker chose, its `versions`, its
+/// `threads` when pulled (sorted) and the sync `state`. Pure.
 ///
 /// # Errors
 ///
 /// The serialization error, which the model types never give.
 pub fn mirror(
     mr: &Mr,
+    clone: Option<&MrClone>,
     versions: &[VersionRecord],
     threads: Option<&[Thread]>,
     state: &SyncState,
@@ -542,6 +548,8 @@ pub fn mirror(
         // In `description.md`.
         object.remove("description");
     }
+    // The poll knows nothing of the clone: without this, each poll would undo the choice.
+    set_clone(&mut snapshot, clone)?;
     let threads = threads
         .map(|threads| {
             let mut threads = threads.to_vec();

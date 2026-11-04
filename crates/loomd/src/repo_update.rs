@@ -556,6 +556,17 @@ impl<'a> Git<'a> {
 
     /// Runs `git <args>` in the working tree; its standard output when it exits with 0.
     pub(crate) fn output(&self, args: &[&OsStr], timeout: Duration) -> Result<String, Failure> {
+        self.output_bytes(args, timeout)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Runs `git <args>` in the working tree; its standard output, as git wrote it, when it
+    /// exits with 0.
+    pub(crate) fn output_bytes(
+        &self,
+        args: &[&OsStr],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, Failure> {
         let mut command = Command::new(&self.runner.program);
         command
             .current_dir(self.workdir)
@@ -627,7 +638,7 @@ pub(crate) fn wait(
     mut child: Child,
     timeout: Duration,
     grace: Duration,
-) -> Result<String, Failure> {
+) -> Result<Vec<u8>, Failure> {
     let stdout = child.stdout.take().map(reader);
     let stderr = child.stderr.take().map(reader);
     let deadline = Instant::now() + timeout;
@@ -662,7 +673,7 @@ pub(crate) fn wait(
     let out = collect(stdout);
     let err = collect(stderr);
     if status.success() {
-        Ok(String::from_utf8_lossy(&out).into_owned())
+        Ok(out)
     } else {
         Err(Failure::Exit {
             status,

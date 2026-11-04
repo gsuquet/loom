@@ -4,6 +4,7 @@ mod archiver;
 mod daemon;
 mod disk_usage;
 mod forge_metadata;
+mod mr_worker;
 mod repos;
 mod reviews;
 mod schedules;

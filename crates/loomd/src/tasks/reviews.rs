@@ -18,6 +18,9 @@ use loom_store::files::{ARCHIVE_DIR, TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
 use loom_store::port::TaskLocation;
 use loom_store::tasks::IndexedState;
 use loomd::backup::commit_message;
+use loomd::mr_refs::{
+    DIFFS_DIR, DiffRecord, MrClone, patch_name, read_clone, record_diffs, with_clone,
+};
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
     SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror,
@@ -42,6 +45,8 @@ pub struct ReviewsApplied {
 #[derive(Default)]
 struct Previous {
     mr: Option<Mr>,
+    /// The clone that the worker chose: the poll keeps it.
+    clone: Option<MrClone>,
     versions: Vec<VersionRecord>,
     state: Option<SyncState>,
 }
@@ -165,8 +170,14 @@ impl Worker {
                 info!(%context, key = %update.key, %id, %status, ?reason, "Review task status changed");
             }
             let versions = merge_versions(&previous.versions, &update.versions, now());
-            let files = mirror(&mr, &versions, update.threads.as_deref(), &state)
-                .map_err(|error| error.to_string())?;
+            let files = mirror(
+                &mr,
+                previous.clone.as_ref(),
+                &versions,
+                update.threads.as_deref(),
+                &state,
+            )
+            .map_err(|error| error.to_string())?;
             write_mirror(&dir, &files.files())
                 .map_err(|error| format!("cannot write the mirror {}: {error}", dir.display()))
         })();
@@ -192,6 +203,65 @@ impl Worker {
         }
         written?;
         Ok((!new.is_empty() || wrote).then_some((id, created)))
+    }
+
+    /// Writes the clone and the diffs of `record` in the mirror of its MR: the patches first, so
+    /// that a record always has its patch. One commit, none when no byte changes. A task
+    /// archived since the worker read it has no mirror here any more: nothing to write.
+    pub(super) fn record_mr_diffs(&mut self, record: &DiffRecord) -> Result<(), String> {
+        let DiffRecord {
+            context, id, key, ..
+        } = record;
+        let root = self
+            .stores
+            .get(context)
+            .ok_or_else(|| format!("no store for context `{context}`"))?;
+        let dir = mirror_dir(&task_dir(root, id), key);
+        let Ok(mr_json) = fs::read(dir.join(MR_FILE)) else {
+            return Ok(());
+        };
+        let cannot = |error: &dyn std::fmt::Display| {
+            format!("cannot write the mirror {}: {error}", dir.display())
+        };
+        let new_mr = with_clone(&mr_json, record.clone.as_ref()).map_err(|error| cannot(&error))?;
+        let versions: Vec<VersionRecord> = fs::read(dir.join(VERSIONS_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let mut new_versions = serde_json::to_vec_pretty(&record_diffs(&versions, &record.diffs))
+            .map_err(|error| cannot(&error))?;
+        new_versions.push(b'\n');
+        let names: Vec<String> = record
+            .diffs
+            .iter()
+            .map(|diff| patch_name(&diff.head))
+            .collect();
+        let patches: Vec<(&str, &[u8])> = names
+            .iter()
+            .zip(&record.diffs)
+            .map(|(name, diff)| (name.as_str(), diff.patch.as_slice()))
+            .collect();
+        let mut wrote =
+            write_mirror(&dir.join(DIFFS_DIR), &patches).map_err(|error| cannot(&error))?;
+        wrote |= write_mirror(
+            &dir,
+            &[
+                (MR_FILE, new_mr.as_slice()),
+                (VERSIONS_FILE, new_versions.as_slice()),
+            ],
+        )
+        .map_err(|error| cannot(&error))?;
+        if wrote {
+            let result = self.commits.commit_task(
+                context,
+                id,
+                TaskLocation::Active,
+                &mirror_message(id, key),
+            );
+            log_commit(context, Some(id), result);
+            self.changed(context, id);
+        }
+        Ok(())
     }
 
     /// Logs `note` on task `id`, then sets its status.
@@ -327,8 +397,10 @@ fn read_previous(dir: &Path) -> Previous {
     let description = read(DESCRIPTION_FILE)
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .unwrap_or_default();
+    let mr_json = read(MR_FILE);
     Previous {
-        mr: read(MR_FILE).and_then(|bytes| read_mr(&bytes, &description)),
+        clone: mr_json.as_deref().and_then(read_clone),
+        mr: mr_json.and_then(|bytes| read_mr(&bytes, &description)),
         versions: read(VERSIONS_FILE)
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default(),
