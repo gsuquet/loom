@@ -27,6 +27,7 @@ The TUI is removed entirely. Its removal follows the merge of the docs that desc
 - It reaches `loomd` over the unix socket, with no TCP port and no new authentication.
 - MR content, transcripts and articles are untrusted. Rendering them must not run their scripts or reach `loomd`.
 - The look is native macOS, see [UI style](ui-style.md#desktop-app-target).
+- A Linux version is likely later, and the toolkit choice weighs it. The app holds presentation only: every rule stays in `loomd` and the core crates, behind the API, so a second front-end reuses them.
 
 The toolkit is the one open decision here. The candidates are SwiftUI, Rust with AppKit through `objc2`, and Tauri. Docs that depend on the toolkit are written once it is chosen.
 
