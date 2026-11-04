@@ -303,7 +303,7 @@ fn a_name_from_outside_that_is_no_ref_name_is_refused() {
 
 #[test]
 fn a_diff_is_made_once_per_head_while_the_mr_is_open() {
-    use DiffKind::{Local, Reduced};
+    use DiffKind::{Local, Reduced, TooLarge};
     use DiffPlan::{FromClone, FromForge, Keep};
     let open = MrState::Open;
     // (state, recorded, patch on disk, clone, plan)
@@ -322,6 +322,10 @@ fn a_diff_is_made_once_per_head_while_the_mr_is_open() {
         // A patch without a record is from a write that stopped before its record.
         (open, None, true, true, FromClone),
         (open, None, true, false, FromForge),
+        // Over a cap: a new try would give the same result.
+        (open, Some(TooLarge), true, true, Keep),
+        (open, Some(TooLarge), true, false, Keep),
+        (open, Some(TooLarge), false, true, FromClone),
         // No more versions come.
         (MrState::Merged, None, false, true, Keep),
         (MrState::Closed, None, false, false, Keep),
@@ -404,16 +408,148 @@ fn the_diff_kind_is_written_only_when_known_and_a_poll_keeps_it() {
 }
 
 #[test]
-fn the_clone_in_mr_json_is_read_set_and_removed_without_other_changes() {
+fn the_clones_in_mr_json_are_read_set_and_removed_without_other_changes() {
     let bytes = b"{\n  \"key\": \"acme/shop#412\",\n  \"title\": \"x\"\n}\n";
-    assert_eq!(read_clone(bytes), None);
-    let clone = clone_at("/work/shop", "upstream");
-    let set = with_clone(bytes, Some(&clone)).unwrap();
-    assert_eq!(read_clone(&set), Some(clone.clone()));
-    assert_eq!(with_clone(&set, Some(&clone)).unwrap(), set);
-    assert_eq!(with_clone(&set, None).unwrap(), bytes);
-    assert!(with_clone(b"{", None).is_err());
-    assert_eq!(read_clone(b"{"), None);
+    assert_eq!(read_clones(bytes), MrClones::default());
+    let clones = MrClones {
+        clone: Some(clone_at("/work/shop", "upstream")),
+        retired: vec![clone_at("/old/shop", "origin")],
+    };
+    let set = with_clones(bytes, &clones).unwrap();
+    assert_eq!(read_clones(&set), clones);
+    assert_eq!(with_clones(&set, &clones).unwrap(), set);
+    assert_eq!(with_clones(&set, &MrClones::default()).unwrap(), bytes);
+    let text = String::from_utf8(
+        with_clones(
+            bytes,
+            &MrClones {
+                retired: Vec::new(),
+                ..clones
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(!text.contains("retired_clones"), "{text}");
+    assert!(with_clones(b"{", &MrClones::default()).is_err());
+    assert_eq!(read_clones(b"{"), MrClones::default());
+}
+
+#[test]
+fn a_clone_that_is_replaced_stays_listed_until_its_refs_are_gone() {
+    let (a, b) = (clone_at("/a", "origin"), clone_at("/b", "origin"));
+    let kept = MrClones {
+        clone: Some(a.clone()),
+        retired: Vec::new(),
+    };
+    let moved = next_clones(&kept, Some(b.clone()));
+    assert_eq!(moved.clone, Some(b.clone()));
+    assert_eq!(moved.retired, std::slice::from_ref(&a));
+    // The clone is gone and no other comes: cleanup still knows the path.
+    let none = next_clones(&kept, None);
+    assert_eq!(none.clone, None);
+    assert_eq!(none.retired, std::slice::from_ref(&a));
+    // It comes back: its refs are in use again.
+    assert_eq!(next_clones(&moved, Some(a.clone())).retired, [b]);
+    assert_eq!(next_clones(&none, Some(a.clone())).retired, []);
+    assert_eq!(next_clones(&kept, Some(a.clone())), kept);
+    // Another name of the remote is another set of refs.
+    let renamed = next_clones(&kept, Some(clone_at("/a", "forge")));
+    assert_eq!(renamed.retired, [a]);
+}
+
+#[test]
+fn refs_are_fetched_again_for_a_new_clone_or_a_missing_head_ref() {
+    use DiffPlan::{FromClone, FromForge, Keep};
+    assert!(!needs_refs(Keep, true, true));
+    assert!(needs_refs(Keep, false, true));
+    assert!(needs_refs(Keep, true, false));
+    // These plans fetch or need no clone anyway.
+    assert!(!needs_refs(FromClone, false, false));
+    assert!(!needs_refs(FromForge, false, false));
+}
+
+#[test]
+fn a_host_wide_failure_stops_the_endpoint_and_another_stops_one_mr() {
+    use loom_api::RemoteProblem::{HttpsAuth, Network, NotFound, Other, SshAuth};
+    for problem in [SshAuth, HttpsAuth, Network] {
+        assert!(stops_the_endpoint(problem), "{problem:?}");
+    }
+    for problem in [NotFound, Other] {
+        assert!(!stops_the_endpoint(problem), "{problem:?}");
+    }
+}
+
+#[test]
+fn a_permanent_failure_backs_off_up_to_eight_polls() {
+    let mut retry = Retry::default();
+    // Which of 30 polls try, when each try fails.
+    let tried: Vec<usize> = (1..=30)
+        .filter(|_| {
+            let due = retry.due();
+            if due {
+                retry.failed();
+            }
+            due
+        })
+        .collect();
+    assert_eq!(tried, [1, 2, 4, 8, 16, 24]);
+}
+
+#[test]
+fn the_caps_leave_the_room_that_the_mr_has() {
+    assert_eq!(PATCH_CAP, 5 * 1024 * 1024);
+    assert_eq!(MR_CAP, 50 * 1024 * 1024);
+    assert_eq!(patch_budget(0), PATCH_CAP);
+    assert_eq!(patch_budget(MR_CAP as u64 - PATCH_CAP as u64), PATCH_CAP);
+    assert_eq!(patch_budget(MR_CAP as u64 - 10), 10);
+    assert_eq!(patch_budget(MR_CAP as u64), 0);
+    assert_eq!(patch_budget(MR_CAP as u64 + 10), 0);
+    let note = String::from_utf8(too_large_note(10)).unwrap();
+    assert!(note.starts_with("# loom: "), "{note}");
+    assert!(note.contains("10 bytes"), "{note}");
+    assert!(note.ends_with('\n'), "{note}");
+    assert_eq!(loom_forge::diff::file_hashes(note.as_bytes()), []);
+}
+
+#[test]
+fn a_remote_that_now_names_another_project_keeps_its_refs() {
+    let moved = repo(
+        "/w",
+        vec![remote("origin", Some(("github.com", "acme/other")))],
+        "origin",
+        None,
+    );
+    let same = project("/w", None);
+    let clone = clone_at("/w", "origin");
+    let names = |repos: &[RepoSummary]| {
+        remote_names_other_project(repos, &clone, "github.com", "acme/shop")
+    };
+    assert!(names(std::slice::from_ref(&moved)));
+    assert!(!names(std::slice::from_ref(&same)));
+    assert!(!names(&[]));
+    // The remote is renamed or removed: its refs are stale, and are ours.
+    assert!(!remote_names_other_project(
+        std::slice::from_ref(&same),
+        &clone_at("/w", "old"),
+        "github.com",
+        "acme/shop"
+    ));
+}
+
+#[test]
+fn a_missing_base_branch_is_told_from_other_failures() {
+    let stderr = "fatal: couldn't find remote ref refs/heads/gone\n";
+    assert!(is_missing_ref(stderr, "refs/heads/gone"));
+    assert!(!is_missing_ref(stderr, "refs/heads/other"));
+    assert!(!is_missing_ref(
+        "fatal: couldn't find remote ref refs/pull/1/head\n",
+        "refs/heads/gone"
+    ));
+    assert!(!is_missing_ref(
+        "fatal: unable to access\n",
+        "refs/heads/gone"
+    ));
 }
 
 #[test]

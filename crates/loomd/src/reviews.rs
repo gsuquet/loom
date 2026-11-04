@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +26,7 @@ use loom_api::{
     Timestamp,
 };
 use loom_config::config::Config;
-use loom_config::forges::{ForgeCredential, ReviewRequests as ConfigRequests};
+use loom_config::forges::{ForgeCredential, ReviewRequests as ConfigRequests, TokenSource};
 use loom_config::machine::MachineName;
 use loom_forge::client::{
     ApiBase, Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient,
@@ -34,6 +35,7 @@ use loom_forge::client::{
 use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, MrSummary, Sha, Thread};
 use loom_forge::{MrContexts, mr_context};
 use loom_repo::ContextRules;
+use loom_repo::update::UpdatePolicies;
 use loom_store::files::TASKS_DIR;
 use loom_store::{Reader, RepoFilter};
 use loomd::api::timestamp;
@@ -63,6 +65,23 @@ fn host_peers(credentials: &[ForgeCredential<'_>], target: &ForgeTarget) -> usiz
         .iter()
         .filter(|other| other.host.as_str() == target.host && *other.context != target.context)
         .count()
+}
+
+/// The git of the MR refs. It does not inherit a `token_env` variable of the configuration: git
+/// uses the credentials of the user (ADR-0016, decision 6), and its hooks and credential helpers
+/// run with its environment.
+fn refs_runner(credentials: &[ForgeCredential<'_>], children: &Arc<ChildGroups>) -> GitRunner {
+    GitRunner {
+        children: Some(Arc::clone(children)),
+        env: credentials
+            .iter()
+            .filter_map(|credential| match credential.token {
+                TokenSource::Env(name) => Some((OsString::from(name), None)),
+                TokenSource::Command(_) => None,
+            })
+            .collect(),
+        ..GitRunner::from_env()
+    }
 }
 
 /// An MR to read: its key, its summary when the search found it, and its Review task.
@@ -218,10 +237,8 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     }
     let user_agent = format!("loomd/{}", VERSION_INFO.version);
     let (refs, refs_handle) = mr_worker::start(
-        GitRunner {
-            children: Some(Arc::clone(&setup.children)),
-            ..GitRunner::from_env()
-        },
+        refs_runner(&credentials, &setup.children),
+        UpdatePolicies::new(config, &setup.user_home),
         setup.stores.clone(),
         Arc::clone(&setup.resolver),
         setup.tasks.clone(),

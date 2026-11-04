@@ -556,16 +556,17 @@ impl<'a> Git<'a> {
 
     /// Runs `git <args>` in the working tree; its standard output when it exits with 0.
     pub(crate) fn output(&self, args: &[&OsStr], timeout: Duration) -> Result<String, Failure> {
-        self.output_bytes(args, timeout)
+        self.output_bytes(args, timeout, None)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Runs `git <args>` in the working tree; its standard output, as git wrote it, when it
-    /// exits with 0.
+    /// exits with 0. With a `limit`, only that many bytes stay in memory, and git still ends.
     pub(crate) fn output_bytes(
         &self,
         args: &[&OsStr],
         timeout: Duration,
+        limit: Option<usize>,
     ) -> Result<Vec<u8>, Failure> {
         let mut command = Command::new(&self.runner.program);
         command
@@ -603,7 +604,7 @@ impl<'a> Git<'a> {
             }
             None => (command.spawn().map_err(Failure::Run)?, None),
         };
-        let result = wait(child, timeout, self.runner.kill_grace);
+        let result = wait(child, timeout, self.runner.kill_grace, limit);
         debug!(
             args = ?args,
             duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -638,9 +639,10 @@ pub(crate) fn wait(
     mut child: Child,
     timeout: Duration,
     grace: Duration,
+    limit: Option<usize>,
 ) -> Result<Vec<u8>, Failure> {
-    let stdout = child.stdout.take().map(reader);
-    let stderr = child.stderr.take().map(reader);
+    let stdout = child.stdout.take().map(|pipe| reader(pipe, limit));
+    let stderr = child.stderr.take().map(|pipe| reader(pipe, None));
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -682,14 +684,28 @@ pub(crate) fn wait(
     }
 }
 
-/// Reads `pipe` to its end on a thread; the bytes arrive on the channel.
-fn reader(mut pipe: impl io::Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+/// Reads `pipe` to its end on a thread; the bytes arrive on the channel, at most `limit` of them.
+/// The rest is read and dropped: a writer stops only at the end of its output.
+fn reader(
+    mut pipe: impl io::Read + Send + 'static,
+    limit: Option<usize>,
+) -> mpsc::Receiver<Vec<u8>> {
     let (send, received) = mpsc::channel();
     let spawned = thread::Builder::new()
         .name("git-output".to_owned())
         .spawn(move || {
             let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
+            match limit {
+                Some(limit) => {
+                    let keep = u64::try_from(limit).unwrap_or(u64::MAX);
+                    let mut kept = io::Read::take(io::Read::by_ref(&mut pipe), keep);
+                    let _ = io::Read::read_to_end(&mut kept, &mut bytes);
+                    let _ = io::copy(&mut pipe, &mut io::sink());
+                }
+                None => {
+                    let _ = pipe.read_to_end(&mut bytes);
+                }
+            }
             let _ = send.send(bytes);
         });
     if let Err(error) = spawned {

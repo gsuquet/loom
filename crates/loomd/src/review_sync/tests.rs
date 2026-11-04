@@ -5,9 +5,10 @@ use loom_api::{ContextAssignment, ForgeKind, Remote, RemoteUrl, RepoIdentity, Re
 use loom_core::{Kind, Link, StatusName};
 use loom_forge::github::{Review, ReviewState, parse_pull, parse_reviews};
 use loom_forge::gitlab::parse_versions;
-use loom_forge::model::{MrKey, MrState, Sha};
+use loom_forge::model::{MrKey, MrState, MrVersion, Sha};
 
 use super::*;
+use crate::mr_refs::{DiffKind, MrClones};
 
 const V1: &str = "7ebf283bfee25ab48f95c0c55181a4ca66b4c990";
 const V2: &str = "84280c47b6aa128c645b1fbea54aded8b32e8463";
@@ -522,7 +523,7 @@ fn the_mirror_round_trips_and_keeps_the_description_apart() {
         verdict: None,
         shown: false,
     };
-    let files = mirror(&mr, None, &versions, None, &state).unwrap();
+    let files = mirror(&mr, &MrClones::default(), &versions, None, &state).unwrap();
     let snapshot: serde_json::Value = serde_json::from_slice(&files.mr).unwrap();
     assert!(snapshot.get("description").is_none());
     assert_eq!(files.description, mr.description.as_bytes());
@@ -532,21 +533,28 @@ fn the_mirror_round_trips_and_keeps_the_description_apart() {
     assert_eq!(read_mr(&files.mr, &mr.description), Some(mr.clone()));
     assert_eq!(read_mr(b"{", ""), None);
     // The same input gives the same bytes: an unchanged MR writes nothing.
-    assert_eq!(mirror(&mr, None, &versions, None, &state).unwrap(), files);
+    assert_eq!(
+        mirror(&mr, &MrClones::default(), &versions, None, &state).unwrap(),
+        files
+    );
     let read: SyncState = serde_json::from_slice(&files.sync).unwrap();
     assert_eq!(read, state);
 
     // A poll keeps the clone that the worker chose, byte for byte.
-    let clone = MrClone {
+    let clone = crate::mr_refs::MrClone {
         path: PathBuf::from("/work/shop"),
         remote: "upstream".to_owned(),
     };
-    let with = mirror(&mr, Some(&clone), &versions, None, &state).unwrap();
+    let clones = MrClones {
+        clone: Some(clone),
+        retired: Vec::new(),
+    };
+    let with = mirror(&mr, &clones, &versions, None, &state).unwrap();
     assert_eq!(
-        crate::mr_refs::with_clone(&files.mr, Some(&clone)).unwrap(),
+        crate::mr_refs::with_clones(&files.mr, &clones).unwrap(),
         with.mr
     );
-    assert_eq!(crate::mr_refs::read_clone(&with.mr), Some(clone));
+    assert_eq!(crate::mr_refs::read_clones(&with.mr), clones);
     assert_eq!(read_mr(&with.mr, &mr.description), Some(mr.clone()));
 
     let key = MrKey::parse("acme/shop#412").unwrap();
@@ -634,4 +642,67 @@ fn the_finder_tells_the_context_only_for_tokens_of_distinct_accounts() {
     assert!(!finder_tells(Some("me"), 1, &[None]));
     assert!(!finder_tells(Some("me"), 2, &[Some("me-at-client")]));
     assert!(!finder_tells(None, 1, &[Some("me-at-client")]));
+}
+
+fn base_version(head: &str, base: &str, merge_base: Option<&str>) -> MrVersion {
+    MrVersion {
+        head_sha: sha(head),
+        base_sha: sha(base),
+        merge_base: merge_base.map(sha),
+        forge_version_id: None,
+        created_at: None,
+    }
+}
+
+#[test]
+fn a_new_base_with_the_same_head_asks_for_a_new_diff() {
+    let mut known = merge_versions(&[], &[base_version(V1, V2, Some(V2))], at(1));
+    known[0].diff = Some(DiffKind::Local);
+    // The same base: nothing changes.
+    assert_eq!(
+        merge_versions(&known, &[base_version(V1, V2, None)], at(2)),
+        known
+    );
+    // Retargeted: the record of the diff and its merge base are of the old base.
+    let moved = merge_versions(&known, &[base_version(V1, V1, None)], at(3));
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].version.base_sha, sha(V1));
+    assert_eq!(moved[0].version.merge_base, None);
+    assert_eq!(moved[0].diff, None);
+    assert_eq!(moved[0].first_seen, at(1));
+}
+
+#[test]
+fn two_forge_versions_of_one_head_count_as_the_newest_one() {
+    let older = MrVersion {
+        created_at: Some(at(10)),
+        ..base_version(V1, V2, Some(V2))
+    };
+    let newer = MrVersion {
+        created_at: Some(at(20)),
+        ..base_version(V1, V1, Some(V1))
+    };
+    let seen = [newer, older];
+    let first = merge_versions(&[], &seen, at(1));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].version.base_sha, sha(V1));
+    let mut done = first;
+    done[0].diff = Some(DiffKind::Local);
+    // A poll that lists both again keeps the record of the diff.
+    assert_eq!(merge_versions(&done, &seen, at(2)), done);
+}
+
+#[test]
+fn the_current_version_is_added_when_the_forge_list_lacks_it() {
+    let known = merge_versions(&[], &[base_version(V1, V2, None)], at(1));
+    // GitLab lists the versions after a background job: the head comes first.
+    let added = merge_current(known.clone(), &base_version(V2, V1, Some(V1)), at(2));
+    assert_eq!(added.len(), 2);
+    assert_eq!(added[1].version.head_sha, sha(V2));
+    assert_eq!(added[1].first_seen, at(2));
+    // Known: the list decides, so the two sources do not undo each other.
+    assert_eq!(
+        merge_current(known.clone(), &base_version(V1, V1, Some(V1)), at(3)),
+        known
+    );
 }

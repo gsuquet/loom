@@ -343,7 +343,8 @@ fn added_deleted_and_renamed_files_hash_the_same_from_git_and_from_the_forge() {
     let added = "diff --git a/n.rs b/n.rs\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/n.rs\n@@ -0,0 +1 @@\n+a\n";
     let deleted = "diff --git a/d.rs b/d.rs\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/d.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
     let edited = "diff --git a/o.rs b/n2.rs\nsimilarity index 80%\nrename from o.rs\nrename to n2.rs\nindex 1..2 100644\n--- a/o.rs\n+++ b/n2.rs\n@@ -1 +1 @@\n-a\n+b\n";
-    let pure = "diff --git a/p.rs b/q.rs\nsimilarity index 100%\nrename from p.rs\nrename to q.rs\n";
+    let pure =
+        "diff --git a/p.rs b/q.rs\nsimilarity index 100%\nrename from p.rs\nrename to q.rs\n";
     let git = [added, deleted, edited, pure].concat();
 
     let renamed = |path: &str, old: &str, body: Option<&str>| FileDiff {
@@ -381,7 +382,9 @@ fn a_rename_from_another_file_or_a_cut_rename_counts_as_changed() {
 #[test]
 fn a_new_file_with_hunks_ignores_its_mode_but_a_file_without_hunks_does_not() {
     let added = |mode: &str| {
-        format!("diff --git a/n b/n\nnew file mode {mode}\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+a\n")
+        format!(
+            "diff --git a/n b/n\nnew file mode {mode}\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+a\n"
+        )
     };
     assert_eq!(
         hash_of(&added("100644"), "n"),
@@ -421,7 +424,10 @@ fn a_reduced_patch_over_the_limit_only_lists_its_files() {
     let cut = reduced_patch_within(&files, full.len() - 1);
     let text = String::from_utf8(cut.clone()).unwrap();
     assert!(!text.contains("@@"), "{text}");
-    assert!(text.contains("# a.rs: the forge gives no patch: the file is too large\n"), "{text}");
+    assert!(
+        text.contains("# a.rs: the forge gives no patch: the file is too large\n"),
+        "{text}"
+    );
     let hashes = file_hashes(&cut);
     assert_eq!(hashes.len(), 2);
     assert!(hashes.iter().all(|file| file.hash.is_none()));

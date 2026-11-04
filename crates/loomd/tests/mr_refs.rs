@@ -15,10 +15,12 @@ use loom_api::{ContextAssignment, Remote, RemoteUrl, RepoIdentity, RepoSummary};
 use loom_forge::diff::{file_hashes, reduced_patch, since_last_review};
 use loom_forge::model::{MrKey, MrVersion, Sha};
 use loom_forge::{github, gitlab};
+use loom_repo::update::UpdatePolicies;
 use loomd::mr_refs::git::{
-    LocalDiff, Reviewed, Step, clone_candidates, delete_refs, fetch_mr, set_reviewed, version_diff,
+    LocalDiff, Reviewed, Step, clone_candidates, delete_refs, fetch_mr, has_head_ref, set_reviewed,
+    version_diff,
 };
-use loomd::mr_refs::{MrClone, choose_clone, head_ref, reviewed_ref};
+use loomd::mr_refs::{MrClone, PATCH_CAP, choose_clone, head_ref, reviewed_ref};
 use loomd::repo_update::GitRunner;
 use tempfile::TempDir;
 
@@ -137,7 +139,7 @@ impl Scenario {
     }
 
     fn diff(&self, version: &MrVersion) -> LocalDiff {
-        version_diff(&runner(&self.home()), &self.clone, version)
+        version_diff(&runner(&self.home()), &self.clone, version, PATCH_CAP)
             .unwrap()
             .unwrap()
     }
@@ -287,7 +289,8 @@ fn without_the_reviewed_ref_git_collects_v1() {
         version_diff(
             &runner(&scenario.home()),
             &scenario.clone,
-            &github_version("github/pull-412.v1.json")
+            &github_version("github/pull-412.v1.json"),
+            PATCH_CAP
         ),
         Ok(None)
     );
@@ -491,7 +494,12 @@ fn a_fork_as_origin_and_the_project_as_upstream_uses_upstream() {
         &scenario.clone,
         &[("origin", "me/shop"), ("upstream", "acme/shop")],
     )];
-    let candidates = clone_candidates(&repos, "github.com", "acme/shop");
+    let candidates = clone_candidates(
+        &repos,
+        "github.com",
+        "acme/shop",
+        &UpdatePolicies::default(),
+    );
     let clone = choose_clone(None, &candidates, "github.com", "acme/shop").unwrap();
     assert_eq!(clone.remote, "upstream");
 
@@ -528,7 +536,12 @@ fn the_worktrees_of_a_clone_are_told_apart_and_a_gone_clone_is_no_candidate() {
         summary(&scenario.clone, &project),
         summary(&scenario.clone, &[("origin", "acme/other")]),
     ];
-    let candidates = clone_candidates(&repos, "github.com", "acme/shop");
+    let candidates = clone_candidates(
+        &repos,
+        "github.com",
+        "acme/shop",
+        &UpdatePolicies::default(),
+    );
     assert_eq!(candidates.len(), 2);
     assert_eq!(candidates[0].repo.identity.path, linked);
     assert!(!candidates[0].main);
@@ -561,9 +574,22 @@ fn the_patch_does_not_depend_on_the_diff_configuration_of_the_user() {
         ("diff.external", external.to_str().unwrap()),
         ("diff.orderFile", "/nonexistent"),
         ("core.abbrev", "12"),
+        ("diff.submodule", "log"),
+        ("diff.ignoreSubmodules", "all"),
     ] {
         scenario.git(&["config", key, value]);
     }
+    assert_eq!(scenario.diff(&version), plain);
+
+    // Attributes of the working tree and of the user: not those of the commit.
+    fs::write(scenario.clone.join(".gitattributes"), "*.rs -diff\n").unwrap();
+    let attributes = scenario.dir.path().join("attributes");
+    fs::write(&attributes, "*.lock -diff\n").unwrap();
+    scenario.git(&[
+        "config",
+        "core.attributesFile",
+        attributes.to_str().unwrap(),
+    ]);
     assert_eq!(scenario.diff(&version), plain);
 }
 
@@ -606,18 +632,10 @@ fn a_remote_that_fails_is_a_failure_that_writes_nothing() {
     let before = scenario.snapshot();
     let moved = scenario.dir.path().join("moved.git");
     fs::rename(&scenario.forge, &moved).unwrap();
-    assert!(matches!(scenario.fetch(), Step::Failed(_)));
+    assert!(matches!(scenario.fetch(), Step::Failed { .. }));
     assert_eq!(scenario.snapshot(), before);
     fs::rename(&moved, &scenario.forge).unwrap();
 
-    // A base branch that the forge no longer has: the head does not move alone.
-    let missing = fetch_mr(
-        &runner(&scenario.home()),
-        &scenario.origin(),
-        &github_key(),
-        "gone",
-    );
-    assert!(matches!(missing, Step::Failed(_)), "{missing:?}");
     // A name from the forge that would write another ref is refused before git.
     let refused = fetch_mr(
         &runner(&scenario.home()),
@@ -625,7 +643,7 @@ fn a_remote_that_fails_is_a_failure_that_writes_nothing() {
         &github_key(),
         "main:refs/heads/main",
     );
-    assert!(matches!(refused, Step::Failed(_)), "{refused:?}");
+    assert!(matches!(refused, Step::Failed { .. }), "{refused:?}");
     assert_eq!(scenario.snapshot(), before);
     // A version whose base the clone does not have is a reason, not a panic.
     let error = version_diff(
@@ -638,6 +656,7 @@ fn a_remote_that_fails_is_a_failure_that_writes_nothing() {
             forge_version_id: None,
             created_at: None,
         },
+        PATCH_CAP,
     );
     assert!(error.is_err(), "{error:?}");
 }
@@ -675,4 +694,391 @@ fn without_a_clone_the_diff_of_the_forge_gives_the_same_since_last_review() {
         &gitlab::parse_diffs(&fixture("gitlab/merge-request-88-diffs.json")).unwrap(),
     );
     assert_eq!(since_last_review(&v1, &gitlab), [JWT]);
+}
+
+/// A `git` that logs each command, then runs the real one. `refuse` is an option of a version
+/// that does not know it: as an older git, it stops there.
+fn logging_git(scenario: &Scenario, refuse: Option<&str>) -> (GitRunner, PathBuf) {
+    let log = scenario.dir.path().join("git.log");
+    let program = scenario.dir.path().join("logging-git");
+    let refusal = refuse.map_or_else(String::new, |option| {
+        format!("case \"$1\" in {option}*) echo \"unknown option: $1\" >&2; exit 129;; esac\n")
+    });
+    fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$GIT_SSH_COMMAND\" \"$*\" >> '{}'\n{refusal}exec git \"$@\"\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let runner = GitRunner {
+        program,
+        ..runner(&scenario.home())
+    };
+    (runner, log)
+}
+
+#[test]
+fn an_older_git_without_attr_source_still_gives_the_patch() {
+    let scenario = Scenario::new();
+    assert_eq!(scenario.fetch(), Step::Done);
+    let version = github_version("github/pull-412.v1.json");
+    let plain = scenario.diff(&version);
+    let (old, log) = logging_git(&scenario, Some("--attr-source"));
+    let got = version_diff(&old, &scenario.clone, &version, PATCH_CAP)
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, plain);
+    let log = fs::read_to_string(log).unwrap();
+    assert!(log.contains("--attr-source"), "{log}");
+}
+
+#[test]
+fn the_patch_is_only_kept_within_its_limit() {
+    let scenario = Scenario::new();
+    assert_eq!(scenario.fetch(), Step::Done);
+    let version = github_version("github/pull-412.v1.json");
+    let size = scenario.diff(&version).patch.len();
+    let at_limit = version_diff(&runner(&scenario.home()), &scenario.clone, &version, size)
+        .unwrap()
+        .unwrap();
+    assert!(!at_limit.over_limit);
+    assert_eq!(at_limit.patch.len(), size);
+    let over = version_diff(
+        &runner(&scenario.home()),
+        &scenario.clone,
+        &version,
+        size - 1,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(over.over_limit);
+    assert_eq!(over.patch, Vec::<u8>::new());
+    assert_eq!(over.merge_base, sha(M1));
+}
+
+#[test]
+fn a_base_branch_that_the_forge_no_longer_has_does_not_stop_the_head() {
+    let scenario = Scenario::new();
+    let step = fetch_mr(
+        &runner(&scenario.home()),
+        &scenario.origin(),
+        &github_key(),
+        "gone",
+    );
+    assert_eq!(step, Step::Done);
+    assert_eq!(scenario.head_ref_commit(), V1);
+    let refs = scenario.git(&["for-each-ref", "--format=%(refname)", "refs/loom/"]);
+    assert_eq!(refs.trim(), head_ref("origin", 412));
+    // The clone has the base of the version: the diff does not need the branch.
+    let diff = scenario.diff(&github_version("github/pull-412.v1.json"));
+    assert_eq!(diff.merge_base, sha(M1));
+
+    // A head that the forge does not have is a failure of this MR, not of its host.
+    scenario.forge_git(&["update-ref", "-d", "refs/pull/412/head"]);
+    let missing = fetch_mr(
+        &runner(&scenario.home()),
+        &scenario.origin(),
+        &github_key(),
+        "main",
+    );
+    assert!(
+        matches!(
+            &missing,
+            Step::Failed {
+                problem: loom_api::RemoteProblem::Other,
+                ..
+            }
+        ),
+        "{missing:?}"
+    );
+}
+
+#[test]
+fn a_repository_with_the_policy_off_is_no_candidate() {
+    let scenario = Scenario::new();
+    let config = loom_config::config::parse_config(
+        "[contexts.client]\nupdate = \"off\"\n[contexts.other]\nupdate = \"fetch\"\n",
+        Path::new("config.toml"),
+    )
+    .unwrap();
+    let policies = UpdatePolicies::new(&config, &scenario.home());
+    let mut repo = summary(&scenario.clone, &[("origin", "acme/shop")]);
+    repo.identity.context = ContextAssignment::Override {
+        context: "client".parse().unwrap(),
+    };
+    assert!(
+        clone_candidates(
+            std::slice::from_ref(&repo),
+            "github.com",
+            "acme/shop",
+            &policies
+        )
+        .is_empty()
+    );
+    repo.identity.context = ContextAssignment::Override {
+        context: "other".parse().unwrap(),
+    };
+    assert_eq!(
+        clone_candidates(
+            std::slice::from_ref(&repo),
+            "github.com",
+            "acme/shop",
+            &policies
+        )
+        .len(),
+        1
+    );
+}
+
+/// The commit of the `moves` fixtures, on M1.
+fn commit_the_moves(scenario: &Scenario) -> Sha {
+    scenario.git(&["checkout", "-q", "-b", "moves", M1]);
+    fs::write(scenario.clone.join("src/new.rs"), "pub fn new() {}\n").unwrap();
+    scenario.git(&["rm", "-q", "src/auth/mod.rs"]);
+    fs::create_dir_all(scenario.clone.join("docs")).unwrap();
+    scenario.git(&["mv", "README.md", "docs/README.md"]);
+    scenario.git(&["mv", "src/api/login.rs", "src/api/signin.rs"]);
+    let signin = scenario.clone.join("src/api/signin.rs");
+    let text = fs::read_to_string(&signin).unwrap();
+    fs::write(
+        &signin,
+        text.replace("Response::ok(claims.sub)", "Response::ok(claims.exp)"),
+    )
+    .unwrap();
+    scenario.git(&["add", "-A"]);
+    scenario.git(&[
+        "-c",
+        "user.name=a",
+        "-c",
+        "user.email=a@a",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "moves",
+    ]);
+    sha(scenario.git(&["rev-parse", "HEAD"]).trim())
+}
+
+#[test]
+fn added_deleted_and_renamed_files_hash_the_same_from_git_and_from_both_forges() {
+    let scenario = Scenario::new();
+    let head = commit_the_moves(&scenario);
+    let local = scenario.diff(&MrVersion {
+        head_sha: head,
+        base_sha: sha(M1),
+        merge_base: None,
+        forge_version_id: None,
+        created_at: None,
+    });
+    let github =
+        reduced_patch(&github::parse_files(&fixture("github/pull-files.moves.json")).unwrap());
+    let gitlab = reduced_patch(
+        &gitlab::parse_diffs(&fixture("gitlab/merge-request-diffs.moves.json")).unwrap(),
+    );
+    let sorted = |patch: &[u8]| {
+        let mut files = file_hashes(patch);
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files
+    };
+    assert_eq!(sorted(&local.patch).len(), 4);
+    assert!(sorted(&local.patch).iter().all(|file| file.hash.is_some()));
+    assert_eq!(sorted(&github), sorted(&local.patch));
+    assert_eq!(sorted(&gitlab), sorted(&local.patch));
+    assert_eq!(
+        since_last_review(&local.patch, &github),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        since_last_review(&gitlab, &local.patch),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn the_exact_refs_of_an_mr_go_and_the_refs_of_a_remote_under_its_prefix_stay() {
+    let scenario = Scenario::new();
+    let home = scenario.home();
+    // MR 12 of the remote `foo`, and MR 34 of the remote `foo/12`.
+    scenario.git(&["update-ref", "refs/loom/mr/foo/12/head", V1]);
+    scenario.git(&["update-ref", "refs/loom/mr/foo/12/34/head", V1]);
+    let foo = MrClone {
+        path: scenario.clone.clone(),
+        remote: "foo".to_owned(),
+    };
+    assert_eq!(delete_refs(&runner(&home), &foo, 12), Step::Done);
+    let left = scenario.git(&["for-each-ref", "--format=%(refname)", "refs/loom/"]);
+    assert_eq!(left.trim(), "refs/loom/mr/foo/12/34/head");
+}
+
+#[test]
+fn the_head_ref_is_seen_or_missed() {
+    let scenario = Scenario::new();
+    let run = runner(&scenario.home());
+    assert!(!has_head_ref(&run, &scenario.origin(), 412));
+    assert_eq!(scenario.fetch(), Step::Done);
+    assert!(has_head_ref(&run, &scenario.origin(), 412));
+}
+
+/// A clone without blobs: `file://`, so that a filter applies.
+fn blobless_clone(scenario: &Scenario) -> PathBuf {
+    scenario.forge_git(&["config", "uploadpack.allowFilter", "true"]);
+    scenario.forge_git(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+    let partial = scenario.dir.path().join("partial");
+    git(
+        &scenario.home(),
+        scenario.dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--no-checkout",
+            "--filter=blob:none",
+            "--single-branch",
+            &format!("file://{}", scenario.forge.display()),
+            partial.to_str().unwrap(),
+        ],
+    );
+    partial
+}
+
+#[test]
+fn a_partial_clone_is_not_asked_for_a_commit_and_its_diff_can_fetch_blobs_in_batch_mode() {
+    let scenario = Scenario::new();
+    let partial = blobless_clone(&scenario);
+    let clone = MrClone {
+        path: partial.clone(),
+        remote: "origin".to_owned(),
+    };
+    let run = runner(&scenario.home());
+    // V2 is on the forge, not in the clone: a lazy fetch would bring it and say that it is here.
+    assert_eq!(
+        set_reviewed(&run, &clone, 412, &sha(V2)),
+        Reviewed::NoCommit
+    );
+    let local = git(&scenario.home(), &partial, &["rev-list", "--all"]);
+    assert!(!local.contains(V2), "{local}");
+
+    assert_eq!(fetch_mr(&run, &clone, &github_key(), "main"), Step::Done);
+    let (logging, log) = logging_git(&scenario, None);
+    let diff = version_diff(
+        &logging,
+        &partial,
+        &github_version("github/pull-412.v1.json"),
+        PATCH_CAP,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(file_hashes(&diff.patch).len(), 3);
+    // `git diff` read blobs through the remote: it cannot ask for a passphrase.
+    let log = fs::read_to_string(log).unwrap();
+    let line = log.lines().find(|line| line.contains(" diff ")).unwrap();
+    assert!(line.starts_with("ssh -o BatchMode=yes|"), "{line}");
+}
+
+#[test]
+fn a_real_submodule_is_not_fetched_and_its_diff_does_not_depend_on_the_configuration() {
+    let scenario = Scenario::new();
+    let home = scenario.home();
+    // The submodule, with one commit, then one more that only its remote has.
+    let sub_work = scenario.dir.path().join("sub-work");
+    fs::create_dir_all(&sub_work).unwrap();
+    let in_sub = |args: &[&str]| git(&home, &sub_work, args);
+    in_sub(&["init", "-q", "-b", "main"]);
+    let sub_commit = |message: &str| {
+        fs::write(sub_work.join("file"), message).unwrap();
+        in_sub(&["add", "-A"]);
+        in_sub(&[
+            "-c",
+            "user.name=a",
+            "-c",
+            "user.email=a@a",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ]);
+        in_sub(&["rev-parse", "HEAD"]).trim().to_owned()
+    };
+    let s1 = sub_commit("one");
+    let sub = scenario.dir.path().join("sub.git");
+    git(
+        &home,
+        scenario.dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            sub_work.to_str().unwrap(),
+            sub.to_str().unwrap(),
+        ],
+    );
+    // The MR adds the submodule.
+    scenario.git(&["submodule", "add", "-q", sub.to_str().unwrap(), "vendored"]);
+    scenario.git(&[
+        "-c",
+        "user.name=a",
+        "-c",
+        "user.email=a@a",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "add a submodule",
+    ]);
+    let head = sha(scenario.git(&["rev-parse", "HEAD"]).trim());
+    scenario.git(&[
+        "push",
+        "-q",
+        "origin",
+        &format!("+{}:refs/pull/412/head", head.as_str()),
+        "+HEAD:refs/heads/with-sub",
+    ]);
+
+    let s2 = sub_commit("two");
+    git(
+        &home,
+        &sub_work,
+        &["push", "-q", sub.to_str().unwrap(), "HEAD:refs/heads/main"],
+    );
+    let in_vendored = scenario.clone.join("vendored");
+    for dir in [&scenario.clone, &in_vendored] {
+        git(&home, dir, &["config", "protocol.file.allow", "always"]);
+        git(&home, dir, &["config", "fetch.recurseSubmodules", "true"]);
+    }
+    // The configuration would fetch it without the flag.
+    let before = Snapshot::take(&home, &in_vendored);
+    assert_eq!(scenario.fetch(), Step::Done);
+    assert_eq!(Snapshot::take(&home, &in_vendored), before);
+    assert_eq!(
+        git(
+            &home,
+            &in_vendored,
+            &["rev-parse", "refs/remotes/origin/main"]
+        )
+        .trim(),
+        s1
+    );
+    let unknown = git_run(&home, &in_vendored, &["cat-file", "-e", &s2]);
+    assert!(!unknown.status.success());
+
+    let version = MrVersion {
+        head_sha: head,
+        base_sha: sha(M1),
+        merge_base: None,
+        forge_version_id: None,
+        created_at: None,
+    };
+    let plain = scenario.diff(&version);
+    let text = String::from_utf8_lossy(&plain.patch).into_owned();
+    assert!(text.contains(&format!("+Subproject commit {s1}")), "{text}");
+    scenario.git(&["config", "diff.submodule", "log"]);
+    scenario.git(&["config", "diff.ignoreSubmodules", "all"]);
+    assert_eq!(scenario.diff(&version), plain);
 }

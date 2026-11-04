@@ -8,30 +8,37 @@
 //! nothing new starts no git command.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use loom_api::{ContextName, ForgeKind, RepoSummary, TaskId};
+use loom_api::{ContextName, ForgeKind, RemoteProblem, RepoSummary, TaskId};
 use loom_forge::client::{
     Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient, GitlabForge as _,
     GitlabMr,
 };
-use loom_forge::diff::reduced_patch;
+use loom_forge::diff::reduced_patch_within;
 use loom_forge::model::{FileDiff, Mr, MrForgeIds, MrKey, MrState, Sha};
+use loom_repo::remote_endpoint;
+use loom_repo::update::UpdatePolicies;
 use loom_store::files::{ARCHIVE_DIR, TASKS_DIR};
 use loom_store::port::TaskLocation;
 use loom_store::{Reader, RepoFilter};
 use loomd::forge::check::ForgeTarget;
 use loomd::forge::token::TokenResolver;
+use loomd::hooks;
 use loomd::mr_refs::git::{
-    Reviewed, Step, clone_candidates, delete_refs, fetch_mr, set_reviewed, version_diff,
+    Reviewed, Step, clone_candidates, delete_refs, fetch_mr, has_head_ref, is_off, set_reviewed,
+    version_diff,
 };
 use loomd::mr_refs::{
-    DiffKind, DiffPlan, DiffRecord, MrClone, VersionDiff, choose_clone, diff_plan, patch_path,
-    read_clone, refs_to_clean, review_rows,
+    DIFFS_DIR, DiffKind, DiffPlan, DiffRecord, MrClone, MrClones, Retry, VersionDiff, choose_clone,
+    diff_plan, needs_refs, next_clones, patch_budget, patch_name, patch_path, read_clones,
+    refs_to_clean, remote_names_other_project, review_rows, stops_the_endpoint, too_large_note,
 };
 use loomd::repo_update::GitRunner;
 use loomd::review_sync::{
@@ -84,6 +91,7 @@ impl MrWorker {
 /// Starts the worker thread.
 pub fn start(
     runner: GitRunner,
+    policies: UpdatePolicies,
     stores: BTreeMap<ContextName, PathBuf>,
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
@@ -94,12 +102,19 @@ pub fn start(
     let worker = Worker {
         stopping: Arc::clone(&stopping),
         runner,
+        policies,
         stores,
         resolver,
         tasks,
         user_agent,
         reviewed: HashMap::new(),
         cleaned: HashSet::new(),
+        retries: HashMap::new(),
+        pass_file: std::env::var(hooks::MR_PASS_FILE_ENV)
+            .ok()
+            .as_deref()
+            .and_then(|value| hooks::mr_pass_file(Some(value)))
+            .map(Path::to_path_buf),
     };
     let thread = thread::Builder::new()
         .name("mr-refs".to_owned())
@@ -119,6 +134,8 @@ pub fn start(
 struct Worker {
     stopping: Arc<AtomicBool>,
     runner: GitRunner,
+    /// A repository with the policy `off` gets no git command.
+    policies: UpdatePolicies,
     stores: BTreeMap<ContextName, PathBuf>,
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
@@ -129,13 +146,18 @@ struct Worker {
     /// The archived tasks whose refs are gone, or that have none. A restart looks at each once
     /// more: so a cleanup that stopped with the daemon ends after the restart.
     cleaned: HashSet<TaskId>,
+    /// The MRs whose last work failed. In memory: a restart tries each once more.
+    retries: HashMap<TaskId, Backoff>,
+    /// The file of the test hook.
+    pass_file: Option<PathBuf>,
 }
 
-/// What is known not to work for the rest of a pass: its MRs are on one host, and each attempt
-/// could wait for a timeout.
+/// What is known not to work for the rest of a pass, since each try could wait for a timeout.
 #[derive(Default)]
 struct Down {
-    git: bool,
+    /// The endpoints that failed for a reason of the host, and the clones whose remote is gone.
+    git: HashSet<String>,
+    /// The forge host: a failure of its token, of its rate or of its network.
     forge: bool,
 }
 
@@ -143,7 +165,7 @@ struct Down {
 struct MirrorRead {
     dir: PathBuf,
     mr: Mr,
-    clone: Option<MrClone>,
+    clones: MrClones,
     versions: Vec<VersionRecord>,
     state: Option<SyncState>,
 }
@@ -153,7 +175,7 @@ fn read_mirror(dir: PathBuf) -> Option<MirrorRead> {
     let read_json = |name: &str| std::fs::read(dir.join(name)).ok();
     Some(MirrorRead {
         mr: read_mr(&mr_json, "")?,
-        clone: read_clone(&mr_json),
+        clones: read_clones(&mr_json),
         versions: read_json(VERSIONS_FILE)
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default(),
@@ -173,26 +195,43 @@ impl Worker {
                 return;
             };
             // Polls that ended during the last pass ask for one pass each, at most.
-            let mut targets = vec![first];
+            let mut targets = vec![(first, 1)];
             for request in received.try_iter() {
                 match request {
                     Request::Pass(target) => {
-                        let same = |known: &ForgeTarget| {
+                        let known = targets.iter_mut().find(|(known, _)| {
                             known.context == target.context && known.host == target.host
-                        };
-                        if !targets.iter().any(|known| same(known)) {
-                            targets.push(target);
+                        });
+                        match known {
+                            Some((_, polls)) => *polls += 1,
+                            None => targets.push((target, 1)),
                         }
                     }
                     Request::Stop => return,
                 }
             }
-            for target in targets {
+            for (target, polls) in targets {
                 if self.stopping() {
                     return;
                 }
                 self.pass(&target);
+                self.signal_pass(polls);
             }
+        }
+    }
+
+    /// The test hook: one line for each poll that the pass served.
+    fn signal_pass(&self, polls: usize) {
+        let Some(path) = &self.pass_file else {
+            return;
+        };
+        let written = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut file| file.write_all("pass\n".repeat(polls).as_bytes()));
+        if let Err(error) = written {
+            warn!(%error, "cannot write the file of the test hook");
         }
     }
 
@@ -213,7 +252,7 @@ impl Worker {
                 return;
             }
         };
-        self.clean(target, &review_rows(&rows));
+        self.clean(target, &repos, &review_rows(&rows));
         let mut down = Down::default();
         for (id, key, _) in tracked_reviews(&rows, &target.context, &target.host) {
             if self.stopping() {
@@ -224,7 +263,12 @@ impl Worker {
     }
 
     /// Deletes the refs of the archived tasks of `target`.
-    fn clean(&mut self, target: &ForgeTarget, rows: &[loomd::mr_refs::ReviewRow]) {
+    fn clean(
+        &mut self,
+        target: &ForgeTarget,
+        repos: &[RepoSummary],
+        rows: &[loomd::mr_refs::ReviewRow],
+    ) {
         let Some(root) = self.stores.get(&target.context).cloned() else {
             return;
         };
@@ -239,27 +283,53 @@ impl Worker {
                 .join(ARCHIVE_DIR)
                 .join(format!("{year:04}"))
                 .join(row.id.as_str());
-            let clone = std::fs::read(mirror_dir(&task_dir, &row.key).join(MR_FILE))
-                .ok()
-                .and_then(|bytes| read_clone(&bytes))
-                .filter(|clone| clone.path.is_dir());
-            let number = row.key.number();
-            let step = clone
-                .as_ref()
-                .map_or(Step::Done, |clone| delete_refs(&self.runner, clone, number));
-            match step {
-                Step::Done => {
-                    if let Some(clone) = clone {
-                        self.reviewed.remove(&(clone.path, clone.remote, number));
-                    }
-                    self.cleaned.insert(row.id.clone());
-                }
-                Step::Busy(_) => {
-                    debug!(key = %row.key, "a git process holds a lock, the refs of the archived task go at the next poll");
-                }
-                Step::Failed(error) => {
-                    warn!(key = %row.key, %error, "cannot delete the refs of an archived task, tried again at the next poll");
-                }
+            let clones = std::fs::read(mirror_dir(&task_dir, &row.key).join(MR_FILE))
+                .map(|bytes| read_clones(&bytes))
+                .unwrap_or_default();
+            let mut done = true;
+            for clone in clones.clone.iter().chain(&clones.retired) {
+                done &= self.drop_refs(repos, clone, &row.key, &target.host);
+            }
+            if done {
+                self.cleaned.insert(row.id.clone());
+            }
+        }
+    }
+
+    /// Deletes the refs of `key` in `clone`, which no longer uses them. `true` when nothing is
+    /// left to do: otherwise the next poll tries again. A repository with the policy `off` gets
+    /// no git command, so its refs wait until the policy changes.
+    fn drop_refs(
+        &mut self,
+        repos: &[RepoSummary],
+        clone: &MrClone,
+        key: &MrKey,
+        host: &str,
+    ) -> bool {
+        if !clone.path.is_dir() {
+            return true;
+        }
+        let indexed = repos.iter().find(|repo| repo.identity.path == clone.path);
+        if indexed.is_some_and(|repo| is_off(repo, &self.policies)) {
+            return false;
+        }
+        if remote_names_other_project(repos, clone, host, key.project()) {
+            return true;
+        }
+        let number = key.number();
+        match delete_refs(&self.runner, clone, number) {
+            Step::Done => {
+                self.reviewed
+                    .remove(&(clone.path.clone(), clone.remote.clone(), number));
+                true
+            }
+            Step::Busy(_) => {
+                debug!(%key, "a git process holds a lock, the refs of the MR go at the next poll");
+                false
+            }
+            Step::Failed { error, .. } => {
+                warn!(%key, %error, "cannot delete the refs of an MR, tried again at the next poll");
+                false
             }
         }
     }
@@ -281,6 +351,10 @@ impl Worker {
             // No mirror yet, or one that the next full read replaces.
             return;
         };
+        // No more versions come; its refs stay until the archive.
+        if mirror.mr.state != MrState::Open {
+            return;
+        }
         let head = mirror.mr.version.head_sha.clone();
         let recorded = mirror
             .versions
@@ -288,40 +362,68 @@ impl Worker {
             .find(|record| record.version.head_sha == head)
             .and_then(|record| record.diff);
         let patch_exists = patch_path(&mirror.dir, &head).is_file();
-        let candidates = clone_candidates(repos, &target.host, key.project());
-        let clone = choose_clone(
-            mirror.clone.as_ref(),
+        let candidates = clone_candidates(repos, &target.host, key.project(), &self.policies);
+        let chosen = choose_clone(
+            mirror.clones.clone.as_ref(),
             &candidates,
             &target.host,
             key.project(),
         );
-        // No more versions come; its refs stay until the archive.
-        if mirror.mr.state != MrState::Open {
-            return;
-        }
-        let plan = diff_plan(mirror.mr.state, recorded, patch_exists, clone.is_some());
-        if let Some(clone) = &clone {
-            self.keep_reviewed(clone, key, mirror.state.as_ref());
-        }
-        let diffs = match (plan, &clone) {
-            (DiffPlan::FromClone, Some(clone)) if !down.git => {
-                self.local_diffs(clone, key, &mirror, down)
+        let mut clones = next_clones(&mirror.clones, chosen);
+        let mut retired = std::mem::take(&mut clones.retired);
+        retired.retain(|old| !self.drop_refs(repos, old, key, &target.host));
+        clones.retired = retired;
+        let plan = diff_plan(
+            mirror.mr.state,
+            recorded,
+            patch_exists,
+            clones.clone.is_some(),
+        );
+        let same_clone = clones.clone == mirror.clones.clone;
+        let refs_only = clones.clone.as_ref().is_some_and(|clone| {
+            // A read for each open MR at each poll: refs can go without loom knowing.
+            let present = plan != DiffPlan::Keep
+                || !same_clone
+                || has_head_ref(&self.runner, clone, key.number());
+            if !present {
+                self.reviewed
+                    .remove(&(clone.path.clone(), clone.remote.clone(), key.number()));
             }
-            (DiffPlan::FromForge, _) if !down.forge => self.forge_diff(target, key, &mirror, down),
-            (DiffPlan::Keep | DiffPlan::FromClone | DiffPlan::FromForge, _) => Vec::new(),
-        };
-        if clone == mirror.clone && diffs.is_empty() {
-            return;
-        }
-        // The fetch may have brought the commit that the last verdict is on.
-        if let Some(clone) = &clone {
+            needs_refs(plan, same_clone, present)
+        });
+        if let Some(clone) = &clones.clone {
             self.keep_reviewed(clone, key, mirror.state.as_ref());
+        }
+        let work = Work {
+            target,
+            repos,
+            id,
+            key,
+            mirror: &mirror,
+            recorded,
+            patch_exists,
+        };
+        let diffs = match (plan, &clones.clone) {
+            (DiffPlan::FromClone, Some(clone)) => self.local_diffs(&work, clone, down),
+            (DiffPlan::Keep, Some(clone)) if refs_only => {
+                let _ = self.fetch(&work, clone, down);
+                Vec::new()
+            }
+            (DiffPlan::FromForge, _) => self.reduced_diff(&work, down),
+            (DiffPlan::Keep | DiffPlan::FromClone, _) => Vec::new(),
+        };
+        // The fetch may have brought the commit that the last verdict is on.
+        if let Some(clone) = &clones.clone {
+            self.keep_reviewed(clone, key, mirror.state.as_ref());
+        }
+        if clones == mirror.clones && diffs.is_empty() {
+            return;
         }
         let record = DiffRecord {
             context: target.context.clone(),
             id: id.clone(),
             key: key.clone(),
-            clone,
+            clones,
             diffs,
         };
         match self.tasks.record_mr_diffs(record) {
@@ -352,78 +454,211 @@ impl Worker {
             Reviewed::Not(Step::Busy(_) | Step::Done) => {
                 debug!(%key, "a git process holds a lock, the reviewed ref moves at the next poll");
             }
-            Reviewed::Not(Step::Failed(error)) => {
+            Reviewed::Not(Step::Failed { error, .. }) => {
                 warn!(%key, %error, "cannot move the reviewed ref of an MR");
             }
         }
     }
 
-    /// Fetches the refs, then makes the patch of each version that the clone can give.
-    fn local_diffs(
-        &self,
-        clone: &MrClone,
-        key: &MrKey,
-        mirror: &MirrorRead,
-        down: &mut Down,
-    ) -> Vec<VersionDiff> {
-        match fetch_mr(&self.runner, clone, key, &mirror.mr.base_ref) {
-            Step::Done => {}
+    /// Whether this poll tries the failing work of the MR. The backoff of a head and a base
+    /// says nothing of a new head or base.
+    fn due(&mut self, work: &Work<'_>) -> bool {
+        let mr = &work.mirror.mr;
+        let entry = self
+            .retries
+            .entry(work.id.clone())
+            .or_insert_with(|| Backoff {
+                head: mr.version.head_sha.clone(),
+                base_ref: mr.base_ref.clone(),
+                retry: Retry::default(),
+            });
+        if entry.head != mr.version.head_sha || entry.base_ref != mr.base_ref {
+            entry.head.clone_from(&mr.version.head_sha);
+            entry.base_ref.clone_from(&mr.base_ref);
+            entry.retry = Retry::default();
+        }
+        entry.retry.due()
+    }
+
+    fn failed(&mut self, work: &Work<'_>) {
+        if let Some(entry) = self.retries.get_mut(work.id) {
+            entry.retry.failed();
+        }
+    }
+
+    /// Fetches the refs of the MR, unless its endpoint or clone is down, or the MR waits.
+    fn fetch(&mut self, work: &Work<'_>, clone: &MrClone, down: &mut Down) -> Fetched {
+        let endpoint = endpoint_of(work.repos, clone);
+        let clone_key = clone.path.display().to_string();
+        if down.git.contains(&endpoint) || down.git.contains(&clone_key) || !self.due(work) {
+            return Fetched::Waits;
+        }
+        let key = work.key;
+        match fetch_mr(&self.runner, clone, key, &work.mirror.mr.base_ref) {
+            Step::Done => Fetched::Done,
             Step::Busy(_) => {
                 debug!(%key, "a git process holds a lock, the MR is fetched at the next poll");
-                return Vec::new();
+                Fetched::Waits
             }
-            Step::Failed(error) => {
-                warn!(%key, %error, "cannot fetch an MR, tried again at the next poll");
-                down.git = true;
-                return Vec::new();
+            Step::Failed { error, problem } if stops_the_endpoint(problem) => {
+                warn!(%key, %error, problem = problem.as_str(), "cannot fetch an MR, the other MRs of its endpoint wait for the next poll");
+                down.git.insert(endpoint);
+                Fetched::Waits
+            }
+            Step::Failed { error, problem } => {
+                warn!(%key, %error, problem = problem.as_str(), "cannot fetch an MR, tried again later");
+                if matches!(problem, RemoteProblem::NotFound) {
+                    down.git.insert(clone_key);
+                }
+                self.failed(work);
+                Fetched::Failed
             }
         }
-        mirror
-            .versions
+    }
+
+    /// Fetches the refs, then makes the patch of each version that the clone can give. The
+    /// current head comes first: it has the first right to the room of the MR. When it gets no
+    /// local patch, it gets the patches of the forge.
+    fn local_diffs(
+        &mut self,
+        work: &Work<'_>,
+        clone: &MrClone,
+        down: &mut Down,
+    ) -> Vec<VersionDiff> {
+        match self.fetch(work, clone, down) {
+            Fetched::Done => {}
+            Fetched::Waits => return Vec::new(),
+            Fetched::Failed => return self.fallback(work, down),
+        }
+        let MirrorRead {
+            dir, mr, versions, ..
+        } = work.mirror;
+        let head = &mr.version.head_sha;
+        let key = work.key;
+        let mut used = patches_size(dir, head);
+        let mut diffs = Vec::new();
+        let mut head_over = None;
+        let todo = versions
             .iter()
-            .filter(|record| {
-                record.diff != Some(DiffKind::Local)
-                    || !patch_path(&mirror.dir, &record.version.head_sha).is_file()
-            })
-            .filter_map(|record| {
-                let version = &record.version;
-                match version_diff(&self.runner, &clone.path, version) {
-                    Ok(Some(diff)) => Some(VersionDiff {
+            .filter(|record| record.version.head_sha == *head)
+            .chain(versions.iter().filter(|record| {
+                record.version.head_sha != *head
+                    && !(matches!(record.diff, Some(DiffKind::Local | DiffKind::TooLarge))
+                        && patch_path(dir, &record.version.head_sha).is_file())
+            }));
+        for record in todo {
+            let version = &record.version;
+            let limit = patch_budget(used);
+            match version_diff(&self.runner, &clone.path, version, limit) {
+                Ok(Some(diff)) if !diff.over_limit => {
+                    used = used.saturating_add(diff.patch.len() as u64);
+                    diffs.push(VersionDiff {
                         head: version.head_sha.clone(),
                         merge_base: Some(diff.merge_base),
                         kind: DiffKind::Local,
                         patch: diff.patch,
-                    }),
-                    Ok(None) => {
-                        debug!(%key, head = version.head_sha.as_str(), "the clone does not have this version");
-                        None
-                    }
-                    Err(error) => {
-                        warn!(%key, head = version.head_sha.as_str(), %error, "cannot make the diff of a version");
-                        None
+                    });
+                }
+                Ok(Some(diff)) => {
+                    warn!(%key, head = version.head_sha.as_str(), limit, "the diff of a version is over the limit of its patch");
+                    if version.head_sha == *head {
+                        head_over = Some((diff.merge_base, limit));
+                    } else {
+                        // The forge gives only its current head: a note says why no patch.
+                        diffs.push(VersionDiff {
+                            head: version.head_sha.clone(),
+                            merge_base: Some(diff.merge_base),
+                            kind: DiffKind::TooLarge,
+                            patch: too_large_note(limit),
+                        });
                     }
                 }
-            })
-            .collect()
+                Ok(None) => {
+                    debug!(%key, head = version.head_sha.as_str(), "the clone does not have this version");
+                }
+                Err(error) => {
+                    warn!(%key, head = version.head_sha.as_str(), %error, "cannot make the diff of a version");
+                }
+            }
+        }
+        if let Some((merge_base, limit)) = head_over {
+            match self.forge_patch(work, limit, down) {
+                Some(patch) => {
+                    let mut noted = too_large_note(limit);
+                    noted.extend(patch);
+                    diffs.push(VersionDiff {
+                        head: head.clone(),
+                        merge_base: Some(merge_base),
+                        kind: DiffKind::TooLarge,
+                        patch: noted,
+                    });
+                }
+                None => self.failed(work),
+            }
+        } else if !diffs.iter().any(|diff| diff.head == *head) {
+            // The clone cannot give it (no base, or no head): a failure of this MR.
+            self.failed(work);
+            diffs.extend(self.fallback(work, down));
+        } else {
+            self.retries.remove(work.id);
+        }
+        diffs
     }
 
-    /// The patch of the current head from the per-file patches of the forge. The forge gives
-    /// the patches of its current head only: a head that moved during the read gives nothing,
-    /// and the next poll sees it.
-    fn forge_diff(
-        &self,
-        target: &ForgeTarget,
-        key: &MrKey,
-        mirror: &MirrorRead,
-        down: &mut Down,
-    ) -> Vec<VersionDiff> {
+    /// The patches of the forge for an MR whose clone failed: nothing when it has them already.
+    fn fallback(&self, work: &Work<'_>, down: &mut Down) -> Vec<VersionDiff> {
+        if work.patch_exists && work.recorded == Some(DiffKind::Reduced) {
+            return Vec::new();
+        }
+        self.reduced_version(work, down).into_iter().collect()
+    }
+
+    /// The patch of an MR without a clone.
+    fn reduced_diff(&mut self, work: &Work<'_>, down: &mut Down) -> Vec<VersionDiff> {
+        if down.forge || !self.due(work) {
+            return Vec::new();
+        }
+        let version = self.reduced_version(work, down);
+        if version.is_some() {
+            self.retries.remove(work.id);
+        } else if !down.forge {
+            self.failed(work);
+        }
+        version.into_iter().collect()
+    }
+
+    fn reduced_version(&self, work: &Work<'_>, down: &mut Down) -> Option<VersionDiff> {
+        let MirrorRead { dir, mr, .. } = work.mirror;
+        let head = &mr.version.head_sha;
+        let limit = patch_budget(patches_size(dir, head));
+        Some(VersionDiff {
+            head: head.clone(),
+            merge_base: None,
+            kind: DiffKind::Reduced,
+            patch: self.forge_patch(work, limit, down)?,
+        })
+    }
+
+    /// The patch of the current head from the per-file patches of the forge, within `limit`
+    /// bytes. The forge gives the patches of its current head only: a head that moved during
+    /// the read gives nothing, and the next poll sees it.
+    fn forge_patch(&self, work: &Work<'_>, limit: usize, down: &mut Down) -> Option<Vec<u8>> {
+        if down.forge {
+            return None;
+        }
+        let Work {
+            target,
+            key,
+            mirror,
+            ..
+        } = work;
         let head = &mirror.mr.version.head_sha;
         let token = match self.resolver.resolve(&target.source) {
             Ok(token) => token,
             Err(error) => {
                 warn!(%key, %error, "cannot resolve the forge token, no patch for the MR");
                 down.forge = true;
-                return Vec::new();
+                return None;
             }
         };
         let read = match target.kind {
@@ -437,21 +672,73 @@ impl Worker {
             }
         };
         match read {
-            Ok(Some(files)) => vec![VersionDiff {
-                head: head.clone(),
-                merge_base: None,
-                kind: DiffKind::Reduced,
-                patch: reduced_patch(&files),
-            }],
-            Ok(None) => Vec::new(),
+            Ok(files) => files.map(|files| reduced_patch_within(&files, limit)),
             Err(error) => {
                 down.forge = stops_the_pass(&error);
                 let error = token.redact(&error.to_string());
                 warn!(%key, error = error.as_str(), "cannot read the patches of an MR from the forge, tried again at the next poll");
-                Vec::new()
+                None
             }
         }
     }
+}
+
+/// How a fetch ended, for the work after it.
+enum Fetched {
+    Done,
+    /// Nothing to tell of the MR: a lock, its endpoint down, or its backoff. The next poll sees.
+    Waits,
+    /// A failure of this MR.
+    Failed,
+}
+
+/// What the steps of one MR read.
+struct Work<'a> {
+    target: &'a ForgeTarget,
+    repos: &'a [RepoSummary],
+    id: &'a TaskId,
+    key: &'a MrKey,
+    mirror: &'a MirrorRead,
+    recorded: Option<DiffKind>,
+    patch_exists: bool,
+}
+
+/// The backoff of the head and the base of one MR.
+struct Backoff {
+    head: Sha,
+    base_ref: String,
+    retry: Retry,
+}
+
+/// The key of the endpoint of the remote of `clone`; the path of the clone when it is unknown.
+fn endpoint_of(repos: &[RepoSummary], clone: &MrClone) -> String {
+    repos
+        .iter()
+        .find(|repo| repo.identity.path == clone.path)
+        .and_then(|repo| {
+            repo.identity
+                .remotes
+                .iter()
+                .find(|remote| remote.name == clone.remote)
+        })
+        .map_or_else(
+            || clone.path.display().to_string(),
+            |remote| remote_endpoint(&remote.url).endpoint,
+        )
+}
+
+/// The bytes of the patches of the mirror `dir`, without the one of `head`, which a new one
+/// replaces.
+fn patches_size(dir: &Path, head: &Sha) -> u64 {
+    let own = patch_name(head);
+    std::fs::read_dir(dir.join(DIFFS_DIR)).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy() != own.as_str())
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|metadata| metadata.len())
+            .sum()
+    })
 }
 
 /// A failure that the other MRs of the host would meet too.

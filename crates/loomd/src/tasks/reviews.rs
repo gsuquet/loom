@@ -19,12 +19,12 @@ use loom_store::port::TaskLocation;
 use loom_store::tasks::IndexedState;
 use loomd::backup::commit_message;
 use loomd::mr_refs::{
-    DIFFS_DIR, DiffRecord, MrClone, patch_name, read_clone, record_diffs, with_clone,
+    DIFFS_DIR, DiffRecord, MrClones, patch_name, read_clones, record_diffs, with_clones,
 };
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
-    SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror,
-    mirror_dir, new_review_task, next_verdict, read_mr, review_key, url_host,
+    SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_current, merge_versions,
+    mirror, mirror_dir, new_review_task, next_verdict, read_mr, review_key, url_host,
 };
 use tracing::{info, info_span, warn};
 
@@ -45,8 +45,8 @@ pub struct ReviewsApplied {
 #[derive(Default)]
 struct Previous {
     mr: Option<Mr>,
-    /// The clone that the worker chose: the poll keeps it.
-    clone: Option<MrClone>,
+    /// The clones that the worker chose: the poll keeps them.
+    clones: MrClones,
     versions: Vec<VersionRecord>,
     state: Option<SyncState>,
 }
@@ -169,10 +169,10 @@ impl Worker {
                 self.set_review_status(&id, *status, &reason.note(&update.key), &daemon)?;
                 info!(%context, key = %update.key, %id, %status, ?reason, "Review task status changed");
             }
-            let versions = merge_versions(&previous.versions, &update.versions, now());
+            let versions = merged_versions(&previous, update, &mr);
             let files = mirror(
                 &mr,
-                previous.clone.as_ref(),
+                &previous.clones,
                 &versions,
                 update.threads.as_deref(),
                 &state,
@@ -223,7 +223,7 @@ impl Worker {
         let cannot = |error: &dyn std::fmt::Display| {
             format!("cannot write the mirror {}: {error}", dir.display())
         };
-        let new_mr = with_clone(&mr_json, record.clone.as_ref()).map_err(|error| cannot(&error))?;
+        let new_mr = with_clones(&mr_json, &record.clones).map_err(|error| cannot(&error))?;
         let versions: Vec<VersionRecord> = fs::read(dir.join(VERSIONS_FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -293,6 +293,16 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+/// The versions after a poll: those of the mirror, those of the forge, and the current one.
+fn merged_versions(previous: &Previous, update: &MrUpdate, mr: &Mr) -> Vec<VersionRecord> {
+    let seen = now();
+    merge_current(
+        merge_versions(&previous.versions, &update.versions, seen),
+        &mr.version,
+        seen,
+    )
 }
 
 /// What the poll saw of `mr` against the `previous` mirror, and the sync state to record.
@@ -399,7 +409,7 @@ fn read_previous(dir: &Path) -> Previous {
         .unwrap_or_default();
     let mr_json = read(MR_FILE);
     Previous {
-        clone: mr_json.as_deref().and_then(read_clone),
+        clones: mr_json.as_deref().map(read_clones).unwrap_or_default(),
         mr: mr_json.and_then(|bytes| read_mr(&bytes, &description)),
         versions: read(VERSIONS_FILE)
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())

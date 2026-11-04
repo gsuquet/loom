@@ -96,7 +96,10 @@ fn section_hash(section: &Section<'_>) -> Option<String> {
     for line in &section.header {
         let no_hunks = section.hunks.is_empty();
         let index = no_hunks && line.starts_with(b"index ");
-        let whole = no_hunks && WHOLE_FILE_LINES.iter().any(|prefix| line.starts_with(prefix));
+        let whole = no_hunks
+            && WHOLE_FILE_LINES
+                .iter()
+                .any(|prefix| line.starts_with(prefix));
         if index || whole || CHANGE_LINES.iter().any(|prefix| line.starts_with(prefix)) {
             add(line);
         }
@@ -237,9 +240,7 @@ pub fn file_hashes(patch: &[u8]) -> Vec<FileHash> {
 pub fn since_last_review(reviewed: &[u8], head: &[u8]) -> Vec<String> {
     let reviewed = file_hashes(reviewed);
     let head = file_hashes(head);
-    let same = |file: &FileHash, others: &[FileHash]| {
-        file.hash.is_some() && others.contains(file)
-    };
+    let same = |file: &FileHash, others: &[FileHash]| file.hash.is_some() && others.contains(file);
     let mut paths: Vec<String> = head
         .iter()
         .filter(|file| !same(file, &reviewed))
@@ -255,7 +256,10 @@ pub fn since_last_review(reviewed: &[u8], head: &[u8]) -> Vec<String> {
 /// A path comes from the forge, and a newline in it must not write a new section.
 fn git_path(side: &str, path: &str) -> String {
     let full = format!("{side}{path}");
-    if !full.bytes().any(|byte| byte.is_ascii_control() || matches!(byte, b'"' | b'\\')) {
+    if !full
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || matches!(byte, b'"' | b'\\'))
+    {
         return full;
     }
     let mut out = String::with_capacity(full.len() + 2);

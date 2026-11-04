@@ -21,7 +21,7 @@ use loom_store::port::TaskLocation;
 use loom_store::tasks::IndexedState;
 use serde::{Deserialize, Serialize};
 
-use crate::mr_refs::{DiffKind, MrClone, set_clone};
+use crate::mr_refs::{DiffKind, MrClones, set_clones};
 use crate::schedule::{backoff, jittered};
 
 /// The directory of the MR mirrors in a task directory.
@@ -336,7 +336,9 @@ pub struct VersionRecord {
 /// `known` (oldest first) with each version of `seen` whose head is new, first seen at `now`.
 ///
 /// A known version gets the merge base and the forge version ID that it lacked (GitLab gives
-/// them); the rest of it is kept. Pure.
+/// them); the rest of it is kept. A known head with a new base (the MR is retargeted) gets that
+/// base, and loses its merge base and the record of its diff: they are of the old base. Two
+/// versions of one head count as the newest. Pure.
 #[must_use]
 pub fn merge_versions(
     known: &[VersionRecord],
@@ -347,11 +349,26 @@ pub fn merge_versions(
     // The forges list the newest first.
     let mut seen: Vec<&MrVersion> = seen.iter().collect();
     seen.sort_by_key(|version| version.created_at);
-    for version in seen {
+    let newest: Vec<&MrVersion> = seen
+        .iter()
+        .enumerate()
+        .filter(|(index, version)| {
+            !seen[index + 1..]
+                .iter()
+                .any(|later| later.head_sha == version.head_sha)
+        })
+        .map(|(_, version)| *version)
+        .collect();
+    for version in newest {
         if let Some(record) = versions
             .iter_mut()
             .find(|record| record.version.head_sha == version.head_sha)
         {
+            if record.version.base_sha != version.base_sha {
+                record.version.base_sha = version.base_sha.clone();
+                record.version.merge_base.clone_from(&version.merge_base);
+                record.diff = None;
+            }
             if record.version.merge_base.is_none() {
                 record.version.merge_base.clone_from(&version.merge_base);
             }
@@ -368,6 +385,29 @@ pub fn merge_versions(
                 diff: None,
             });
         }
+    }
+    versions
+}
+
+/// `versions` with the `current` version of an MR when the forge list lacks its head. Pure.
+///
+/// GitLab fills `/versions` after a background job. A known head stays as the list says, so the
+/// two sources do not undo each other.
+#[must_use]
+pub fn merge_current(
+    mut versions: Vec<VersionRecord>,
+    current: &MrVersion,
+    now: Timestamp,
+) -> Vec<VersionRecord> {
+    if !versions
+        .iter()
+        .any(|record| record.version.head_sha == current.head_sha)
+    {
+        versions.push(VersionRecord {
+            version: current.clone(),
+            first_seen: now,
+            diff: None,
+        });
     }
     versions
 }
@@ -530,7 +570,7 @@ impl Mirror {
     }
 }
 
-/// The mirror files of `mr`, with the `clone` that the worker chose, its `versions`, its
+/// The mirror files of `mr`, with the `clones` that the worker chose, its `versions`, its
 /// `threads` when pulled (sorted) and the sync `state`. Pure.
 ///
 /// # Errors
@@ -538,7 +578,7 @@ impl Mirror {
 /// The serialization error, which the model types never give.
 pub fn mirror(
     mr: &Mr,
-    clone: Option<&MrClone>,
+    clones: &MrClones,
     versions: &[VersionRecord],
     threads: Option<&[Thread]>,
     state: &SyncState,
@@ -549,7 +589,7 @@ pub fn mirror(
         object.remove("description");
     }
     // The poll knows nothing of the clone: without this, each poll would undo the choice.
-    set_clone(&mut snapshot, clone)?;
+    set_clones(&mut snapshot, clones)?;
     let threads = threads
         .map(|threads| {
             let mut threads = threads.to_vec();

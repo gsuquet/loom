@@ -9,7 +9,7 @@ pub mod git;
 
 use std::path::{Path, PathBuf};
 
-use loom_api::{ContextName, ForgeKind, RepoIdentity, RepoSummary, TaskId};
+use loom_api::{ContextName, ForgeKind, RemoteProblem, RepoIdentity, RepoSummary, TaskId};
 use loom_forge::model::{MrKey, MrState, Sha};
 use loom_store::IndexedTask;
 use loom_store::port::TaskLocation;
@@ -23,6 +23,16 @@ use crate::review_sync::{VersionRecord, review_key};
 pub const DIFFS_DIR: &str = "diffs";
 /// The field of `mr.json` that keeps the clone chosen.
 const CLONE_FIELD: &str = "clone";
+/// The field of `mr.json` that lists the clones whose refs may still be there.
+const RETIRED_FIELD: &str = "retired_clones";
+/// The largest patch that a mirror keeps. The store and its backup hold each patch, in a git
+/// history that keeps it: over this, the version falls back to the patches of the forge.
+pub const PATCH_CAP: usize = 5 * 1024 * 1024;
+/// The largest total of the patches of one MR, for the same reason.
+pub const MR_CAP: usize = 50 * 1024 * 1024;
+/// The most polls that a permanent failure of one MR waits for between two tries, minus one: the
+/// limit of the backoff of automatic updates, 8 times the interval.
+const MAX_SKIPPED_POLLS: u32 = 7;
 
 /// The clone that holds the refs of an MR (`clone` in `mr.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +51,138 @@ pub enum DiffKind {
     Local,
     /// The per-file patches of the forge: no context expansion, and large files can be missing.
     Reduced,
+    /// The local diff is over [`PATCH_CAP`] or [`MR_CAP`]. The current head has the patches of
+    /// the forge (or their list) after a note; an older version has the note alone.
+    #[serde(rename = "reduced_too_large")]
+    TooLarge,
+}
+
+/// The clones of an MR in `mr.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MrClones {
+    /// The clone chosen.
+    pub clone: Option<MrClone>,
+    /// The clones that held its refs before. Each stays listed until its refs are deleted, so
+    /// that the cleanup still knows the path when no clone replaces it.
+    pub retired: Vec<MrClone>,
+}
+
+/// The clones after the choice of `chosen`. Pure.
+#[must_use]
+pub fn next_clones(kept: &MrClones, chosen: Option<MrClone>) -> MrClones {
+    let mut retired = kept.retired.clone();
+    if let Some(old) = &kept.clone
+        && Some(old) != chosen.as_ref()
+        && !retired.contains(old)
+    {
+        retired.push(old.clone());
+    }
+    retired.retain(|old| Some(old) != chosen.as_ref());
+    MrClones {
+        clone: chosen,
+        retired,
+    }
+}
+
+/// Whether the plan `Keep` still has to fetch: the refs are in the clone that the patch came
+/// from, or the user deleted them. Pure.
+#[must_use]
+pub const fn needs_refs(plan: DiffPlan, same_clone: bool, head_ref_present: bool) -> bool {
+    match plan {
+        DiffPlan::Keep => !same_clone || !head_ref_present,
+        DiffPlan::FromClone | DiffPlan::FromForge => false,
+    }
+}
+
+/// Whether a failure of git with `problem` is one that the next MRs of its endpoint would meet
+/// too, each after its own timeout. Pure.
+#[must_use]
+pub const fn stops_the_endpoint(problem: RemoteProblem) -> bool {
+    match problem {
+        RemoteProblem::SshAuth | RemoteProblem::HttpsAuth | RemoteProblem::Network => true,
+        RemoteProblem::NotFound | RemoteProblem::Other => false,
+    }
+}
+
+/// The backoff of one MR after a failure that is its own, counted in polls: no clock, and it
+/// follows the interval of its host. It doubles, as for automatic updates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retry {
+    failures: u32,
+    skip: u32,
+}
+
+impl Retry {
+    /// Whether this poll tries; otherwise it counts as one poll waited. Pure.
+    pub const fn due(&mut self) -> bool {
+        if self.skip == 0 {
+            true
+        } else {
+            self.skip -= 1;
+            false
+        }
+    }
+
+    /// A try failed. Pure.
+    pub fn failed(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        let waits = 1_u32
+            .checked_shl(self.failures - 1)
+            .map_or(MAX_SKIPPED_POLLS, |factor| factor - 1);
+        self.skip = waits.min(MAX_SKIPPED_POLLS);
+    }
+}
+
+/// The bytes that the next patch of an MR can have, when its patches take `used` bytes. Pure.
+#[must_use]
+pub fn patch_budget(used: u64) -> usize {
+    let left = (MR_CAP as u64).saturating_sub(used);
+    usize::try_from(left).unwrap_or(usize::MAX).min(PATCH_CAP)
+}
+
+/// The line at the start of a patch that says why it is not the local diff: the diff is over
+/// the room of `limit` bytes that it had. No file: a patch reader skips it. Pure.
+#[must_use]
+pub fn too_large_note(limit: usize) -> Vec<u8> {
+    format!("# loom: the local diff is over the limit of {limit} bytes for this patch\n")
+        .into_bytes()
+}
+
+/// Whether git's standard error says that the remote has no ref `name`. Pure.
+#[must_use]
+pub fn is_missing_ref(stderr: &str, name: &str) -> bool {
+    stderr.lines().any(|line| {
+        line.trim()
+            .strip_suffix(name)
+            .is_some_and(|start| start.ends_with("couldn't find remote ref "))
+    })
+}
+
+/// Whether the remote of `clone` now names another project than the one of the MR. Pure.
+///
+/// Its refs may then be of another MR with the number, and stay. A remote renamed or removed, or
+/// a repository out of the index, tells nothing.
+#[must_use]
+pub fn remote_names_other_project(
+    repos: &[RepoSummary],
+    clone: &MrClone,
+    host: &str,
+    project: &str,
+) -> bool {
+    repos
+        .iter()
+        .find(|repo| repo.identity.path == clone.path)
+        .and_then(|repo| {
+            repo.identity
+                .remotes
+                .iter()
+                .find(|remote| remote.name == clone.remote)
+        })
+        .and_then(|remote| remote.location.as_ref())
+        .is_some_and(|location| {
+            !(location.host.eq_ignore_ascii_case(host)
+                && location.path.eq_ignore_ascii_case(project))
+        })
 }
 
 /// An indexed repository that can hold the refs of an MR.
@@ -169,6 +311,12 @@ fn is_ref_part(name: &str) -> bool {
         && !name.contains("@{")
 }
 
+/// The full name of the base branch `base_ref` on the remote.
+#[must_use]
+pub fn base_ref_name(base_ref: &str) -> String {
+    format!("refs/heads/{base_ref}")
+}
+
 /// The refspecs of the head of the MR `key` and of its base branch. Pure.
 ///
 /// # Errors
@@ -192,7 +340,7 @@ pub fn fetch_refspecs(
     let prefix = ref_prefix(remote, number);
     Ok([
         format!("+{source}:{prefix}head"),
-        format!("+refs/heads/{base_ref}:{prefix}base"),
+        format!("+{}:{prefix}base", base_ref_name(base_ref)),
     ])
 }
 
@@ -225,10 +373,14 @@ pub const fn diff_plan(
         MrState::Open => {}
     }
     match (recorded, patch_exists, has_clone) {
-        (Some(DiffKind::Local), true, _) | (Some(DiffKind::Reduced), true, false) => DiffPlan::Keep,
+        (Some(DiffKind::Local | DiffKind::TooLarge), true, _)
+        | (Some(DiffKind::Reduced), true, false) => DiffPlan::Keep,
         (Some(DiffKind::Reduced) | None, true, true)
-        | (Some(DiffKind::Local | DiffKind::Reduced) | None, false, true) => DiffPlan::FromClone,
-        (None, true, false) | (Some(DiffKind::Local | DiffKind::Reduced) | None, false, false) => {
+        | (Some(DiffKind::Local | DiffKind::Reduced | DiffKind::TooLarge) | None, false, true) => {
+            DiffPlan::FromClone
+        }
+        (None, true, false)
+        | (Some(DiffKind::Local | DiffKind::Reduced | DiffKind::TooLarge) | None, false, false) => {
             DiffPlan::FromForge
         }
     }
@@ -256,8 +408,8 @@ pub struct DiffRecord {
     pub id: TaskId,
     /// The MR.
     pub key: MrKey,
-    /// The clone chosen.
-    pub clone: Option<MrClone>,
+    /// The clones after the choice.
+    pub clones: MrClones,
     /// The new diffs.
     pub diffs: Vec<VersionDiff>,
 }
@@ -281,24 +433,34 @@ pub fn record_diffs(versions: &[VersionRecord], diffs: &[VersionDiff]) -> Vec<Ve
     versions
 }
 
-/// The clone in the bytes of an `mr.json`. Pure.
+/// The clones in the bytes of an `mr.json`. Pure.
 #[must_use]
-pub fn read_clone(mr_json: &[u8]) -> Option<MrClone> {
-    let value: serde_json::Value = serde_json::from_slice(mr_json).ok()?;
-    serde_json::from_value(value.get(CLONE_FIELD)?.clone()).ok()
+pub fn read_clones(mr_json: &[u8]) -> MrClones {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(mr_json) else {
+        return MrClones::default();
+    };
+    MrClones {
+        clone: value
+            .get(CLONE_FIELD)
+            .and_then(|clone| serde_json::from_value(clone.clone()).ok()),
+        retired: value
+            .get(RETIRED_FIELD)
+            .and_then(|retired| serde_json::from_value(retired.clone()).ok())
+            .unwrap_or_default(),
+    }
 }
 
-/// `snapshot`, a JSON object, with `clone` set or removed.
+/// `snapshot`, a JSON object, with `clones` set: a field without a value is removed.
 ///
 /// # Errors
 ///
 /// The error of `serde_json`, which the model types never give.
-pub fn set_clone(
+pub fn set_clones(
     snapshot: &mut serde_json::Value,
-    clone: Option<&MrClone>,
+    clones: &MrClones,
 ) -> Result<(), serde_json::Error> {
     if let Some(object) = snapshot.as_object_mut() {
-        match clone {
+        match &clones.clone {
             Some(clone) => {
                 object.insert(CLONE_FIELD.to_owned(), serde_json::to_value(clone)?);
             }
@@ -306,18 +468,26 @@ pub fn set_clone(
                 object.remove(CLONE_FIELD);
             }
         }
+        if clones.retired.is_empty() {
+            object.remove(RETIRED_FIELD);
+        } else {
+            object.insert(
+                RETIRED_FIELD.to_owned(),
+                serde_json::to_value(&clones.retired)?,
+            );
+        }
     }
     Ok(())
 }
 
-/// The bytes of an `mr.json` with `clone` set or removed. Pure.
+/// The bytes of an `mr.json` with `clones` set. Pure.
 ///
 /// # Errors
 ///
 /// The error of `serde_json` when the bytes are not a JSON object.
-pub fn with_clone(mr_json: &[u8], clone: Option<&MrClone>) -> Result<Vec<u8>, serde_json::Error> {
+pub fn with_clones(mr_json: &[u8], clones: &MrClones) -> Result<Vec<u8>, serde_json::Error> {
     let mut snapshot: serde_json::Value = serde_json::from_slice(mr_json)?;
-    set_clone(&mut snapshot, clone)?;
+    set_clones(&mut snapshot, clones)?;
     let mut bytes = serde_json::to_vec_pretty(&snapshot)?;
     bytes.push(b'\n');
     Ok(bytes)

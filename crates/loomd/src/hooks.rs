@@ -20,12 +20,22 @@ pub const SHUTDOWN_GRACE_ENV: &str = "LOOM_TEST_SHUTDOWN_GRACE";
 pub const REVIEW_START_DELAY_ENV: &str = "LOOM_TEST_REVIEW_START_DELAY";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
+/// A file that gets one line for each poll whose pass of MR refs ended.
+pub const MR_PASS_FILE_ENV: &str = "LOOM_TEST_MR_PASS_FILE";
 /// Replaces the API of forge hosts.
 ///
 /// The value is the base URL of a fake forge for every host, or
 /// `<host>=<base>[,<host>=<base>…]`, such as `github.com=http://127.0.0.1:8080`. The GitHub
 /// GraphQL endpoint is `<base>/graphql`.
 pub const FORGE_API_ENV: &str = "LOOM_TEST_FORGE_API";
+
+/// The file of [`MR_PASS_FILE_ENV`]: `None` when unset or empty, or in a release build.
+#[must_use]
+pub fn mr_pass_file(value: Option<&str>) -> Option<&Path> {
+    value
+        .filter(|value| !value.is_empty() && cfg!(debug_assertions))
+        .map(Path::new)
+}
 
 /// The API base of `host` in the hook variable: `None` when unset or empty, when a list does
 /// not name the host, or in a release build.

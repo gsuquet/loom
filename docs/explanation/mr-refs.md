@@ -27,11 +27,16 @@ A separate thread does this work after each poll of a context and a forge host. 
 This step has its own failures:
 
 - A git failure does not fail, delay or change the mirror sync. `loomd` writes the failure to its log.
-- A lock of another git process is not a failure. `loomd` does not remove the lock.
-- In both cases, the next poll does the work again, because the patch is not recorded.
-- After a git failure, the other MRs of the host wait for the next poll. Each of them could wait for the full timeout.
+- A lock of another git process is not a failure. `loomd` does not remove the lock, and the next poll does the work again.
+- An authentication or network failure stops the other MRs of that endpoint until the next poll. Each of them could wait for the full timeout. A remote that is gone stops the other MRs of that clone in the same way.
+- Any other failure, such as a head that the remote does not have, stops only its MR. That MR uses the patches of the forge. Its next tries occur less frequently: the wait doubles, to a maximum of 8 polls.
+- If the remote no longer has the base branch, the head comes alone. The diff uses the base commit of the version.
 
-A poll that finds no new head starts no fetch. `loomd` fetches only for tasks that exist. The merged and closed MRs get no new diff.
+A poll that finds no new head starts no fetch and no diff. It starts one `git rev-parse` for each open MR, because you can delete the refs. If the refs are not there, or the clone changed, the next poll fetches them again. `loomd` fetches only for tasks that exist. The merged and closed MRs get no new diff.
+
+## Repositories with the policy `off`
+
+The `update = "off"` policy means no git command. A repository with this policy is not a choice for an MR. If no other clone is available, the MR uses the patches of the forge. Refs that the repository already has stay until you change the policy.
 
 ## What the fetch writes in your clone
 
@@ -56,13 +61,25 @@ GitLab uses `refs/merge-requests/<n>/head` as the source of the head. The flags 
 
 The fetch does not touch your branches, your index or your working tree. Thus, a dirty working tree or an operation in progress does not stop it.
 
-The fetch uses the same environment as [repository updates](repo-updates.md): `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode` if you did not configure an SSH command, your credential helpers, and a timeout of 120 seconds. `loomd` does not give the forge token to git. The `update` policy of a repository does not apply, because this fetch moves no branch.
+The fetch uses the same environment as [repository updates](repo-updates.md): `GIT_TERMINAL_PROMPT=0`, SSH `BatchMode` if you did not configure an SSH command, your credential helpers, and a timeout of 120 seconds. `loomd` does not give the forge token to git, and removes each `token_env` variable from the environment of these commands.
 
 ## The diff of a version
 
 The diff of a version is `git diff -M <merge base> <head>`. GitLab gives the merge base. For GitHub, `loomd` runs `git merge-base <base.sha> <head>` with the base tip of that version, and writes the result to `versions.json`. A later tip of the target branch would move the hunks away from the hunks of the forge.
 
-`loomd` sets the options of `git diff` itself, for example the prefixes and the number of context lines. Thus, your diff configuration does not change the patch. It writes the patch to `diffs/<sha>.patch` in the task directory, and sets `diff` to `local` in `versions.json`. The patch stays after the clone is gone. The store backup holds the patches, as it holds the other files of the task.
+`loomd` sets the options of `git diff` itself, for example the prefixes, the number of context lines and the format of submodules. Thus, your diff configuration does not change the patch. The attributes come from the head commit, not from your working tree or from `core.attributesFile`. This needs git 2.41: an older git reads the `.gitattributes` of the working tree. It writes the patch to `diffs/<sha>.patch` in the task directory, and sets `diff` to `local` in `versions.json`. The patch stays after the clone is gone. The store backup holds the patches, as it holds the other files of the task.
+
+A new base with the same head (the MR has a new target branch) gives a new diff.
+
+## Limits of a patch
+
+A patch has a maximum of 5 MiB, and the patches of one MR have a maximum of 50 MiB, because the history of the store keeps each one. Over a limit:
+
+- The current head gets the patches of the forge, or only the list of its files if these are over the limit too.
+- An older version gets no diff. The forge has only the patches of its current head.
+- `versions.json` has `diff` set to `reduced_too_large`, and the first line of the patch starts with `# loom:`.
+
+`loomd` does not try again for that head, because the result would be the same.
 
 ## Since the last review
 
@@ -71,6 +88,7 @@ The list of files to read again comes from the patches of the two versions, not 
 - The hash reads the `+`, `-` and context lines, and the `\ No newline at end of file` line.
 - The hash does not read the `index` line, the line numbers or the section text of the `@@` lines. Thus, a rebase that only moves the lines of a file keeps its hash.
 - For a file without hunks, the hash reads what the header tells: the mode, the rename source, or, for a binary file, the `index` line.
+- A file that the forge gives no patch for has no hash. It is always in the list, because nothing shows that it did not change.
 
 A file is in the list when its hash changed, when it is new in the diff, or when it left the diff. Example from the fixtures: between the two versions, `git diff` of the heads shows `README.md` and `src/auth/jwt.rs`, but only `src/auth/jwt.rs` is in the list.
 
@@ -81,12 +99,15 @@ An MR without a clone still syncs. `loomd` reads the per-file patches of the for
 - It has no context expansion.
 - It has only the current head.
 - A binary or large file has no hunks. One line that starts with `# ` tells this.
+- A rename without a patch counts as a rename alone: a binary file that also changed looks the same.
 
 If a clone comes later, the next poll replaces the reduced patch of the current head with the full one.
 
 ## Cleanup
 
-After a task is archived, the next poll of its context and host deletes its refs with `git update-ref -d`. Only the refs of that MR go. The patches stay in the archived task.
+After a task is archived, the next poll of its context and host deletes its refs with `git update-ref -d`. Only the three refs of that MR go. The patches stay in the archived task. If the remote now names another project, its refs stay, because they can be of another MR. A repository with the policy `off` keeps its refs.
+
+When another clone replaces the clone of an MR, the old clone loses its refs. Until then, `retired_clones` in `mr.json` keeps its path.
 
 The refs stay when an active Review task of any context has the same MR, because a clone has one set of refs for each MR. If a lock or a failure stops the deletion, the next poll does it again. After a restart, `loomd` looks at each archived task one more time.
 
@@ -94,4 +115,7 @@ The refs stay when an active Review task of any context has the same MR, because
 
 - A clone that this machine does not have is not a choice. If two machines poll one context, each one can write its own clone to `mr.json`. Set `machines` on the context, so that one machine polls it.
 - Your last verdict gives the `reviewed` ref. If you never gave a verdict on a version, `git gc` can remove its commit after a force push. Its patch stays.
+- `.git/info/attributes` still changes a patch: git has no option to ignore it.
+- The mode of a new or deleted file with hunks does not count in the hash, because the forges do not give it. For the same reason, a mode change next to hunks counts as a change between a local and a reduced patch.
+- A global `core.excludesFile` that ignores `*.patch` keeps the patches out of the commits of the store.
 - A version whose head is not in the clone gets no patch. This occurs for an old GitLab version: a later force push replaced its head before the first fetch.
