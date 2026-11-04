@@ -4,7 +4,7 @@ Instructions for coding agents working on this repository.
 
 ## What loom is
 
-A personal work engine: a prioritized list of everything I have to do across contexts (personal, clients), synced with forges and trackers, recorded as an auditable ledger, and delegable to specialist agents under typed contracts and gates. Rust, single binary family (`loom`, `loomd`).
+A personal task and knowledge management system, connected directly to the right sources, in which agents are first-class tools to refine, review, improve and implement, under typed contracts and gates. Rust core (`loom`, `loomd`), with a native macOS desktop app replacing the TUI.
 
 ## Status
 
@@ -18,16 +18,18 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 | --- | --- |
 | Vision, non-goals | [docs/design/vision.md](docs/design/vision.md) |
 | Processes, interfaces, crates, git, language | [docs/design/architecture.md](docs/design/architecture.md) |
-| Tasks, events, notes, kinds, status, priority, contexts | [docs/design/domain-model.md](docs/design/domain-model.md) |
+| Tasks, events, sources, kinds, status, order, contexts | [docs/design/domain-model.md](docs/design/domain-model.md) |
+| Sources, knowledge pages, meetings, conceptions, promotion | [docs/design/knowledge.md](docs/design/knowledge.md) |
+| Connector instances, write levels, write states, undo | [docs/design/connectors.md](docs/design/connectors.md) |
 | Store layout, ownership, IDs, multi-machine | [docs/design/storage.md](docs/design/storage.md) |
 | Repo index, contexts of repos, automatic updates | [docs/design/repos.md](docs/design/repos.md) |
 | Issue and MR sync | [docs/design/tracker-sync.md](docs/design/tracker-sync.md) |
 | MR review: discovery, mirror, refs, publish, forge credentials | [docs/design/reviews.md](docs/design/reviews.md) |
-| Events, learnings | [docs/design/capture-and-learnings.md](docs/design/capture-and-learnings.md) |
+| Events | [docs/design/capture-and-learnings.md](docs/design/capture-and-learnings.md) |
 | Agents, gates, runtimes, factory | [docs/design/agents.md](docs/design/agents.md) |
-| TUI, gestures | [docs/design/user-workflow.md](docs/design/user-workflow.md) |
+| Desktop app: pages, keys, flows | [docs/design/user-workflow.md](docs/design/user-workflow.md), [docs/prototypes/](docs/prototypes/README.md) |
 | Colors, spacing, badges, panes, modals, toasts (TUI and web) | [docs/design/ui-style.md](docs/design/ui-style.md) |
-| Settled decisions | [docs/adr/](docs/adr/README.md) |
+| Past decisions, frozen | [docs/adr/](docs/adr/README.md) |
 | Versions and acceptance criteria | [docs/roadmap.md](docs/roadmap.md) |
 | Code, docs and git style | [docs/reference/style-guide.md](docs/reference/style-guide.md) |
 
@@ -78,7 +80,7 @@ The quality gate is `mise run check`; CI runs it on Linux and macOS. Pull reques
 
 Two kinds of documentation, never mixed:
 
-- `docs/design/`: **target behavior** (design specs). Input for your task. If your implementation has to diverge, update the design doc in the same PR and say why.
+- `docs/design/` and `docs/prototypes/`: **target behavior** (design specs and working mockups). Input for your task. If your implementation has to diverge, update the design doc in the same PR and say why.
 - [Diátaxis](https://diataxis.fr/) folders: **shipped behavior** only, describing what the code does now, never what is planned.
   - `docs/reference/`: CLI commands and flags, config keys, file formats, API and JSON schemas, release assets. Dry, complete, no instructions.
   - `docs/how-to-guides/`: one goal per guide, steps for someone who knows the basics (install, upgrade, roll back…).
@@ -91,7 +93,7 @@ Rules:
 - Any user-visible change updates the matching reference in the same PR.
 - A new user procedure gets a how-to.
 - The "Documentation" section of your issue lists what to write.
-- A new structural decision needs a new ADR in `docs/adr/` (next number, status `proposed`).
+- ADRs are frozen as history. A new structural decision goes in the matching design doc.
 
 ## Security
 

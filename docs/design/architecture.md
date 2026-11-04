@@ -7,19 +7,28 @@
 | Process | Role |
 | --- | --- |
 | `loomd` | Daemon, single writer of the store. Polls sources, syncs, schedules and supervises agent runs, applies upgrades. Runs as a launchd user agent (macOS) or systemd user unit (Linux) unless disabled. |
-| `loom` | CLI and TUI. A client of `loomd`; starts it if it is not running. |
+| `loom` | CLI, for scripts and agents. A client of `loomd`; starts it if it is not running. With no arguments it opens the desktop app. |
+| Desktop app | The one window I work in. A client of `loomd`. |
 | `loom mcp` | MCP server (stdio) for agents, a client of `loomd`. |
 
 ## Interfaces
 
-- **loomd API**: HTTP + JSON with SSE streams, on a unix socket locally, TCP + auth for the future central instance. CLI, TUI, MCP server and web UI are all clients of this one API.
+- **loomd API**: HTTP + JSON with SSE streams, on a unix socket locally, TCP + auth for the future central instance. CLI, desktop app and MCP server are all clients of this one API.
   - HTTP/1.1 on the unix socket: HTTP/2 brings nothing locally (no handshake or connection cost) and would need prior-knowledge h2c without TLS; every client, `curl --unix-socket` included, speaks HTTP/1.1.
-  - HTTP/2 negotiated through TLS (ALPN) on the central instance: browsers allow 6 HTTP/1.1 connections per host and each SSE stream holds one, so the web UI needs HTTP/2 there.
-- **CLI**: every command supports `--json`, with a versioned output schema. Every TUI action has a CLI equivalent.
-- **TUI** (ratatui): the cockpit. See [User workflow](user-workflow.md).
-- **Web UI**: served by loomd once the central instance exists; works locally too. A desktop app would be the same web UI in a shell, only if needed.
+- **CLI**: every command supports `--json`, with a versioned output schema. A CLI-only gap is acceptable while the app catches up.
+- **Desktop app**: see [Desktop app](#desktop-app) and [User workflow](user-workflow.md).
 - **MCP server**: the only MCP server agents see. See [Agent orchestration](agents.md).
 - **Files**: readable by anyone and any tool. Writes go through loomd. Hand edits of `task.md` are detected and indexed.
+
+## Desktop app
+
+The TUI is removed entirely. Its removal follows the merge of the docs that describe the app. Business logic stays in `loomd` and `loom-core`, and never moves into the app.
+
+- It reaches `loomd` over the unix socket, with no TCP port and no new authentication.
+- MR content, transcripts and articles are untrusted. Rendering them must not run their scripts or reach `loomd`.
+- The look is native macOS, see [UI style](ui-style.md#desktop-app-target).
+
+The toolkit is the one open decision here. The candidates are SwiftUI, Rust with AppKit through `objc2`, and Tauri. Docs that depend on the toolkit are written once it is chosen.
 
 ## Language: Rust
 
@@ -37,7 +46,7 @@ Crates are added when a version needs them, never ahead of time.
 
 | Crate | Kind | Introduced | Content |
 | --- | --- | --- | --- |
-| `loom` | bin | v0.1 | CLI (clap), later the TUI |
+| `loom` | bin | v0.1 | CLI (clap) |
 | `loomd` | bin | v0.1 | Daemon: API server, scheduler, updater |
 | `loom-api` | lib | v0.1 | Types shared by the API, the CLI `--json` output and the MCP tools. No I/O. Builds on `loom-core` and re-exports its primitives (`Timestamp`, `ContextName`) |
 | `loom-config` | lib | v0.1 | Loom home resolution, files under it, `config.toml` parsing. No I/O. Shared by `loom` and `loomd` |

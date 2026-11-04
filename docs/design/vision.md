@@ -2,6 +2,10 @@
 
 > Why loom exists, what it is for, and what it deliberately does not do (yet).
 
+Loom is a personal task and knowledge management system, connected directly to the right sources, in which agents are first-class tools to refine, review, improve and implement.
+
+It succeeds when, after a month, I have somewhere to store references, no longer spawn agents by hand, know what to do next, and no longer open the forge to see MRs waiting.
+
 Anything I do shall be written, traced and exploitable. Continuous improvement and learning.
 
 Anything delegated to and accomplished by agents shall be observed and persisted in the same manner.
@@ -18,9 +22,10 @@ Loom replaces the git inventory scripts in my dotfiles. The previous loom implem
 
 ## Non-goals (before v1)
 
-- No sync of Freshservice, Slack or Datadog content back upstream (tracker sync covers Jira, GitLab, GitHub issues only).
-- No capture of shell, keystrokes or screen.
-- No team / multi-user features.
+- No write-back beyond the [write levels](connectors.md#write-levels) of each connector.
+- No capture of shell, keystrokes or screen. Loom does not record meetings.
+- No team or multi-user features. Each user runs a completely separate install.
 - No automatic git conflict resolution.
-- No web or desktop UI before the central instance (v0.11).
-- macOS + Linux only.
+- Nothing tightly coupled to one user's setup: tools, accounts and rules are configuration.
+- No legal or provider-approval feature. Users are responsible for their own usage; loom offers multiple contexts.
+- The desktop app is macOS only for now. The CLI and `loomd` keep their current platforms.

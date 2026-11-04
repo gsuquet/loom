@@ -1,16 +1,19 @@
 # Domain model
 
-> Tasks, events and notes; kinds, sources, granularity, status, priority and contexts.
+> Tasks, events, sources and knowledge pages; kinds, granularity, status, order and contexts.
 
-Three entities.
+Four entities.
 
 | Entity | What it is | Lifecycle |
 | --- | --- | --- |
-| **Task** | Something I still have to do | Has a done state, is prioritized |
+| **Task** | Something I still have to do, a conception included | Has a done state, is prioritized |
 | **Event** | Something that happened (status change, note, commit, MR, agent session, meeting, gate result) | Append-only, timestamped |
-| **Note** | A learning | Scoped `context` or `portable` |
+| **Source** | Something I can cite (article, book, feed item, file, meeting, test result, experience) | `captured → to read → read → distilled → reference`, or `dismissed` |
+| **Knowledge page** | What is true on a topic, each statement linked to its sources | Living, scoped to a context or shared |
 
-The priority list is the set of open tasks. The ledger ("anything I do shall be written") is the event stream.
+Source and Knowledge page replace Note. See [Knowledge](knowledge.md).
+
+The ledger ("anything I do shall be written") is the event stream.
 
 ### Task kinds
 
@@ -22,25 +25,34 @@ Kind = nature of the work. It drives the body template, the done condition and t
 | Bug | Jira, issues, spawned from support | Fix merged and verified |
 | Chore | Me, Jira tech tasks, cron | Done |
 | Research | Me | Conclusion written (findings + decision) |
-| Investigation | Datadog alert, Freshservice incident, Slack | Cause identified + disposition (spawned task, noise, upstream) |
-| Review | MR/PR where my review is requested | Verdict posted for the current head SHA; a new push reopens it |
-| Support | Freshservice request, Slack | Requester has an answer |
+| Investigation | Datadog alert, Freshservice incident | Cause identified + disposition (spawned task, noise, upstream) |
+| Review | MR/PR I started reviewing; before that it is a [queue entry](reviews.md#waiting-on-me) | Verdict posted for the current head SHA; a new push reopens it |
+| Support | Freshservice request | Requester has an answer |
 | Content | Me | Delivered or published (optional `format`: talk, article, training, workshop) |
 | Admin | Me, cron (timesheets, expenses, staffing) | Done |
 | Interview | Me, staffing | Feedback written |
 | Learning | Me | Course or certification completed |
+| Conception | Me, a meeting, a ticket | Decisions agreed and subtasks approved |
 
 - No Incident kind: an incident is an Investigation with high severity and a due date.
 - Epic / project = `parent` relation, not a kind nor an entity. Children see the parent's `files/` (design docs, ADRs). A parent is a task of the child's context, never the child itself nor one of its descendants; loomd checks it when a parent is set (a hand edit is recorded as written).
-- Meetings are events (from the calendar), not tasks. Preparation is a task; action items are tasks with `spawned_from: <event>`.
+- A conception is a design that creates subtasks. It is a task, not an entity. See [Conceptions](knowledge.md#conceptions).
+- Meetings are events and sources, not tasks. Preparation is a task. An action item is a proposal in the Inbox; once accepted, it is a task with a `source` link to the meeting.
+- A task can span several repos: refinement lists them as `repo` links, and more can be added. A task can hold files, stored in the context's store and secret-scanned when added.
 
-### Sources
+### Links and relations
 
-GitLab/GitHub MRs and issues, Jira, Freshservice, Slack, Datadog, calendar, cron, me.
+- `relations` holds task IDs only: `parent`, `spawned_from`, `blocks`, `supersedes`. `spawned_from` is never an event.
+- `[[links]]` reaches everything else, by role: `origin`, `repo`, `source`, `knowledge`, `claim`, `person`.
+- A parent is never archived while it has open children.
 
-- **Dedup key**: `(provider, host, external_id)`. Ingestion is idempotent. A flapping Datadog monitor reopens its task (key: monitor id + group).
+### Ingestion origins
+
+GitLab/GitHub MRs and issues, Jira, Freshservice, Datadog, calendar, cron, me.
+
+- **Dedup key**: `(provider, host, external_id)`. Ingestion is idempotent. A flapping Datadog monitor is grouped by monitor in the Inbox. If it fires again after a dismissal, it is a new row (key: monitor id + group).
 - **Cron**: a schedule generates one task per occurrence. RRULE (RFC 5545) rather than cron syntax, to express e.g. "last working day of the month" (`FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1`). Dedup key `(schedule_id, occurrence_date)`. Missed occurrences: only the latest is created. Previous occurrence still open: per-schedule policy `skip | stack | replace`.
-- **Slack**: no ticket object, ingestion needs a trigger (reaction, saved item, or `loom add --from <url>`). Client workspaces usually require admin approval for apps: start manual.
+- **No Slack connector**: `loom add --from <url>` stays the manual way in.
 - **Client trackers** (Jira, Freshservice): API token availability and write scope depend on client policy. Manual fallback.
 
 ### Granularity rule
@@ -48,7 +60,7 @@ GitLab/GitHub MRs and issues, Jira, Freshservice, Slack, Datadog, calendar, cron
 A new task is created whenever the done condition differs.
 
 - Jira bug + my MR + its CI = one task with several links.
-- Slack report -> Freshservice -> Jira bug = two tasks: Support (done when answered) and Bug (done when merged), linked by `spawned_from`.
+- Freshservice request -> Jira bug = two tasks: Support (done when answered) and Bug (done when merged), linked by `spawned_from`.
 - Reviewing a colleague's MR = its own task.
 - Delegating part of a task = creating a child task and delegating it fully.
 
@@ -59,22 +71,22 @@ A new task is created whenever the done condition differs.
 - Archived is a location, not a status: a task moves to the archive N days after `done`/`cancelled`.
 - Task status (my work) and issue status (the tracker's) are separate. A terminal remote state (merged, closed, resolved) closes the local task; otherwise neither drives the other. Changing an issue status is an explicit edit of the issue mirror (see [Tracker sync](tracker-sync.md)). Rules like "task active -> issue In Progress" can come later.
 
-### Priority
+### Order
 
-Inputs are stored, the score is computed:
+Today shows sections, not one ranked list: Urgent, In progress, Due, Waiting on you, Follow-ups, Planned, With an agent. See [Today](user-workflow.md#today).
+
+Inputs are stored, and the order inside a section is computed:
 
 - `importance` p0–p3 (default per kind/source), `due` (or source SLA), `pinned`, number of tasks blocked, age.
 - Order is lexicographic, no weights ([ADR-0013](../adr/0013-task-store.md)): pinned, then overdue or due today (earliest first), then importance, then due date (none last), then age (oldest first).
-- The list holds `ready` and `active` tasks; `inbox` has its own view; `waiting` tasks are hidden while their `until` is in the future or unset, and listed again from the `until` date.
+- `inbox` has its own page. `waiting` tasks are hidden while their `until` is in the future or unset, and listed again from the `until` date, saying they came back.
 - `loom ls --why` names the rule that ordered each task after its predecessor.
 
-### Focus
-
-One focus task per context, machine-local (two terminals in two contexts each have theirs). `loom go <id>` makes it the focus of its context, sets it `active`, puts the previous focus of that context back to `ready`, and changes directory to its `repo` link. `loom log` without an ID attaches to the focus of the current context.
+Several tasks can be in progress at once, in several contexts. There is no focus task. `loom go <id>` sets a task `active` and changes directory to its worktree or repo. `loom log` without an ID goes to the day's journal, in the last-used context, shown before saving.
 
 ### Context
 
-Exactly one per task. Resolution order: `-c`/`--context` -> `LOOM_CONTEXT` -> current repo remote -> `match.paths` -> `default_context`. No global "current context" file: two terminals can be in two contexts. Repos are assigned to contexts by the same `match` rules ([Repositories](repos.md#contexts)). A task moves to another context with `loom set <id> context=<name>` or the context picker (`c`): it keeps its ID and history ([ADR-0015](../adr/0015-move-a-task-between-contexts.md)). A task with a parent or children does not move, since a parent is in the context of its children.
+Exactly one per task. Resolution order: `-c`/`--context` -> `LOOM_CONTEXT` -> current repo remote -> `match.paths` -> `default_context`. No global "current context" file: two terminals can be in two contexts. Repos are assigned to contexts by the same `match` rules ([Repositories](repos.md#contexts)). A capture moves to another context with `loom set <id> context=<name>` or `c`, and an item from a connector stays in that connector's context. A moved task keeps its ID and history ([ADR-0015](../adr/0015-move-a-task-between-contexts.md)). A task with a parent or children does not move, since a parent is in the context of its children.
 
 Git identity stays managed by the dotfiles.
 

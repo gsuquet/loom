@@ -8,8 +8,11 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
 ~/.loom/
   config.toml
   index.db                          # rebuildable, machine-local (repo paths live here)
-  knowledge/                        # portable notes, survive a context purge
+  knowledge/                        # shared pages, survive a context purge
+  profiles/<name>.toml              # shared profiles, see agents.md
+  skills/<name>/                    # shared skills
   contexts/<ctx>/
+    queue/mrs/<provider>-<key>.json   # daemon-owned: MRs waiting on me, no task yet (see reviews.md)
     tasks/<id>/
       task.md                       # mine: frontmatter + free notes
       events.jsonl                  # append-only
@@ -17,9 +20,16 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
       issues/<provider>-<key>/      # editable mirror of a tracker issue (see tracker-sync.md)
       mrs/<provider>-<key>/         # MR mirror: mr.json, description.md, versions.json, threads.json, sync.json, diffs/<sha>.patch, review.json (see reviews.md)
       files/                        # transcripts, slides, other artifacts
-      runs/<run-id>/                # context pack, stream, gate results, outputs
+      runs/<run-id>/                # context pack, frozen skills, events, stream, gate results, outputs
     archive/<yyyy>/<id>/
-    notes/                          # context-scoped notes
+    sources/<id>/                     # source.md, local copy, quote check result
+    knowledge/<slug>.md               # context-scoped pages
+    glossary.md                       # terms, names to avoid, promotion flags
+    out-of-scope/<slug>.md            # rejected ideas, with the reason
+    specialists/<name>/               # prompts, skills, model and provider, as plain files
+    profiles/<name>.toml              # context profiles
+    skills/<name>/                    # context skills
+    pipelines/<name>.toml             # stages, gates, loop caps
     journal/<yyyy>/<mm>.jsonl       # events not tied to a task
 ```
 
@@ -54,6 +64,7 @@ repo = "company-a/checkout"
 parent = "h8w2nc4d"
 spawned_from = []
 blocks = []
+supersedes = []
 +++
 
 Free notes, kind template sections.
@@ -61,6 +72,7 @@ Free notes, kind template sections.
 
 - `task.md` has no `updated` key: the last change is the `at` of the last event in `events.jsonl`.
 - Frontmatter is TOML between `+++` lines, rewritten with `toml_edit`: comments, key order and unknown keys survive ([ADR-0013](../adr/0013-task-store.md)). A task of an unknown kind or status, written by a newer version, is shown read-only.
+- The Outbox is held by `loomd`: a held write has a send time, is machine-local, and never travels with a store sync. See [Write states](connectors.md#write-states).
 - `events.jsonl` lines carry a schema version `v`, the actor and the `machine_id`.
 
 ## Moving a task between contexts
@@ -76,12 +88,12 @@ Free notes, kind template sections.
 - In v0.3 each context needs its own backup remote: the same `store.backup.remote` in two contexts is rejected when the configuration is loaded, since both stores would push to the same branch. One branch per context in a shared repository is a later option.
 - `~/.loom/machine.toml` (local, unversioned) names the machine; `[contexts.<name>] machines = [...]` lists the machines holding a context (absent: all). `config.toml` stays identical on every machine.
 
-## Multiple machines (after v0.3)
+## Multiple machines
 
-Needed once a second machine edits the same context.
+Loom runs on two machines, and a context may be on both.
 
 - `StorePort`: local files + git sync now, HTTP adapter to a central instance (container / VM) later.
 - One poller machine per context (`poll_on = "<machine>"`) until the central instance.
-- Runs take a lease to avoid double execution. Sync conflicts become inbox tasks.
+- Runs take a lease to avoid double execution (delivery step 4). A store divergence stops that context's sync and is reported, never merged automatically.
 - `merge=union` on `*.jsonl` in `.gitattributes`; `task.md` is the only real conflict point.
 - `machine_id` on every event.
