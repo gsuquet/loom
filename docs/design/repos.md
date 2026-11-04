@@ -64,8 +64,9 @@ Read with `gix`, no git process (ADR-0008), refreshed after a scan, after a fetc
 | `last_commit` | Date of `HEAD`'s commit |
 | `last_fetch` | Modification time of `FETCH_HEAD` (the latest of a linked worktree's and the main one's) |
 | `last_update` | Result of the last automatic update (see below) |
+| `languages` | Detected from manifest files in the tracked tree (`Cargo.toml`, `go.mod`, `package.json`, `*.tf`...), vendored directories excluded. Overridden by `languages` in `[repos."<path>"]`. Selects [profiles](agents.md#profiles) |
 
-Editable metadata lives in `config.toml` (`[repos."<path>"]`: `context`, `update`); repo card files in the context stores come with v0.3.
+Editable metadata lives in `config.toml` (`[repos."<path>"]`: `context`, `update`, `languages`); repo card files in the context stores come with v0.3.
 
 ## Index and search
 

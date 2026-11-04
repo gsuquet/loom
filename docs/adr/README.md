@@ -1,6 +1,6 @@
 # Architecture decision records
 
-> Decisions that are settled. Changing one means writing a new ADR that supersedes it.
+> Frozen as history. New decisions go in the design docs, which override these records where they differ. ADR-0014 (TUI architecture) no longer describes the system.
 
 | ADR | Decision |
 | --- | --- |

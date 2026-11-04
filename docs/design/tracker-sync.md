@@ -2,7 +2,7 @@
 
 > Two-way sync and creation of Jira, GitLab and GitHub issues.
 
-Edit issues locally, in the file or the TUI, and push them upstream.
+Edit issues locally, in the file or the app, and push them upstream.
 
 ### Mirror layout
 
@@ -22,7 +22,7 @@ Title, description, status, labels, assignee, priority, new comments. Not synced
 ### Sync rules
 
 - **Pull** (poller machine): remote changes merge into `issue.md` with a 3-way merge against `.base`. Field-level for frontmatter, text merge for the description.
-- **Push is explicit by default**: `loom push <task>` or the TUI shows the diff against the fresh remote, then pushes. Every edit notifies the issue's watchers, so batching edits matters. Auto-push with debounce is a per-context opt-in.
+- **Push is explicit by default**: `loom push <task>` or the app shows the diff against the fresh remote, then pushes. Every edit notifies the issue's watchers, so batching edits matters. Every push follows the [write states](connectors.md#write-states). There is no auto-push.
 - Before each push: fetch remote, 3-way merge, push the merge, store the new base. A conflict blocks the push and creates an inbox item; nothing is overwritten silently.
 - Only changed fields are sent. An unchanged description is never re-sent, so loom's Markdown conversion never reformats an issue nobody touched.
 - Every push is an event with before/after values.
@@ -33,7 +33,7 @@ Title, description, status, labels, assignee, priority, new comments. Not synced
 - **GitHub / GitLab**: Markdown native. Status = open/closed, plus scoped labels for workflow states (`workflow::review`) mapped per context. Write needs the GitLab `api` scope (`read_api` is not enough) and a fine-grained GitHub token with issues write.
 - **Jira**: the hard part.
   - Cloud REST v3 descriptions and comments are ADF (JSON), Data Center uses wiki markup. Conversion to Markdown is lossy (panels, mentions, media, merged table cells, status lozenges): unsupported nodes are kept as opaque placeholders in the Markdown so a round-trip preserves them.
-  - Status is changed through workflow transitions, not set. Loom finds the transition to the target status; if it requires fields (resolution, …), the TUI asks for them; if no transition exists, the edit is rejected.
+  - Status is changed through workflow transitions, not set. Loom finds the transition to the target status; if it requires fields (resolution, …), the app asks for them; if no transition exists, the edit is rejected.
   - Status vocabulary mapped per context (workflow table in config).
 
 ### Creating issues
@@ -46,11 +46,11 @@ Creating a ticket = writing an issue mirror that has no remote key yet, then pus
 - **After publish**: the draft takes its remote key. If the issue is assigned to me, ingestion finds it by its key and attaches it to the existing task instead of creating a duplicate. If not, it is an event in the journal; I can keep a `waiting { on }` task to follow it, closed automatically with the issue.
 - **Templates**: the kind templates are the ticket templates, overridable per context to match each team's conventions (story format, labels, components).
 - **Ticket lint before publish**: loom fetches and caches the required fields per project and issue type (Jira create metadata, GitLab/GitHub labels and milestones) and validates the draft locally. A ticket written through loom also passes the readiness gate, so it is executable by the factory.
-- **Manually**: `loom issue new --kind bug --to jira:CORE` opens `$EDITOR` on the template; TUI `n`.
-- **With an agent**: `loom issue draft --from <file|url|->` or TUI `N`. A ticket-writer template (direct API, no code tools):
+- **Manually**: `loom issue new --kind bug --to jira:CORE` opens `$EDITOR` on the template; or the app.
+- **With an agent**: `loom issue draft --from <file|url|->` or the app. A ticket-writer template (direct API, no code tools):
   - input: rough notes, a Slack thread, investigation findings, meeting notes, an epic description;
   - output: one or several typed drafts (title, description in the kind template, acceptance criteria, labels, parent and links, suggested estimate);
   - checks duplicates through loom search over indexed issues and flags `possible_duplicate_of`;
-  - creating drafts is internal (automatic); publishing follows the autonomy policy of the context.
-- **Batch**: an epic breakdown produces N linked drafts, reviewed and edited together in the TUI, published in one go (parent created first, then children with their links).
+  - an agent's draft is a proposal, as in the [autonomy policy](agents.md#autonomy-policy); publishing needs my approval.
+- **Batch**: an epic breakdown produces N linked drafts, reviewed and edited together in the app, published in one go (parent created first, then children with their links).
 - Commands: `loom issue new | draft | edit | push | publish`.

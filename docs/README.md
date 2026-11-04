@@ -2,8 +2,9 @@
 
 | Folder | Content | Describes |
 | --- | --- | --- |
-| [design/](design/) | Design specs: vision, architecture, model, storage, sync, agents, workflow | Target behavior |
-| [adr/](adr/README.md) | Architecture decision records | Settled decisions |
+| [design/](design/) | Design specs: vision, architecture, model, knowledge, connectors, storage, sync, agents, workflow | Target behavior |
+| [prototypes/](prototypes/README.md) | Working mockups of the desktop app, deleted once built | Target behavior |
+| [adr/](adr/README.md) | Architecture decision records, frozen as history | Past decisions |
 | [roadmap.md](roadmap.md) | Versions, acceptance criteria, current tasks | Plan |
 | [reference/](reference/) | CLI, configuration, file formats, schemas, release assets, style guide | Shipped behavior |
 | [how-to-guides/](how-to-guides/) | One goal per guide | Shipped behavior |

@@ -1,0 +1,2392 @@
+<title>Loom Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: a work desk. Top bar, one sectioned list that holds the focus, detail beside it, key legend and connector health at the bottom. */
+:root {
+  --bg: #f3f5f6; --panel: #ffffff; --sunk: #e8ecee; --fg: #172026; --muted: #55636c; --line: #cfd7db;
+  --accent: #0b6a77; --accent-ink: #ffffff; --select: #dcecef;
+  --urgent: #a82a1f; --warn: #8a5a00; --ok: #24683c;
+  --a: #0b6a77; --b: #6b3fa0; --p: #3f5a2a;
+  --sans: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12181b; --panel: #1a2226; --sunk: #232d32; --fg: #e7edef; --muted: #9dadb5; --line: #33424a;
+  --accent: #58c1cf; --accent-ink: #0b1a1e; --select: #1f3b42;
+  --urgent: #ff8f83; --warn: #e4b95a; --ok: #79cf95;
+  --a: #58c1cf; --b: #bd9cec; --p: #a5c987; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #12181b; --panel: #1a2226; --sunk: #232d32; --fg: #e7edef; --muted: #9dadb5; --line: #33424a;
+  --accent: #58c1cf; --accent-ink: #0b1a1e; --select: #1f3b42;
+  --urgent: #ff8f83; --warn: #e4b95a; --ok: #79cf95;
+  --a: #58c1cf; --b: #bd9cec; --p: #a5c987; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 14px/1.45 var(--sans); }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+kbd { font: 500 12px/1 var(--mono); padding: 2px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--panel); white-space: nowrap; }
+.shell { display: grid; grid-template-columns: 176px minmax(0, 1fr); align-items: start; }
+.shell.collapsed { grid-template-columns: 58px minmax(0, 1fr); }
+.side { position: sticky; top: 0; display: flex; flex-direction: column; gap: 14px; height: 100vh; padding: 14px 8px 14px max(8px, env(safe-area-inset-left, 0px)); border-right: 1px solid var(--line); background: var(--panel); }
+.navs { display: flex; flex-direction: column; gap: 2px; }
+.side-more { padding-top: 12px; border-top: 1px solid var(--line); }
+.nav { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 4px 6px; border-radius: 6px; font-weight: 500; }
+button.nav:hover { background: var(--sunk); }
+.nav[aria-pressed="true"] { background: var(--select); font-weight: 600; }
+.nav.off { color: var(--muted); font-weight: 400; }
+.nav .lbl { flex: 1; white-space: nowrap; }
+.nav b { font: 600 12px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.shell.collapsed .lbl { display: none; }
+.shell.collapsed .nav { position: relative; justify-content: center; }
+.shell.collapsed .nav b { position: absolute; top: 0; right: 0; font-size: 10px; padding: 1px 3px; border-radius: 6px; background: var(--sunk); }
+@media (max-width: 620px) { .shell, .shell.collapsed { grid-template-columns: minmax(0, 1fr); } .side { position: static; flex-direction: row; flex-wrap: wrap; height: auto; padding: 8px 16px; border-right: 0; border-bottom: 1px solid var(--line); } #side-toggle { display: none; } .navs { flex-direction: row; flex-wrap: wrap; } .side-more { padding-top: 0; border-top: 0; } .nav { width: auto; } .shell.collapsed .lbl { display: inline; } .shell.collapsed .nav b { position: static; } }
+.ico { display: none; font: 600 12px/1 var(--mono); min-width: 22px; text-align: center; }
+:root:not([data-keys="shown"]) .shell.collapsed .ico { display: inline-block; }
+:root:not([data-keys="shown"]) kbd, :root:not([data-keys="shown"]) #legend { display: none; }
+:root:not([data-keys="shown"]) .hint kbd { display: inline-block; }
+.hint { font-size: 13px; color: var(--muted); }
+.foot { position: sticky; bottom: 0; z-index: 2; padding: 6px 0; background: var(--bg); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-height: 28px; }
+.foot .toast { min-height: 0; }
+.foot > button { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 12px; border: 1px solid var(--urgent); border-radius: 6px; font-weight: 500; }
+.banner button { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.modal-back { position: fixed; inset: 0; z-index: 5; display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px 16px; background: rgba(0, 0, 0, 0.45); }
+.modal { display: flex; flex-direction: column; gap: 10px; width: min(620px, 100%); max-height: 78vh; overflow-y: auto; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.modal h2 { margin: 0; font-size: 16px; font-weight: 700; }
+.modal p { margin: 0; }
+.modal input, .modal textarea { width: 100%; padding: 8px; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; }
+.modal textarea { min-height: 120px; resize: vertical; }
+.exact { padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sunk); border-radius: 6px; }
+.opt { display: flex; justify-content: space-between; gap: 12px; width: 100%; padding: 7px 10px; border-radius: 6px; }
+.opt[aria-current="true"] { background: var(--select); }
+.opt small { color: var(--muted); }
+.bar { position: sticky; top: 6px; z-index: 3; }
+.banner { position: sticky; top: 6px; z-index: 3; background: var(--panel); }
+.list { overflow: clip !important; }
+.sec { position: sticky; top: 0; z-index: 1; background: var(--panel); cursor: default; }
+.sec.fold { cursor: pointer; }
+.list .row { padding: 4px 12px; }
+.desk.split .list .row.task { grid-template-columns: 16px minmax(0, 1fr) auto; }
+.desk.split .list .row.task .why { grid-column: 3; }
+.why .kind-inline { color: var(--muted); font-weight: 400; }
+.list .row .what { display: flex; flex-direction: column-reverse; }
+.list .row .what .kind { display: block; }
+:root:not([data-keys="shown"]) .bar kbd, :root:not([data-keys="shown"]) .modal kbd { display: inline-block; }
+.urgent-strip { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; width: 100%; padding: 6px 12px; border-radius: 6px; background: var(--urgent); color: var(--panel); font-weight: 600; }
+.filter-chip { padding: 2px 8px; border: 1px solid var(--accent); border-radius: 6px; font-size: 13px; }
+.nav b.quiet { color: var(--muted); font-weight: 400; }
+.holds { display: flex; flex-direction: column; gap: 2px; width: 100%; }
+.holds div { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-weight: 600; color: var(--warn); }
+.holds button { padding: 1px 8px; border: 1px solid var(--line); border-radius: 6px; font-weight: 400; color: var(--fg); }
+.foot .summary { flex-basis: 100%; font-size: 13px; color: var(--muted); }
+.foot .summary button { color: var(--urgent); font-weight: 600; text-decoration: underline; }
+mark { background: var(--warn); color: var(--panel); padding: 0 3px; border-radius: 3px; }
+.dlg-head { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--muted); }
+.thread { padding: 8px 10px; font-size: 13px; border-left: 3px solid var(--line); }
+.threads { display: flex; flex-direction: column; gap: 6px; }
+.wrap { display: flex; flex-direction: column; gap: 12px; padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.date { color: var(--muted); }
+.counts { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); }
+.counts b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.try { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 10px 12px; background: var(--sunk); border-radius: 6px; }
+.try strong { font-weight: 600; }
+.try ol { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; padding: 0; list-style-position: inside; }
+.score { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-variant-numeric: tabular-nums; }
+.score button { text-decoration: underline; color: var(--muted); }
+.desk { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 860px) { .desk { grid-template-columns: minmax(0, 1fr); } .score { margin-left: 0; } }
+.list { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.sec { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); border-top: 1px solid var(--line); }
+.sec:first-child { border-top: 0; }
+.row { display: grid; width: 100%; grid-template-columns: 16px 104px minmax(0, 1fr) minmax(0, 190px); gap: 2px 10px; align-items: baseline; padding: 7px 12px; }
+.row:hover { background: var(--sunk); }
+.row[aria-current="true"] { background: var(--select); }
+.mark { font-family: var(--mono); font-weight: 600; color: var(--accent); }
+.ctx { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.ctx.a { color: var(--a); } .ctx.b { color: var(--b); } .ctx.p { color: var(--p); }
+.what { min-width: 0; }
+.what .kind { display: block; font-size: 12px; color: var(--muted); }
+.title { font-weight: 500; }
+.why { font-size: 13px; color: var(--muted); }
+.why.urgent { color: var(--urgent); font-weight: 600; }
+.why.warn { color: var(--warn); font-weight: 600; }
+@media (max-width: 620px) { .row.task { grid-template-columns: 16px minmax(0, 1fr); } .row.task .why { grid-column: 2; } .row, .row.inbox { grid-template-columns: 26px minmax(0, 1fr); } .row .ctx, .row .what, .row .why { grid-column: 2; } }
+.next { display: inline-block; font: 600 11px/1.5 var(--mono); padding: 0 5px; margin-right: 6px; border-radius: 3px; background: var(--accent); color: var(--accent-ink); }
+.empty { padding: 28px 12px; color: var(--muted); }
+.detail { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+.detail h2 { margin: 0; font-size: 16px; font-weight: 700; text-wrap: balance; }
+.detail p { margin: 0; }
+.meta { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 0; font-size: 13px; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; min-width: 0; }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.acts button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.acts button:hover { background: var(--sunk); }
+.row.inbox { grid-template-columns: 26px 104px minmax(0, 1fr) minmax(0, 190px); }
+.row.picked { box-shadow: inset 3px 0 0 var(--accent); }
+.box { font-family: var(--mono); font-weight: 600; color: var(--accent); white-space: nowrap; }
+.n { display: inline-block; margin-left: 6px; padding: 0 5px; font: 600 12px/1.5 var(--mono); border: 1px solid var(--line); border-radius: 3px; }
+.picked-note { font-weight: 600; }
+.brief { display: flex; flex-direction: column; gap: 6px; padding: 12px; }
+.brief h2 { margin: 0; font-size: 18px; font-weight: 700; text-wrap: balance; }
+.brief p, .brief ul { margin: 0; }
+.brief ul { padding-left: 18px; }
+.facts { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; color: var(--muted); }
+.row.task { grid-template-columns: 16px minmax(0, 1fr) minmax(0, 230px); }
+.path { font: 400 12px/1.5 var(--mono); overflow-wrap: anywhere; color: var(--muted); }
+.pack { display: flex; flex-direction: column; }
+.pack-item { display: grid; width: 100%; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 0 8px; padding: 6px 8px; border-top: 1px solid var(--line); }
+.pack-item[aria-current="true"] { background: var(--select); }
+.pack-item small { display: block; font-size: 12px; color: var(--muted); }
+.pack-item .tok { font: 400 12px/1.6 var(--mono); color: var(--muted); }
+.flag { color: var(--urgent); font-weight: 600; }
+.choice { display: flex; flex-wrap: wrap; gap: 6px; }
+.choice button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.choice button[aria-pressed="true"] { background: var(--select); border-color: var(--accent); }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel); border: 1px solid var(--accent); border-radius: 6px; }
+.bar input { flex: 1 1 220px; min-width: 0; padding: 6px 8px; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; }
+.bar .acts button { background: var(--panel); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 13px; }
+.health { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.health .bad { color: var(--urgent); font-weight: 600; }
+.health .fine b { color: var(--ok); font-weight: 600; }
+.toast { min-height: 20px; font-size: 13px; font-weight: 500; color: var(--accent); }
+.desk.split { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+.desk.split .list .row { grid-template-columns: 16px 96px minmax(0, 1fr); }
+.desk.split .list .row .why { grid-column: 3; }
+.desk.review { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
+.desk .focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.desk.split .detail, .desk.review .detail { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
+.pane { padding: 0; gap: 0; }
+.pane .acts { padding: 0 12px 12px; }
+.pane .row.task { border-top: 0; }
+.row-more { display: flex; flex-direction: column; gap: 8px; padding: 2px 12px 10px 38px; background: var(--select); }
+.row-more .acts { padding: 0; }
+.rv-head { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-bottom: 1px solid var(--line); }
+.rv-head h2 { margin: 0; font-size: 18px; font-weight: 700; }
+.rv-body { display: grid; grid-template-columns: 190px minmax(0, 1fr); }
+.rv-files { display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.rv-file { display: block; width: 100%; padding: 7px 10px; font-size: 13px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.rv-file[aria-current="true"] { background: var(--select); font-weight: 600; }
+.rv-file small { display: block; font: 400 12px/1.5 var(--mono); color: var(--muted); }
+.rv-diff { min-width: 0; padding-bottom: 8px; font: 400 12.5px/1.55 var(--mono); }
+.rv-path { padding: 8px 10px; font-weight: 600; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.rv-hunk { padding: 2px 10px; color: var(--muted); background: var(--sunk); }
+.ln { display: grid; width: 100%; grid-template-columns: 34px 34px 14px 14px minmax(0, 1fr); padding-right: 8px; font: inherit; }
+.ln.sp { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding-right: 0; }
+.half { display: grid; grid-template-columns: 30px 14px 14px minmax(0, 1fr); min-width: 0; }
+.half + .half { border-left: 1px solid var(--line); }
+.ln .no, .half .no { padding-right: 6px; text-align: right; color: var(--muted); }
+.code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.del { background: color-mix(in srgb, var(--urgent) 12%, transparent); }
+.ln[aria-current="true"], .half[aria-current="true"] { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dot { color: var(--accent); font-weight: 600; }
+.com { display: block; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.com[aria-current="true"] { border-color: var(--accent); background: var(--select); }
+.com small { display: block; font: 400 12px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.com.off { opacity: 0.55; text-decoration: line-through; }
+.com-edit { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 6px; }
+.com-edit textarea { width: 100%; min-height: 110px; padding: 6px 8px; font: 400 13px/1.45 var(--sans); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; resize: vertical; }
+.note { padding: 8px 12px; background: var(--sunk); border-bottom: 1px solid var(--line); }
+.meter { height: 8px; border-radius: 4px; background: var(--sunk); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); }
+.meter.warn i { background: var(--warn); }
+.ev { margin: 0; padding-left: 18px; font-size: 13px; }
+.ev li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.badge { display: inline-block; font: 600 11px/1.5 var(--mono); padding: 0 5px; border: 1px solid var(--line); border-radius: 3px; }
+@media (max-width: 860px) { .desk.split, .desk.review { grid-template-columns: minmax(0, 1fr); } .desk.split .detail, .desk.review .detail { position: static; max-height: none; } .rv-body { grid-template-columns: minmax(0, 1fr); } .rv-files { border-right: 0; } }
+@media (prefers-reduced-motion: no-preference) { .row { transition: background-color 80ms linear; } }
+/* Three looks to compare on the real screens. Desk is the base above. */
+:root[data-look="ledger"] { --bg: #f7f6f2; --panel: #fffefb; --sunk: #ecebe5; --fg: #1c1b18; --muted: #5c5a52; --line: #d6d3c9; --accent: #8a4b08; --select: #f3e7d3; --urgent: #a3241a; --warn: #7a5200; --ok: #2f6b3a; --a: #1f5f8b; --b: #7a3e9d; --p: #4a6b1f; --accent-ink: #ffffff; --sans: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif; }
+:root[data-look="focus"] { --bg: #fbfbfd; --panel: #ffffff; --sunk: #f0f0f5; --fg: #1b1b22; --muted: #5a5a68; --line: #dcdce4; --accent: #3d3bb3; --select: #e7e7f8; --urgent: #b3261e; --warn: #855800; --ok: #1e6b3c; --a: #0b6a77; --b: #7a3e9d; --p: #4a6b1f; --accent-ink: #ffffff; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+@media (prefers-color-scheme: dark) {
+  :root[data-look="ledger"]:not([data-theme="light"]) { --bg: #171611; --panel: #1f1e18; --sunk: #2a2921; --fg: #ece9df; --muted: #a8a595; --line: #3a382e; --accent: #e0a458; --select: #3a2e1c; --urgent: #ff8f83; --warn: #e4b95a; --ok: #79cf95; --a: #6db3e2; --b: #c39be8; --p: #a9cf7a; --accent-ink: #1a1408; color-scheme: dark; }
+  :root[data-look="focus"]:not([data-theme="light"]) { --bg: #15151b; --panel: #1c1c24; --sunk: #26262f; --fg: #eaeaf2; --muted: #a2a2b2; --line: #33333f; --accent: #a5a3f5; --select: #2c2b4a; --urgent: #ff8f83; --warn: #e4b95a; --ok: #79cf95; --a: #58c1cf; --b: #c39be8; --p: #a9cf7a; --accent-ink: #15151b; color-scheme: dark; }
+}
+:root[data-look="ledger"][data-theme="dark"] { --bg: #171611; --panel: #1f1e18; --sunk: #2a2921; --fg: #ece9df; --muted: #a8a595; --line: #3a382e; --accent: #e0a458; --select: #3a2e1c; --urgent: #ff8f83; --warn: #e4b95a; --ok: #79cf95; --a: #6db3e2; --b: #c39be8; --p: #a9cf7a; --accent-ink: #1a1408; color-scheme: dark; }
+:root[data-look="focus"][data-theme="dark"] { --bg: #15151b; --panel: #1c1c24; --sunk: #26262f; --fg: #eaeaf2; --muted: #a2a2b2; --line: #33333f; --accent: #a5a3f5; --select: #2c2b4a; --urgent: #ff8f83; --warn: #e4b95a; --ok: #79cf95; --a: #58c1cf; --b: #c39be8; --p: #a9cf7a; --accent-ink: #15151b; color-scheme: dark; }
+/* Ledger: dense, square, ruled like a register. */
+:root[data-look="ledger"] body { font-size: 13px; line-height: 1.35; }
+:root[data-look="ledger"] .list, :root[data-look="ledger"] .detail, :root[data-look="ledger"] .acts button, :root[data-look="ledger"] .nav, :root[data-look="ledger"] .try, :root[data-look="ledger"] .bar, :root[data-look="ledger"] .modal, :root[data-look="ledger"] .urgent-strip, :root[data-look="ledger"] kbd { border-radius: 0; }
+:root[data-look="ledger"] .list .row { padding: 2px 10px; border-bottom: 1px solid var(--line); }
+:root[data-look="ledger"] .why, :root[data-look="ledger"] .what .kind, :root[data-look="ledger"] .facts, :root[data-look="ledger"] .nav b { font-family: var(--mono); font-size: 12px; }
+:root[data-look="ledger"] .sec { background: var(--sunk); padding: 3px 10px; letter-spacing: 0.06em; }
+:root[data-look="ledger"] h1 { font-size: 16px; }
+:root[data-look="ledger"] .detail h2, :root[data-look="ledger"] .brief h2, :root[data-look="ledger"] .rv-head h2 { font-size: 14px; }
+/* Focus: calm and roomy, one accent, content over boxes. */
+:root[data-look="focus"] body { font-size: 15px; line-height: 1.5; }
+:root[data-look="focus"] .list, :root[data-look="focus"] .detail { border-color: transparent; border-radius: 10px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+:root[data-look="focus"] .desk .focus { border-color: transparent; box-shadow: 0 0 0 2px var(--accent); }
+:root[data-look="focus"] .list .row { padding: 8px 14px; border-radius: 8px; }
+:root[data-look="focus"] .sec { border-top: 0; padding: 14px 14px 4px; text-transform: none; font-size: 13px; letter-spacing: 0; }
+:root[data-look="focus"] .side { background: var(--bg); border-right: 0; }
+:root[data-look="focus"] .acts button, :root[data-look="focus"] .nav { border-radius: 8px; }
+:root[data-look="focus"] .acts button { background: var(--sunk); border-color: transparent; }
+:root[data-look="focus"] h1 { font-size: 24px; }
+</style>
+
+<div class="shell" id="shell">
+<aside class="side" aria-label="Pages">
+  <button id="side-toggle" class="nav" type="button" aria-expanded="true"><kbd>h</kbd><span class="ico" aria-hidden="true">≡</span><span class="lbl" id="side-label">Collapse</span></button>
+  <nav class="navs">
+    <button id="nav-today" class="nav" type="button"><kbd>g t</kbd><span class="ico" aria-hidden="true">To</span><span class="lbl">Today</span><b id="today-count">0</b></button>
+    <button id="nav-inbox" class="nav" type="button"><kbd>g i</kbd><span class="ico" aria-hidden="true">In</span><span class="lbl">Inbox</span><b id="inbox-count">0</b></button>
+    <button id="nav-day" class="nav" type="button"><kbd>g d</kbd><span class="ico" aria-hidden="true">Da</span><span class="lbl">My day</span></button>
+    <button id="nav-reviews" class="nav" type="button"><kbd>g v</kbd><span class="ico" aria-hidden="true">Re</span><span class="lbl">Reviews</span><b id="reviews-count" class="quiet">0</b></button>
+    <button id="nav-agents" class="nav" type="button"><kbd>g a</kbd><span class="ico" aria-hidden="true">Ag</span><span class="lbl">Agents</span><b id="agents-count">0</b></button>
+    <button id="nav-meet" class="nav" type="button"><kbd>g m</kbd><span class="ico" aria-hidden="true">Me</span><span class="lbl">Meetings</span><b id="meet-count">0</b></button>
+    <button id="nav-lib" class="nav" type="button"><kbd>g r</kbd><span class="ico" aria-hidden="true">Rd</span><span class="lbl">Reading</span><b id="reading-count" class="quiet">0</b></button>
+    <button id="nav-pages" class="nav" type="button"><kbd>g k</kbd><span class="ico" aria-hidden="true">Kn</span><span class="lbl">Knowledge</span></button>
+    <button id="nav-search" class="nav" type="button"><kbd>q</kbd><span class="ico" aria-hidden="true">Go</span><span class="lbl">Go to or search</span></button>
+  </nav>
+  <div class="navs side-more">
+    <span hidden><b id="later-count">0</b></span>
+    <button id="nav-out" class="nav" type="button"><kbd>g o</kbd><span class="ico" aria-hidden="true">Ou</span><span class="lbl">Outbox</span><b id="out-count">1</b></button>
+    <button id="nav-set" class="nav" type="button"><kbd>g s</kbd><span class="ico" aria-hidden="true">Se</span><span class="lbl">Settings</span></button>
+  </div>
+</aside>
+<div class="wrap">
+  <button id="urgent-strip" class="urgent-strip" type="button" hidden></button>
+  <div class="top">
+    <h1 id="page-title">Today</h1>
+    <span class="date">Wednesday 4 November · demo data</span>
+    <button id="filter-chip" class="filter-chip" type="button" hidden></button>
+  </div>
+
+  <div class="try">
+    <strong>Try:</strong>
+    <ol id="try-list"></ol>
+    <div class="score">
+      <span>Keys <b id="k-count">0</b></span>
+      <button id="reset" type="button">Reset</button>
+    </div>
+  </div>
+
+  <div id="banner" class="banner" hidden>
+    <span>loomd is not running. This is the last known state, and changes are paused until it is back.</span>
+    <button id="banner-fix" type="button">Start loomd</button>
+  </div>
+
+  <div id="logbar" class="bar" hidden>
+    <label for="log-input"><strong id="log-label"></strong></label>
+    <input id="log-input" type="text" autocomplete="off" placeholder="Helped dana with the VPN profile. Tab changes the context.">
+    <span class="acts"><button type="button" data-send="Enter"><kbd>Enter</kbd> Save</button><button type="button" data-send="Escape"><kbd>Esc</kbd> Cancel</button></span>
+  </div>
+
+  <div id="laterbar" class="bar" hidden>
+    <strong>Move to later</strong>
+    <div class="acts">
+      <button type="button" data-later="tomorrow"><kbd>t</kbd> Tomorrow</button>
+      <button type="button" data-later="Monday"><kbd>m</kbd> Monday</button>
+      <button type="button" data-later="cancel"><kbd>Esc</kbd> Cancel</button>
+    </div>
+  </div>
+
+  <div id="ctxbar" class="bar" hidden>
+    <strong>Move to context</strong>
+    <div class="acts">
+      <button type="button" data-ctx="a"><kbd>a</kbd> company-a</button>
+      <button type="button" data-ctx="b"><kbd>b</kbd> company-b</button>
+      <button type="button" data-ctx="p"><kbd>p</kbd> personal</button>
+      <button type="button" data-ctx="cancel"><kbd>Esc</kbd> Cancel</button>
+    </div>
+  </div>
+
+  <div id="repobar" class="bar" hidden>
+    <label for="repo-input"><strong>Add a worktree</strong></label>
+    <input id="repo-input" type="text" autocomplete="off" placeholder="Search repos in this context">
+    <span id="repo-match"></span>
+    <span class="acts"><button type="button" data-send="Enter"><kbd>Enter</kbd> Add first match</button><button type="button" data-send="Escape"><kbd>Esc</kbd> Cancel</button></span>
+  </div>
+
+  <div id="replybar" class="bar" hidden>
+    <label for="reply-input"><strong>Answer the agent</strong></label>
+    <input id="reply-input" type="text" autocomplete="off" placeholder="Compare with prod-eu">
+    <span class="acts"><button type="button" data-send="Enter"><kbd>Enter</kbd> Send</button><button type="button" data-send="Escape"><kbd>Esc</kbd> Cancel</button></span>
+  </div>
+
+  <div id="stopbar" class="bar" hidden>
+    <strong>Stop this run? Its worktree stays.</strong>
+    <div class="acts">
+      <button type="button" data-stop="Enter"><kbd>Enter</kbd> Stop</button>
+      <button type="button" data-stop="Escape"><kbd>Esc</kbd> Cancel</button>
+    </div>
+  </div>
+
+  <div id="uploadbar" class="bar" hidden>
+    <strong id="upload-text"></strong>
+    <div class="acts">
+      <button type="button" data-up="CmdEnter"><kbd>⌘Enter</kbd> Upload comments</button>
+      <button type="button" data-up="CmdShiftEnter"><kbd>⌘⇧Enter</kbd> Upload and approve</button>
+      <button type="button" data-up="Escape"><kbd>Esc</kbd> Cancel</button>
+    </div>
+  </div>
+
+  <div class="desk" id="desk">
+    <div class="list" id="list" aria-label="Today's list"></div>
+    <div class="detail" id="detail" aria-live="polite"></div>
+  </div>
+
+  <div class="foot">
+    <div class="holds" id="holds" aria-live="polite"></div>
+    <div class="toast" id="toast" role="status"></div>
+    <button id="undo-btn" type="button" hidden><kbd>u</kbd> Undo</button>
+    <div class="hint" id="hint" role="status"></div>
+    <div class="summary" id="summary"></div>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+</div>
+</div>
+<div id="modal-back" class="modal-back" hidden><div class="modal" id="modal" role="dialog" aria-modal="true" aria-label="Dialog"></div></div>
+
+<script>
+// Scoped: global `status` and `history` would collide with window.status and window.history.
+(function () {
+var SECTIONS = [
+  { id: 'urgent', name: 'Urgent' },
+  { id: 'progress', name: 'In progress' },
+  { id: 'due', name: 'Due' },
+  { id: 'waiting', name: 'Waiting on you' },
+  { id: 'followup', name: 'Follow-ups' },
+  { id: 'planned', name: 'Planned' },
+  { id: 'agents', name: 'With an agent' }
+];
+var GROUPS = [
+  { id: 'alerts', name: 'Alerts' },
+  { id: 'tickets', name: 'Tickets' },
+  { id: 'own', name: 'Your captures' },
+  { id: 'pool', name: 'Team pool, unassigned' }
+];
+var CTX = { a: '● company-a', b: '■ company-b', p: '▲ personal' };
+var ITEMS = [
+  { id: 'alert', sec: 'urgent', ctx: 'a', kind: 'Datadog alert · p1', title: 'checkout-api 5xx above 2% in prod', why: 'Firing for 12 min', tone: 'urgent', agent: 'Investigator', opens: 'Datadog', from: 'Monitor 88213, team filter', body: 'No Freshservice incident yet: this monitor does not trigger on-call.' },
+  { id: 'rotate', sec: 'due', ctx: 'a', kind: 'Jira · PLAT-482', title: 'Rotate registry credentials', why: 'Due today', tone: 'warn', agent: 'Implementer', opens: 'Jira', from: 'Assigned to you', body: 'Refined. Repos listed: infra/gitops, infra/registry. Merge order: registry first.' },
+  { id: 'auth', sec: 'waiting', ctx: 'a', kind: 'MR · acme/shop!412', title: 'Auth refactor', why: 'dana asked 2 days ago', agent: 'Reviewer', opens: 'GitLab', from: 'Review requested', body: '' },
+  { id: 'vpn', sec: 'waiting', ctx: 'b', kind: 'Freshservice · INC-1093', title: 'Cannot reach staging VPN', why: 'Requester waiting 1 day', agent: 'Investigator', opens: 'Freshservice', from: 'Assigned to you', body: 'Your reply goes through a preview before it reaches the requester.' },
+  { id: 'netpol', sec: 'waiting', ctx: 'a', kind: 'Your MR · infra/gitops!88', title: 'Network policies for Argo CD', why: 'Pipeline failed 40 min ago', tone: 'warn', agent: 'Implementer', opens: 'GitLab', from: 'Your MR, 1 of 2 in its task', body: 'Group: infra/gitops!88, infra/charts!31. No order defined.' },
+  { id: 'handbook', sec: 'waiting', ctx: 'a', kind: 'MR · docs/handbook!20', title: 'On-call handover page', why: 'Mentioned yesterday', agent: 'Reviewer', opens: 'GitLab', from: 'Mention', body: 'alice asked for your view on one paragraph.' },
+  { id: 'runq', sec: 'waiting', ctx: 'a', kind: 'Investigator · question', title: 'Why did checkout-worker restart overnight?', why: 'Asks you a question', tone: 'warn', agent: 'Investigator', opens: 'the worktree', from: 'Run you started at 08:40', body: 'The agent is waiting for your answer. Open the run to answer it.' },
+  { id: 'runf', sec: 'waiting', ctx: 'b', kind: 'Implementer · run failed', title: 'Upgrade cert-manager in staging', why: 'Interrupted at 07:55', tone: 'urgent', agent: 'Implementer', opens: 'the worktree', from: 'Run you started yesterday', body: 'The worktree is kept, with one commit not pushed. Open the run to resume or take over.' },
+  { id: 'dns', sec: 'followup', ctx: 'b', kind: 'Follow-up · OPS-71', title: 'DNS change from the network team', why: 'No movement for 6 days', tone: 'warn', agent: 'Ticket writer', opens: 'Jira', from: 'Waiting on someone else', body: 'Flagged automatically. Nudge them, or set a date to look again.' },
+  { id: 'backup', sec: 'planned', ctx: 'b', kind: 'Jira · OPS-77', title: 'Document backup restore', why: 'Due Friday', agent: 'Implementer', opens: 'Jira', from: 'Assigned to you', body: 'Not refined yet. It moves to Due on the day it falls due.' },
+  { id: 'argo', sec: 'planned', ctx: 'p', kind: 'Knowledge', title: 'Finish the Argo CD security page', why: 'On your short list', agent: 'Knowledge distiller', opens: 'Editor', from: 'Your short list', body: 'Four open questions left on the page.' },
+  { id: 'issuer', sec: 'planned', ctx: 'p', kind: 'Idea', title: 'Renew the homelab cert issuer', why: 'Back from later', agent: 'Implementer', opens: 'Editor', from: 'Hotkey, Monday', body: 'You moved this to today on Monday, so it returned to Planned.' }
+];
+var ENTRIES = [
+  { id: 'flap', group: 'alerts', ctx: 'a', kind: 'Datadog · monitor 90142', title: 'checkout-worker memory above 85%', why: 'Flapping', count: 8, agent: 'Investigator', opens: 'Datadog', body: '8 alerts in 2 hours, grouped by monitor and host group. Accepting creates one task.' },
+  { id: 'disk', group: 'alerts', ctx: 'a', kind: 'Datadog · monitor 77310', title: 'Disk usage above 80% on nodes', why: '3 hosts', count: 3, agent: 'Investigator', opens: 'Datadog', body: '3 hosts in the same monitor within 10 minutes.' },
+  { id: 'latency', group: 'alerts', ctx: 'b', kind: 'Datadog · monitor 51208', title: 'API latency warning in staging', why: 'Warning, 1 h ago', agent: 'Investigator', opens: 'Datadog', body: 'Matched your team filter at warning level.' },
+  { id: 'cert', group: 'alerts', ctx: 'b', kind: 'Datadog · monitor 51977', title: 'Certificate expires in 21 days', why: 'Warning, today', agent: 'Implementer', opens: 'Datadog', body: 'Not urgent yet. Give it a date rather than leaving it here.' },
+  { id: 'plat', group: 'tickets', ctx: 'a', kind: 'Jira · PLAT-497', title: 'Add a tier for batch workloads', why: 'Assigned 3 h ago', agent: 'Refiner', opens: 'Jira', body: 'Short description, no acceptance criteria. A refining agent could help.' },
+  { id: 'req', group: 'tickets', ctx: 'b', kind: 'Freshservice · SR-2231', title: 'Access request for the staging cluster', why: 'Assigned today', agent: 'Investigator', opens: 'Freshservice', body: 'A small one you may handle on the spot.' },
+  { id: 'link', group: 'own', ctx: 'p', kind: 'Link from a colleague', title: 'Kargo promotion patterns', why: 'Added this morning', agent: 'Researcher', opens: 'Browser', body: 'Send it to Reading if you only want to read it.' },
+  { id: 'pool1', group: 'pool', ctx: 'a', kind: 'Jira · PLAT-503', title: 'Rotate the CI runner tokens', why: 'Unassigned, 2 days', agent: 'Implementer', opens: 'Jira', body: 'Accepting assigns it to you in Jira.' },
+  { id: 'pool2', group: 'pool', ctx: 'b', kind: 'Freshservice · SR-2240', title: 'New VPN profile for a contractor', why: 'Unassigned, today', agent: 'Investigator', opens: 'Freshservice', body: 'Accepting assigns it to you in Freshservice.' },
+  { id: 'thought', group: 'own', ctx: 'p', kind: 'Hotkey', title: 'Check the Cilium layer 7 rules on Redis', why: 'Yesterday', agent: 'Researcher', opens: 'Editor', body: 'Captured with no context. Move it to the right one before accepting.' }
+];
+
+var TRIES = {
+  today: ['Start two tasks in company-a.', 'Move the on-call page to later.', 'Send a reviewer to the auth MR.', 'Undo the last one.'],
+  inbox: ['Select the whole Alerts section.', 'Unselect one alert, then dismiss the rest.', 'Move your hotkey note to company-a.', 'Accept the Jira ticket, then see it in Today.']
+};
+var LEGENDS = {
+  today: [['j k', 'move'], ['n p', 'section'], ['s', 'start'], ['z', 'later'], ['a', 'send agent'], ['o', 'open'], ['d', 'done'], ['u', 'undo'], ['l', 'log (works from any app)']],
+  inbox: [['j k', 'move'], ['n p', 'section'], ['x', 'select'], ['X', 'select section'], ['y', 'accept'], ['z', 'accept with a date'], ['r', 'send to Reading'], ['m', 'mute'], ['a', 'send agent'], ['o', 'open'], ['d', 'dismiss'], ['c', 'change context'], ['u', 'undo'], ['Esc', 'clear selection']]
+};
+
+TRIES.today = ['Confirm your short list.', 'Start the Jira task, and cancel it with u during the countdown.', 'Show one context with w, and fold a section with v.', 'Go elsewhere with g, then r for example: the urgent strip stays.'];
+LEGENDS.today = [['j k', 'move'], ['n p', 'section'], ['Enter', 'go into it'], ['s', 'start'], ['z', 'later'], ['r', 'reply'], ['m', 'mute'], ['a', 'send agent'], ['o', 'open'], ['d', 'done'], ['v', 'fold section'], ['V', 'unfold all'], ['w', 'show one context'], ['q', 'go to or search'], ['u', 'undo'], ['l', 'log (works from any app)']];
+TRIES.task = ['Add a worktree with w, and a file with f.', 'Send an agent, and tell it what you want with t.', 'Try to approve the push: open its diff first.', 'Approve with Cmd+Enter, then cancel with u during the countdown.'];
+LEGENDS.task = [['j k', 'move'], ['n p', 'section'], ['w', 'add worktree'], ['f', 'add file'], ['a', 'send agent'], ['o', 'open'], ['⌘Enter', 'approve'], ['s', 'start'], ['d', 'done'], ['Enter', 'follow link or open run'], ['u', 'undo'], ['Esc', 'back to the list']];
+TRIES.review = ['Send the reviewer with a if there is no draft yet.', 'Jump through its comments with m.', 'Edit one with e, drop the nitpick with x, add your own with c.', 'Compare views with v, then upload with Cmd+Enter.'];
+LEGENDS.review = [['j k', 'line'], ['n p', 'file'], ['m M', 'next or previous comment'], ['c', 'comment'], ['e', 'edit'], ['x', 'keep or drop'], ['a', 'send reviewer'], ['f', 'viewed or not'], ['v', 'unified or side by side'], ['o', 'open in VS Code'], ['⌘Enter', 'upload or approve'], ['u', 'undo'], ['Esc', 'back']];
+var TASK_ROWS = [
+  { id: 'repo1', group: 'work', title: 'infra/registry', kind: '1 · Merge first', why: 'MR !64 approved, pipeline passed', opens: 'VS Code', path: '~/.loom/worktrees/plat-482/registry', body: 'Branch plat-482-rotate. The MR can merge once you choose to, in GitLab.' },
+  { id: 'repo2', group: 'work', title: 'infra/gitops', kind: '2 · After infra/registry', why: 'MR !91 draft, waits for !64', tone: 'warn', opens: 'VS Code', path: '~/.loom/worktrees/plat-482/gitops', body: 'Merging this before !64 shows a warning. Order comes from the refinement, and you can change it.' },
+  { id: 'file1', group: 'files', title: 'rotation-plan.md', kind: 'Plan · written by the implementer', why: 'Text, 2 KB', opens: 'VS Code', path: 'tasks/plat-482/files/rotation-plan.md', body: 'Stored with the task, in the context’s store, and offered to agents working on it.' },
+  { id: 'file2', group: 'files', title: 'registry-access.png', kind: 'Diagram · added by you', why: 'Image, 180 KB', opens: 'Preview', path: 'tasks/plat-482/files/registry-access.png', body: 'Images are not sent to agents unless you add them.' },
+  { id: 'run1', group: 'agents', title: 'Implementer, in the background', kind: 'Run · finished at 09:12', why: '$0.38 of $2.00', opens: 'the run', body: 'Worked in both worktrees with a clean environment. It used read-only Kubernetes through loom and asked no questions.' },
+  { id: 'prop1', group: 'needs', title: 'Push 2 commits to infra/gitops', kind: 'Proposal from the implementer', why: 'Needs your approval', tone: 'warn', opens: 'the diff', approve: true, body: 'Agents hold no credentials, so loom pushes only after you approve.' },
+  { id: 'rel-parent', group: 'relations', title: 'Platform hardening', kind: 'Parent task', why: 'company-a', link: true, opens: 'the parent', body: 'Its brief is included by default when an agent works on this task.' },
+  { id: 'rel-jira', group: 'relations', title: 'PLAT-482', kind: 'Jira ticket', why: 'Synced 3 min ago', link: true, opens: 'Jira', body: 'Two-way: status changes here update Jira at once.' },
+  { id: 'rel-alert', group: 'relations', title: 'Registry 401 spike', kind: 'Spawned from a Datadog alert', why: 'Monday', link: true, opens: 'Datadog', body: 'The alert that led to this task.' },
+  { id: 'rel-page', group: 'relations', title: 'Argo CD security best practices', kind: 'Knowledge page', why: 'Shared', link: true, opens: 'the page', body: 'Linked through infra/gitops. Shared knowledge can be reached from any context.' },
+  { id: 'rel-book', group: 'relations', title: 'Registry credentials runbook', kind: 'Knowledge page', why: 'company-a only', link: true, opens: 'the page', body: 'Stays in this context. Another client’s agent can never reach it through a link.' },
+  { id: 'ev1', group: 'events', title: 'Implementer run finished', kind: 'Agent · today 09:12', why: '', opens: 'the event', body: 'Recorded automatically on the timeline.' },
+  { id: 'ev2', group: 'events', title: 'Repos listed during refinement', kind: 'You · yesterday', why: '', opens: 'the event', body: 'Recorded automatically on the timeline.' },
+  { id: 'ev3', group: 'events', title: 'Imported from Jira', kind: 'Connector · Monday', why: '', opens: 'the event', body: 'Recorded automatically on the timeline.' }
+];
+var TASK_GROUPS = [
+  { id: 'needs', name: 'Needs you' }, { id: 'work', name: 'Repos and MRs' }, { id: 'files', name: 'Files' }, { id: 'agents', name: 'Agent work' }, { id: 'relations', name: 'Relations' }, { id: 'events', name: 'Timeline' }
+];
+var SPECIALISTS = ['Reviewer', 'Implementer', 'Investigator', 'Researcher', 'Knowledge distiller', 'Meeting distiller', 'Ticket writer', 'Refiner'];
+var REPOS = ['infra/charts', 'infra/terraform', 'infra/policies', 'docs/handbook'];
+var ACCOUNTS = { a: 'company-a, billed by usage', b: 'company-b, billed by usage', p: 'personal, seat' };
+var PACK = [
+  { id: 'brief', title: 'This task’s brief', why: 'This task', tok: 420 },
+  { id: 'parent', title: 'Platform hardening brief', why: 'Parent task', tok: 610 },
+  { id: 'agents-md', title: 'AGENTS.md of both repos', why: 'Repos listed on the task', tok: 1850 },
+  { id: 'rules', title: 'Implementer rules', why: 'Fixed set of this specialist', tok: 900 },
+  { id: 'plan', title: 'rotation-plan.md', why: 'File on this task', tok: 540 },
+  { id: 'argo', title: 'Argo CD security best practices', why: 'Linked through infra/gitops', tok: 2300 },
+  { id: 'thread', title: 'Jira comment thread', why: 'Related, left out by default', tok: 1200 },
+  { id: 'book', title: 'Registry credentials runbook', why: 'Possible secret on line 18. Fix it to include this page.', tok: 760, flagged: true }
+];
+
+var THREADS = [{ who: 'alice', file: 0, text: 'Do we still need the role in the token?' }, { who: 'dana', file: 0, text: 'Yes, the admin pages read it. I will move it next.' }];
+var LABELS = /^(praise|nitpick|suggestion|issue|todo|question|thought|chore|note)( \([\w-]+(, ?[\w-]+)*\))?:/;
+var DIFF = [
+  { path: 'src/auth/session.ts', hunks: [{ old: 12, nw: 12, lines: [
+    ' export function createSession(user: User, res: Response) {',
+    '-  const token = jwt.sign({ id: user.id, role: user.role }, process.env.SECRET);',
+    '-  res.cookie("session", token);',
+    '+  const token = signSession({ id: user.id, role: user.role });',
+    '+  res.cookie("session", token, { httpOnly: true, sameSite: "lax" });',
+    '   return token;',
+    ' }',
+    ' ',
+    ' export function readSession(req: Request): Session | null {',
+    '-  return jwt.verify(req.cookies.session, process.env.SECRET) as Session;',
+    '+  try {',
+    '+    return verifySession(req.cookies.session);',
+    '+  } catch {',
+    '+    return null;',
+    '+  }',
+    ' }'] }] },
+  { path: 'src/auth/middleware.ts', hunks: [{ old: 5, nw: 5, lines: [
+    ' export function requireAuth(req, res, next) {',
+    '   const session = readSession(req);',
+    '-  if (!session) return res.redirect("/login");',
+    '+  if (!session) return res.status(401).end();',
+    '   req.user = session;',
+    '   next();',
+    ' }'] }] },
+  { path: 'src/auth/session.test.ts', hunks: [{ old: 30, nw: 30, lines: [
+    ' describe("sessions", () => {',
+    '+  test("rejects a tampered cookie", () => {',
+    '+    const req = requestWith("session=tampered");',
+    '+    expect(readSession(req)).toBeNull();',
+    '+  });',
+    '+',
+    '+  test("returns null without a cookie", () => {',
+    '+    expect(readSession(requestWith(""))).toBeNull();',
+    '+  });',
+    ' });'] }] },
+  { path: 'docs/auth.md', hunks: [{ old: 8, nw: 8, lines: [
+    ' ## Sessions',
+    ' ',
+    '-Sessions use a JWT stored in a cookie.',
+    '+Sessions use a signed cookie. Log in again after it expires.',
+    ' ',
+    '-Sign in is required on every page.',
+    '+Log in is required on every page.'] }] },
+  { path: 'package-lock.json', generated: true, add: 12, del: 9, hunks: [] }
+];
+DIFF.forEach(function (f) {
+  if (f.generated) return;
+  f.add = 0; f.del = 0; f.rows = [];
+  f.hunks.forEach(function (h) {
+    var o = h.old, n = h.nw;
+    h.lines.forEach(function (l, i) {
+      var c = l.charAt(0), row = { c: c, text: l.slice(1), first: i === 0, hunk: h };
+      if (c === '+') { row.n = n++; f.add++; } else if (c === '-') { row.o = o++; f.del++; } else { row.o = o++; row.n = n++; }
+      f.rows.push(row);
+    });
+  });
+});
+var TOTAL = DIFF.reduce(function (a, f) { return { add: a.add + f.add, del: a.del + f.del }; }, { add: 0, del: 0 });
+ITEMS.filter(function (i) { return i.id === 'auth'; })[0].body = DIFF.length + ' files, +' + TOTAL.add + ' −' + TOTAL.del + '. Open the review to see the local diff. Sending a reviewer creates the Review task and a draft you edit before upload.';
+var DRAFT = [
+  { id: 'c0', file: -1, at: 0, by: 'Reviewer', text: 'note: The main risks are the cookie flags and the changed redirect. I read the five files and the existing tests. I did not run the app.' },
+  { id: 'c1', file: 0, at: 4, by: 'Reviewer', text: 'issue (blocking): This cookie has no `secure` flag, so it can be sent over plain HTTP. Add `secure: true` outside local development.' },
+  { id: 'c2', file: 0, at: 12, by: 'Reviewer', text: 'suggestion (non-blocking): This treats a tampered cookie like an expired one. Log tampered cookies so that an attack shows up.' },
+  { id: 'c3', file: 1, at: 3, by: 'Reviewer', text: 'question: Pages relied on the redirect to /login. What sends a browser to the login page now that this returns 401?' },
+  { id: 'c4', file: 2, at: 1, by: 'Reviewer', text: 'praise: This test covers the main risk of the refactor.' },
+  { id: 'c5', file: 3, at: 3, by: 'Reviewer', text: 'nitpick (non-blocking): "Log in" and "sign in" both appear elsewhere in the docs. Pick one.' }
+];
+
+TRIES.run = ['Open the investigator run from Waiting on you.', 'Look at the refused command in its activity.', 'Answer its question with r.', 'Open the failed run, then resume it with s.'];
+LEGENDS.run = [['j k', 'move'], ['n p', 'section'], ['r', 'answer'], ['⌘Enter', 'approve'], ['s', 'resume'], ['v', 'take over in terminal'], ['x', 'stop'], ['o', 'open worktree'], ['u', 'undo'], ['Esc', 'back']];
+TRIES.library = ['Select two captured items with x.', 'Select a whole section with X.', 'Keep the selection with y, or dismiss it with d.', 'Send the distiller to an article you have read.'];
+LEGENDS.library = [['j k', 'move'], ['n p', 'section'], ['x', 'select'], ['X', 'select section'], ['y', 'next stage'], ['d', 'dismiss'], ['a', 'send agent'], ['f', 'add a link or feed'], ['o', 'open local copy'], ['u', 'undo'], ['Esc', 'clear selection']];
+TRIES.pages = ['Open the Argo CD page.', 'Accept or reject its proposed update.', 'Go back, open Kargo locked tasks, and promote it with P.', 'Try P on the runbook, which has a possible secret.'];
+LEGENDS.pages = [['j k', 'move'], ['n p', 'section'], ['Enter', 'open'], ['e', 'edit in VS Code'], ['u', 'undo'], ['l', 'log']];
+TRIES.knowledge = TRIES.pages;
+TRIES.meetings = ['Open Platform weekly to check what was found.', 'Send the distiller to your notes on the backup review.', 'Add your own notes with f.', 'See that a meeting stays in its context.'];
+LEGENDS.meetings = [['j k', 'move'], ['n p', 'section'], ['Enter', 'check'], ['a', 'send distiller'], ['f', 'add notes or a transcript'], ['o', 'open'], ['u', 'undo']];
+TRIES.meeting = ['Read what was said behind each item.', 'Add your action item to Planned with y.', 'See that the shared page only gets a draft.', 'Note the status said on the claim.'];
+LEGENDS.meeting = [['j k', 'move'], ['n p', 'section'], ['y', 'accept'], ['x', 'reject'], ['o', 'open at this moment'], ['u', 'undo'], ['Esc', 'back']];
+TRIES.day = ['See what was recorded on its own, per context.', 'Copy the standup with c.', 'Send something, then see it here.'];
+LEGENDS.day = [['j k', 'move'], ['n p', 'section'], ['c', 'copy standup'], ['y', 'copy timesheet']];
+TRIES.later = ['See what comes back and when.', 'Bring one back today with y.'];
+LEGENDS.later = [['j k', 'move'], ['y', 'bring back today'], ['u', 'undo']];
+TRIES.outbox = ['Read why it was not sent.', 'Retry with Cmd+Enter, or discard with d.', 'In Today, reply to the VPN ticket: it lands here, since its token expired.', 'Renew the token in Settings, then retry.'];
+LEGENDS.outbox = [['j k', 'move'], ['⌘Enter', 'retry'], ['o', 'open'], ['d', 'discard'], ['u', 'undo']];
+TRIES.settings = ['Compare the three looks under Appearance, on Today and on a review.', 'Try each in light and dark.', 'Renew the Freshservice token.', 'Look at the demo states: not running, cleared, first run.'];
+LEGENDS.settings = [['j k', 'move'], ['n p', 'section'], ['Enter', 'use this']];
+TRIES.reviews = ['See every MR that involves you, by what it needs.', 'Open Auth refactor with Enter.', 'Send a reviewer to the mention with a.', 'Compare with Waiting on you in Today.'];
+LEGENDS.reviews = [['j k', 'move'], ['n p', 'section'], ['Enter', 'open review'], ['a', 'send reviewer'], ['o', 'open in GitLab'], ['u', 'undo'], ['l', 'log']];
+TRIES.agents = ['See which runs need you first.', 'Open the investigator with Enter.', 'Answer it, press Esc, and see it move to Running.', 'Check the spend per account at the top.'];
+LEGENDS.agents = [['j k', 'move'], ['n p', 'section'], ['Enter', 'open run'], ['o', 'open worktree'], ['u', 'undo'], ['l', 'log']];
+LEGENDS.knowledge = [['j k', 'move'], ['n p', 'section'], ['y', 'accept'], ['x', 'reject'], ['e', 'edit in VS Code'], ['P', 'promote to shared'], ['u', 'undo'], ['Esc', 'back']];
+var RUNS = {
+  runq: { who: 'Investigator', task: 'Why did checkout-worker restart overnight?', ctx: 'a', state: 'Paused, waiting for you', where: 'Background', tree: '~/.loom/worktrees/ops-checkout/shop', started: 'Today 08:40', spend: 1.62, warn: 1.5, stop: 2, account: 'company-a, billed by usage', rows: [
+    { id: 'q1', group: 'needs', question: true, kind: 'Question · 3 min ago', title: 'Which cluster should I compare against, prod-eu or prod-us?', why: 'Needs your answer', tone: 'warn', body: 'It stays paused until you answer, and your answer goes to the run through loom.' },
+    { id: 'a1', group: 'activity', kind: 'Datadog, through loom · 08:41', title: 'Read monitor 90142', why: '', body: 'Read only. The agent never holds the Datadog key.' },
+    { id: 'a2', group: 'activity', kind: 'Kubernetes, read only, through loom · 08:44', title: 'kubectl get pods -n checkout', why: '', body: 'Allowed by the tools set for this run.' },
+    { id: 'a3', group: 'activity', kind: 'Refused by loom · 08:46', title: 'kubectl delete pod checkout-worker-7f', why: 'Not in its tools', tone: 'urgent', body: 'Loom refused this request. The tools for this run are read only.' },
+    { id: 'a4', group: 'activity', kind: 'Note from the agent · 08:51', title: 'Found 3 OOM kills at 02:10', why: '', body: 'Written to the run notes, and part of its result when it ends.' }
+  ] },
+  runf: { who: 'Implementer', task: 'Upgrade cert-manager in staging', ctx: 'b', state: 'Interrupted', where: 'Background', tree: '~/.loom/worktrees/ops-certmgr/charts', started: 'Yesterday 18:20', spend: 0.41, warn: 1.5, stop: 2, account: 'company-b, billed by usage', rows: [
+    { id: 'f1', group: 'needs', failed: true, kind: 'Run failed · 07:55', title: 'The machine went to sleep and the run was interrupted', why: 'Resume or take over', tone: 'urgent', body: 'Loom does not restart a run on its own. The worktree is kept as it was.' },
+    { id: 'f2', group: 'activity', kind: 'Commit, not pushed · 18:44', title: 'Bump cert-manager chart to the new minor', why: '1 commit', body: 'Stays local until a proposal is approved.' },
+    { id: 'f3', group: 'activity', kind: 'Kubernetes, read only, through loom · 18:31', title: 'kubectl get crds', why: '', body: 'Allowed by the tools set for this run.' }
+  ] },
+  run1: { who: 'Implementer', task: 'Rotate registry credentials', ctx: 'a', state: 'Finished at 09:12', where: 'Background', tree: '~/.loom/worktrees/plat-482/', started: 'Today 08:30', spend: 0.38, warn: 1.5, stop: 2, account: 'company-a, billed by usage', rows: [
+    { id: 'i1', group: 'needs', approve: true, kind: 'Proposal', title: 'Push 2 commits to infra/gitops', why: 'Needs your approval', tone: 'warn', body: 'Agents hold no credentials, so loom pushes only after you approve.' },
+    { id: 'i2', group: 'activity', kind: 'Kubernetes, read only, through loom · 08:42', title: 'kubectl get deployments -n registry', why: '', body: 'Allowed by the tools set for this run.' },
+    { id: 'i3', group: 'result', kind: 'Result', title: 'One credential per cluster, old one still to revoke', why: '', body: 'Revoking is left to you, after the merge.' }
+  ] }
+};
+var RUN_GROUPS = [{ id: 'needs', name: 'Needs you' }, { id: 'activity', name: 'Activity' }, { id: 'result', name: 'Result' }];
+var LIB_GROUPS = [{ id: 'captured', name: 'Captured' }, { id: 'toread', name: 'To read' }, { id: 'read', name: 'Read' }, { id: 'distilled', name: 'Distilled' }];
+var PAGE_GROUPS = [{ id: 'shared', name: 'Shared' }, { id: 'a', name: '● company-a' }, { id: 'sources', name: 'Sources' }];
+var SOURCES = [
+  { id: 'src-sec', group: 'sources', kind: 'Official docs · shared', title: 'Argo CD security', why: 'Local copy', body: 'Cited by Argo CD security best practices.' },
+  { id: 'src-cil', group: 'sources', kind: 'Official docs · shared', title: 'Cilium layer 7 policies', why: 'Local copy', body: 'Cited by Argo CD security best practices.' },
+  { id: 'src-mtg', group: 'sources', ctx: 'a', kind: 'Meeting', title: 'Kargo rollout retro', why: 'company-a only', body: 'Cited by Kargo locked tasks. Its claims carry the status said.' }
+];
+var REVIEW_GROUPS = [{ id: 'draft', name: 'Drafts to check' }, { id: 'requested', name: 'Review requested' }, { id: 'mentions', name: 'Mentions' }, { id: 'own', name: 'Your MRs' }, { id: 'done', name: 'Recently done' }];
+var AGENT_GROUPS = [{ id: 'needs', name: 'Needs you' }, { id: 'running', name: 'Running' }, { id: 'done', name: 'Finished' }];
+var REVIEWS = [
+  { id: 'pay', group: 'draft', ctx: 'a', kind: 'MR · billing/api!77', title: 'Payment retry logic', why: 'Draft ready, 4 comments', tone: 'warn', agent: 'Reviewer', opens: 'GitLab', body: 'From your pre-review rule on this repo, so it stayed out of Today until you open it.' },
+  { id: 'auth', group: 'requested', ctx: 'a', kind: 'MR · acme/shop!412', title: 'Auth refactor', why: 'dana asked 2 days ago', agent: 'Reviewer', opens: 'GitLab', body: 'Open the review to see the local diff.' },
+  { id: 'handbook', group: 'mentions', ctx: 'a', kind: 'MR · docs/handbook!20', title: 'On-call handover page', why: 'Mentioned yesterday', agent: 'Reviewer', opens: 'GitLab', body: 'alice asked for your view on one paragraph.' },
+  { id: 'netpol', group: 'own', ctx: 'a', kind: 'Your MR · infra/gitops!88', title: 'Network policies for Argo CD', why: 'Pipeline failed 40 min ago', tone: 'warn', agent: 'Implementer', opens: 'GitLab', body: 'Grouped with infra/charts!31, in the same task. No order defined.' },
+  { id: 'charts', group: 'own', ctx: 'a', kind: 'Your MR · infra/charts!31', title: 'Chart values for the Argo CD policies', why: 'Approved', agent: 'Implementer', opens: 'GitLab', body: 'Grouped with infra/gitops!88, in the same task. Merging stays in GitLab.' },
+  { id: 'reg', group: 'own', ctx: 'a', kind: 'Your MR · infra/registry!64', title: 'Rotate registry credentials', why: 'Approved, merges first', agent: 'Implementer', opens: 'GitLab', body: 'First in the merge order of PLAT-482.' },
+  { id: 'ship', group: 'done', ctx: 'a', kind: 'MR · acme/shop!398', title: 'Cache headers for static assets', why: 'You reviewed yesterday', agent: 'Reviewer', opens: 'GitLab', body: 'It comes back here if there is new activity.' }
+];
+var NEXT_STAGE = { captured: 'toread', toread: 'read', read: 'distilled', distilled: 'reference' };
+var STAGE_ACTION = { captured: 'Keep to read', toread: 'Mark as read', read: 'Mark as distilled', distilled: 'Make it a reference' };
+var LIB = [
+  { id: 'rss-k8s', group: 'captured', ctx: 'p', kind: 'RSS feed', title: 'Kubernetes blog', count: 12, why: 'Today', agent: 'Researcher', opens: 'the feed', body: 'A feed shows as one row, so a few dozen items a day stay readable. In the app, Enter expands it.' },
+  { id: 'rss-sec', group: 'captured', ctx: 'p', kind: 'RSS feed', title: 'Cloud security newsletter', count: 9, why: 'Today', agent: 'Researcher', opens: 'the feed', body: 'A feed shows as one row. Dismissing clears what is there.' },
+  { id: 'cap1', group: 'captured', ctx: 'p', kind: 'Phone · LinkedIn', title: 'How we cut Argo CD sync times', why: 'This morning', agent: 'Researcher', opens: 'the local copy', body: 'Sent from your phone. Loom saved a local copy, in case the link dies.' },
+  { id: 'cap2', group: 'captured', ctx: 'p', kind: 'Link from a colleague', title: 'Kargo promotion patterns', why: 'Yesterday', agent: 'Researcher', opens: 'the local copy', body: 'Local copy saved.' },
+  { id: 'rd1', group: 'toread', ctx: 'p', kind: 'Article · 14 min', title: 'Layered knowledge production for engineers', why: 'Kept Monday', agent: 'Researcher', opens: 'the local copy', body: 'Reading happens outside loom. Mark it read when you are done.' },
+  { id: 'rd2', group: 'toread', ctx: 'p', kind: 'Docs · 9 min', title: 'Cilium layer 7 policies', why: 'Kept Monday', agent: 'Researcher', opens: 'the local copy', body: 'Linked to your question on Redis.' },
+  { id: 'dn1', group: 'read', ctx: 'p', kind: 'Article', title: 'Rendered manifests in practice', why: 'Read yesterday', agent: 'Knowledge distiller', opens: 'the local copy', body: 'The distiller can propose an update to a knowledge page. You accept or reject each change.' }
+];
+var PAGES = [
+  { id: 'kp-argo', group: 'pages', page: 'argo', kind: 'Knowledge page · shared', title: 'Argo CD security best practices', why: 'Draft, 1 proposed update', tone: 'warn', ctx: 'p', agent: 'Knowledge distiller', opens: 'VS Code', body: '14 practices, with one update waiting for your decision.' },
+  { id: 'kp-book', group: 'pages', page: 'book', kind: 'Knowledge page · company-a only', title: 'Registry credentials runbook', why: 'Possible secret', tone: 'urgent', ctx: 'a', agent: 'Knowledge distiller', opens: 'VS Code', body: 'Blocked from agents until the possible secret is fixed.' },
+  { id: 'kp-kargo', group: 'pages', page: 'kargo', kind: 'Knowledge page · company-a only', title: 'Kargo locked tasks', why: 'Ready to promote', ctx: 'a', agent: 'Knowledge distiller', opens: 'VS Code', body: 'Written from client work. It can be promoted to shared.' }
+];
+var KP = {
+  argo: { title: 'Argo CD security best practices', scope: 'Shared', status: 'Draft, never reviewed', check: '20 of 20 quotes found in local copies', groups: [{ id: 'prop', name: 'Proposed update' }, { id: 'delivery', name: 'Delivery' }, { id: 'radius', name: 'Blast radius' }, { id: 'rejected', name: 'Tried and rejected' }, { id: 'todo', name: 'To add' }], rows: [
+    { id: 'p1', group: 'prop', proposal: true, kind: 'From the distiller, reading Cilium layer 7 policies', title: 'Add a quote to "Restrict Argo CD’s components with network policies"', why: 'Needs your decision', tone: 'warn', body: 'A request that breaks a layer 7 rule is answered rather than dropped.', ev: ['Docs [cilium-layer7]: "an HTTP 403 access denied is sent back for HTTP requests which violate the policy"', 'Quote found in the local copy.'] },
+    { id: 'k1', group: 'delivery', kind: 'Applied', title: 'Deploy from a central GitOps repo, not from dev repos', why: '', body: 'Keep a repo under the platform team’s control. Only validated CI pipelines or Kargo can write to it.', ev: ['Experience [ours]: adopted over reading dev repos directly.', 'Docs [best-practices]: "commit access can be given to the source code repo, and not the application config repo"'] },
+    { id: 'k2', group: 'delivery', kind: 'Tested', title: 'Render manifests before they reach Argo CD', why: '', body: 'Do not use Argo CD as the template engine. With Helm, that needs access to a wide range of source repos.', ev: ['Experience [ours]: tested with Helm mostly, then abandoned for rendered manifests.', 'Docs [secret-management]: "which is increasingly becoming a best practice for GitOps"'] },
+    { id: 'k3', group: 'radius', kind: 'Applied', title: 'Lock down the default project', why: '', body: 'The default project allows any source, any cluster and all kinds, and it cannot be deleted.', ev: ['Docs [projects]: "permits deployments from any source repo, to any cluster, and all resource Kinds"', 'Experience [ours]: locked down.'] },
+    { id: 'k4', group: 'radius', kind: 'Docs only', title: 'Allow-list cluster-scoped resources per project', why: 'Not checked by us', body: 'Cluster-scoped resources are denied unless allowed, so list only what a project needs.', ev: ['Docs [projects]: "cluster-scoped resources are restricted via allow list"'] },
+    { id: 'k5', group: 'rejected', kind: 'Rejected', title: 'Argo CD as a template engine', why: '', body: 'Needs access to a wide range of source repos. Replaced by rendered manifests.', ev: [] },
+    { id: 'k6', group: 'todo', kind: 'Open', title: 'What stops a Kargo project from adding its own write steps', why: '', body: 'An open question on the page, which can become a task for the researcher.', ev: [] }
+  ], rel: ['Used by: Rotate registry credentials', 'Linked through: infra/gitops', 'Sources: 10, with local copies'] },
+  book: { title: 'Registry credentials runbook', scope: 'company-a only', status: 'Possible secret on line 18', blocked: true, check: 'No quotes to check', groups: [{ id: 'steps', name: 'Steps' }], rows: [
+    { id: 'b1', group: 'steps', kind: 'Step', title: 'Create the new credential', why: '', body: 'Line 18 looks like a token. Fix it in VS Code, and the page can go to agents again.', ev: ['Experience [ours]: used on the last rotation.'] }
+  ], rel: ['Used by: Rotate registry credentials'] },
+  kargo: { title: 'Kargo locked tasks', scope: 'company-a only', status: 'Reviewed yesterday', terms: 1, check: '3 of 3 quotes found in local copies', groups: [{ id: 'pr', name: 'Practices' }], rows: [
+    { id: 'c1', group: 'pr', kind: 'Applied', title: 'Lock the destination folder in a ClusterPromotionTask', why: '', body: 'The destination comes from the Kargo project, so a project writes only to its own folder.', ev: ['Experience [ours]: applied.', 'Docs [kargo-tasks]: "inflates the task\'s steps and merges them with the template\'s steps"'] }
+  ], rel: ['Linked through: infra/gitops'] }
+};
+
+var KEY_MODES = [
+  { id: 'shown', group: 'keys', kind: 'Display', title: 'Displayed', why: '', body: 'Every button and the bottom of each page show their shortcut.' },
+  { id: 'hints', group: 'keys', kind: 'Hidden, with messages', title: 'Hidden, with a message after a click', why: '', body: 'Shortcuts stay out of sight. When you click something that has one, a message tells you the key.' },
+  { id: 'hidden', group: 'keys', kind: 'Hidden', title: 'Hidden', why: '', body: 'Shortcuts stay out of sight and keep working, with no messages.' }
+];
+function loadKeys() { try { var m = localStorage.getItem('loom-keys'); return m === 'shown' || m === 'hidden' || m === 'hints' ? m : 'shown'; } catch (err) { return 'shown'; } }
+var keyMode = loadKeys();
+document.documentElement.setAttribute('data-keys', keyMode);
+function setKeys(m) {
+  keyMode = m;
+  document.documentElement.setAttribute('data-keys', m);
+  try { localStorage.setItem('loom-keys', m); } catch (err) { /* stays for this visit */ }
+}
+var page = 'today';
+var backPage = 'today';
+var mode = '';
+var keys = 0;
+var undoStack = [];
+var s = fresh();
+
+function fresh() {
+  return { status: {}, inbox: {}, ctx: {}, picked: {}, selected: 'alert', cursor: 'flap', taskCursor: 'prop1', runs: [], repos: [], files: [], approved: false, dayCur: 'd1', meetCur: 'm1', exCur: 'x1', extract: {}, fromMeetings: [], meetAdded: [], demo: 'normal', tokenOk: false, muted: {}, sentReply: {}, laterBack: {}, laterCur: '', outCur: '', outbox: [{ id: 'ob1', target: 'Jira PLAT-490', what: 'Change status to Done', err: '409 conflict: someone changed this ticket at 09:03', conflict: true, ctx: 'a' }], sent: [], filter: '', logCtx: 'a', collapsed: {}, unsent: {}, diffSeen: false, extraItems: [], shortDone: false, shortOff: {}, captured: [], setCur: 'shown', lib: {}, libCur: 'cap1', libPicked: {}, revCur: 'pay', agentCur: 'runq', pageCur: 'kp-argo', kp: 'argo', kpCur: 'p1', kpProp: '', shared: {}, runId: 'runq', runCur: 'q1', answer: '', stopped: {}, resumed: {}, pack: { target: '', off: {}, cur: 0, where: 'background', who: 0, skip: false, skipped: {} }, review: { draft: false, file: 0, line: 0, cur: '', view: 'unified', viewed: {}, comments: JSON.parse(JSON.stringify(DRAFT)), editing: '', uploaded: '' } };
+}
+var $ = function (id) { return document.getElementById(id); };
+function esc(t) { var d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+// Key hints leave the messages unless shortcuts are displayed.
+function toast(t) {
+  var clean = t.replace(/\s*Press u to undo( in this demo)?\./, '');
+  $('toast').textContent = keyMode === 'shown' ? t : clean;
+  var top = undoStack[undoStack.length - 1];
+  if (top && !top.label && clean) top.label = clean.replace(/\.$/, '').slice(0, 60);
+}
+function remember() { undoStack.push({ json: JSON.stringify(s), label: '' }); }
+// Local actions only. Writes that leave loom use held(), which has its own cancel.
+var holds = [];
+function drawHolds() {
+  $('holds').innerHTML = holds.map(function (h, n) {
+    return '<div>Sending in ' + h.left + ' s: ' + esc(h.label) + ' <button type="button" data-hold="' + n + '"><kbd>u</kbd> Cancel</button></div>';
+  }).join('');
+}
+function held(o) {
+  if (o.apply) o.apply();
+  var h = { label: o.label, left: 5, o: o };
+  h.timer = setInterval(function () {
+    h.left--;
+    if (h.left <= 0) {
+      clearInterval(h.timer);
+      holds.splice(holds.indexOf(h), 1);
+      var failed = o.commit ? o.commit() : false;
+      if (!failed) {
+        s.sent.push({ ctx: o.ctx, label: o.label });
+        toast('Sent: ' + o.label + '. ' + o.reverse);
+      }
+      render();
+    }
+    drawHolds();
+  }, 1000);
+  holds.push(h);
+  $('toast').textContent = '';
+  render();
+  drawHolds();
+}
+function cancelHold(n) {
+  var h = holds[n];
+  if (!h) return;
+  clearInterval(h.timer);
+  holds.splice(n, 1);
+  if (h.o.revert) h.o.revert();
+  toast('Cancelled before sending: ' + h.label + '.');
+  render();
+  drawHolds();
+}
+
+function ctxOf(i) { return s.ctx[i.id] || i.ctx; }
+function entries() { return ENTRIES.concat(s.fromMeetings || []); }
+function entryById(id) { return entries().filter(function (e) { return e.id === id; })[0]; }
+function openEntries() {
+  var out = [];
+  GROUPS.forEach(function (g) {
+    entries().forEach(function (e) { if (e.group === g.id && !s.inbox[e.id] && ctxOk(e)) out.push(e); });
+  });
+  return out;
+}
+// Accepted Inbox entries become ordinary Today items in Planned.
+function allItems() {
+  var accepted = entries().filter(function (e) { return s.inbox[e.id] === 'accepted'; }).map(function (e) {
+    return { id: e.id, sec: e.sev === 'p1' ? 'urgent' : 'planned', ctx: e.ctx, kind: e.kind, title: e.title, why: 'Accepted from Inbox', agent: e.agent, opens: e.opens, from: 'Inbox', body: e.body };
+  });
+  return ITEMS.concat(accepted, s.extraItems);
+}
+function byId(id) { return allItems().filter(function (i) { return i.id === id; })[0]; }
+function ctxOk(x) { return !s.filter || x.ctx === s.filter || s.ctx[x.id] === s.filter; }
+function statusOf(i) { return s.status[i.id] || 'open'; }
+function sectionOf(i) {
+  var st = statusOf(i);
+  if (st === 'started') return 'progress';
+  if (st === 'agent') return 'agents';
+  return st === 'open' ? i.sec : '';
+}
+function ordered() {
+  var all = allItems(), out = [];
+  SECTIONS.forEach(function (sec) {
+    if (s.collapsed[sec.id] && sec.id !== 'urgent') return;
+    all.forEach(function (i) { if (sectionOf(i) === sec.id && (sec.id === 'urgent' || ctxOk(i))) out.push(i); });
+  });
+  return out;
+}
+function whyOf(i) {
+  var st = statusOf(i);
+  if (s.muted[i.id]) return s.muted[i.id];
+  if (s.sentReply[i.id]) return 'You replied just now';
+  if (st === 'started') return 'Started by you';
+  if (st === 'agent') return i.agent + ' running';
+  if (s.unsent[i.id]) return 'Reply not sent, see Outbox';
+  if (i.id === 'rotate' && !s.approved) return 'Due today, a push waits for your approval';
+  return i.why;
+}
+
+function renderToday() {
+  var list = ordered();
+  if (list.length && !list.some(function (i) { return i.id === s.selected; })) s.selected = list[0].id;
+  var html = list.length ? '' : '<div class="empty">Today is clear. Check Inbox and Reading when you have time.</div>';
+  if (!s.shortDone) html = '<button type="button" class="row task" id="short-open" data-short="1"><span class="mark" aria-hidden="true">☼</span><span class="what"><span class="kind">Loom suggests three items for today</span><span class="title">Confirm your short list</span></span><span class="why warn">Not confirmed</span></button>' + html;
+  SECTIONS.forEach(function (sec) {
+    var rows = list.filter(function (i) { return sectionOf(i) === sec.id; });
+    var hiddenCount = s.collapsed[sec.id] && sec.id !== 'urgent' ? allItems().filter(function (i) { return sectionOf(i) === sec.id && ctxOk(i); }).length : 0;
+    if (!rows.length && !hiddenCount) return;
+    html += '<div class="sec' + (sec.id === 'urgent' ? '' : ' fold') + '"' + (sec.id === 'urgent' ? '' : ' data-fold="' + sec.id + '"') + '><span>' + (hiddenCount ? '▸ ' : '') + esc(sec.name) + '</span><span>' + (hiddenCount || rows.length) + '</span></div>';
+    rows.forEach(function (i) {
+      var cur = i.id === s.selected;
+      var c = ctxOf(i);
+      html += '<button type="button" class="row" data-id="' + i.id + '" aria-current="' + cur + '">' +
+        '<span class="mark" aria-hidden="true">' + (cur ? '›' : '') + '</span>' +
+        '<span class="ctx ' + c + '">' + esc(CTX[c]) + '</span>' +
+        '<span class="what"><span class="title">' + esc(i.title) + '</span></span>' +
+        '<span class="why ' + (statusOf(i) === 'open' ? (i.tone || '') : '') + '">' + esc(whyOf(i)) + '<span class="kind-inline"> · ' + esc(i.kind) + '</span></span>' +
+      '</button>';
+    });
+  });
+  var laterN = laterRows().length;
+  if (laterN) html += '<button type="button" class="row task" data-later-open="1"><span class="mark" aria-hidden="true"></span><span class="what"><span class="kind">Comes back on its date</span><span class="title">Later</span></span><span class="why">' + laterN + (laterN === 1 ? ' item' : ' items') + '</span></button>';
+  $('list').innerHTML = html;
+  if (mode === 'pack') { renderPack(); return; }
+  if (page === 'task') { renderTask(true); return; }
+  var i = byId(s.selected);
+  if (!i || !sectionOf(i)) { $('detail').innerHTML = '<p>Nothing selected.</p>'; return; }
+  if (i.id === 'rotate') { renderTask(false); return; }
+  var c = ctxOf(i);
+  $('detail').innerHTML =
+    '<div><span class="ctx ' + c + '">' + esc(CTX[c]) + '</span></div>' +
+    '<h2>' + esc(i.title) + '</h2><p>' + esc(i.body) + '</p>' +
+    '<dl class="meta"><dt>Type</dt><dd>' + esc(i.kind) + '</dd><dt>Why here</dt><dd>' + esc(whyOf(i)) + '</dd>' +
+    '<dt>From</dt><dd>' + esc(i.from) + '</dd><dt>Agent</dt><dd>' + esc(i.agent) + '</dd></dl>' +
+    '<div class="acts">' +
+      (statusOf(i) === 'started' ? '' : '<button type="button" data-act="s"><kbd>s</kbd> Start</button>') +
+      '<button type="button" data-act="z"><kbd>z</kbd> Later</button>' +
+      (i.opens === 'Freshservice' ? '<button type="button" data-act="r"><kbd>r</kbd> Reply</button>' : '') +
+      (i.opens === 'Datadog' ? '<button type="button" data-act="m"><kbd>m</kbd> Mute</button>' : '') +
+      '<button type="button" data-act="a"><kbd>a</kbd> Send ' + esc(i.agent.toLowerCase()) + '</button>' +
+      '<button type="button" data-act="Enter"><kbd>Enter</kbd> ' + (i.id === 'auth' ? 'Open review' : 'Open task') + '</button>' +
+      '<button type="button" data-act="o"><kbd>o</kbd> Open in ' + esc(i.opens) + '</button>' +
+      '<button type="button" data-act="d"><kbd>d</kbd> ' + (i.opens === 'GitLab' ? 'Remove from my queue' : 'Done') + '</button>' +
+    '</div>';
+}
+function pickedIds() {
+  return openEntries().filter(function (e) { return s.picked[e.id]; }).map(function (e) { return e.id; });
+}
+function renderInbox() {
+  var list = openEntries();
+  if (list.length && !list.some(function (e) { return e.id === s.cursor; })) s.cursor = list[0].id;
+  var html = list.length ? '' : '<div class="empty">Inbox is empty. New items appear here as connectors sync.</div>';
+  GROUPS.forEach(function (g) {
+    var rows = list.filter(function (e) { return e.group === g.id; });
+    if (!rows.length) return;
+    html += '<div class="sec"><span>' + esc(g.name) + '</span><span>' + rows.length + '</span></div>';
+    rows.forEach(function (e) {
+      var cur = e.id === s.cursor, on = !!s.picked[e.id], c = ctxOf(e);
+      html += '<button type="button" class="row inbox' + (on ? ' picked' : '') + '" data-id="' + e.id + '" aria-current="' + cur + '" aria-pressed="' + on + '">' +
+        '<span class="box" aria-hidden="true" data-box="1">' + (on ? '☑' : '☐') + '</span>' +
+        '<span class="ctx ' + c + '">' + esc(CTX[c]) + '</span>' +
+        '<span class="what"><span class="kind">' + esc(e.kind) + '</span><span class="title">' + (cur ? '› ' : '') + esc(e.title) +
+          (e.count ? '<span class="n">×' + e.count + '</span>' : '') + '</span></span>' +
+        '<span class="why">' + esc(s.muted[e.id] || e.why) + '</span>' +
+      '</button>';
+    });
+  });
+  $('list').innerHTML = html;
+  var picked = pickedIds();
+  var e = entryById(s.cursor);
+  var acts = '<div class="acts">' +
+    '<button type="button" data-tri="y"><kbd>y</kbd> Accept</button>' +
+    (e && e.opens === 'Datadog' && !picked.length ? '<button type="button" data-tri="m"><kbd>m</kbd> Mute</button>' : '') +
+    (e && !picked.length ? '<button type="button" data-tri="a"><kbd>a</kbd> Send ' + esc(e.agent.toLowerCase()) + '</button><button type="button" data-tri="o"><kbd>o</kbd> Open in ' + esc(e.opens) + '</button>' : '') +
+    '<button type="button" data-tri="z"><kbd>z</kbd> Accept with a date</button>' +
+    (entryById(s.cursor) && entryById(s.cursor).group === 'own' ? '<button type="button" data-tri="r"><kbd>r</kbd> Send to Reading</button>' : '') +
+    '<button type="button" data-tri="d"><kbd>d</kbd> Dismiss</button>' +
+    '<button type="button" data-tri="c"><kbd>c</kbd> Change context</button></div>';
+  if (picked.length) {
+    $('detail').innerHTML = '<h2>' + picked.length + ' selected</h2><p class="picked-note">Each action applies to all of them.</p><p>' +
+      picked.map(function (id) { var pe = entryById(id); return esc(CTX[ctxOf(pe)].slice(2) + ': ' + pe.title); }).join('<br>') + '</p>' +
+      (picked.some(function (id) { return ctxOf(entryById(id)) !== ctxOf(entryById(picked[0])); }) ? '<p class="flag">This selection spans several contexts.</p>' : '') + acts;
+  } else if (e && !s.inbox[e.id]) {
+    var c = ctxOf(e);
+    $('detail').innerHTML = '<div><span class="ctx ' + c + '">' + esc(CTX[c]) + '</span></div><h2>' + esc(e.title) + '</h2><p>' + esc(e.body) + '</p>' +
+      '<dl class="meta"><dt>Type</dt><dd>' + esc(e.kind) + '</dd><dt>Agent</dt><dd>' + esc(e.agent) + '</dd></dl>' + acts;
+  } else {
+    $('detail').innerHTML = '<p>Nothing selected.</p>';
+  }
+}
+// A per-viewer convenience: the page works the same if storage is blocked.
+function loadSide() { try { return localStorage.getItem('loom-side') === 'collapsed'; } catch (err) { return false; } }
+function setSide(collapsed) {
+  $('shell').className = 'shell' + (collapsed ? ' collapsed' : '');
+  $('side-toggle').setAttribute('aria-expanded', String(!collapsed));
+  $('side-toggle').title = collapsed ? 'Expand' : 'Collapse';
+  $('side-label').textContent = collapsed ? 'Expand' : 'Collapse';
+  try { localStorage.setItem('loom-side', collapsed ? 'collapsed' : 'open'); } catch (err) { /* stays for this visit */ }
+}
+function toggleSide() { setSide(!$('shell').classList.contains('collapsed')); }
+function render() {
+  $('page-title').textContent = { today: 'Today', inbox: 'Inbox', task: 'Today', review: 'Review', library: 'Reading', pages: 'Knowledge', knowledge: 'Knowledge', run: 'Run', reviews: 'Reviews', agents: 'Agents', settings: 'Settings', later: 'Later', outbox: 'Outbox', meetings: 'Meetings', meeting: 'Meeting', day: 'My day' }[page];
+  $('desk').className = 'desk' + (page === 'today' || page === 'task' ? ' split' : page === 'review' || page === 'run' || page === 'knowledge' || page === 'meeting' ? ' review' : '');
+  $('list').className = 'list' + (page === 'today' && mode !== 'pack' ? ' focus' : '');
+  $('detail').className = 'detail' + (page === 'task' && mode !== 'pack' ? ' pane focus' : page === 'today' && byId(s.selected) && s.selected === 'rotate' && mode !== 'pack' ? ' pane' : mode === 'pack' ? ' focus' : '');
+  $('nav-today').setAttribute('aria-pressed', page === 'today' || page === 'task');
+  $('nav-inbox').setAttribute('aria-pressed', page === 'inbox');
+  $('nav-lib').setAttribute('aria-pressed', page === 'library');
+  $('nav-pages').setAttribute('aria-pressed', page === 'pages' || page === 'knowledge');
+  $('nav-reviews').setAttribute('aria-pressed', page === 'reviews' || page === 'review');
+  $('nav-agents').setAttribute('aria-pressed', page === 'agents' || page === 'run');
+  $('nav-set').setAttribute('aria-pressed', page === 'settings');
+  $('nav-meet').setAttribute('aria-pressed', page === 'meetings' || page === 'meeting');
+  $('meet-count').textContent = meetRows().filter(function (m) { return m.group === 'check'; }).length;
+  $('nav-out').setAttribute('aria-pressed', page === 'outbox');
+  $('out-count').textContent = s.outbox.length;
+  $('banner').hidden = s.demo !== 'offline';
+
+  var lastUndo = undoStack[undoStack.length - 1];
+  $('undo-btn').hidden = !lastUndo;
+  $('undo-btn').innerHTML = '<kbd>u</kbd> Undo' + (lastUndo && lastUndo.label ? ': ' + esc(lastUndo.label) : '');
+  $('nav-day').setAttribute('aria-pressed', page === 'day');
+  $('today-count').textContent = unfiltered(ordered).filter(function (i) { return sectionOf(i) === 'urgent' || sectionOf(i) === 'due' || sectionOf(i) === 'waiting'; }).length;
+  drawStrip();
+  drawSummary();
+  var chip = $('filter-chip');
+  chip.hidden = !s.filter;
+  if (s.filter) chip.textContent = 'Showing ' + CTX[s.filter].slice(2) + ' only on this page. Clear';
+  $('log-label').textContent = 'Log to today\'s journal, ' + CTX[s.logCtx].slice(2);
+  $('reviews-count').textContent = unfiltered(reviewRows).filter(function (x) { return x.group !== 'done'; }).length;
+  $('agents-count').textContent = unfiltered(agentRows).filter(function (x) { return x.group === 'needs'; }).length;
+  $('try-list').innerHTML = TRIES[page].map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('');
+  $('legend').innerHTML = LEGENDS[page].map(function (l) {
+    return '<span>' + l[0].split(' ').map(function (k) { return '<kbd>' + esc(k) + '</kbd>'; }).join(' ') + ' ' + esc(l[1]) + '</span>';
+  }).join('');
+  if (page === 'today' || page === 'task') renderToday(); else if (page === 'inbox') renderInbox(); else if (page === 'library') renderLibrary(); else if (page === 'reviews') renderReviews(); else if (page === 'agents') renderAgents(); else if (page === 'pages') renderPages(); else if (page === 'settings') renderSettings(); else if (page === 'day') renderDay(); else if (page === 'meetings') renderMeetings(); else if (page === 'meeting') renderMeeting(); else if (page === 'later') renderLater(); else if (page === 'outbox') renderOutbox(); else if (page === 'knowledge') renderKnowledge(); else if (page === 'run') renderRun(); else renderReview();
+  if ((s.demo === 'empty' || s.demo === 'firstrun') && page !== 'settings') {
+    var EMPTY = { today: 'Today is clear, except company-b Freshservice, unknown since its token expired.', task: 'Today is clear.', inbox: 'Inbox is empty. New items appear here as connectors sync.', reviews: 'No MR needs you.', review: 'No MR needs you.', agents: 'No run yet. Send an agent from a task.', run: 'No run yet.', library: 'Nothing to read. Capture a link from your phone, or add an RSS feed.', pages: 'No knowledge page yet. Distil something you have read.', knowledge: 'No knowledge page yet.', meetings: 'No meeting yet. Paste your notes or add a transcript.', meeting: 'No meeting yet.', later: 'Nothing is waiting for a later date.', outbox: 'Nothing is waiting to be sent.' };
+    $('list').className = 'list';
+    if (s.demo === 'firstrun') {
+      $('list').innerHTML = '<div class="brief"><h2>Set up your first context</h2><p>A context holds the tasks, knowledge, connectors and accounts of one client or area. Each one stays separate from the others.</p><ol><li>Name it.</li><li>Connect GitLab, or skip it for now.</li><li>Choose the agent account it uses.</li></ol><div class="acts"><button type="button" id="demo-normal">Create a context</button></div></div>';
+    } else {
+      $('list').innerHTML = '<div class="empty">' + esc(EMPTY[page]) + '</div>';
+    }
+    $('detail').innerHTML = '<p>Nothing selected.</p>';
+  }
+  $('k-count').textContent = keys;
+  $('inbox-count').textContent = unfiltered(openEntries).length;
+  $('reading-count').textContent = readingCount();
+  $('later-count').textContent = laterRows().length;
+}
+function currentList() { return page === 'today' ? ordered() : page === 'inbox' ? openEntries() : page === 'library' ? libRows() : page === 'reviews' ? reviewRows() : page === 'agents' ? agentRows() : page === 'pages' ? pageRows() : page === 'settings' ? settingRows() : page === 'day' ? dayRows() : page === 'meetings' ? orderedMeetings() : page === 'meeting' ? exRows() : page === 'later' ? laterRows() : page === 'outbox' ? outRows() : page === 'run' ? runRows() : page === 'knowledge' ? kpRows() : taskRows(); }
+function currentId() { return page === 'today' ? s.selected : page === 'inbox' ? s.cursor : page === 'library' ? s.libCur : page === 'reviews' ? s.revCur : page === 'agents' ? s.agentCur : page === 'pages' ? s.pageCur : page === 'settings' ? s.setCur : page === 'day' ? s.dayCur : page === 'meetings' ? s.meetCur : page === 'meeting' ? s.exCur : page === 'later' ? s.laterCur : page === 'outbox' ? s.outCur : page === 'run' ? s.runCur : page === 'knowledge' ? s.kpCur : s.taskCursor; }
+function setCurrent(id) { if (page === 'today') s.selected = id; else if (page === 'inbox') s.cursor = id; else if (page === 'library') s.libCur = id; else if (page === 'reviews') s.revCur = id; else if (page === 'agents') s.agentCur = id; else if (page === 'pages') s.pageCur = id; else if (page === 'settings') s.setCur = id; else if (page === 'day') s.dayCur = id; else if (page === 'meetings') s.meetCur = id; else if (page === 'meeting') s.exCur = id; else if (page === 'later') s.laterCur = id; else if (page === 'outbox') s.outCur = id; else if (page === 'run') s.runCur = id; else if (page === 'knowledge') s.kpCur = id; else s.taskCursor = id; }
+function groupOf(item) { return page === 'today' ? sectionOf(item) : item.group; }
+function move(delta) {
+  var list = currentList();
+  var n = list.findIndex(function (i) { return i.id === currentId(); });
+  var next = list[Math.max(0, Math.min(list.length - 1, n + delta))];
+  if (next) setCurrent(next.id);
+  render();
+  var el = document.querySelector((page === 'task' ? '#detail ' : '') + '.row[aria-current="true"]');
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+}
+function jump(delta) {
+  var list = currentList();
+  if (!list.length) return;
+  var names = [];
+  list.forEach(function (i) { if (names.indexOf(groupOf(i)) < 0) names.push(groupOf(i)); });
+  var cur = list.filter(function (i) { return i.id === currentId(); })[0];
+  var idx = cur ? names.indexOf(groupOf(cur)) : 0;
+  var target = names[Math.max(0, Math.min(names.length - 1, idx + delta))];
+  setCurrent(list.filter(function (i) { return groupOf(i) === target; })[0].id);
+  render();
+}
+// After an item leaves the list, the cursor stays at the same position.
+function settleCursor(oldIndex) {
+  var list = currentList();
+  if (list.length) setCurrent(list[Math.min(oldIndex, list.length - 1)].id);
+}
+function indexNow() { return currentList().findIndex(function (i) { return i.id === currentId(); }); }
+
+function actToday(k) {
+  var i = byId(s.selected);
+  if (!i || !sectionOf(i)) return;
+  var n = indexNow();
+  if (k === 's' && statusOf(i) !== 'started') {
+    if (writesOut(i)) {
+      held({ label: i.opens + ' status of ' + i.title + ': In progress', ctx: ctxOf(i), reverse: 'To reverse it, change the status in ' + i.opens + '.',
+        apply: function () { s.status[i.id] = 'started'; }, revert: function () { delete s.status[i.id]; } });
+      return;
+    }
+    remember(); s.status[i.id] = 'started';
+    toast('Started: ' + i.title + '.');
+  }
+  if (k === 'a') { sendAgent(i); return; }
+  if (k === 'y') { if (!s.shortDone) openShort(); return; }
+  if (k === 'r') {
+    if (i.opens !== 'Freshservice') { toast('Replies are for Freshservice tickets.'); return; }
+    openWrite('Reply on ' + i.kind.split(' · ')[1] + ': ' + i.title, 'To Sam Roy, requester. They will receive this.', '', true, i.id, { ctx: ctxOf(i), thread: 'Sam Roy, yesterday: "Since this morning I cannot reach the staging VPN from home."' });
+    return;
+  }
+  if (k === 'm') {
+    if (i.opens !== 'Datadog') { toast('Muting is for Datadog alerts.'); return; }
+    dlg = { type: 'mute', item: i, cur: 0 }; mode = 'dlg'; drawDlg();
+    return;
+  }
+  if (k === 'o') toast('In the app, this opens ' + i.title + ' in ' + i.opens + '.');
+  if (k === 'd') {
+    if (writesOut(i)) {
+      held({ label: i.opens + ' status of ' + i.title + ': Done', ctx: ctxOf(i), reverse: 'To reverse it, change the status in ' + i.opens + '.',
+        apply: function () { s.status[i.id] = 'done'; settleCursor(n); }, revert: function () { delete s.status[i.id]; s.selected = i.id; } });
+      return;
+    }
+    remember(); s.status[i.id] = 'done'; settleCursor(n);
+    toast((i.opens === 'GitLab' ? 'Removed from your queue, nothing changed in GitLab: ' : 'Done: ') + i.title + '. Press u to undo.');
+  }
+  if (k === 'Enter') {
+    if (i.id === 'rotate') { go('task'); return; }
+    if (i.id === 'auth') { backPage = 'today'; go('review'); return; }
+    if (RUNS[i.id]) { openRun(i.id, 'today'); return; }
+    toast('This demo has pages for PLAT-482, Auth refactor and the two agent items in Waiting on you.');
+  }
+  if (k === 'z') { openBar('later'); return; }
+  render();
+}
+function writesOut(i) { return i.opens === 'Jira' || i.opens === 'Freshservice'; }
+// Open means not yet treated: moving an urgent item to later keeps it here.
+function urgentOpen() {
+  var items = allItems().filter(function (i) {
+    var st = statusOf(i);
+    return i.sec === 'urgent' && !s.muted[i.id] && (st === 'open' || st.indexOf('later:') === 0);
+  });
+  return items.concat(openEntries.call ? unfiltered(openEntries).filter(function (e) { return e.sev === 'p1' && !s.muted[e.id]; }) : []);
+}
+function unfiltered(fn) { var f = s.filter; s.filter = ''; var r = fn(); s.filter = f; return r; }
+function drawStrip() {
+  var open = urgentOpen();
+  var el = $('urgent-strip');
+  var onToday = page === 'today' || page === 'task';
+  el.hidden = !open.length || (onToday && window.scrollY < 150) || s.demo === 'empty' || s.demo === 'firstrun';
+  if (open.length) el.textContent = 'Urgent: ' + CTX[open[0].ctx].slice(2) + ', ' + open[0].title + ', ' + open[0].why.toLowerCase() + (open.length > 1 ? ' and ' + (open.length - 1) + ' more' : '') + '. Go to it';
+}
+window.addEventListener('scroll', function () { drawStrip(); }, { passive: true });
+function connectorRows() { return settingRows().filter(function (x) { return x.group === 'conn'; }); }
+function drawSummary() {
+  var bad = connectorRows().filter(function (x) { return x.fix; });
+  var off = s.demo === 'offline';
+  $('summary').innerHTML = off ? 'Connectors: unknown while loomd is down.' : connectorRows().length - bad.length + ' of ' + connectorRows().length + ' connectors in sync. ' +
+    bad.map(function (x) { return '<button type="button" id="summary-fix">' + esc(x.kind + ' ' + x.title + ': token expired, list may be incomplete') + '</button>'; }).join(' ');
+}
+function taskRows() {
+  var runs = s.runs.map(function (x, n) {
+    return { id: 'new' + n, group: 'agents', title: x.who + (x.where === 'terminal' ? ', in your terminal' : ', in the background'), kind: 'Run · just started', why: x.where === 'terminal' ? 'Session open' : '$0.00 of $2.00', opens: 'the run', body: 'Clean environment. It received ' + x.items + ' items. External requests go through loom.' };
+  });
+  var repos = s.repos.map(function (r, n) {
+    return { id: 'extra' + n, group: 'work', title: r, kind: 'Added · no place in the merge order', why: 'Worktree ready, no MR yet', opens: 'VS Code', path: '~/.loom/worktrees/plat-482/' + r.split('/')[1], body: 'Loom created the worktree on the task branch and removes it when the task closes.' };
+  });
+  var files = s.files.map(function (f, n) {
+    return { id: 'addfile' + n, group: 'files', title: f, kind: 'Added by you', why: 'Text, 1 KB', opens: 'VS Code', path: 'tasks/plat-482/files/' + f, body: 'The secret scan ran when you added it, and found nothing.' };
+  });
+  var rows = [];
+  TASK_GROUPS.forEach(function (g) {
+    runs.concat(TASK_ROWS, repos, files).forEach(function (row) { if (row.group === g.id) rows.push(row); });
+  });
+  return rows;
+}
+function rowWhy(row) { return row.approve && s.approved ? 'Approved, pushed by loom' : row.why; }
+function renderTask(focused) {
+  var rows = taskRows();
+  if (!rows.some(function (x) { return x.id === s.taskCursor; })) s.taskCursor = rows[0].id;
+  var i = byId('rotate');
+  var html = '<div class="brief"><div class="facts"><span class="ctx a">' + esc(CTX.a) + '</span><span>' + esc(whyOf(i)) + '</span><span>Jira PLAT-482</span><span>Parent: Platform hardening</span></div>' +
+    '<h2>Rotate registry credentials</h2>' +
+    '<p>Replace the shared registry credentials with one per cluster, then remove the old ones.</p>' +
+    '<ul><li>Each cluster pulls with its own credential.</li><li>The old credential is revoked.</li></ul></div>';
+  if (!focused) {
+    html += '<div class="acts">' +
+      '<button type="button" data-act="Enter"><kbd>Enter</kbd> Go into this task</button>' +
+      (statusOf(i) === 'started' ? '' : '<button type="button" data-act="s"><kbd>s</kbd> Start</button>') +
+      '<button type="button" data-act="z"><kbd>z</kbd> Later</button>' +
+      '<button type="button" data-act="a"><kbd>a</kbd> Send agent</button>' +
+      '<button type="button" data-act="d"><kbd>d</kbd> Done</button></div>';
+  }
+  TASK_GROUPS.forEach(function (g) {
+    var list = rows.filter(function (x) { return x.group === g.id; });
+    if (!list.length) return;
+    html += '<div class="sec"><span>' + esc(g.name) + '</span><span>' + list.length + '</span></div>';
+    list.forEach(function (x) {
+      var cur = focused && x.id === s.taskCursor;
+      html += '<button type="button" class="row task" data-id="' + x.id + '" aria-current="' + cur + '">' +
+        '<span class="mark" aria-hidden="true">' + (cur ? '›' : '') + '</span>' +
+        '<span class="what"><span class="kind">' + esc(x.kind) + '</span><span class="title">' + esc(x.title) + '</span></span>' +
+        '<span class="why ' + (x.approve && s.approved ? '' : (x.tone || '')) + '">' + esc(rowWhy(x)) + '</span></button>';
+      if (cur) {
+        html += '<div class="row-more"><p>' + esc(x.body) + '</p>' +
+          (x.path ? '<p class="path">' + esc(x.path) + '</p>' : '') +
+          '<div class="acts">' +
+          (x.approve && !s.approved ? '<button type="button" data-task="CmdEnter"><kbd>⌘Enter</kbd> Approve</button>' : '') +
+          (x.link ? '<button type="button" data-task="Enter"><kbd>Enter</kbd> Follow link</button>' : '') +
+          (x.id === 'run1' || x.id === 'prop1' ? '<button type="button" data-task="Enter"><kbd>Enter</kbd> Open run</button>' : '') +
+          '<button type="button" data-task="o"><kbd>o</kbd> Open ' + esc(x.opens) + '</button></div></div>';
+      }
+    });
+  });
+  $('detail').innerHTML = html;
+}
+function anyById(id) { return byId(id) || entryById(id) || libById(id) || REVIEWS.concat(MEETINGS, s.meetAdded).filter(function (x) { return x.id === id; })[0]; }
+function packFor(id) {
+  if (id === 'rotate') return PACK;
+  var i = anyById(id);
+  return [
+    { id: 'item', title: i.title, why: 'The item you are sending it to', tok: 380 },
+    { id: 'rules', title: SPECIALISTS[s.pack.who] + ' rules', why: 'Fixed set of this specialist', tok: 900 },
+    { id: 'ctx', title: 'Context conventions', why: 'This context', tok: 640 },
+    { id: 'more', title: 'Past tasks in the same area', why: 'Related, left out by default', tok: 1400 }
+  ];
+}
+function packDefaults(id) { return id === 'rotate' ? { thread: true, book: true } : { more: true }; }
+function packIncluded() { return packFor(s.pack.target).filter(function (x) { return !s.pack.off[x.id]; }); }
+function sendAgent(i, always) {
+  if (!always && s.pack.skipped[i.agent]) {
+    s.pack.target = i.id; s.pack.off = packDefaults(i.id); s.pack.who = SPECIALISTS.indexOf(i.agent); s.pack.where = 'background';
+    finishSend();
+    return;
+  }
+  s.pack.target = i.id;
+  s.pack.who = SPECIALISTS.indexOf(i.agent);
+  s.pack.off = packDefaults(i.id);
+  s.pack.cur = 0; s.pack.where = 'background'; s.pack.skip = false; s.pack.note = '';
+  mode = 'pack'; toast(''); render();
+}
+function finishSend() {
+  var pk = s.pack, who = SPECIALISTS[pk.who], id = pk.target, title = anyById(id).title;
+  var n = page === 'today' ? indexNow() : -1;
+  var count = packIncluded().length;
+  if (pk.skip) pk.skipped[who] = true;
+  mode = '';
+  if (id === 'rotate') s.runs.push({ who: who, where: pk.where, items: count });
+  if (id === 'auth') s.review.draft = true;
+  s.status[id] = 'agent';
+  if (n >= 0) settleCursor(n);
+  toast((pk.where === 'terminal' ? who + ' session prepared for ' + title + '. In the app, it opens in your terminal.' : who + ' started on ' + title + ', with ' + count + ' items. Its result returns to Waiting on you.') +
+    (id === 'auth' ? ' Demo: the draft is ready at once.' : ''));
+  render();
+}
+function renderPack() {
+  var items = packFor(s.pack.target), target = anyById(s.pack.target);
+  var total = packIncluded().reduce(function (sum, x) { return sum + x.tok; }, 0);
+  var who = SPECIALISTS[s.pack.who];
+  var rotate = s.pack.target === 'rotate';
+  $('detail').innerHTML = '<h2>Send ' + esc(who.toLowerCase()) + '</h2><p>To: ' + esc(target.title) + '</p>' +
+    '<div><span class="ctx ' + ctxOf(target) + '">' + esc(CTX[ctxOf(target)]) + '</span></div>' +
+    '<div class="choice"><button type="button" data-pack="e"><kbd>e</kbd> Next specialist: ' + esc(who) + '</button></div>' +
+    '<label class="choice" for="pack-note"><kbd>t</kbd> What do you want done?</label><input id="pack-note" class="note-input" type="text" autocomplete="off" placeholder="Optional. Press Enter when done." value="' + esc(s.pack.note || '').replace(/"/g, '&quot;') + '" style="width:100%;padding:6px 8px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:4px">' +
+    '<div class="choice"><button type="button" data-pack="b" aria-pressed="' + (s.pack.where === 'background') + '"><kbd>b</kbd> Background</button>' +
+    '<button type="button" data-pack="v" aria-pressed="' + (s.pack.where === 'terminal') + '"><kbd>v</kbd> Your terminal</button></div>' +
+    '<dl class="meta"><dt>Account</dt><dd>' + esc(ACCOUNTS[ctxOf(target)]) + '</dd><dt>Budget</dt><dd>Warn at $1.50, stop at $2.00</dd><dt>Worktrees</dt><dd>' + (rotate ? 'infra/registry, infra/gitops' : target.id === 'auth' ? 'acme/shop, on the MR branch' : 'None yet') + '</dd><dt>Tools</dt><dd>' + (who === 'Reviewer' ? 'Read the MR, through loom' : 'Datadog, read-only Kubernetes, through loom') + '</dd></dl>' +
+    '<div class="pack" aria-label="What it receives"><p><strong>It receives ' + packIncluded().length + ' items, about ' + total.toLocaleString('en-US') + ' tokens.</strong> Searched: this context and shared knowledge only.</p>' +
+    items.map(function (x, n) {
+      var on = !s.pack.off[x.id];
+      return '<button type="button" class="pack-item" data-item="' + n + '" aria-current="' + (n === s.pack.cur) + '" aria-pressed="' + on + '">' +
+        '<span class="box" aria-hidden="true">' + (on ? '☑' : '☐') + '</span>' +
+        '<span>' + esc(x.title) + '<small class="' + (x.flagged ? 'flag' : '') + '">' + esc(x.why) + '</small></span>' +
+        '<span class="tok">' + x.tok.toLocaleString('en-US') + '</span></button>';
+    }).join('') + '</div>' +
+    '<div class="acts"><button type="button" data-pack="Enter"><kbd>Enter</kbd> Send</button>' +
+    '<button type="button" data-pack="f"><kbd>f</kbd> ' + (s.pack.skip ? 'Panel skipped next time for this specialist' : 'Skip this panel next time for this specialist') + '</button>' +
+    '<button type="button" data-pack="Escape"><kbd>Esc</kbd> Cancel</button></div>';
+}
+function loadTheme() { try { var m = localStorage.getItem('loom-theme'); return m === 'light' || m === 'dark' ? m : 'system'; } catch (err) { return 'system'; } }
+var themeMode = loadTheme();
+function setTheme(m) {
+  themeMode = m;
+  if (m === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', m);
+  try { localStorage.setItem('loom-theme', m); } catch (err) { /* stays for this visit */ }
+}
+setTheme(themeMode);
+function loadLook() { try { var m = localStorage.getItem('loom-look'); return m === 'ledger' || m === 'focus' ? m : 'desk'; } catch (err) { return 'desk'; } }
+var lookMode = loadLook();
+function setLook(m) {
+  lookMode = m;
+  document.documentElement.setAttribute('data-look', m);
+  try { localStorage.setItem('loom-look', m); } catch (err) { /* stays for this visit */ }
+}
+setLook(lookMode);
+var SETTING_GROUPS = [{ id: 'keys', name: 'Keyboard shortcuts' }, { id: 'theme', name: 'Appearance' }, { id: 'conn', name: 'Connectors' }, { id: 'ctx', name: 'Contexts' }, { id: 'state', name: 'Demo: app state' }];
+var SETTINGS_EXTRA = [
+  { id: 'panel', panel: true, group: 'keys', kind: 'Agent panel', title: 'Show the agent panel again', body: 'For every specialist where you chose to skip it.' },
+  { id: 'system', set: 'theme', group: 'theme', kind: 'Theme', title: 'Follow the system', body: 'Light or dark, as macOS is set.' },
+  { id: 'light', set: 'theme', group: 'theme', kind: 'Theme', title: 'Light', body: 'Always light.' },
+  { id: 'dark', set: 'theme', group: 'theme', kind: 'Theme', title: 'Dark', body: 'Always dark.' },
+  { id: 'desk', set: 'look', group: 'theme', kind: 'Look', title: 'Desk', body: 'The look so far: compact, with clear panels and one teal accent.' },
+  { id: 'ledger', set: 'look', group: 'theme', kind: 'Look', title: 'Ledger', body: 'A dense register: square, ruled rows and tabular data. The most on one screen.' },
+  { id: 'focus', set: 'look', group: 'theme', kind: 'Look', title: 'Focus', body: 'Calm and roomy: native macOS type, soft panels and fewer lines.' },
+  { id: 'con-gl-a', group: 'conn', ctx: 'a', kind: 'GitLab', title: 'GitLab of company-a', why: 'Synced 1 min ago', body: 'Enters: MRs waiting on you. Writes: approve, comment, retry a pipeline, upload a review.' },
+  { id: 'con-gl-p', group: 'conn', ctx: 'p', kind: 'GitLab', title: 'GitLab, personal', why: 'Synced 1 min ago', body: 'Its own token and filters.' },
+  { id: 'con-gh-p', group: 'conn', ctx: 'p', kind: 'GitHub', title: 'GitHub, personal', why: 'Synced 2 min ago', body: 'For loom itself.' },
+  { id: 'con-dd-a', group: 'conn', ctx: 'a', kind: 'Datadog', title: 'Datadog of company-a', why: 'Synced 1 min ago', body: 'Filter: team and alert level. Writes: mute, confirmed with an end time.' },
+  { id: 'con-dd-b', group: 'conn', ctx: 'b', kind: 'Datadog', title: 'Datadog of company-b', why: 'Synced 1 min ago', body: 'Its own key and filter.' },
+  { id: 'con-ji-a', group: 'conn', ctx: 'a', kind: 'Jira', title: 'Jira of company-a', why: 'Synced 3 min ago', body: 'Enters: assigned to you, and a pool of unassigned team tickets.' },
+  { id: 'con-fs', fix: true, group: 'conn', ctx: 'b', kind: 'company-b', title: 'Freshservice', why: 'Token expired', tone: 'urgent', body: 'Lists may be incomplete and writes wait in the Outbox until you add a new token.' },
+  { id: 'ctx-a', group: 'ctx', kind: 'Account: company-a, billed by usage', title: 'company-a', why: 'This machine', body: 'Its own store, connectors, accounts and flagged terms. Removing a context asks you to type its name.' },
+  { id: 'ctx-b', group: 'ctx', kind: 'Account: company-b, billed by usage', title: 'company-b', why: 'This machine and the laptop', body: 'One machine polls for it. A store divergence stops its sync and is reported, never merged.' },
+  { id: 'ctx-p', group: 'ctx', kind: 'Account: personal, seat', title: 'personal', why: 'This machine', body: 'Its own store and account.' },
+  { id: 'normal', set: 'state', group: 'state', kind: 'Demo only', title: 'Normal', body: 'The demo data.' },
+  { id: 'offline', set: 'state', group: 'state', kind: 'Demo only', title: 'loomd not running', body: 'A banner, last known state, and changes paused.' },
+  { id: 'empty', set: 'state', group: 'state', kind: 'Demo only', title: 'Everything cleared', body: 'What each page says when it has nothing to show.' },
+  { id: 'firstrun', set: 'state', group: 'state', kind: 'Demo only', title: 'First run', body: 'No context yet.' }
+];
+function settingRows() {
+  return KEY_MODES.map(function (m) { return Object.assign({}, m, { set: 'keys', why: m.id === keyMode ? 'In use' : '' }); }).concat(SETTINGS_EXTRA.map(function (x) {
+    var y = Object.assign({}, x);
+    if (x.set === 'theme') y.why = x.id === themeMode ? 'In use' : '';
+    if (x.set === 'look') y.why = x.id === lookMode ? 'In use' : '';
+    if (x.set === 'state') y.why = x.id === s.demo ? 'In use' : '';
+    if (x.fix && s.tokenOk) { y.why = 'Synced just now'; y.tone = ''; y.fix = false; y.body = 'Token renewed.'; }
+    return y;
+  }));
+}
+function renderSettings() {
+  var rows = settingRows();
+  $('list').innerHTML = renderRows(rows, SETTING_GROUPS, s.setCur);
+  var x = rows.filter(function (m) { return m.id === s.setCur; })[0];
+  $('detail').innerHTML = '<h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p><div class="acts">' +
+    (x.panel ? keyButton('Enter', 'Show it again') : x.set && x.why !== 'In use' ? keyButton('Enter', 'Use this') : x.fix ? keyButton('Enter', 'Add a new token') : '') + '</div>';
+}
+function actSettings(k) {
+  if (k !== 'Enter') return;
+  var x = settingRows().filter(function (m) { return m.id === s.setCur; })[0];
+  if (x.panel) { s.pack.skipped = {}; toast('The agent panel will show again.'); render(); return; }
+  if (x.fix) { s.tokenOk = true; toast('Token renewed. In the app, this asks for the token and stores it in the Keychain.'); render(); return; }
+  if (x.set === 'keys') setKeys(x.id);
+  else if (x.set === 'theme') setTheme(x.id);
+  else if (x.set === 'look') setLook(x.id);
+  else if (x.set === 'state') s.demo = x.id;
+  else return;
+  toast('Changed.');
+  render();
+}
+var MEET_GROUPS = [{ id: 'check', name: 'To check' }, { id: 'new', name: 'Not processed' }, { id: 'done', name: 'Done' }];
+var MEETINGS = [
+  { id: 'm1', group: 'check', ctx: 'a', agent: 'Meeting distiller', opens: 'the transcript', kind: 'Today 10:00 · transcript, 42 min', title: 'Platform weekly', why: '5 items to check', tone: 'warn', body: 'The distiller found decisions, actions, a question and a claim. Each one points to its place in the transcript.' },
+  { id: 'm2', group: 'new', ctx: 'b', agent: 'Meeting distiller', opens: 'the notes', kind: 'Yesterday · your notes', title: 'Backup restore review', why: 'Not processed', body: 'Your notes are stored, in company-b only. The distiller can extract what matters from them.' },
+  { id: 'm3', group: 'new', ctx: 'p', agent: 'Meeting distiller', opens: 'the notes', kind: 'Monday · meetup, your notes', title: 'GitOps meetup', why: 'Not processed', body: 'A meetup counts too. What you distil from it can feed shared knowledge.' },
+  { id: 'm4', group: 'done', ctx: 'a', agent: 'Meeting distiller', opens: 'the transcript', kind: 'Last week · transcript, 30 min', title: 'Kargo rollout retro', why: 'Linked to 3 tasks and 1 page', body: 'Everything was checked. It stays searchable, and only agents you allow receive it.' }
+];
+var EXTRACT_GROUPS = [{ id: 'decisions', name: 'Decisions' }, { id: 'actions', name: 'Action items' }, { id: 'questions', name: 'Open questions' }, { id: 'claims', name: 'Claims for knowledge' }];
+var EXTRACT = [
+  { id: 'x1', group: 'decisions', kind: 'Decision', title: 'Batch workloads get their own tier', at: '12:40', said: 'alice: "so we agree, batch gets its own tier and no shared project"', links: ['Task: Add a tier for batch workloads (PLAT-497)'], yes: 'Link to the task' },
+  { id: 'x2', group: 'actions', kind: 'Action · you', title: 'Write the tier definition', at: '14:05', said: 'alice: "can you write the tier definition this week?" You: "yes"', links: ['Task: Add a tier for batch workloads (PLAT-497)'], yes: 'Add to Planned', planned: true },
+  { id: 'x3', group: 'actions', kind: 'Action · dana', title: 'Check the quota for the new tier', at: '15:30', said: 'dana: "I will check the quota on my side"', links: ['Person: dana'], yes: 'Follow it up', follow: true },
+  { id: 'x4', group: 'questions', kind: 'Open question', title: 'Who owns the Redis network rules?', at: '22:10', said: 'You: "who actually owns the Redis rules?" Nobody answered.', links: ['Draft in company-a, for: Argo CD security best practices'], yes: 'Add to a draft in company-a (shared only through promotion)' },
+  { id: 'x5', group: 'claims', kind: 'Claim · said', title: 'The locked Kargo task stopped writes outside a project’s folder', at: '31:05', said: 'bob: "since the locked task, nothing has written outside its folder"', links: ['Knowledge: Kargo locked tasks'], yes: 'Propose to Kargo locked tasks, company-a' }
+];
+function meetRows() {
+  var added = (s.meetAdded || []).map(function (m) { return m; });
+  return MEETINGS.concat(added).map(function (m) {
+    var y = Object.assign({}, m);
+    if (m.id === 'm1') {
+      var left = EXTRACT.filter(function (x) { return !s.extract[x.id]; }).length;
+      if (!left) { y.group = 'done'; y.why = 'All checked'; y.tone = ''; } else y.why = left + (left === 1 ? ' item' : ' items') + ' to check';
+    }
+    if (s.status[m.id] === 'agent') y.why = 'Meeting distiller running';
+    return y;
+  });
+}
+function renderMeetings() {
+  var rows = orderedMeetings();
+  if (!rows.length) { $('list').innerHTML = '<div class="empty">No meeting in this context.</div>'; $('detail').innerHTML = '<p>Nothing selected.</p>'; return; }
+  $('list').innerHTML = renderRows(rows, MEET_GROUPS, s.meetCur);
+  if (mode === 'pack') { renderPack(); return; }
+  var x = rows.filter(function (r) { return r.id === s.meetCur; })[0] || rows[0];
+  $('detail').innerHTML = '<div><span class="ctx ' + x.ctx + '">' + esc(CTX[x.ctx]) + '</span></div><h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p>' +
+    '<dl class="meta"><dt>Source</dt><dd>' + esc(x.kind) + '</dd><dt>Stays in</dt><dd>' + esc(CTX[x.ctx].slice(2)) + ', never shared as it is</dd><dt>Secret scan</dt><dd>Clean</dd></dl><div class="acts">' +
+    (x.id === 'm1' ? keyButton('Enter', 'Check what was found') : keyButton('a', 'Send meeting distiller')) + keyButton('f', 'Add notes or a transcript') + keyButton('o', 'Open ' + x.opens) + '</div>';
+}
+function orderedMeetings() { var a = meetRows(), o = []; MEET_GROUPS.forEach(function (g) { a.forEach(function (x) { if (x.group === g.id && ctxOk(x)) o.push(x); }); }); return o; }
+function actMeetings(k) {
+  var x = orderedMeetings().filter(function (r) { return r.id === s.meetCur; })[0];
+  if (k === 'f') { dlg = { type: 'write', step: 'edit', meeting: true, pick: true, heading: 'Add notes or a transcript', to: 'Stays in this context. In the app, you can also drop a Meet transcript, or a .txt, .vtt or .md file. Loom does not record meetings.', text: '' }; mode = 'dlg'; drawDlg(); return; }
+  if (!x) return;
+  if (k === 'o') { toast('In the app, this opens ' + x.opens + ' of ' + x.title + '.'); return; }
+  if (k === 'a') { sendAgent(x); return; }
+  if (k === 'Enter') {
+    if (x.id === 'm1') { s.exCur = 'x1'; go('meeting'); return; }
+    toast('This demo has extracted items for Platform weekly only.');
+  }
+}
+function exRows() { return EXTRACT.map(function (x) { var st = s.extract[x.id]; return Object.assign({}, x, { why: st === 'yes' ? 'Done: ' + x.yes : st === 'no' ? 'Rejected' : x.yes, tone: '' }); }); }
+function renderMeeting() {
+  var rows = exRows();
+  $('list').innerHTML = '<div class="rv-head"><div class="facts"><span class="ctx a">' + esc(CTX.a) + '</span><span>Today 10:00</span><span>Transcript, 42 min</span><span>Secret scan clean</span><span>On today’s timeline</span></div><h2>Platform weekly</h2><p>Found by the meeting distiller. Nothing is applied until you accept it.</p></div>' + renderRows(rows, EXTRACT_GROUPS, s.exCur);
+  var x = rows.filter(function (r) { return r.id === s.exCur; })[0];
+  $('detail').innerHTML = '<div><span class="badge">' + esc(x.kind) + '</span></div><h2>' + esc(x.title) + '</h2>' +
+    '<strong>Said at ' + esc(x.at) + '</strong><div class="exact">' + esc(x.said) + '</div><p class="why">Quote found in the transcript.</p>' +
+    '<strong>Links in the graph</strong><ul class="ev">' + x.links.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '<li>Meeting: Platform weekly</li></ul>' +
+    '<div class="acts">' + (s.extract[x.id] ? '' : keyButton('y', x.yes) + keyButton('x', 'Reject')) + keyButton('o', 'Open at ' + x.at) + keyButton('Escape', 'Back') + '</div>';
+}
+function actMeeting(k) {
+  var x = EXTRACT.filter(function (r) { return r.id === s.exCur; })[0];
+  if (k === 'Escape') { go('meetings'); return; }
+  if (k === 'o') { toast('In the app, this opens the transcript at ' + x.at + '.'); return; }
+  if (s.extract[x.id]) { toast('Already decided. Press u to undo.'); return; }
+  remember();
+  s.extract[x.id] = k === 'y' ? 'yes' : 'no';
+  if (k === 'y' && (x.planned || x.follow)) s.extraItems.push({ id: 'from-' + x.id, sec: x.follow ? 'followup' : 'planned', ctx: 'a', kind: 'From Platform weekly', title: x.title, why: 'Said at ' + x.at, agent: 'Implementer', opens: 'the transcript', from: 'Meeting', body: x.said });
+  toast((k === 'y' ? x.yes + ': ' : 'Rejected: ') + x.title + '. Press u to undo.');
+  move(1);
+}
+var DAY = [
+  { id: 'd1', ctx: 'a', at: '08:30', kind: 'Agent', title: 'Implementer on PLAT-482, $0.38' },
+  { id: 'd2', ctx: 'a', at: '08:40', kind: 'Agent', title: 'Investigator on the checkout-worker restarts, $1.62' },
+  { id: 'd3', ctx: 'b', at: '09:15', kind: 'Journal', title: 'Helped with the VPN profile' },
+  { id: 'd4', ctx: 'a', at: '10:00', kind: 'Meeting', title: 'Platform weekly, 42 min' },
+  { id: 'd5', ctx: 'a', at: '11:10', kind: 'Review', title: 'Cache headers reviewed yesterday, approved today' }
+];
+var DAY_GROUPS = [{ id: 'a', name: '● company-a, about 3 h 20' }, { id: 'b', name: '■ company-b, about 40 min' }, { id: 'p', name: '▲ personal' }];
+function dayRows() {
+  var sentRows = s.sent.map(function (x, n) { return { id: 'sent' + n, ctx: x.ctx, at: 'Now', kind: 'Sent', title: x.label }; });
+  return DAY.concat(sentRows).filter(ctxOk).map(function (x) { return Object.assign({}, x, { group: x.ctx, why: x.at, body: 'Recorded automatically.' }); }).sort(function (a, b) { return a.group < b.group ? -1 : a.group > b.group ? 1 : 0; });
+}
+function renderDay() {
+  var rows = dayRows();
+  if (!rows.some(function (x) { return x.id === s.dayCur; })) s.dayCur = rows.length ? rows[0].id : '';
+  $('list').innerHTML = rows.length ? renderRows(rows, DAY_GROUPS, s.dayCur) : '<div class="empty">Nothing recorded in this context today.</div>';
+  $('detail').innerHTML = '<h2>Today, Wednesday 4 November</h2><p>Recorded automatically: status changes, MRs, reviews, runs, meetings, journal lines, what was sent, and commits. Time is estimated from activity.</p>' +
+    '<strong>Standup</strong><div class="exact">Yesterday: reviewed cache headers.\nToday: registry credentials, batch tier.\nBlocked: nothing.</div>' +
+    '<div class="acts">' + keyButton('c', 'Copy the standup') + keyButton('y', 'Copy the timesheet') + '</div>';
+}
+function actDay(k) {
+  if (k === 'c') toast('In the app, this copies the standup.');
+  if (k === 'y') toast('In the app, this copies each context\'s suggested time, for your timesheet tool.');
+}
+var LATER = [
+  { id: 'lt1', ctx: 'b', when: 'Tomorrow', title: 'Review backup retention', kind: 'Jira · OPS-80' },
+  { id: 'lt2', ctx: 'p', when: 'Monday', title: 'Try the Kargo verification step', kind: 'Idea' }
+];
+var LATER_GROUPS = [{ id: 'Tomorrow', name: 'Tomorrow' }, { id: 'Monday', name: 'Monday' }];
+function laterRows() {
+  var rows = LATER.filter(function (x) { return !s.laterBack[x.id]; }).map(function (x) {
+    return { id: x.id, group: x.when, ctx: x.ctx, kind: x.kind, title: x.title, why: 'Returns to its section', body: 'It returns on its date, marked as back from later.' };
+  });
+  allItems().forEach(function (i) {
+    var st = statusOf(i);
+    if (st.indexOf('later:') === 0) rows.push({ id: i.id, item: true, group: st.slice(6) === 'tomorrow' ? 'Tomorrow' : 'Monday', ctx: ctxOf(i), kind: i.kind, title: i.title, why: 'Returns to ' + (SECTIONS.filter(function (g) { return g.id === i.sec; })[0] || {}).name, body: 'You moved this today.' });
+  });
+  entries().forEach(function (e) {
+    var st = s.inbox[e.id] || '';
+    if (st.indexOf('later:') === 0) rows.push({ id: e.id, entry: true, group: st.slice(6) === 'tomorrow' ? 'Tomorrow' : 'Monday', ctx: ctxOf(e), kind: e.kind, title: e.title, why: 'Accepted with a date', body: 'Accepted from Inbox.' });
+  });
+  var out = [];
+  LATER_GROUPS.forEach(function (g) { rows.forEach(function (x) { if (x.group === g.id) out.push(x); }); });
+  return out;
+}
+function renderLater() {
+  var rows = laterRows();
+  if (!rows.length) { $('list').innerHTML = '<div class="empty">Nothing is waiting for a later date.</div>'; $('detail').innerHTML = '<p>Nothing selected.</p>'; return; }
+  if (!rows.some(function (x) { return x.id === s.laterCur; })) s.laterCur = rows[0].id;
+  $('list').innerHTML = renderRows(rows, LATER_GROUPS, s.laterCur);
+  var x = rows.filter(function (r) { return r.id === s.laterCur; })[0];
+  $('detail').innerHTML = '<div><span class="ctx ' + x.ctx + '">' + esc(CTX[x.ctx]) + '</span></div><h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p><div class="acts">' + keyButton('y', 'Bring back today') + '</div>';
+}
+function actLater(k) {
+  var x = laterRows().filter(function (r) { return r.id === s.laterCur; })[0];
+  if (!x || k !== 'y') return;
+  remember();
+  if (x.item) delete s.status[x.id]; else if (x.entry) s.inbox[x.id] = 'accepted'; else s.laterBack[x.id] = true;
+  toast(x.title + ' is back today. Press u to undo.');
+  render();
+}
+function outRows() {
+  return s.outbox.map(function (o) {
+    return { id: o.id, group: 'failed', ctx: o.ctx, kind: o.target, title: o.what, why: o.conflict ? 'Conflict' : 'Failed', tone: 'urgent', body: o.err, conflict: o.conflict, fs: o.fs };
+  });
+}
+function renderOutbox() {
+  var rows = outRows();
+  if (!rows.length) { $('list').innerHTML = '<div class="empty">Nothing is waiting to be sent.</div>'; $('detail').innerHTML = '<p>Nothing selected.</p>'; return; }
+  if (!rows.some(function (x) { return x.id === s.outCur; })) s.outCur = rows[0].id;
+  $('list').innerHTML = renderRows(rows, [{ id: 'failed', name: 'Not sent' }], s.outCur);
+  var x = rows.filter(function (r) { return r.id === s.outCur; })[0];
+  $('detail').innerHTML = '<div><span class="ctx ' + x.ctx + '">' + esc(CTX[x.ctx]) + '</span></div><h2>' + esc(x.title) + '</h2><p class="flag">' + esc(x.body) + '</p><p>' +
+    (x.conflict ? 'Loom never retries a conflict on its own. Check the ticket, then retry or discard.' : 'Kept until you act on it.') + '</p><div class="acts">' + keyButton('CmdEnter', 'Retry') + keyButton('o', 'Open ' + x.kind.split(' ')[0]) + keyButton('d', 'Discard') + '</div>';
+}
+function actOutbox(k) {
+  var x = outRows().filter(function (r) { return r.id === s.outCur; })[0];
+  if (!x) return;
+  if (k === 'o') { toast('In the app, this opens it in ' + x.kind.split(' ')[0] + '.'); return; }
+  if (k === 'd') {
+    remember();
+    s.outbox = s.outbox.filter(function (o) { return o.id !== x.id; });
+    toast('Discarded: ' + x.title + '. Press u to undo.');
+    render();
+    return;
+  }
+  if (k !== 'CmdEnter') return;
+  if (x.fs && !s.tokenOk) { toast('Still failing: the Freshservice token of company-b has expired. Renew it in Settings.'); return; }
+  var saved = s.outbox.slice();
+  held({ label: x.title + ' on ' + x.kind, ctx: x.ctx, reverse: 'It went through.', apply: function () { s.outbox = s.outbox.filter(function (o) { return o.id !== x.id; }); }, revert: function () { s.outbox = saved; } });
+}
+// ---- Dialogs: publish preview, mute with an end time, go to or search
+var dlg = null;
+var SHORT = ['backup', 'argo', 'issuer'];
+var MUTE = [{ id: '1h', label: '1 hour', end: 'until 11:30' }, { id: '4h', label: '4 hours', end: 'until 14:30' }, { id: 'tmw', label: 'Until tomorrow morning', end: 'until tomorrow 09:00' }];
+function openShort() { dlg = { type: 'short', cur: 0 }; mode = 'dlg'; drawDlg(); }
+function closeDlg() { dlg = null; $('modal-back').hidden = true; if (mode === 'dlg') mode = ''; }
+function keyLabel(k) { return k === 'Escape' ? 'Esc' : k === 'CmdEnter' ? '⌘Enter' : k; }
+function buttonsFor(list) { return '<div class="acts">' + list.map(function (b) { return '<button type="button" data-dlg="' + b[0] + '"><kbd>' + keyLabel(b[0]) + '</kbd> ' + esc(b[1]) + '</button>'; }).join('') + '</div>'; }
+function drawDlg() {
+  var h = '';
+  if (dlg.type === 'promote') {
+    var pg = KP[s.kp];
+    h = '<h2>Promote to shared knowledge</h2><div class="dlg-head"><span class="ctx ' + 'a">' + esc(CTX.a) + '</span><span>to every context</span></div>' +
+      '<div class="exact">Lock the destination folder in a ClusterPromotionTask. The destination comes from the Kargo project, so a project writes only to its own folder. The image comes from <mark>registry.acme.example</mark>.</div>' +
+      '<p>Secret scan clean. One flagged term, on line 4.</p>' +
+      (dlg.term ? '<p><strong>' + (dlg.term === 'rewrite' ? 'Will read: "the image comes from a private registry".' : 'Kept as it is.') + '</strong></p>' : '<p class="flag">Decide on this term to go on.</p>') +
+      '<p>Once other contexts\' agents have read it, it cannot be recalled.</p>' +
+      buttonsFor([['r', 'Rewrite the term'], ['k', 'Keep it'], ['CmdEnter', 'Promote'], ['Escape', 'Cancel']]);
+  } else if (dlg.type === 'short') {
+    h = '<h2>Your short list for today</h2><p>Loom suggests these. Press x to take one off. The others stay in Planned; those you take off come back tomorrow.</p>' +
+      SHORT.map(function (id, n) { var i = byId(id); return '<button type="button" class="opt" data-opt="' + n + '" aria-current="' + (n === dlg.cur) + '"><span>' + (s.shortOff[id] ? '☐ ' : '☑ ') + esc(i.title) + '</span><small>' + esc(CTX[i.ctx].slice(2)) + '</small></button>'; }).join('') +
+      buttonsFor([['x', 'On or off'], ['Enter', 'Confirm'], ['Escape', 'Not now']]);
+  } else if (dlg.type === 'help') {
+    h = '<h2>Keys on this page</h2>' + LEGENDS[page === 'task' ? 'task' : page].map(function (l) { return '<div class="opt"><span>' + esc(l[1]) + '</span><kbd>' + esc(l[0]) + '</kbd></div>'; }).join('') +
+      '<h2>Everywhere</h2>' + [['g then a letter', 'go to a page'], ['q', 'go to or search'], ['h', 'hide the sidebar'], ['w', 'show one context'], ['u', 'undo, or cancel a send'], ['l', 'log']].map(function (l) { return '<div class="opt"><span>' + esc(l[1]) + '</span><kbd>' + esc(l[0]) + '</kbd></div>'; }).join('') + buttonsFor([['Escape', 'Close']]);
+  } else if (dlg.type === 'write') {
+    if (dlg.pick && !dlg.ctx) {
+      h = '<h2>' + esc(dlg.heading) + '</h2>' + ctxPicker();
+    } else if (dlg.step === 'edit') {
+      h = '<h2>' + esc(dlg.heading) + '</h2><div class="dlg-head">' + (dlg.ctx ? '<span class="ctx ' + dlg.ctx + '">' + esc(CTX[dlg.ctx]) + '</span>' : '') + '<span>' + esc(dlg.to) + '</span></div>' + (dlg.thread ? '<div class="thread">' + esc(dlg.thread) + '</div>' : '') +
+        (dlg.fs && !s.tokenOk ? '<p class="flag">The Freshservice token for company-b has expired. If you send now, this waits in the Outbox.</p>' : '') +
+        '<textarea id="dlg-text" aria-label="Text">' + esc(dlg.text) + '</textarea>' + buttonsFor([['CmdEnter', dlg.meeting || dlg.capture ? 'Save' : 'Preview'], ['Escape', 'Cancel']]);
+    } else {
+      h = '<h2>Check before sending</h2><div class="dlg-head">' + (dlg.ctx ? '<span class="ctx ' + dlg.ctx + '">' + esc(CTX[dlg.ctx]) + '</span>' : '') + '<span>' + esc(dlg.to) + '</span></div>' + (dlg.thread ? '<div class="thread">' + esc(dlg.thread) + '</div>' : '') + '<div class="exact">' + esc(dlg.text) + '</div>' + buttonsFor([['CmdEnter', 'Send'], ['e', 'Edit'], ['Escape', 'Cancel']]);
+    }
+  } else if (dlg.type === 'mute') {
+    h = '<h2>Mute this monitor</h2><div class="dlg-head"><span class="ctx ' + dlg.item.ctx + '">' + esc(CTX[dlg.item.ctx]) + '</span><span>Datadog of ' + esc(CTX[dlg.item.ctx].slice(2)) + '</span></div><p>' + esc(dlg.item.title) + '. Creates a Datadog downtime on this monitor only. It stays in your list, marked as muted.</p>' +
+      MUTE.map(function (m, n) { return '<button type="button" class="opt" data-opt="' + n + '" aria-current="' + (n === dlg.cur) + '"><span>' + esc(m.label) + '</span><small>' + esc(m.end) + '</small></button>'; }).join('') +
+      buttonsFor([['CmdEnter', 'Confirm mute'], ['Escape', 'Cancel']]);
+  } else {
+    var res = paletteResults(dlg.q);
+    dlg.cur = Math.min(dlg.cur, Math.max(0, res.length - 1));
+    if (dlg.typing) { drawResults(res); return; }
+    h = '<input id="dlg-q" type="text" autocomplete="off" aria-label="Go to or search" placeholder="Go to a page, find a task or a knowledge page, run an action" value="' + esc(dlg.q).replace(/"/g, '&quot;') + '"><div id="dlg-res"></div>';
+    $('modal').innerHTML = h; $('modal-back').hidden = false;
+    drawResults(res);
+    $('dlg-q').focus();
+    return;
+  }
+  $('modal').innerHTML = h; $('modal-back').hidden = false;
+  var ta = $('dlg-text'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+function drawResults(res) {
+  $('dlg-res').innerHTML = res.length ? res.map(function (r, n) {
+    return '<button type="button" class="opt" data-opt="' + n + '" aria-current="' + (n === dlg.cur) + '"><span>' + esc(r.title) + '</span><small>' + esc(r.kind) + '</small></button>';
+  }).join('') : '<p class="empty">Nothing found. Press Esc to go back.</p>';
+}
+function paletteResults(q) { return unfiltered(function () { return paletteAll(q); }); }
+function paletteAll(q) {
+  var nav = [['Today', 'today'], ['My day', 'day'], ['Inbox', 'inbox'], ['Reviews', 'reviews'], ['Agents', 'agents'], ['Meetings', 'meetings'], ['Reading', 'library'], ['Knowledge', 'pages'], ['Later', 'later'], ['Outbox', 'outbox'], ['Settings', 'settings']].map(function (x) {
+    return { title: x[0], kind: 'Page', run: function () { go(x[1]); } };
+  });
+  var acts = [
+    { title: 'Create a Jira ticket', kind: 'Action', run: function () { openWrite('Create a Jira ticket', 'To this context\'s Jira', '', false, null, { pick: true, sendLabel: 'Create a Jira ticket' }); } },
+    { title: 'Add a link or feed to Reading', kind: 'Action', run: function () { openWrite('Add a link or a feed', 'Paste a link, or a feed address.', '', false, null, { pick: true, capture: true }); } },
+    { title: 'Add meeting notes or a transcript', kind: 'Action', run: function () { go('meetings'); actMeetings('f'); } },
+    { title: 'Log a small item', kind: 'Action', run: function () { render(); openLog(); } }
+  ];
+  var tasks = ordered().map(function (i) { return { title: i.title, kind: CTX[ctxOf(i)].slice(2) + ' · ' + i.kind, run: function () { go('today'); s.selected = i.id; render(); } }; });
+  var pages = PAGES.map(function (x) { return { title: x.title, kind: 'Knowledge page', run: function () { s.kp = x.page; s.kpCur = KP[x.page].rows[0].id; go('knowledge'); } }; });
+  var meets = MEETINGS.map(function (m) { return { title: m.title, kind: 'Meeting · ' + CTX[m.ctx].slice(2), run: function () { s.meetCur = m.id; go('meetings'); } }; });
+  var reading = LIB.concat(s.captured).map(function (x) { return { title: x.title, kind: 'Reading · ' + CTX[x.ctx].slice(2), run: function () { s.libCur = x.id; go('library'); } }; });
+  var reviews = REVIEWS.map(function (x) { return { title: x.title, kind: 'Review · ' + CTX[x.ctx].slice(2) + ' · ' + x.kind, run: function () { s.revCur = x.id; go('reviews'); } }; });
+  var inboxItems = openEntries().map(function (x) { return { title: x.title, kind: 'Inbox · ' + CTX[ctxOf(x)].slice(2), run: function () { s.cursor = x.id; go('inbox'); } }; });
+  var runs = Object.keys(RUNS).map(function (id) { return { title: RUNS[id].task, kind: 'Run · ' + CTX[RUNS[id].ctx].slice(2) + ' · ' + RUNS[id].who, run: function () { openRun(id, 'agents'); } }; });
+  var sources = SOURCES.map(function (x) { return { title: x.title, kind: 'Source', run: function () { s.pageCur = x.id; go('pages'); } }; });
+  var claims = KP.argo.rows.map(function (r) { return { title: r.title, kind: 'In: ' + KP.argo.title, run: function () { s.kp = 'argo'; s.kpCur = r.id; go('knowledge'); } }; });
+  var all = nav.concat(acts, tasks, inboxItems, reviews, runs, pages, sources, reading, meets, claims), low = (q || '').toLowerCase().trim();
+  var hits = low ? all.filter(function (r) { return r.title.toLowerCase().indexOf(low) >= 0 || r.kind.toLowerCase().indexOf(low) >= 0; }) : nav.concat(acts);
+  return hits.slice(0, 14);
+}
+function openPalette() { dlg = { type: 'palette', q: '', cur: 0 }; mode = 'dlg'; drawDlg(); }
+function openWrite(heading, to, text, fs, id, extra) { dlg = Object.assign({ type: 'write', step: 'edit', heading: heading, to: to, text: text, fs: fs, id: id }, extra || {}); mode = 'dlg'; drawDlg(); }
+function ctxPicker(next) { return '<p>Which context does this belong to?</p>' + buttonsFor([['a', CTX.a], ['b', CTX.b], ['p', CTX.p], ['Escape', 'Cancel']]); }
+function dlgKey(k, e) {
+  if (k === 'Escape') { e.preventDefault(); closeDlg(); toast('Cancelled.'); render(); return; }
+  if (dlg.type === 'palette') {
+    var res = paletteResults(dlg.q);
+    if (k === 'ArrowDown') { e.preventDefault(); dlg.cur = Math.min(res.length - 1, dlg.cur + 1); drawResults(res); }
+    if (k === 'ArrowUp') { e.preventDefault(); dlg.cur = Math.max(0, dlg.cur - 1); drawResults(res); }
+    if (k === 'Enter') { e.preventDefault(); var r = res[dlg.cur]; closeDlg(); if (r) r.run(); }
+    return;
+  }
+  if (dlg.type === 'help') return;
+  if (dlg.type === 'short') {
+    if (k === 'j' || k === 'ArrowDown') { dlg.cur = Math.min(SHORT.length - 1, dlg.cur + 1); drawDlg(); }
+    if (k === 'k' || k === 'ArrowUp') { dlg.cur = Math.max(0, dlg.cur - 1); drawDlg(); }
+    if (k === 'x') { var sid = SHORT[dlg.cur]; if (s.shortOff[sid]) delete s.shortOff[sid]; else s.shortOff[sid] = true; drawDlg(); }
+    if (k === 'Enter') {
+      e.preventDefault();
+      remember();
+      s.shortDone = true;
+      SHORT.forEach(function (id) { if (s.shortOff[id]) s.status[id] = 'later:tomorrow'; });
+      closeDlg();
+      toast('Short list confirmed. Press u to undo.');
+      render();
+    }
+    return;
+  }
+  if (dlg.type === 'promote') {
+    if (k === 'r' || k === 'k') { dlg.term = k === 'r' ? 'rewrite' : 'keep'; drawDlg(); return; }
+    if (k === 'CmdEnter') {
+      if (!dlg.term) { toast('Decide on the flagged term first.'); return; }
+      var pid = s.kp;
+      closeDlg();
+      held({ label: 'Promote ' + KP[pid].title + ' to shared', ctx: 'a', reverse: 'Other contexts can read it now. It cannot be recalled from what they have read.', apply: function () { s.shared[pid] = true; }, revert: function () { delete s.shared[pid]; } });
+    }
+    return;
+  }
+  if (dlg.type === 'mute') {
+    if (k === 'j' || k === 'ArrowDown') { e.preventDefault(); dlg.cur = Math.min(MUTE.length - 1, dlg.cur + 1); drawDlg(); }
+    if (k === 'k' || k === 'ArrowUp') { e.preventDefault(); dlg.cur = Math.max(0, dlg.cur - 1); drawDlg(); }
+    if (k === 'CmdEnter') {
+      e.preventDefault();
+      var it = dlg.item, end = MUTE[dlg.cur].end;
+      closeDlg();
+      held({ label: 'Mute ' + it.title + ' ' + end, ctx: it.ctx, reverse: 'To reverse it, remove the downtime in Datadog.', apply: function () { s.muted[it.id] = 'Muted ' + end; }, revert: function () { delete s.muted[it.id]; } });
+    }
+    return;
+  }
+  if (dlg.pick && !dlg.ctx) {
+    if (k === 'a' || k === 'b' || k === 'p') { e.preventDefault(); dlg.ctx = k; drawDlg(); }
+    return;
+  }
+  if (dlg.step === 'edit') {
+    if (k === 'CmdEnter') {
+      e.preventDefault();
+      dlg.text = $('dlg-text').value.trim();
+      if (!dlg.text) { toast('Write something first.'); return; }
+      if (dlg.meeting || dlg.capture) {
+        var note = dlg.text, cx = dlg.ctx, isMeeting = dlg.meeting;
+        closeDlg();
+        remember();
+        if (isMeeting) {
+          var mid = 'added' + s.meetAdded.length;
+          s.meetAdded.push({ id: mid, group: 'new', ctx: cx, agent: 'Meeting distiller', opens: 'the notes', kind: 'Just now · your notes', title: note.split('\n')[0].slice(0, 60), why: 'Not processed', body: 'Secret scan clean. Stored in ' + CTX[cx].slice(2) + ', and on today\'s timeline.' });
+          s.meetCur = mid;
+        } else {
+          var cid = 'cap-new' + s.captured.length;
+          s.captured.push({ id: cid, group: 'captured', ctx: cx, kind: 'Added by you', title: note.split('\n')[0].slice(0, 80), why: 'Just now', agent: 'Researcher', opens: 'the local copy', body: 'Loom saves a local copy.' });
+        }
+        toast('Saved in ' + CTX[cx].slice(2) + '. Press u to undo.');
+        render();
+        return;
+      }
+      dlg.step = 'check'; drawDlg();
+    }
+    return;
+  }
+  if (k === 'e') { e.preventDefault(); dlg.step = 'edit'; drawDlg(); return; }
+  if (k === 'CmdEnter') {
+    e.preventDefault();
+    var d = dlg;
+    closeDlg();
+    held({ label: d.sendLabel || 'Reply on INC-1093', ctx: d.ctx || 'b', reverse: d.fs ? 'To reverse it, delete the reply in Freshservice.' : 'To reverse it, delete it in Jira.',
+      commit: function () {
+        if (d.fs && !s.tokenOk) {
+          s.outbox.push({ id: 'ob' + (s.outbox.length + 2), target: 'Freshservice INC-1093', what: 'Reply: ' + d.text.slice(0, 60), err: '401: the Freshservice token of company-b has expired', ctx: 'b', fs: true });
+          if (d.id) s.unsent[d.id] = true;
+          toast('Not sent: the Freshservice token has expired. Your reply is safe in the Outbox.');
+          return true;
+        }
+        if (d.id) s.sentReply[d.id] = true;
+        return false;
+      } });
+  }
+}
+function readingCount() {
+  // Feed items stay out of the count: a badge you always see must mean something.
+  var n = LIB.concat(s.captured).filter(function (x) { var st = s.lib[x.id] || x.group; return !x.count && (st === 'captured' || st === 'toread'); }).length;
+  return n + entries().filter(function (e) { var st = s.lib[e.id] || 'captured'; return s.inbox[e.id] === 'reading' && (st === 'captured' || st === 'toread'); }).length;
+}
+function libRows() {
+  var sent = entries().filter(function (e) { return s.inbox[e.id] === 'reading'; }).map(function (e) {
+    return { id: e.id, group: 'captured', ctx: e.ctx, kind: e.kind, title: e.title, why: 'From Inbox', agent: e.agent, opens: e.opens, body: e.body };
+  });
+  var rows = LIB.concat(s.captured, sent).map(function (x) {
+    var st = s.lib[x.id] || x.group;
+    return Object.assign({}, x, { group: st, why: s.status[x.id] === 'agent' ? x.agent + ' running' : x.why });
+  }).filter(function (x) { return NEXT_STAGE[x.group]; });
+  var out = [];
+  LIB_GROUPS.forEach(function (g) { rows.forEach(function (x) { if (x.group === g.id && ctxOk(x)) out.push(x); }); });
+  return out;
+}
+function libPickedIds() { return libRows().filter(function (x) { return s.libPicked[x.id]; }).map(function (x) { return x.id; }); }
+function pageRows() {
+  var out = [];
+  var rows = PAGES.map(function (x) {
+    var shared = x.page === 'argo' || s.shared[x.page];
+    var why = x.page === 'argo' ? (s.kpProp ? 'Draft' : x.why) : s.shared[x.page] ? 'Promoted today' : x.why;
+    return Object.assign({}, x, { ctx: shared ? '' : x.ctx, group: shared ? 'shared' : x.ctx, why: why, tone: x.page === 'argo' && s.kpProp ? '' : s.shared[x.page] ? '' : x.tone, kind: shared ? 'Shared' : 'Client only' });
+  });
+  var refs = LIB.concat(s.captured).filter(function (x) { return s.lib[x.id] === 'reference'; }).map(function (x) { return Object.assign({}, x, { group: 'sources', why: 'Local copy', body: 'A reference that knowledge pages can cite.' }); });
+  rows = rows.concat(SOURCES, refs);
+  PAGE_GROUPS.forEach(function (g) { rows.forEach(function (x) { if (x.group === g.id) out.push(x); }); });
+  return out;
+}
+function renderPages() {
+  var rows = pageRows();
+  $('list').innerHTML = renderRows(rows, PAGE_GROUPS, s.pageCur);
+  var x = rows.filter(function (r) { return r.id === s.pageCur; })[0];
+  $('detail').innerHTML = '<h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p><div class="acts">' + keyButton('Enter', x.page ? 'Open page' : 'Open local copy') + keyButton('e', 'Edit in VS Code') + '</div>';
+}
+function actPages(k) {
+  var x = pageRows().filter(function (r) { return r.id === s.pageCur; })[0];
+  if (k === 'e') { toast('In the app, this opens the page in VS Code. It is a plain file in the store.'); return; }
+  if (k === 'Enter' && !x.page) { toast('In the app, this opens the local copy of ' + x.title + '.'); return; }
+  if (k === 'Enter') { s.kp = x.page; s.kpCur = KP[x.page].rows[0].id; go('knowledge'); }
+}
+function revById(id) { return reviewRows().filter(function (x) { return x.id === id; })[0]; }
+function reviewRows() {
+  var rv = s.review;
+  var rows = REVIEWS.map(function (x) {
+    var y = Object.assign({}, x);
+    var st = s.status[x.id];
+    if (st === 'done') { y.group = 'done'; y.why = 'Done today'; y.tone = ''; }
+    else if (st === 'agent') { y.why = x.agent + ' running'; y.tone = ''; }
+    if (x.id === 'auth') {
+      if (rv.uploaded) { y.group = 'done'; y.why = rv.uploaded === 'approved' ? 'Uploaded and approved' : 'Uploaded'; y.tone = ''; }
+      else if (rv.draft) { y.group = 'draft'; y.why = 'Draft ready, ' + rv.comments.filter(function (c) { return !c.off; }).length + ' comments'; y.tone = 'warn'; }
+    }
+    return y;
+  });
+  var out = [];
+  REVIEW_GROUPS.forEach(function (g) { rows.forEach(function (x) { if (x.group === g.id && ctxOk(x)) out.push(x); }); });
+  return out;
+}
+function renderReviews() {
+  var rows = reviewRows();
+  if (!rows.length) { $('list').innerHTML = '<div class="empty">No MR in this context needs you.</div>'; $('detail').innerHTML = '<p>Nothing selected.</p>'; return; }
+  if (!rows.some(function (x) { return x.id === s.revCur; })) s.revCur = rows[0].id;
+  $('list').innerHTML = renderRows(rows, REVIEW_GROUPS, s.revCur);
+  if (mode === 'pack') { renderPack(); return; }
+  var x = revById(s.revCur);
+  $('detail').innerHTML = '<div><span class="ctx ' + x.ctx + '">' + esc(CTX[x.ctx]) + '</span></div><h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p>' +
+    '<dl class="meta"><dt>MR</dt><dd>' + esc(x.kind) + '</dd><dt>Status</dt><dd>' + esc(x.why) + '</dd></dl><div class="acts">' +
+    keyButton('Enter', 'Open review') + keyButton('a', 'Send ' + x.agent.toLowerCase()) + keyButton('o', 'Open in GitLab') + '</div>';
+}
+function actReviews(k) {
+  var x = revById(s.revCur);
+  if (!x) return;
+  if (k === 'o') { toast('In the app, this opens ' + x.title + ' in GitLab.'); return; }
+  if (k === 'a') {
+    if (x.group === 'done') { toast('This review is done.'); return; }
+    sendAgent(x);
+    return;
+  }
+  if (k === 'Enter') {
+    if (x.id === 'auth') { backPage = 'reviews'; go('review'); return; }
+    toast('This demo has a diff for Auth refactor only.');
+  }
+}
+function agentRows() {
+  var rows = Object.keys(RUNS).map(function (id) {
+    var r = RUNS[id], group, why, tone = '';
+    if (s.stopped[id]) { group = 'done'; why = 'Stopped by you'; }
+    else if (id === 'runq') { group = s.answer ? 'running' : 'needs'; why = s.answer ? 'Running' : 'Asks you a question'; tone = s.answer ? '' : 'warn'; }
+    else if (id === 'runf') { group = s.resumed.runf ? 'running' : 'needs'; why = s.resumed.runf ? 'Running again' : 'Interrupted at 07:55'; tone = s.resumed.runf ? '' : 'urgent'; }
+    else { group = s.approved ? 'done' : 'needs'; why = s.approved ? 'Finished, push approved' : 'Proposal to approve'; tone = s.approved ? '' : 'warn'; }
+    return { id: id, run: id, group: group, ctx: r.ctx, kind: r.who, title: r.task, why: why, tone: tone, body: r.state + '. ' + r.where + ', started ' + r.started.toLowerCase() + '.' };
+  });
+  var others = allItems().concat(entries(), LIB, MEETINGS, s.meetAdded, REVIEWS.filter(function (x) { return !byId(x.id); })).filter(function (i) { return s.status[i.id] === 'agent' && !RUNS[i.id]; }).map(function (i) {
+    return { id: i.id, group: 'running', ctx: i.ctx, kind: i.agent, title: i.title, why: 'Running', body: 'Started just now, in this demo.' };
+  });
+  var out = [];
+  AGENT_GROUPS.forEach(function (g) { rows.concat(others).forEach(function (x) { if (x.group === g.id && ctxOk(x)) out.push(x); }); });
+  return out;
+}
+function spendLine() {
+  var sum = { a: 0, b: 0 };
+  Object.keys(RUNS).forEach(function (id) { sum[RUNS[id].ctx] += RUNS[id].spend; });
+  return 'This week: company-a $' + sum.a.toFixed(2) + ', company-b $' + sum.b.toFixed(2) + ', personal on a seat';
+}
+function renderAgents() {
+  var rows = agentRows();
+  if (!rows.length) { $('list').innerHTML = '<div class="note">' + esc(spendLine()) + '</div><div class="empty">No run in this context.</div>'; $('detail').innerHTML = '<p>Nothing selected.</p>'; return; }
+  if (!rows.some(function (x) { return x.id === s.agentCur; })) s.agentCur = rows[0].id;
+  $('list').innerHTML = '<div class="note">' + esc(spendLine()) + '</div>' + renderRows(rows, AGENT_GROUPS, s.agentCur);
+  var x = rows.filter(function (r) { return r.id === s.agentCur; })[0];
+  $('detail').innerHTML = '<div><span class="ctx ' + x.ctx + '">' + esc(CTX[x.ctx]) + '</span></div><h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p>' +
+    '<dl class="meta"><dt>Agent</dt><dd>' + esc(x.kind.split(' · ')[0]) + '</dd><dt>Status</dt><dd>' + esc(x.why) + '</dd></dl><div class="acts">' +
+    (x.run ? keyButton('Enter', 'Open run') : '') + keyButton('o', 'Open worktree') + '</div>';
+}
+function actAgents(k) {
+  var x = agentRows().filter(function (r) { return r.id === s.agentCur; })[0];
+  if (!x) return;
+  if (k === 'o') { toast('In the app, this opens the worktree of ' + x.title + ' in VS Code.'); return; }
+  if (k === 'Enter') {
+    if (x.run) openRun(x.run, 'agents');
+    else toast('This demo has run pages for the three runs it starts with.');
+  }
+}
+function libById(id) { return libRows().filter(function (x) { return x.id === id; })[0]; }
+function renderRows(rows, groups, curId, picked) {
+  var html = '';
+  groups.forEach(function (g) {
+    var list = rows.filter(function (x) { return x.group === g.id; });
+    if (!list.length) return;
+    html += '<div class="sec"><span>' + esc(g.name) + '</span><span>' + list.reduce(function (n, x) { return n + (x.count || 1); }, 0) + '</span></div>';
+    list.forEach(function (x) {
+      var cur = x.id === curId, on = picked && picked[x.id];
+      html += '<button type="button" class="row task' + (on ? ' picked' : '') + '" data-id="' + x.id + '" aria-current="' + cur + '"' + (picked ? ' aria-pressed="' + !!on + '"' : '') + '>' +
+        '<span class="mark" aria-hidden="true">' + (picked ? (on ? '☑' : '☐') : (cur ? '›' : '')) + '</span>' +
+        '<span class="what"><span class="kind">' + (x.ctx ? '<span class="ctx ' + x.ctx + '">' + esc(CTX[x.ctx]) + '</span> · ' : '') + esc(x.kind) + '</span><span class="title">' + (picked && cur ? '› ' : '') + esc(x.title) + (x.count ? '<span class="n">×' + x.count + '</span>' : '') + '</span></span>' +
+        '<span class="why ' + (x.tone || '') + '">' + esc(x.why || '') + '</span></button>';
+    });
+  });
+  return html;
+}
+function keyButton(k, label) { return '<button type="button" data-k="' + k + '"><kbd>' + keyLabel(k) + '</kbd> ' + esc(label) + '</button>'; }
+function renderLibrary() {
+  var rows = libRows();
+  if (!rows.some(function (x) { return x.id === s.libCur; })) s.libCur = rows.length ? rows[0].id : '';
+  if (!rows.length) { $('list').innerHTML = '<div class="empty">Nothing left to read.</div>'; $('detail').innerHTML = '<p>Nothing selected.</p>'; return; }
+  $('list').innerHTML = renderRows(rows, LIB_GROUPS, s.libCur, s.libPicked);
+  if (mode === 'pack') { renderPack(); return; }
+  var picked = libPickedIds();
+  if (picked.length) {
+    $('detail').innerHTML = '<h2>' + picked.length + ' selected</h2><p class="picked-note">Each action applies to all of them.</p><p>' +
+      picked.map(function (id) { return esc(libById(id).title); }).join('<br>') + '</p><div class="acts">' + keyButton('y', 'Next stage') + keyButton('d', 'Dismiss') + keyButton('Escape', 'Clear selection') + '</div>';
+    return;
+  }
+  var x = libById(s.libCur), c = x.ctx;
+  $('detail').innerHTML = '<div><span class="ctx ' + c + '">' + esc(CTX[c]) + '</span></div><h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p>' +
+    '<dl class="meta"><dt>Type</dt><dd>' + esc(x.kind) + '</dd><dt>Agent</dt><dd>' + esc(x.agent) + '</dd></dl><div class="acts">' +
+    keyButton('y', STAGE_ACTION[x.group]) + keyButton('d', 'Dismiss') + keyButton('a', 'Send ' + x.agent.toLowerCase()) + keyButton('o', 'Open ' + x.opens) + '</div>';
+}
+function actLibrary(k) {
+  if (k === 'f') { openWrite('Add a link or a feed', 'Paste a link, or a feed address.', '', false, null, { pick: true, capture: true }); return; }
+  var x = libById(s.libCur);
+  if (!x) return;
+  if (k === 'Enter') { toast(x.count ? 'In the app, this expands the feed so that you can keep single items.' : 'Reading happens outside loom, from the local copy.'); return; }
+  if (k === 'o') { toast('In the app, this opens ' + x.opens + '.'); return; }
+  if (k === 'Escape') { s.libPicked = {}; toast('Selection cleared.'); render(); return; }
+  if (k === 'x') { if (s.libPicked[x.id]) delete s.libPicked[x.id]; else s.libPicked[x.id] = true; move(1); return; }
+  if (k === 'X') {
+    var sec = libRows().filter(function (r) { return r.group === x.group; });
+    var all = sec.every(function (r) { return s.libPicked[r.id]; });
+    sec.forEach(function (r) { if (all) delete s.libPicked[r.id]; else s.libPicked[r.id] = true; });
+    render();
+    return;
+  }
+  if (k === 'a') {
+    if (libPickedIds().length) { toast('An agent works on one item at a time: clear the selection first.'); return; }
+    sendAgent(x);
+    return;
+  }
+  var ids = libPickedIds().length ? libPickedIds() : [x.id];
+  var n = indexNow();
+  remember();
+  ids.forEach(function (id) {
+    var r = libById(id);
+    s.lib[id] = k === 'y' ? NEXT_STAGE[r.group] : 'dismissed';
+    delete s.libPicked[id];
+  });
+  if (k === 'y') toast(ids.length === 1 && s.lib[ids[0]] === 'reference' ? x.title + ' is now a source that knowledge pages can cite. Press u to undo.' : 'Moved ' + plural(ids.length) + '. Press u to undo.');
+  else toast('Dismissed ' + plural(ids.length) + '. Press u to undo.');
+  settleOrStay(x.id, n);
+  render();
+}
+function settleOrStay(id, n) { if (!currentList().some(function (r) { return r.id === id; })) settleCursor(n); }
+function kpRows() {
+  var d = KP[s.kp];
+  return d.rows.filter(function (r) { return !(r.proposal && s.kpProp); });
+}
+function renderKnowledge() {
+  var d = KP[s.kp], rows = kpRows(), shared = s.shared[s.kp];
+  if (!rows.some(function (x) { return x.id === s.kpCur; })) s.kpCur = rows[0].id;
+  var head = '<div class="rv-head"><div class="facts"><span>' + esc(shared ? 'Shared' : d.scope) + '</span><span' + (d.blocked ? ' class="flag"' : '') + '>' + esc(d.status) + '</span><span>' + esc(d.check) + '</span></div><h2>' + esc(d.title) + '</h2></div>';
+  if (s.kpProp) head += '<div class="note">Proposed update ' + esc(s.kpProp) + '.</div>';
+  $('list').innerHTML = head + renderRows(rows, d.groups, s.kpCur);
+  var x = rows.filter(function (r) { return r.id === s.kpCur; })[0];
+  $('detail').innerHTML = '<div><span class="badge">' + esc(x.kind) + '</span></div><h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p>' +
+    (x.ev.length ? '<strong>Evidence</strong><ul class="ev">' + x.ev.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>' : '') +
+    '<strong>Relations</strong><ul class="ev">' + d.rel.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>' +
+    '<div class="acts">' + (x.proposal ? keyButton('y', 'Accept') + keyButton('x', 'Reject') : '') + keyButton('e', 'Edit in VS Code') +
+    (d.scope === 'Shared' || shared ? '' : keyButton('P', 'Promote to shared')) + keyButton('Escape', 'Back') + '</div>';
+}
+function actKnowledge(k) {
+  var d = KP[s.kp], x = kpRows().filter(function (r) { return r.id === s.kpCur; })[0];
+  if (k === 'Escape') { go('pages'); return; }
+  if (k === 'e') { toast('In the app, this opens the page in VS Code. It is a plain file in the store.'); return; }
+  if ((k === 'y' || k === 'x')) {
+    if (!x.proposal) { toast('Nothing to decide on this row.'); return; }
+    remember();
+    s.kpProp = k === 'y' ? 'accepted' : 'rejected';
+    toast('Proposed update ' + s.kpProp + '. Press u to undo.');
+    render();
+    return;
+  }
+  if (k === 'P') {
+    if (d.scope === 'Shared' || s.shared[s.kp]) { toast('This page is already shared.'); return; }
+    if (d.blocked) { toast('Promotion refused: fix the possible secret on line 18 first.'); return; }
+    dlg = { type: 'promote', term: '' }; mode = 'dlg'; drawDlg();
+  }
+}
+function openRun(id, from) {
+  backPage = from;
+  s.runId = id;
+  s.runCur = runRows()[0].id;
+  go('run');
+}
+function runRows() {
+  var r = RUNS[s.runId], out = [];
+  var extra = s.runId === 'runq' && s.answer ? [{ id: 'q2', group: 'activity', kind: 'You answered', title: s.answer, why: '', body: 'Sent to the run through loom.' }] : [];
+  var rows = r.rows.filter(function (x) {
+    if (x.question && s.answer) return false;
+    if (x.failed && s.resumed[s.runId]) return false;
+    return true;
+  }).map(function (x) {
+    return x.approve && s.approved ? Object.assign({}, x, { why: 'Approved, pushed by loom', tone: '' }) : x;
+  }).concat(extra);
+  RUN_GROUPS.forEach(function (g) { rows.forEach(function (x) { if (x.group === g.id) out.push(x); }); });
+  return out;
+}
+function runState() {
+  var r = RUNS[s.runId];
+  if (s.stopped[s.runId]) return 'Stopped by you';
+  if (s.resumed[s.runId]) return 'Running again';
+  if (s.runId === 'runq' && s.answer) return 'Running';
+  return r.state;
+}
+function renderRun() {
+  var r = RUNS[s.runId], rows = runRows();
+  if (!rows.some(function (x) { return x.id === s.runCur; })) s.runCur = rows[0].id;
+  var html = '<div class="rv-head"><div class="facts"><span class="ctx ' + r.ctx + '">' + esc(CTX[r.ctx]) + '</span><span>' + esc(r.who) + '</span><span>' + esc(runState()) + '</span></div><h2>' + esc(r.task) + '</h2></div>';
+  $('list').innerHTML = html + renderRows(rows, RUN_GROUPS, s.runCur);
+  var x = rows.filter(function (y) { return y.id === s.runCur; })[0];
+  var over = r.spend >= r.warn;
+  var live = !s.stopped[s.runId] && r.state.indexOf('Finished') < 0 && !(s.runId === 'runf' && !s.resumed.runf);
+  $('detail').innerHTML = '<h2>' + esc(x.title) + '</h2><p>' + esc(x.body) + '</p><div class="acts">' +
+    (x.question ? keyButton('r', 'Answer') : '') + (x.approve && !s.approved ? keyButton('o', 'Open the diff') + keyButton('CmdEnter', 'Approve') : '') + (x.failed ? keyButton('s', 'Resume') : '') + '</div>' +
+    '<strong>This run</strong>' +
+    '<div><div class="meter' + (over ? ' warn' : '') + '" role="img" aria-label="Budget used"><i style="width:' + Math.min(100, r.spend / r.stop * 100) + '%"></i></div>' +
+    '<small class="' + (over ? 'why warn' : 'why') + '">$' + r.spend.toFixed(2) + ' of $' + r.stop.toFixed(2) + (over ? ', above the $' + r.warn.toFixed(2) + ' warning' : '') + '</small></div>' +
+    '<dl class="meta"><dt>Account</dt><dd>' + esc(r.account) + '</dd><dt>Runs in</dt><dd>' + esc(r.where) + '</dd><dt>Started</dt><dd>' + esc(r.started) + '</dd><dt>Worktree</dt><dd class="path">' + esc(r.tree) + '</dd></dl>' +
+    '<div class="acts">' + keyButton('v', 'Take over in terminal') + (live ? keyButton('x', 'Stop') : '') + keyButton('o', 'Open worktree') + keyButton('Escape', 'Back') + '</div>';
+}
+var takeoverArmed = false;
+function actRun(k) {
+  var r = RUNS[s.runId], x = runRows().filter(function (y) { return y.id === s.runCur; })[0];
+  if (k === 'Escape') { go(backPage); return; }
+  if (k === 'o') { if (x && x.approve) s.diffSeen = true; toast('In the app, this opens ' + (x && x.approve ? 'the diff' : r.tree + ' in VS Code') + '.'); return; }
+  if (k === 'CmdEnter') { approvePush(x); return; }
+  if (k === 'v' && !takeoverArmed) { takeoverArmed = true; toast('This ends the background run. Press v again to take over in your terminal.'); return; }
+  takeoverArmed = false;
+  if (k === 'v') { toast('In the app, this prepares a session in your terminal, in this worktree. The background run ends first.'); return; }
+  if (k === 'r') {
+    if (s.answer || s.runId !== 'runq' || s.stopped.runq) { toast('This run has no open question.'); return; }
+    mode = 'reply'; $('replybar').hidden = false; $('reply-input').value = ''; $('reply-input').focus();
+    return;
+  }
+  if (k === 's') {
+    if (!x || !x.failed) { toast('Only an interrupted run can be resumed.'); return; }
+    s.resumed[s.runId] = true; s.status[s.runId] = 'agent'; toast('Resumed from its worktree. It moved to With an agent in Today.'); render();
+    return;
+  }
+  if (k === 'x') {
+    if (r.state.indexOf('Finished') === 0 || s.stopped[s.runId] || (s.runId === 'runf' && !s.resumed.runf)) { toast('This run is not running.'); return; }
+    mode = 'stop'; $('stopbar').hidden = false;
+  }
+}
+function stopKey(k) {
+  $('stopbar').hidden = true; mode = '';
+  if (k === 'Enter') { s.stopped[s.runId] = true; if (s.status[s.runId] === 'agent' || s.runId === 'runq') s.status[s.runId] = 'done'; toast('Stopped. The worktree stays, and you can resume from it.'); render(); }
+  else toast('');
+}
+function comById(id) { return s.review.comments.filter(function (c) { return c.id === id; })[0]; }
+function comWhere(c) {
+  if (c.file < 0) return 'Whole MR';
+  var r = DIFF[c.file].rows[c.at];
+  return DIFF[c.file].path + ':' + (r.n || r.o);
+}
+function comsSorted() {
+  return s.review.comments.slice().sort(function (a, b) { return a.file - b.file || a.at - b.at; });
+}
+function comAt(file, line) { return s.review.comments.filter(function (c) { return c.file === file && c.at === line; })[0]; }
+function rowCells(r, idx, file, cls) {
+  var c = comAt(file, idx);
+  var mark = c && (s.review.draft || c.by === 'You') ? '●' : '';
+  return '<span class="dot" aria-hidden="true">' + mark + '</span><span>' + (r.c === ' ' ? '' : esc(r.c)) + '</span><span class="code">' + (esc(r.text) || ' ') + '</span>';
+}
+function unifiedLine(r, idx, file) {
+  var cls = r.c === '+' ? ' add' : r.c === '-' ? ' del' : '';
+  return '<button type="button" class="ln' + cls + '" data-line="' + idx + '" aria-current="' + (idx === s.review.line) + '">' +
+    '<span class="no">' + (r.o || '') + '</span><span class="no">' + (r.n || '') + '</span>' + rowCells(r, idx, file) + '</button>';
+}
+function half(r, idx, file) {
+  if (!r) return '<span class="half"></span>';
+  var cls = r.c === '+' ? ' add' : r.c === '-' ? ' del' : '';
+  return '<span class="half' + cls + '" data-line="' + idx + '" aria-current="' + (idx === s.review.line) + '"><span class="no">' + (r.c === '+' ? r.n : r.o || r.n) + '</span>' + rowCells(r, idx, file) + '</span>';
+}
+function splitLines(rows, file) {
+  var out = '', i = 0;
+  while (i < rows.length) {
+    if (rows[i].c === ' ') {
+      out += '<div class="ln sp">' + half(rows[i], i, file) + half(rows[i], i, file).replace(' aria-current="true"', ' aria-current="false"') + '</div>';
+      i++; continue;
+    }
+    var dels = [], adds = [];
+    while (i < rows.length && rows[i].c === '-') dels.push(i++);
+    while (i < rows.length && rows[i].c === '+') adds.push(i++);
+    for (var n = 0; n < Math.max(dels.length, adds.length); n++) {
+      out += '<div class="ln sp">' + half(rows[dels[n]], dels[n], file) + half(rows[adds[n]], adds[n], file) + '</div>';
+    }
+  }
+  return out;
+}
+function renderReview() {
+  var rv = s.review, f = DIFF[rv.file];
+  var html = '<div class="rv-head"><div class="facts"><span class="ctx a">' + esc(CTX.a) + '</span><span>acme/shop!412</span><span>By dana</span><span>Pipeline passed</span><span>+' + TOTAL.add + ' −' + TOTAL.del + ' in ' + DIFF.length + ' files</span><span>' + Object.keys(rv.viewed).length + ' of ' + DIFF.length + ' viewed</span></div>' +
+    '<h2>Auth refactor</h2><p>Replaces direct JWT calls with signed session helpers.</p></div>';
+  if (rv.uploaded) html += '<div class="note"><strong>Review uploaded' + (rv.uploaded === 'approved' ? ' and MR approved' : '') + '.</strong> This MR left Waiting on you until there is new activity. Merging stays in GitLab.</div>';
+  else if (!rv.draft) html += '<div class="note"><strong>No draft yet.</strong> <span class="acts"><button type="button" data-rev="a"><kbd>a</kbd> Send a reviewer</button><button type="button" data-rev="c"><kbd>c</kbd> Write your own comment</button></span></div>';
+  html += '<div class="rv-body"><nav class="rv-files" aria-label="Files">' + DIFF.map(function (x, n) {
+    var seen = !!rv.viewed[n];
+    var count = rv.draft ? rv.comments.filter(function (c) { return c.file === n && !c.off; }).length : rv.comments.filter(function (c) { return c.file === n && c.by === 'You'; }).length;
+    return '<button type="button" class="rv-file" data-file="' + n + '" aria-current="' + (n === rv.file) + '">' + (seen ? '<span class="dot">✓</span> ' : '') + esc(x.path) +
+      '<small>+' + x.add + ' −' + x.del + (count ? ' · ● ' + count : '') + (x.generated ? ' · generated' : '') + '</small></button>';
+  }).join('') + '</nav><div class="rv-diff"><div class="rv-path">' + esc(f.path) + '</div>';
+  if (f.generated) html += '<div class="empty">Generated file, collapsed.</div>';
+  else {
+    f.hunks.forEach(function (h) { html += '<div class="rv-hunk">@@ −' + h.old + ' +' + h.nw + ' @@</div>'; });
+    html += rv.view === 'split' ? splitLines(f.rows, rv.file) : f.rows.map(function (r, n) { return unifiedLine(r, n, rv.file); }).join('');
+  }
+  html += '</div></div>';
+  $('list').innerHTML = html;
+  if (mode === 'pack') { renderPack(); return; }
+  var everyComment = comsSorted().filter(function (c) { return rv.draft || c.by === 'You'; });
+  var kept = everyComment.filter(function (c) { return !c.off; }).length;
+  var shown = everyComment.filter(function (c) { return c.file < 0 || c.file === rv.file; });
+  var side = '<h2>Draft review</h2><p>' + (everyComment.length ? kept + ' of ' + everyComment.length + (everyComment.length === 1 ? ' comment' : ' comments') + ' will upload. This column shows the whole MR and this file.' : 'No comments yet.') + '</p>';
+  var th = THREADS.filter(function (x) { return x.file === rv.file; });
+  if (th.length) side += '<strong>Already on the MR</strong><div class="threads">' + th.map(function (x) { return '<div class="thread">' + esc(x.who) + ': ' + esc(x.text) + '</div>'; }).join('') + '</div><strong>Yours</strong>';
+  shown.forEach(function (c) {
+    if (rv.editing === c.id) {
+      side += '<div class="com-edit"><small class="path">' + esc(comWhere(c)) + '</small><textarea id="com-input" aria-label="Comment">' + esc(c.text) + '</textarea>' +
+        '<span class="acts"><button type="button" data-send="CmdEnter"><kbd>⌘Enter</kbd> Save</button><button type="button" data-send="Escape"><kbd>Esc</kbd> Cancel</button></span></div>';
+    } else {
+      side += '<button type="button" class="com' + (c.off ? ' off' : '') + '" data-com="' + c.id + '" aria-current="' + (c.id === rv.cur) + '"><small>' + esc(comWhere(c)) + ' · ' + esc(c.by) + (c.off ? ' · dropped' : '') + '</small>' + esc(c.text) +
+        (LABELS.test(c.text) ? '' : '<small class="flag">No Conventional Comments label</small>') + '</button>';
+    }
+  });
+  if (!rv.uploaded && !rv.editing) side += '<div class="acts">' +
+    '<button type="button" data-rev="CmdEnter"><kbd>⌘Enter</kbd> ' + (kept ? 'Upload' : 'Approve') + '</button>' +
+    '<button type="button" data-rev="c"><kbd>c</kbd> Comment</button>' +
+    (rv.draft ? '' : '<button type="button" data-rev="a"><kbd>a</kbd> Send reviewer</button>') +
+    (kept ? '<button type="button" data-rev="e"><kbd>e</kbd> Edit</button><button type="button" data-rev="x"><kbd>x</kbd> Drop or keep</button>' : '') +
+    '<button type="button" data-rev="f"><kbd>f</kbd> Viewed</button><button type="button" data-rev="v"><kbd>v</kbd> Side by side</button><button type="button" data-rev="o"><kbd>o</kbd> VS Code</button><button type="button" data-rev="Escape"><kbd>Esc</kbd> Back</button></div>';
+  $('detail').innerHTML = side;
+  if (rv.editing) { var ta = $('com-input'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+function reviewMove(k) {
+  var rv = s.review, rows = DIFF[rv.file].rows || [];
+  if (k === 'j' || k === 'ArrowDown') rv.line = Math.min(Math.max(rows.length - 1, 0), rv.line + 1);
+  if (k === 'k' || k === 'ArrowUp') rv.line = Math.max(0, rv.line - 1);
+  if (k === 'n') { rv.file = Math.min(DIFF.length - 1, rv.file + 1); rv.line = 0; }
+  if (k === 'p') { rv.file = Math.max(0, rv.file - 1); rv.line = 0; }
+  // Reaching the last line, or visiting a collapsed file, counts as viewed. A new push would clear it for changed files.
+  if (k && (DIFF[rv.file].generated || (rows = DIFF[rv.file].rows, rows.length && rv.line === rows.length - 1))) rv.viewed[rv.file] = true;
+  var c = comAt(rv.file, rv.line);
+  rv.cur = c && (rv.draft || c.by === 'You') ? c.id : '';
+  render();
+  var el = document.querySelector('.rv-diff [aria-current="true"]');
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+}
+function reviewKey(k) {
+  var rv = s.review;
+  if (k === 'Escape') { go(backPage); return; }
+  if (k === 'o') { toast('In the app, this opens ' + DIFF[rv.file].path + ' in VS Code, in the review worktree.'); return; }
+  if (k === 'v') { rv.view = rv.view === 'split' ? 'unified' : 'split'; render(); return; }
+  if (k === 'f') {
+    if (rv.viewed[rv.file]) delete rv.viewed[rv.file]; else rv.viewed[rv.file] = true;
+    render();
+    return;
+  }
+  if (k === 'm' || k === 'M') {
+    var list = comsSorted().filter(function (c) { return rv.draft || c.by === 'You'; });
+    if (!list.length) { toast('No comments yet.'); return; }
+    var n = list.findIndex(function (c) { return c.id === rv.cur; });
+    var c = list[(n + (k === 'm' ? 1 : list.length - 1 + (n < 0 ? 1 : 0))) % list.length];
+    rv.cur = c.id;
+    if (c.file >= 0) { rv.file = c.file; rv.line = c.at; }
+    render();
+    return;
+  }
+  if (rv.uploaded) { toast('This review is already uploaded.'); return; }
+  if (k === 'a') {
+    if (rv.draft) { toast('The draft is already here.'); return; }
+    sendAgent(byId('auth'));
+    return;
+  }
+  if (k === 'c') {
+    if (DIFF[rv.file].generated) { toast('This file is collapsed: choose another one to comment on.'); return; }
+    remember();
+    var id = 'mine' + Date.now();
+    rv.comments.push({ id: id, file: rv.file, at: rv.line, by: 'You', text: 'suggestion (non-blocking): ' });
+    rv.cur = id; rv.editing = id; mode = 'comment'; render();
+    return;
+  }
+  var cur = comById(rv.cur);
+  if (k === 'e' || k === 'x') {
+    if (!cur) { toast('Move to a comment first.'); return; }
+    remember();
+    if (k === 'x') { cur.off = !cur.off; toast(cur.off ? 'Dropped from the upload.' : 'Kept.'); render(); return; }
+    rv.editing = cur.id; mode = 'comment'; render();
+    return;
+  }
+  if (k === 'CmdEnter') {
+    var up = rv.comments.filter(function (c) { return !c.off && (rv.draft || c.by === 'You'); });
+    var seen = Object.keys(rv.viewed).length;
+    $('upload-text').textContent = (up.length ? 'Upload ' + up.length + (up.length === 1 ? ' comment' : ' comments') + ' to acme/shop!412 as your review?' : 'Approve acme/shop!412, with no comments?') + ' You have viewed ' + seen + ' of ' + DIFF.length + ' files.';
+    $('uploadbar').hidden = false;
+    mode = 'upload';
+  }
+}
+// Leaving a page mid-edit keeps the text. An empty comment never stays.
+function keepEditing() {
+  var ed = s.review.editing, box = $('com-input');
+  if (!ed) return;
+  var c = comById(ed), text = box ? box.value.trim() : c.text;
+  s.review.editing = '';
+  if (!text || /^[a-z]+( \([\w, -]+\))?:$/.test(text)) s.review.comments = s.review.comments.filter(function (x) { return x.id !== ed; });
+  else { c.text = text; toast('Your comment was kept in the draft.'); }
+}
+function saveComment() {
+  var c = comById(s.review.editing), text = $('com-input').value.trim();
+  s.review.editing = ''; mode = '';
+  if (!text) { undo(); toast('Empty comment removed.'); return; }
+  if (c.text !== text) { c.text = text; if (c.by !== 'You') c.by = 'Edited by you'; }
+  toast(LABELS.test(text) ? 'Saved in the draft.' : 'Saved. It has no Conventional Comments label.');
+  render();
+}
+function uploadKey(k) {
+  var rv = s.review;
+  if (k === 'Escape') { $('uploadbar').hidden = true; mode = ''; toast(''); return; }
+  var up = rv.comments.filter(function (c) { return !c.off && (rv.draft || c.by === 'You'); });
+  if (k === 'CmdEnter' && !up.length) k = 'CmdShiftEnter';
+  if (k === 'CmdShiftEnter' && up.some(function (c) { return /^[a-z]+ \([^)]*blocking/.test(c.text) && !/non-blocking/.test(c.text); })) {
+    toast('A blocking comment is still in the draft. Drop it, or upload without approving.');
+    return;
+  }
+  var approve = k === 'CmdShiftEnter', before = rv.uploaded, st = s.status.auth;
+  $('uploadbar').hidden = true; mode = '';
+  held({ label: (up.length ? 'Upload ' + up.length + (up.length === 1 ? ' comment' : ' comments') : 'Approve') + (up.length && approve ? ' and approve' : '') + ' on acme/shop!412', ctx: 'a', reverse: 'To reverse it, delete the comments or remove the approval in GitLab.',
+    apply: function () { rv = s.review; rv.uploaded = approve ? 'approved' : 'comments'; s.status.auth = 'done'; },
+    revert: function () { s.review.uploaded = before; if (st) s.status.auth = st; else delete s.status.auth; } });
+}
+function packKey(k) {
+  var pk = s.pack;
+  if (k === 't') { $('pack-note').focus(); return; }
+  var items = packFor(pk.target);
+  if (k === 'j' || k === 'ArrowDown') pk.cur = Math.min(items.length - 1, pk.cur + 1);
+  else if (k === 'k' || k === 'ArrowUp') pk.cur = Math.max(0, pk.cur - 1);
+  else if (k === 'x') {
+    var item = items[pk.cur];
+    if (item.flagged) toast('This page stays out until the possible secret on line 18 is fixed.');
+    else if (pk.off[item.id]) delete pk.off[item.id];
+    else pk.off[item.id] = true;
+  }
+  else if (k === 'b') pk.where = 'background';
+  else if (k === 'v') pk.where = 'terminal';
+  else if (k === 'e') pk.who = (pk.who + 1) % SPECIALISTS.length;
+  else if (k === 'f') pk.skip = !pk.skip;
+  else if (k === 'Escape') { mode = ''; toast(''); }
+  else if (k === 'Enter') { finishSend(); return; }
+  render();
+}
+function approvePush(row) {
+  if (!row || !row.approve || s.approved) { toast('Nothing to approve on this row.'); return; }
+  if (!s.diffSeen) { toast('Open the diff first, with o.'); return; }
+  held({ label: 'Push 2 commits to infra/gitops', ctx: 'a', reverse: 'To reverse it, revert the commits on the branch.', apply: function () { s.approved = true; }, revert: function () { s.approved = false; } });
+}
+function actTask(k) {
+  var row = taskRows().filter(function (x) { return x.id === s.taskCursor; })[0];
+  if (!row) return;
+  if (k === 'a') { sendAgent(byId('rotate')); return; }
+  if (k === 'w') { openRepo(); return; }
+  if (k === 'f') {
+    remember();
+    s.files.push('notes-' + (s.files.length + 1) + '.md');
+    s.taskCursor = 'addfile' + (s.files.length - 1);
+    toast('In the app, this opens a file picker, and files can be dropped on the page too. Press u to undo.');
+  }
+  if (k === 'o') { if (row.approve) s.diffSeen = true; toast('In the app, this opens ' + row.opens + '.'); }
+  if (k === 'CmdEnter') { approvePush(row); return; }
+  if (k === 's' || k === 'd') { go('today'); s.selected = 'rotate'; actToday(k); return; }
+  if (k === 'Enter' && (row.id === 'run1' || row.id === 'prop1')) { openRun('run1', 'task'); return; }
+  if (k === 'Enter') toast(row.link ? 'In the app, this follows the link to ' + row.title + '. Esc comes back.' : 'This row has no link to follow.');
+  if (k === 'Escape') { go('today'); return; }
+  render();
+}
+function targets() {
+  var p = pickedIds();
+  if (p.length) return p;
+  return entryById(s.cursor) && !s.inbox[s.cursor] ? [s.cursor] : [];
+}
+function plural(n) { return n + (n === 1 ? ' item' : ' items'); }
+function triage(k) {
+  var cur = entryById(s.cursor);
+  if ((k === 'o' || k === 'a' || k === 'm') && pickedIds().length) { toast('This acts on one item: clear the selection first.'); return; }
+  if (k === 'o' && cur) { toast('In the app, this opens ' + cur.title + ' in ' + cur.opens + '.'); return; }
+  if (k === 'a' && cur) { sendAgent(cur); return; }
+  if (k === 'm' && cur) {
+    if (cur.opens !== 'Datadog') { toast('Muting is for Datadog alerts.'); return; }
+    dlg = { type: 'mute', item: Object.assign({}, cur, { ctx: ctxOf(cur) }), cur: 0 }; mode = 'dlg'; drawDlg();
+    return;
+  }
+  var t = targets();
+  if (!t.length) { toast('Nothing to act on.'); return; }
+  if (k === 'z') { openBar('later'); return; }
+  if (k === 'c') { openBar('ctx'); return; }
+  if (k === 'r' && t.some(function (id) { return entryById(id).group !== 'own'; })) { toast('Only your captures can go to Reading. Alerts and tickets need treating.'); return; }
+  if (k === 'y' && t.some(function (id) { return entryById(id).group === 'pool'; })) {
+    var one = entryById(t[0]);
+    held({ label: 'Assign ' + one.kind + ' to you', ctx: one.ctx, reverse: 'To reverse it, unassign it in ' + one.opens + '.', apply: function () { s.inbox[one.id] = 'accepted'; delete s.picked[one.id]; }, revert: function () { delete s.inbox[one.id]; } });
+    return;
+  }
+  var n = indexNow();
+  remember();
+  t.forEach(function (id) {
+    s.inbox[id] = k === 'y' ? 'accepted' : k === 'r' ? 'reading' : 'dismissed';
+    delete s.picked[id];
+  });
+  settleCursor(n);
+  toast({ y: 'Accepted ' + plural(t.length) + ' to Planned in Today.', r: 'Sent ' + plural(t.length) + ' to Reading.', d: 'Dismissed ' + plural(t.length) + '.' }[k] + ' Press u to undo.');
+  render();
+}
+function later(when) {
+  closeBars();
+  if (when === 'cancel') { toast(''); render(); return; }
+  var label = when === 'tomorrow' ? 'tomorrow' : 'on ' + when;
+  remember();
+  if (page === 'today') {
+    var i = byId(s.selected);
+    var n = indexNow();
+    s.status[i.id] = 'later:' + when;
+    settleCursor(n);
+    toast(i.title + ' returns to its section ' + label + ', marked as back from later. Press u to undo.');
+  } else {
+    var t = targets(), m = indexNow();
+    t.forEach(function (id) { s.inbox[id] = 'later:' + when; delete s.picked[id]; });
+    settleCursor(m);
+    toast('Accepted ' + plural(t.length) + ', to appear ' + label + '. Press u to undo.');
+  }
+  render();
+}
+function setCtx(c) {
+  closeBars();
+  if (c === 'cancel') { toast(''); render(); return; }
+  var t = targets();
+  if (t.some(function (id) { return entryById(id).group !== 'own'; })) {
+    toast('Not moved: items from a connector stay in that connector\'s context. Only your captures can move.');
+    render();
+    return;
+  }
+  remember();
+  t.forEach(function (id) { s.ctx[id] = c; });
+  toast('Moved ' + plural(t.length) + ' to ' + CTX[c].slice(2) + '. Press u to undo.');
+  render();
+}
+function openBar(which) { mode = which; $(which === 'later' ? 'laterbar' : 'ctxbar').hidden = false; }
+function closeBars() { mode = ''; ['laterbar', 'ctxbar', 'logbar', 'repobar', 'uploadbar', 'replybar', 'stopbar'].forEach(function (b) { $(b).hidden = true; }); }
+function repoMatches() {
+  var q = $('repo-input').value.trim().toLowerCase();
+  return REPOS.filter(function (r) { return s.repos.indexOf(r) < 0 && r.indexOf(q) >= 0; });
+}
+function showMatches() { var m = repoMatches(); $('repo-match').textContent = m.length ? m.join(' · ') : 'No match'; }
+function openRepo() { mode = 'repo'; $('repobar').hidden = false; $('repo-input').value = ''; showMatches(); $('repo-input').focus(); }
+function openLog() { mode = 'log'; $('logbar').hidden = false; $('log-input').value = ''; $('log-input').focus(); }
+function undo() {
+  if (holds.length) { cancelHold(holds.length - 1); return; }
+  var h = undoStack.pop();
+  if (!h) { toast('Nothing to undo. What was sent stays sent.'); return; }
+  // Undo is local: what was sent, failed or reached an agent stays as it is.
+  var live = {};
+  ['outbox', 'sent', 'unsent', 'sentReply', 'muted', 'approved', 'shared', 'filter', 'collapsed', 'answer', 'stopped', 'resumed', 'runs'].forEach(function (f) { live[f] = s[f]; });
+  s = JSON.parse(h.json);
+  Object.keys(live).forEach(function (f) { s[f] = live[f]; });
+  toast('Undone' + (h.label ? ': ' + h.label : '') + '.');
+  render();
+}
+function togglePick(id) {
+  if (s.picked[id]) delete s.picked[id]; else s.picked[id] = true;
+}
+function go(p) { keepEditing(); closeBars(); if (p !== page) s.filter = ''; page = p; if ($('toast').textContent.indexOf('kept in the draft') < 0) toast(''); render(); }
+
+function cycleFilter() {
+  var order = ['', 'a', 'b', 'p'];
+  s.filter = order[(order.indexOf(s.filter) + 1) % order.length];
+  s.picked = {}; s.libPicked = {};
+  toast(s.filter ? 'Showing ' + CTX[s.filter].slice(2) + ' only on this page. Urgent items always show.' : 'Showing every context.');
+  render();
+}
+var dlgSwallow = false;
+var GO = { t: 'today', d: 'day', i: 'inbox', v: 'reviews', a: 'agents', m: 'meetings', r: 'library', k: 'pages', l: 'later', o: 'outbox', s: 'settings' };
+document.addEventListener('keydown', function (e) {
+  $('hint').textContent = '';
+  // Caps Lock must not change meanings, except keys that are capitals on purpose.
+  var raw = e.key;
+  var key = (e.getModifierState && e.getModifierState('CapsLock') && raw.length === 1 && !e.shiftKey) ? raw.toLowerCase() : raw;
+  var cmd = e.metaKey || e.ctrlKey;
+  if (cmd && e.shiftKey && key === 'Enter') key = 'CmdShiftEnter';
+  else if (cmd && key === 'Enter') key = 'CmdEnter';
+  if (e.repeat && (key === 'CmdEnter' || key === 'CmdShiftEnter' || key === 'Enter')) { e.preventDefault(); return; }
+  if (cmd && key === 'k' && mode !== 'dlg') { e.preventDefault(); openPalette(); return; }
+  if (cmd && key === ',') { e.preventDefault(); go('settings'); return; }
+  if (mode === 'go') {
+    mode = '';
+    if (key === 'h') { dlg = { type: 'help' }; mode = 'dlg'; drawDlg(); return; }
+    if (GO[key]) { e.preventDefault(); keys++; go(GO[key]); }
+    return;
+  }
+  if (mode === 'dlg') {
+    var typingBox = document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+    if (dlgSwallow) { dlgSwallow = false; e.preventDefault(); return; }
+    if (key === 'g' && !typingBox) { dlgSwallow = true; toast('Close this first.'); return; }
+    dlgKey(key, e);
+    return;
+  }
+  if (key === 'g' && (mode === 'later' || mode === 'ctx' || mode === 'upload' || mode === 'stop')) { closeBars(); render(); }
+  if (cmd && key !== 'CmdEnter' && key !== 'CmdShiftEnter') return;
+  if (e.altKey) return;
+  if (mode === 'log') {
+    if (e.key === 'Tab') { e.preventDefault(); var lo = ['a', 'b', 'p']; s.logCtx = lo[(lo.indexOf(s.logCtx) + 1) % 3]; $('log-label').textContent = 'Log to today\'s journal, ' + CTX[s.logCtx].slice(2); return; }
+    if (e.key === 'Escape') { keys++; closeBars(); render(); }
+    if (e.key === 'Enter') {
+      var t = $('log-input').value.trim();
+      keys++; closeBars();
+      toast(t ? 'Added to today\'s journal: ' + t : 'Nothing logged: the line was empty.');
+      render();
+    }
+    return;
+  }
+  if (mode === 'repo') {
+    if (e.key === 'Escape') { keys++; closeBars(); render(); }
+    if (e.key === 'Enter') {
+      var match = repoMatches()[0];
+      keys++; closeBars();
+      if (match) { remember(); s.repos.push(match); s.taskCursor = 'extra' + (s.repos.length - 1); toast('Worktree created for ' + match + '. Press u to undo.'); }
+      else toast('No repo matched.');
+      render();
+    }
+    return;
+  }
+  if (mode === 'reply') {
+    if (e.key === 'Escape') { keys++; closeBars(); render(); }
+    if (e.key === 'Enter') {
+      var ans = $('reply-input').value.trim();
+      keys++; closeBars();
+      if (ans) { s.answer = ans; s.status.runq = 'agent'; s.runCur = runRows()[0].id; toast('Sent to the agent. The run goes on, and moved to With an agent in Today.'); }
+      else toast('Nothing sent: the answer was empty.');
+      render();
+    }
+    return;
+  }
+  if (mode === 'stop') {
+    if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); keys++; stopKey(e.key); }
+    return;
+  }
+  if (mode === 'comment') {
+    if (e.key === 'Escape') { e.preventDefault(); keys++; mode = ''; s.review.editing = ''; undo(); toast('Edit cancelled.'); }
+    if (key === 'CmdEnter') { e.preventDefault(); keys++; saveComment(); }
+    return;
+  }
+  if (mode === 'upload') {
+    if (key === 'CmdEnter' || key === 'CmdShiftEnter' || key === 'Escape') { e.preventDefault(); keys++; uploadKey(key); }
+    return;
+  }
+  if (mode === 'later') {
+    var pick = { t: 'tomorrow', m: 'Monday', Escape: 'cancel' }[e.key];
+    if (pick) { e.preventDefault(); keys++; later(pick); }
+    return;
+  }
+  if (mode === 'ctx') {
+    var c = { a: 'a', b: 'b', p: 'p', Escape: 'cancel' }[e.key];
+    if (c) { e.preventDefault(); keys++; setCtx(c); }
+    return;
+  }
+  if (mode === 'pack') {
+    if (document.activeElement && document.activeElement.id === 'pack-note') {
+      if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); s.pack.note = document.activeElement.value; document.activeElement.blur(); render(); }
+      return;
+    }
+    var packKeys = { t: 1, j: 1, ArrowDown: 1, k: 1, ArrowUp: 1, x: 1, b: 1, v: 1, e: 1, f: 1, Enter: 1, Escape: 1 };
+    if (packKeys[e.key]) { e.preventDefault(); keys++; packKey(e.key); }
+    return;
+  }
+  var common = { j: 1, ArrowDown: 1, k: 1, ArrowUp: 1, n: 1, p: 1, u: 1, l: 1, h: 1, g: 1, q: 1, w: 1 };
+  var perPage = page === 'day' ? { c: 1, y: 1 } : page === 'meetings' ? { a: 1, f: 1, o: 1, Enter: 1 } : page === 'meeting' ? { y: 1, x: 1, o: 1, Escape: 1 } : page === 'settings' ? { Enter: 1 } : page === 'later' ? { y: 1 } : page === 'outbox' ? { CmdEnter: 1, o: 1, d: 1 } : page === 'library' ? { x: 1, X: 1, y: 1, d: 1, a: 1, o: 1, f: 1, Enter: 1, Escape: 1 } : page === 'reviews' ? { a: 1, o: 1, Enter: 1 } : page === 'agents' ? { o: 1, Enter: 1 } : page === 'pages' ? { e: 1, Enter: 1 } : page === 'knowledge' ? { y: 1, x: 1, e: 1, P: 1, Escape: 1 } : page === 'run' ? { r: 1, CmdEnter: 1, s: 1, v: 1, x: 1, o: 1, Escape: 1 } : page === 'review' ? { a: 1, c: 1, e: 1, f: 1, x: 1, CmdEnter: 1, m: 1, M: 1, o: 1, v: 1, Escape: 1 } : page === 'inbox' ? { x: 1, X: 1, y: 1, z: 1, r: 1, d: 1, c: 1, a: 1, o: 1, m: 1, Escape: 1 } : page === 'task' ? { a: 1, o: 1, CmdEnter: 1, s: 1, d: 1, w: 1, f: 1, Enter: 1, Escape: 1 } : page === 'today' ? { s: 1, a: 1, o: 1, d: 1, z: 1, r: 1, m: 1, v: 1, V: 1, y: 1, Enter: 1 } : { x: 1, X: 1, y: 1, z: 1, r: 1, d: 1, c: 1, Escape: 1 };
+  if (!common[key] && !perPage[key]) return;
+  e.preventDefault();
+  keys++;
+  var navOnly = { h: 1, g: 1, q: 1 };
+  if (page !== 'settings' && s.demo !== 'normal') {
+    var readable = s.demo === 'offline' && { j: 1, k: 1, n: 1, p: 1, ArrowDown: 1, ArrowUp: 1, Enter: 1, Escape: 1, o: 1, l: 1, u: 1, w: 1 }[key];
+    if (!navOnly[key] && !readable) { toast(s.demo === 'offline' ? 'Changes are paused until loomd is back. The log still works, and is queued.' : 'Nothing to act on here.'); return; }
+  }
+  var kk0 = key;
+  if (kk0 === 'u') undo();
+  else if (kk0 === 'l') { render(); openLog(); }
+  else if (kk0 === 'h') toggleSide();
+  else if (kk0 === 'g') { mode = 'go'; $('hint').innerHTML = 'Go to: <kbd>t</kbd> Today <kbd>d</kbd> My day <kbd>i</kbd> Inbox <kbd>v</kbd> Reviews <kbd>a</kbd> Agents <kbd>m</kbd> Meetings <kbd>r</kbd> Reading <kbd>k</kbd> Knowledge <kbd>l</kbd> Later <kbd>o</kbd> Outbox <kbd>s</kbd> Settings <kbd>h</kbd> Keys'; }
+  else if (kk0 === 'q') openPalette();
+  else if (kk0 === 'w' && page !== 'task') { if (['today', 'inbox', 'reviews', 'agents', 'library', 'meetings', 'day'].indexOf(page) >= 0) cycleFilter(); else toast('The context filter works on lists.'); }
+  else if (page === 'review' && /^(j|k|n|p|ArrowDown|ArrowUp)$/.test(key)) reviewMove(key);
+  else if (key === 'j' || key === 'ArrowDown') move(1);
+  else if (key === 'k' || key === 'ArrowUp') move(-1);
+  else if (key === 'n') jump(1);
+  else if (key === 'p') jump(-1);
+  else if (page === 'day') actDay(key);
+  else if (page === 'reviews') actReviews(key);
+  else if (page === 'agents') actAgents(key);
+  else if (page === 'pages') actPages(key);
+  else if (page === 'settings') actSettings(key);
+  else if (page === 'later') actLater(key);
+  else if (page === 'outbox') actOutbox(key);
+  else if (page === 'meetings') actMeetings(key);
+  else if (page === 'meeting') actMeeting(key);
+  else if (page === 'library') actLibrary(key);
+  else if (page === 'knowledge') actKnowledge(key);
+  else if (page === 'run') actRun(key);
+  else if (page === 'review') reviewKey(key);
+  else if (page === 'task') actTask(key);
+  else if (page === 'today' && key === 'v') { var curSel = byId(s.selected); if (curSel && sectionOf(curSel) === 'urgent') { toast('Urgent does not fold.'); } else if (curSel && sectionOf(curSel)) { s.collapsed[sectionOf(curSel)] = true; render(); } }
+  else if (page === 'today' && key === 'V') { s.collapsed = {}; render(); }
+  else if (page === 'today') actToday(key);
+  else if (e.key === 'x') {
+    if (entryById(s.cursor) && !s.inbox[s.cursor]) { togglePick(s.cursor); move(1); }
+  } else if (e.key === 'X') {
+    var cur = entryById(s.cursor);
+    if (cur) {
+      var group = openEntries().filter(function (x) { return x.group === cur.group; });
+      var allOn = group.every(function (x) { return s.picked[x.id]; });
+      group.forEach(function (x) { if (allOn) delete s.picked[x.id]; else s.picked[x.id] = true; });
+      render();
+    }
+  } else if (e.key === 'Escape') { s.picked = {}; toast('Selection cleared.'); render(); }
+  else triage(e.key);
+});
+$('list').addEventListener('click', function (e) {
+  var foldEl = e.target.closest('[data-fold]');
+  if (foldEl) { var fid = foldEl.getAttribute('data-fold'); if (s.collapsed[fid]) delete s.collapsed[fid]; else s.collapsed[fid] = true; render(); return; }
+  if (e.target.closest('[data-short]')) { openShort(); return; }
+  if (e.target.closest('[data-later-open]')) { go('later'); return; }
+  var fileBtn = e.target.closest('[data-file]');
+  if (fileBtn) { s.review.file = Number(fileBtn.getAttribute('data-file')); s.review.line = 0; reviewMove('open'); return; }
+  var nr = e.target.closest('[data-rev]');
+  if (nr) { reviewKey(nr.getAttribute('data-rev')); return; }
+  var pickBox = page === 'library' && e.target.closest('.mark');
+  if (pickBox) { var pr = e.target.closest('.row').getAttribute('data-id'); if (s.libPicked[pr]) delete s.libPicked[pr]; else s.libPicked[pr] = true; render(); return; }
+  var lineEl = e.target.closest('[data-line]');
+  if (lineEl) { s.review.line = Number(lineEl.getAttribute('data-line')); reviewMove(''); return; }
+  var r = e.target.closest('.row');
+  if (!r) return;
+  var id = r.getAttribute('data-id');
+  if (page === 'task') { page = 'today'; }
+  setCurrent(id);
+  if (page === 'inbox' && e.target.closest('[data-box]')) togglePick(id);
+  render();
+});
+$('detail').addEventListener('click', function (e) {
+  var gk = e.target.closest('[data-k]');
+  if (gk) { var kk = gk.getAttribute('data-k'); if (page === 'day') actDay(kk); else if (page === 'run') actRun(kk); else if (page === 'meetings') actMeetings(kk); else if (page === 'meeting') actMeeting(kk); else if (page === 'settings') actSettings(kk); else if (page === 'later') actLater(kk); else if (page === 'outbox') actOutbox(kk); else if (page === 'library') actLibrary(kk); else if (page === 'reviews') actReviews(kk); else if (page === 'agents') actAgents(kk); else if (page === 'pages') actPages(kk); else if (page === 'knowledge') actKnowledge(kk); else if (page === 'run') actRun(kk); return; }
+  var cm = e.target.closest('[data-com]');
+  if (cm) { var picked = comById(cm.getAttribute('data-com')); s.review.cur = picked.id; if (picked.file >= 0) { s.review.file = picked.file; s.review.line = picked.at; } render(); return; }
+  var rv = e.target.closest('[data-rev]');
+  if (rv) { reviewKey(rv.getAttribute('data-rev')); return; }
+  var tr = e.target.closest('.row.task');
+  if (tr) { s.taskCursor = tr.getAttribute('data-id'); page = 'task'; render(); return; }
+  var b = e.target.closest('[data-act]');
+  if (b) actToday(b.getAttribute('data-act'));
+  var c = e.target.closest('[data-tri]');
+  if (c) triage(c.getAttribute('data-tri'));
+  var t = e.target.closest('[data-task]');
+  if (t) actTask(t.getAttribute('data-task'));
+  var pk = e.target.closest('[data-pack]');
+  if (pk) packKey(pk.getAttribute('data-pack'));
+  var it = e.target.closest('[data-item]');
+  if (it) { s.pack.cur = Number(it.getAttribute('data-item')); packKey('x'); }
+});
+$('repo-input').addEventListener('input', showMatches);
+$('stopbar').addEventListener('click', function (e) { var b = e.target.closest('[data-stop]'); if (b) stopKey(b.getAttribute('data-stop')); });
+$('nav-lib').addEventListener('click', function () { go('library'); });
+$('nav-set').addEventListener('click', function () { go('settings'); });
+$('nav-meet').addEventListener('click', function () { go('meetings'); });
+$('nav-out').addEventListener('click', function () { go('outbox'); });
+$('nav-search').addEventListener('click', openPalette);
+$('banner-fix').addEventListener('click', function () { s.demo = 'normal'; toast('loomd is back.'); render(); });
+$('list').addEventListener('click', function (e) { if (e.target.id === 'demo-normal') { s.demo = 'normal'; toast('In the app, this walks through the three steps.'); render(); } }, true);
+$('modal').addEventListener('input', function (e) { if (e.target.id === 'dlg-q') { dlg.q = e.target.value; dlg.cur = 0; drawResults(paletteResults(dlg.q)); } });
+$('modal').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-dlg]');
+  if (b) { dlgKey(b.getAttribute('data-dlg'), { preventDefault: function () {}, shiftKey: false }); return; }
+  var o = e.target.closest('[data-opt]');
+  if (!o) return;
+  dlg.cur = Number(o.getAttribute('data-opt'));
+  if (dlg.type === 'palette') { var r = paletteResults(dlg.q)[dlg.cur]; closeDlg(); if (r) r.run(); }
+  else if (dlg.type === 'short') { var sd = SHORT[dlg.cur]; if (s.shortOff[sd]) delete s.shortOff[sd]; else s.shortOff[sd] = true; drawDlg(); }
+  else drawDlg();
+});
+$('modal-back').addEventListener('click', function (e) { if (e.target.id === 'modal-back') { closeDlg(); render(); } });
+$('undo-btn').addEventListener('click', undo);
+$('holds').addEventListener('click', function (e) { var b = e.target.closest('[data-hold]'); if (b) cancelHold(Number(b.getAttribute('data-hold'))); });
+$('urgent-strip').addEventListener('click', function () { var first = urgentOpen()[0]; if (first && entryById(first.id)) { s.cursor = first.id; go('inbox'); return; } go('today'); if (first) { if (statusOf(first).indexOf('later:') === 0) toast('It is still untreated: it comes back ' + statusOf(first).slice(6) + '.'); s.selected = first.id; render(); } });
+$('filter-chip').addEventListener('click', function () { s.filter = ''; toast('Showing every context.'); render(); });
+$('summary').addEventListener('click', function (e) { if (e.target.id === 'summary-fix') { s.setCur = 'con-fs'; go('settings'); } });
+$('nav-day').addEventListener('click', function () { go('day'); });
+// Runs before the handlers below re-render the clicked button.
+document.addEventListener('click', function (e) {
+  if (mode === 'go') mode = '';
+  if (e.target.closest('[data-send]')) return;
+  $('hint').textContent = '';
+  if (keyMode !== 'hints') return;
+  var b = e.target.closest('button');
+  var kb = b && b.querySelector('kbd');
+  if (!kb) return;
+  $('hint').innerHTML = 'Shortcut: <kbd>' + esc(kb.textContent) + '</kbd>';
+}, true);
+// Buttons in input bars do what their key does.
+document.addEventListener('click', function (e) {
+  var b = e.target.closest('[data-send]');
+  if (b) { var ks = b.getAttribute('data-send'); document.dispatchEvent(new KeyboardEvent('keydown', { key: ks === 'CmdEnter' ? 'Enter' : ks, metaKey: ks === 'CmdEnter', bubbles: true, cancelable: true })); }
+});
+$('nav-pages').addEventListener('click', function () { go('pages'); });
+$('nav-reviews').addEventListener('click', function () { go('reviews'); });
+$('nav-agents').addEventListener('click', function () { go('agents'); });
+$('uploadbar').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-up]');
+  if (b) uploadKey(b.getAttribute('data-up'));
+});
+$('laterbar').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-later]');
+  if (b) later(b.getAttribute('data-later'));
+});
+$('ctxbar').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-ctx]');
+  if (b) setCtx(b.getAttribute('data-ctx'));
+});
+$('nav-today').addEventListener('click', function () { go('today'); });
+$('nav-inbox').addEventListener('click', function () { go('inbox'); });
+$('side-toggle').addEventListener('click', toggleSide);
+setSide(loadSide());
+$('reset').addEventListener('click', function () {
+  holds.forEach(function (h) { clearInterval(h.timer); }); holds = []; drawHolds();
+  keys = 0; undoStack = []; s = fresh(); closeBars(); toast('Counts and demo state reset.'); render();
+});
+render();
+})();
+</script>

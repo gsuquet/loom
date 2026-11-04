@@ -1,114 +1,133 @@
 # User workflow
 
-> Gestures, daily loop, TUI views, task inspection and code review.
+> The desktop app: pages, daily loop, keys, and the review, run and knowledge flows.
 
-### Principles
+The behaviour below is shown working in the [prototype](../prototypes/README.md).
 
-- Every TUI action has a CLI equivalent (scriptable, testable). Available actions per task are computed by the core, not the UI.
-- Keyboard first, single-key verbs, vim navigation, `/` to search everywhere, `?` for help.
-- Each context has a color, shown on every task, run and action: posting to the wrong client must be visually obvious.
-- Local actions are undoable (they are events). Pushed actions are not: they always show a diff and ask for confirmation.
-- Loom interrupts me only when it needs me: approval, clarification, failure, conflict.
+## Principles
 
-### Daily loop
+- One window, always open on a secondary screen or reached with AeroSpace. Pages are in a collapsible sidebar.
+- Keyboard first, with every action also available by mouse. Actions available on a task are computed by the core, not the app.
+- Every row of every page shows its context, by colour and shape. On a page about one item, a solid band at the top names the context. A wrong-client action is the costliest mistake in loom.
+- Local actions are undoable. Writes that leave loom follow [Write states](connectors.md#write-states).
+- Loom interrupts me only when it needs me.
+- The layout works tiled and full width, on a 24 to 27 inch secondary screen and on a single 34 inch screen.
 
-| Moment | Gesture | Surface |
+## Daily loop
+
+| Moment | Gesture | Page |
 | --- | --- | --- |
-| Capture | `loom add "…"` from any shell, context inferred from cwd; global hotkey later (Raycast/Alfred calling the CLI) | CLI |
-| Start of day | `loom` opens the Today view | TUI |
-| Triage | On each inbox item: `a` accept (kind, importance, due), `d` delegate, `z` snooze (`waiting until`), `m` merge into an existing task, `s` split, `x` cancel (v0.3: `a`, `z`, `x`; merge and split later) | TUI |
-| Focus | `loom go <id>` / `g`: set active, cd to the repo or worktree. One focus task per context, machine-local; delegated tasks run in the background | CLI + shell integration |
-| Note | `loom log "…"` attaches to the focus task | CLI |
-| Delegate | `d` -> suggested template -> readiness check -> pack preview (editable) -> budget -> run starts | TUI |
-| Watch | Run page: live stream, attach/detach, send a message, take over, cancel | TUI |
-| Approve | Approval queue: proposed action + diff + gate results + cost; approve, reject with a reason (feeds metrics), edit, approve all of a class | TUI |
-| Create a ticket | `n` from the template in `$EDITOR`, or `N` with the ticket-writer agent; drafts view; `P` publishes after lint and preview | TUI + editor |
-| Edit a ticket | `e` opens the issue mirror in `$EDITOR`; `p` shows the diff against remote and pushes | TUI + editor |
-| Close | `c` done, optional "learned" prompt, archived after N days | TUI / CLI |
-| End of day | Journal summary and timesheet suggestion per context | TUI / CLI |
+| Capture | Global hotkey logs one line from any app; `loom add` from a shell; phone queue for links | Anywhere |
+| Start of day | Loom suggests a short list and I confirm it. This is configurable | Today |
+| Triage | Accept, send to Reading, dismiss, mute, delegate, with multiple selection | Inbox |
+| Work | Open the task beside the list, add a worktree, start an agent | Today, task |
+| Review | Launch a reviewer, edit its draft, upload | Reviews, review |
+| Approve | Read the proposal, open its diff, approve or reject | Task, Agents |
+| Learn | Distil sources into pages, close conceptions | Reading, Knowledge |
+| End of day | Timeline for standups, timesheet suggestion per context | My day |
 
-### TUI views
+## Pages
 
-Three kinds of screens ([ADR-0014](../adr/0014-tui-architecture.md)):
-
-- **Queues**: lists of things to act on, one component, reached from the tab bar (number keys). A preview pane shows the selected item; under about 120 columns, or with `|`, it is hidden.
-- **Object pages**: full screen with their own tabs and keys, opened with `enter`.
-- **Modals**: pickers, the `:` command palette (every view, action and context, fuzzy), confirmation with a diff before any push.
-
-```
- 1 Today 12 │ 2 Inbox 4 │ 3 Waiting 3 │ 4 Runs 2 │ 5 Approvals 1     ● personal ● company-a ● company-b
-┌ Today · all contexts ─────────────────┬ k3q7 Login timeout on mobile checkout ──────────┐
-│▸● p1 company-a Bug   Login timeout m… │ bug · active · p1 · due 15 oct · company-a       │
-│ ● p0 company-a Inv   Checkout 5xx sp… │ repo company-a/checkout · parent h8w2 Hardening  │
-│ ◐ p1 company-b Rev   !412 auth refac… │──────────────────────────────────────────────────│
-│ ○ p2 personal  Chore Renew certs      │ ## Symptoms                                      │
-│ ○ p2 company-b Admin Timesheet Oct    │ Mobile users time out after 30 s on payment…     │
-└ enter open  g go  c done  z snooze  @ context  + new  : palette  / search  ? help ───────┘
-```
-
-| Queue | Version | Preview |
+| Page | Key | Holds |
 | --- | --- | --- |
-| Today, Inbox, Waiting | v0.3 | task overview |
-| Review (MRs to review) | v0.4 | changed files, threads, agent findings |
-| Outbox (drafts, issue edits, unpushed reviews; `↑` marks unpushed items in every queue) | v0.5 | diff against the remote |
-| Runs | v0.7 | stage strip, cost, stream tail |
-| Approvals | v0.7 | proposed action, diff, gate results, cost |
-| Pipelines | v0.10 | stage strip per task (`plan ✓ implement ▸ review · fix · preflight`) |
+| Today | `g t` | The sections below, with the selected task's page beside the list |
+| My day | `g d` | Timeline, Sent records, timesheet suggestion |
+| Inbox | `g i` | Everything assigned, with multiple selection |
+| Reviews | `g v` | MRs waiting on me, from all connectors |
+| Agents | `g a` | Runs, pipelines and proposals |
+| Meetings | `g m` | Imports, and what each one yielded |
+| Reading | `g r` | The source queue, with multiple selection |
+| Knowledge | `g k` | Pages, status, relations, proposals, promotion |
+| Later | `g l` | Tasks moved to a later date, and when each returns |
+| Outbox | `g o` | Held and Not sent writes |
+| Settings | `g s` | Appearance, shortcut mode, connectors, rules |
+| Help | `g h` | Keys of the current page |
 
-Object pages: Task (below), Review (below; `enter` on a Review task opens it), Run, Journal.
+## Keys
 
-Keys are layered: global (`1`–`9`, `:`, `/`, `?`, `q`), then the current view, then an open modal; `?` lists the current layer. In queues: `@` picks the context filter (all or one), `+` creates a task in the selected context, `g` sets the focus and quits so that the shell function from `loom shell-init` changes directory to the task's repo. In `/` search, `enter` on a repo has no object page to open: it marks the repo used and quits the same way, into the repo's checkout; without the shell integration the TUI stays open and shows the path, and a checkout that is gone is an error, never its parent repo.
+Single letters are the default, because digits and `? / ] [` need Shift or Option on a macOS AZERTY keyboard.
 
-The TUI follows loomd's change events (SSE) instead of polling. Colors are the terminal's 16 ANSI colors, so the TUI follows the terminal theme; context colors are chosen among them.
+- **Global:** `g` then a letter for pages, `q` search, `h` sidebar, `w` page filter, `u` undo or cancel a hold, `l` log a line (`Tab` changes its context), `Cmd+K` palette, `Cmd+,` Settings. `Esc` closes the innermost open thing, then returns to the page I came from, which makes it the one back key. In lists, `j k` move and `n p` jump between sections.
+- **Today:** `s` start, `z` later, `r` reply, `m` mute, `a` send an agent, `o` open at the source, `d` done, `v` fold a section, `V` unfold all, `y` confirm the short list, `Enter` go into it.
+- **Inbox:** `x` select, `X` select a section, `y` accept (on a team pool ticket, assign it to me, with the hold), `z` accept with a date, `r` send a capture to Reading, `d` dismiss, `c` change a capture's context, `a` send an agent, `o` open, `m` mute, `Esc` clear the selection.
+- **Task:** `a` send an agent, `o` open, `s` start, `d` done, `w` add a worktree (this replaces the filter here), `f` add a file, `Cmd+Enter` approve the selected proposal, `Enter` follow a link or open a run, `Esc` back to the list.
+- **Reviews:** `a` send a reviewer, `o` open at the source, `Enter` open the review.
+- **Review:** `j k` lines, `n p` files, `m M` next and previous comment, `c` comment, `e` edit, `x` keep or drop, `a` send a reviewer, `f` viewed or not, `v` unified or side by side, `o` open in the editor, `Cmd+Enter` open the upload bar or, with no comments, approve, `Esc` back. In the upload bar, `Cmd+Enter` uploads and `Cmd+Shift+Enter` approves with the upload.
+- **Agents:** `o` open at the source, `Enter` open the run.
+- **Run:** `r` answer the question, `s` resume an interrupted run, `v` take over in my terminal (press twice), `x` stop (`Enter` confirms), `o` open, `Cmd+Enter` approve, `Esc` back.
+- **Meetings:** `a` send the distiller, `f` add notes or a transcript, `o` open at the source, `Enter` open.
+- **Meeting:** `y` accept, `x` reject, `o` open, `Esc` back.
+- **Reading:** `x` select, `X` select a section, `y` next stage, `d` dismiss, `a` send an agent, `f` add a link or feed, `o` open, `Enter` expand a feed, `Esc` clear the selection.
+- **Knowledge:** `Enter` open a page, `e` edit, `y` accept an update, `x` reject it, `P` promote, `Esc` back.
+- **Outbox:** `Cmd+Enter` retry, `o` open, `d` discard.
+- **Later:** `y` bring back, `t` today, `m` next week.
+- **My day:** `c` copy the standup, `y` copy the timesheet.
+- **Settings:** `Enter` change the setting.
+- **Pack panel:** `t` say what I want done, `j k` move, `x` include or leave out (a flagged item stays out), `b` run in the background, `v` run in my terminal, `e` next specialist, `f` skip the panel next time, `Enter` send, `Esc` cancel.
+- **Dialogs:** short list `j k x Enter`; mute `j k Cmd+Enter`; promote `r k Cmd+Enter`.
 
-### Run page (v0.7)
+**Shortcut display** is a setting with three modes: displayed (the default), hidden, and hidden with a message after a click when a shortcut exists.
 
-```
-┌ Run reviewer@3 · !412 auth refactor · company-b · 2m14 · $0.41 ┐
-│ plan ✓  review ▸  report ·                                     │
-│ ▸ read src/auth/jwt.rs (88 lines)                              │
-│ ▸ tool logs_search "token expired" -> 12 hits                  │
-│ │ The expiry check uses `<`, so a token expiring this second…  │
-│ ⚑ finding issue (blocking) src/auth/jwt.rs:41                  │
-└ m message  T take over  x cancel  esc detach ──────────────────┘
-```
+In a prompt, `g` closes the prompt. It never triggers one of the prompt's actions.
 
-Attach is structured: the page renders the run's stream; `m` sends a message mid-run when the runtime supports it; `T` (take over) stops the run and opens a shell in its worktree; `esc` detaches and the run continues. No pseudo-terminal.
+## Today
 
-Nothing requires leaving the TUI to read: every task, issue, MR, run and file is inspectable in place, archived ones included (read-only). `$EDITOR` stays available, never required.
+Sections, in this order: **Urgent, In progress, Due, Waiting on you, Follow-ups, Planned, With an agent.**
 
-### Task detail
+- A task leaves its section when started or moved to later, and returns to it saying it came back.
+- Due holds overdue and due today only.
+- **Follow-ups:** an automatic flag after N days without movement, plus an optional due date.
+- **Urgent** ignores the filter and cannot fold. Anything urgent and untreated shows on a strip wherever it sits, including the Inbox and items moved to later, and a p1 notifies.
+- An agent's proposal shows first on its task and on Today.
+- **Filter:** `w` shows one context on the current page and clears on leaving it. Counts and search ignore it.
+- There is no context lock and no focus task.
 
-Tabs:
+## Inbox
 
-| Tab | Content |
-| --- | --- |
-| Overview | Fields (kind, status, importance, due, context, parent) + `task.md` body rendered as Markdown |
-| Issues | Each issue mirror rendered: fields, description, comment thread, local changes not yet pushed |
-| Relations | Linked tasks, issues, MRs, repos; navigable (`enter` follows a link, `backspace` goes back) |
-| Events | Timeline filterable by type and actor (me, agent, daemon, rule) |
-| Runs | Runs of this task; opens the run view (live, or replayed from the stored stream) |
-| Files | Artifacts with preview: Markdown, text, diffs; images through the terminal graphics protocol when supported (Ghostty, Kitty) |
+Everything assigned arrives here, with multiple selection, except what [Ingestion](connectors.md#ingestion) sends to Urgent. Flapping alerts are grouped by monitor. Dismissing clears what is there; a monitor that fires again comes back as a new row. The team pool of unassigned tickets is browsed from here, and assigning one to myself is an Immediate write.
 
-Editing in place: fields through pickers (status, kind, importance, due, context), text (body, comments, issue description) in an embedded editor. `$EDITOR` is an alternative for long texts. v0.3 ships the pickers and `$EDITOR`; the embedded editor comes later.
+**Dates** are typed in one field: `fri`, `+3d`, `15 dec` or an ISO date. The field shows the resolved date before I confirm.
 
-Projects are parent tasks: Relations shows the tree, and Today can group its list by parent.
+**Live updates** follow `loomd`'s change events. Rows never move under the selection: new and moved rows wait behind a count at the top of their section, and apply when I leave the page or choose the count. The selection follows its item. Urgent rows are the exception and appear at once.
 
-### Code review
+## Task page
 
-Data, git and forge side: [Code review](reviews.md). Components, widths, colors and sketches at 80 and 160 columns: [UI style](ui-style.md#49-review-page).
+It opens beside the list. It shows the fields, the Markdown notes, the proposal first when there is one, relations, events, runs and files. Files are secret-scanned when added.
 
-- **Layout**: file tree (change counts, viewed mark, findings and threads count), diff (unified, or side by side when the terminal is wide enough), threads and findings inline under their line.
-- **Data, all local**: diff per head SHA, base and head file contents from the fetched refs (expand context around a hunk), forge threads pulled into the MR mirror, agent findings from reviewer runs.
-- **Gestures**: `]`/`[` hunks, `}`/`{` files, `v` mark file viewed, `c` comment on a line or `V` selection, with a Conventional Comments label and decoration picker, `s` suggestion block (GitHub/GitLab suggestion syntax), `r` reply, `R` resolve, `o` open the file at the line in `$EDITOR` (optional), `w` check the MR out in a worktree to run it, `e` edit a draft, `x` delete a draft, `m` move a flagged draft, `Tab` switch between the file tree and the diff (`|` under 120 columns), `S` unified or side by side, `←`/`→` old or new side in side by side.
-- **Agent findings**: typed (path, line range, side, label, decorations, body, optional suggestion, confidence), shown inline. `y` turns a finding into my draft comment, `n` dismisses it, `e` edits it. Accept and dismiss rates are the reviewer template's precision metric.
-- **Drafts until publish**: comments stay local; `P` publishes them as a single review with a verdict (approve, request changes, comment), through the forge's batch review APIs. Publishing is team-visible: autonomy policy applies.
-- **Re-review after a push**: "since last review" shows only the files whose diff changed since the last reviewed version (not `git diff <old head> <new head>`, which is wrong after a rebase; see [Code review](reviews.md#git-refs-and-diffs)). Viewed marks reset only on those files. Draft comments are re-anchored, or flagged when their line disappeared.
-- **Large MRs**: lazy rendering; generated and vendored files collapsed (patterns per repo in the repo card).
-- Candidate crates (to validate): `ratatui`, `syntect` (highlighting), `tui-markdown`, `tui-textarea`, `ratatui-image`.
+Projects and conceptions are parent tasks. A parent shows its **plan map**: a list of its subtasks with their status, their MRs and their blocks relations, in order. A list comes first; a drawn map only if the list proves insufficient.
 
-### Notifications
+Closing a conception asks where each lasting decision goes, see [Closing a conception](knowledge.md#closing-a-conception).
 
-- Desktop notifications for: approval needed, clarification needed, run failed, sync conflict, p0 ingested.
-- Shell prompt segment: current context and focus task.
-- Remote push for night shifts later (e.g. ntfy or a Slack DM), so a blocked run is not discovered in the morning.
+## Review
+
+Data, git and forge side: [Code review](reviews.md).
+
+- **Flow:** launch a reviewer. It creates a local draft review with Conventional Comments. I see it, edit it and approve the upload.
+- The diff is unified by default, with a side-by-side view. Draft comments sit in a side column. Files can be marked as viewed.
+- Approving is refused while a blocking comment remains. A diff must be opened before its proposal can be approved.
+- **Waiting on me:** review requested, assigned, mentions, and my own MRs with new comments, failed pipelines or approval to merge. There is no pool of all team MRs.
+- An MR is a [queue entry](reviews.md#waiting-on-me) until I start on it. Opening the review or any reviewer launch creates the Review task, and tasks from a pre-review rule stay out of Today until opened.
+- An opt-in rule can pre-review MRs from chosen repos.
+- An agent can address comments on my own MRs. Its changes come back as a proposal before any push.
+- **Pipeline retry** is an Immediate write: a letter, then the hold.
+- **Multi-repo MRs** show as one group row on Reviews, under their task, in order when the task defines one. A merge out of that order shows a warning in the group. Merge itself stays in the forge.
+
+## Agents and runs
+
+The Agents page lists runs across contexts, then proposals. A run page shows the stage strip, the live stream, cost and gate results. The states are running, waiting on me, failed and interrupted, see [Agent orchestration](agents.md#rules).
+
+The panel showing what an agent receives opens the first time for each specialist, and can be skipped afterwards.
+
+## Reading and Knowledge
+
+See [Knowledge](knowledge.md). An RSS feed is one row on Reading, and `Enter` expands it in place. A source's facts (origin, date, stage, quote check, pages that cite it) show in the side panel when it is selected.
+
+## Notifications
+
+Approval needed, clarification needed, run failed, sync conflict, p0 ingested, expired token. They are configurable. New MRs and tickets only update a count.
+
+## Memory of the day
+
+- A timeline for standups and timesheets.
+- Recorded automatically: status changes, MRs, reviews, agent runs, hotkey lines, Claude Code sessions, commits.
+- Timesheets: a per-context suggestion to copy into the timesheet tool. No connector, no timers, and time is estimated from activity.

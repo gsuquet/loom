@@ -7,43 +7,101 @@
 | Entity | Contents |
 | --- | --- |
 | **AgentTemplate** | `id@version`, role, applicable kinds, prompt, allowed tools (built-in + loom MCP), input schema, output schema, gates, budget (USD, turns, time), **required runtime capabilities** |
-| **Pipeline** | Ordered stages per kind (e.g. Story: plan -> implement -> review -> fix -> preflight -> draft MR). Stage = template + gates; typed output of a stage feeds the next. Stages are runs on the same task, not child tasks |
+| **Specialist** | The template of a role, as plain files in the store, editable in any editor: reviewer, implementer, investigator, researcher, knowledge distiller, meeting distiller, ticket creation, grilling, refining, pruning. Each has its own skills, model and provider, and a default [scope](#repo-and-task-scope). All are new, not reused from existing Claude Code skills |
+| **Profile** | What applies when a run touches a given language or repo: skills, gate commands, model. See [Profiles](#profiles) |
+| **Pipeline** | Stages defined in a text file (e.g. implement -> review -> fix, capped). Stage = template + gates + [scope](#repo-and-task-scope); typed output of a stage feeds the next. Stages are runs on the same task, not child tasks. No visual editor |
 | **DelegationRequest** | task, template@version, `requested_by: operator \| rule:<id>` |
-| **Run** | request, stage, runtime + model, runner, context pack, worktree, lease (`machine_id` + expiry), status, stream, gate results, outputs, cost |
+| **Run** | request, stage, repo (for a repo-scope run), runtime + model, runner, context pack, worktrees, lease (`machine_id` + expiry), status, frozen skills (source and commit), the profiles that applied, stream, gate results, outputs, cost |
 | **ContextPack** | Exactly what the agent receives, computed from the template input schema, persisted in the run |
 
 Schemas are generated from Rust types (`schemars`): one source for CLI `--json`, MCP tools and agent contracts.
 
 ### Rules
 
-- **Delegation is triggered by me** until the factory (v0.10). Auto-delegation is a rules engine emitting the same `DelegationRequest` with `requested_by: rule:<id>`. Nothing else changes.
+- **Delegation is triggered by me.** Automatic starts are opt-in per rule, emitting the same `DelegationRequest` with `requested_by: rule:<id>`. A rule starts an agent; its result stays a proposal.
+- **Two ways to run:** in the background, asking questions through loom, or as a prepared session in my terminal, which writes its result to a file that loom picks up on close. I mark that one done. Both run in a clean environment. There is no embedded terminal.
+- **Worktrees:** loom creates them per task, one per repo, and cleans up.
+- **Accounts are per context.** A wrong account for a context is blocked, not only warned about.
+- **Budgets:** warn, or warn and stop. Usage billing and seats are both supported, and spend is visible.
+- **Loops have a hard cap.** A loop that reaches it stops and asks me.
+- **Choosing context:** loom picks a default from the task, its parents, the context and related knowledge. The specialist has a fixed set. I can add, edit and remove.
+- **Reviewer isolation:** a reviewer receives only the diff, the spec, the skills from its profiles and the conventions of the repo, which overrides the pack layers below. It never receives task history or the implementer's reasoning. Loom enforces this when it builds the pack.
+- **Evidence:** an implementer attaches a throwaway journey through the running system to its proposal. At most three curated journeys per project are kept.
+- **Silence:** a run with no activity for a set time warns me.
+- **Interrupted is not Failed:** infrastructure death is not a bad result. The run keeps its worktrees, with resume or take over offered, and `loomd` reconciles on restart. Nothing restarts automatically.
 - **Agents hold no credentials.** External effects (push, draft MR, comment, ticket reply) are **proposed actions** in the typed output, executed by loom after gates, according to the autonomy policy below.
-- **Minimal context, enforced** (Claude Code adapter): `claude -p` launched with `--bare`, `--system-prompt-file`, `--tools`/`--disallowedTools`, `--strict-mcp-config --mcp-config <loom only>`, `--json-schema`, `--max-budget-usd`, `--max-turns`, `--permission-prompts none`, `--output-format stream-json`. All lookups beyond the worktree go through loom MCP, logged and scoped to the run's context.
+- **Minimal context, enforced** for background runs, not for prepared terminal sessions (Claude Code adapter): `claude -p` launched with `--bare`, `--system-prompt-file`, `--tools`/`--disallowedTools`, `--strict-mcp-config --mcp-config <loom only>`, `--json-schema`, `--max-budget-usd`, `--max-turns`, `--permission-prompts none`, `--output-format stream-json`. All lookups beyond the worktree go through loom MCP, logged and scoped to the run's context.
 - **Runtime**: `AgentRuntime` port in Rust, see [Runtimes and providers](#runtimes-and-providers). No second language.
+
+### Repo and task scope
+
+A stage runs with one of two scopes:
+
+- **`repo`:** one run per repo of the task. Each has one worktree, its own brief, and only the profiles of that repo. Implementer and reviewer default to this, and fix follows the stage it fixes.
+- **`task`:** one run that sees every repo of the task. Everything else defaults to this: grilling, refining, planning, investigating.
+
+A specialist declares its default, and a stage in a pipeline file can override it (`scope = "repo" | "task"`). With one repo, the two are the same.
+
+- **Handoff:** a task-scope plan stage writes one brief per repo in its typed output, including what the repos must agree on, such as an API shape. A repo-scope run receives only its own brief.
+- **Order:** repo-scope runs follow the order of the task when it defines one, otherwise they run in parallel within the scheduler's caps.
+- **Failure and loops:** a stage is done when each of its runs is. One failure stops only that repo; the others keep their result, and a retry runs only the failed repos. Loop caps count per repo.
+- **Cross-repo check:** a per-repo reviewer cannot see a break between repos. So the default pipeline of a multi-repo task ends with a task-scope review of all the diffs against the spec. A pipeline file can remove it.
+
+### Profiles
+
+A profile is a plain file that says when it applies and what it adds. It is the private overlay for a language or repo: it never goes in the repo, whose own `AGENTS.md` or `CLAUDE.md` still loads through the repo card.
+
+```toml
+# ~/.loom/profiles/rust.toml, or contexts/<ctx>/profiles/rust.toml
+[match]
+languages = ["rust"]              # or repos = ["acme/*"]
+
+[add]
+skills = ["rust-review"]
+remove_skills = []
+specialists = ["reviewer", "implementer"]   # all when absent
+model = "..."                     # optional
+
+[gates]
+test = "cargo nextest run"
+lint = "cargo clippy -- -D warnings"
+```
+
+- **Layers:** shared, then context, then language, then repo. Skills add up, and a layer can remove an inherited skill. For a single value, the most specific layer wins.
+- **Skills:** `~/.loom/skills/<name>/` and `contexts/<ctx>/skills/<name>/`. The context one wins on the same name.
+- **Isolation:** shared profiles and skills flow down into contexts, never the reverse, so a client's skills cannot reach another context.
+- **Several languages:** a repo with two languages gets both profiles, and the gates of both run. Two profiles of the same layer that set different models are refused by the pre-run gate, which names them, until a repo profile decides.
+- **Monorepo:** it is one repo, so every language found in it matches.
+- **Model:** a profile can set the model, within the account of the context. Provider, account and budget stay per context, since spend and credentials are per context.
+- **Task-scope runs:** they receive the skills of every repo, each labelled with its repo. Single values come from the shared and context layers only, since repos can disagree.
+- **Recorded:** the resolved set is frozen in the run, so versions can be compared and I can see why a skill loaded. The panel showing what an agent receives names the profile behind each skill. `loom profile show --repo <repo> --specialist <name>` prints the result without a run.
+- **Text rule:** a skill is text loaded into an agent, so it must [name the mistake it prevents](knowledge.md#keeping-knowledge-useful).
 
 ### Autonomy policy
 
-| Class | Examples | Approval |
-| --- | --- | --- |
-| Internal, reversible | Push to a `loom/*` branch, open a draft MR, create child tasks | Automatic once the template version has earned it in this context (e.g. >= 90% gates passed over the last 20 runs) |
-| Visible to the team | Mark MR ready, comment on an MR, Jira status transition | Configurable per context |
-| Visible to a client or requester | Ticket or Slack reply, public Jira comment | Always me |
+Everything from an agent is a proposal I approve. Acting without me may come later, per specialist version and per context, once autonomy is proven and only after my go-ahead. Metrics alone never grant it: they are evidence for my decision, and they can revoke it. This overrides the automatic grant in [ADR-0007](../adr/0007-autonomy-policy.md).
 
-Autonomy is granted per template version and per context, and revoked automatically when metrics drop.
+| Class | Examples | Approval now | Possible later, after my go-ahead |
+| --- | --- | --- | --- |
+| Internal, reversible | Push to a `loom/*` branch, open a draft MR, create child tasks | Me | Automatic |
+| Visible to the team | Mark MR ready, comment on an MR, Jira status transition | Me | Configurable per context |
+| Visible to a client or requester | Ticket reply, public Jira comment | Me | Always me |
+
+The evidence per specialist version is its gate pass rate, my rework rate and the number of messages I send after launch.
 
 ### Gates
 
 1. Pre-run: brief valid against input schema, budget available, worktree clean.
 2. Output contract: JSON validated against output schema; N retries with the validation error.
-3. Deterministic: build, tests, lint, types (commands declared per repo), diff size, allowed/forbidden paths, secret scan.
+3. Deterministic: build, tests, lint, types (commands from [profiles](#profiles)), diff size, allowed/forbidden paths, secret scan.
 4. Adversarial review by another template (probabilistic, complements 3).
 5. Approval of proposed actions according to the autonomy policy.
 
-Each template version is measured (gate pass rate, my rework rate, cost per run). Versions can be compared on the same tasks: this is the continuous improvement loop for agents.
+Each template version is measured (gate pass rate, my rework rate, messages after launch, cost per run). Versions can be compared on the same tasks: this is the continuous improvement loop for agents.
 
 ### Runtimes and providers
 
-Configurable per context. Two families behind the same `AgentRuntime` port:
+Claude Code comes first, on both accounts, and Antigravity later, behind the runtime port. Configurable per context. Two families behind the same `AgentRuntime` port:
 
 | Family | Examples | Used for |
 | --- | --- | --- |
@@ -80,13 +138,13 @@ triage = { runtime = "bedrock", model = "…" }
 
 ### Factory
 
-Unattended pipelines fed by the priority list.
+Pipelines started by rules. Results stay proposals until I give the go-ahead described in [Autonomy policy](#autonomy-policy).
 
-- **Intake rules**: e.g. Jira issues labelled `loom:auto`, cron tasks, alerts matching a monitor. They emit `DelegationRequest`s with `requested_by: rule:<id>`.
+- **Intake rules**: a schedule plus a guard script, one firing per run, skipping overlaps. A new rule starts in a test mode. They emit `DelegationRequest`s with `requested_by: rule:<id>`.
 - **Scheduler**: parallel run cap per runner and per context, budget per day and per context, pickup by priority, kill switch per context, circuit breaker per template (failure rate spike stops its runs), a task failing N times returns to the inbox with the diagnosis.
 - **Runners**: any loomd can be a runner for the contexts it is allowed to serve.
   - Local runner (my machines): worktrees, capped parallelism, power assertion to prevent sleep while runs are active, pauses cleanly otherwise.
-  - Central runner (VM / container): same binary, for long runs and night shifts (scheduling windows per runner, e.g. 22:00–07:00), one container per run.
+  - Central runner (VM / container), a later option with no date: same binary, for long runs and night shifts (scheduling windows per runner, e.g. 22:00–07:00), one container per run.
   - Placement per run: `local | central | any`, with rules (expected duration, night window). Leases prevent double execution.
   - Allowed runners per context: a client may forbid hosting its code or credentials on a personal VM.
 - **Template evaluation**: archived tasks with their accepted outcome form a replay set. A new template version is replayed before promotion. An agent may propose template versions, evaluated the same way. The ledger becomes the eval dataset.
@@ -105,7 +163,7 @@ Minimal context only works if it is the right context. Garbage in, guesses out.
 | Investigation | Signal (alert or report), time window, service |
 | Research | Question, decision it feeds, time box |
 
-Missing fields block delegation. A cheap **brief critic** (direct API) lists ambiguities and questions; I answer in the TUI, or loom proposes a comment to the ticket author.
+Missing fields block delegation. A cheap **brief critic** (direct API) lists ambiguities and questions; I answer in the app, or loom proposes a comment to the ticket author.
 
 **2. Layered context pack with a token budget per layer.**
 
@@ -114,7 +172,7 @@ Missing fields block delegation. A cheap **brief critic** (direct API) lists amb
 | Brief | Typed task input (from the template schema) | Always inlined |
 | Repo card | Languages, build/test/lint commands, structure, conventions, `AGENTS.md`/`CLAUDE.md` of the repo | Inlined, cached per repo SHA by the repo index |
 | Linked artifacts | Issue mirror + comments, MR diff, alert snapshot | Inlined if under budget, else spilled to file + summary |
-| History | Similar archived tasks (same files touched, same component, same monitor, then FTS), their findings and decisions; context and portable notes | Summaries inlined, details by reference |
+| History | Similar archived tasks (same files touched, same component, same monitor, then FTS), their findings and decisions; knowledge pages and the decisions of the parent conception | Summaries inlined, details by reference |
 | Pointers | IDs and paths the agent can fetch through loom MCP | References only |
 
 Structural links (same files, same labels, same monitor) are ranked above text search: they are more precise. Embeddings only if measurement shows FTS + structure is not enough.
@@ -127,7 +185,7 @@ Structural links (same files, same labels, same monitor) are ranked above text s
 
 **6. Measured.** Per run: pack composition and size, loom MCP lookups (a lookup = something missing from the pack), declared assumptions, gate results, my rework. Lookups repeated across runs become pack rules. Missing knowledge that is repeatedly looked up in the same repo becomes a Chore: document it in the repo's `AGENTS.md` (context debt).
 
-**7. Visible.** I can preview and edit the pack before a manual delegation. Every run keeps the exact pack it received.
+**7. Visible.** The panel showing what an agent receives opens the first time for each specialist, and can be skipped afterwards. I can add, edit and remove what it holds. Text in a pack or prompt must name the plausible mistake it prevents ([Keeping knowledge useful](knowledge.md#keeping-knowledge-useful)). Every run keeps the exact pack it received.
 
 ### External data for agents
 
@@ -141,6 +199,7 @@ Example: Datadog logs, metrics, monitors, dashboards.
   - field projection (`fields`) and a default `limit` on every tool;
   - tabular results as TSV with a header row instead of JSON (no repeated keys);
   - spill to file: a result above the per-call budget is written to `runs/<id>/data/<call>.tsv`; the agent receives a summary, the row count and the path, and reads slices with Read/Grep (run data dir passed with `--add-dir`).
+- Agent tools come in this order: Datadog, then read-only Kubernetes. Implementers run `terraform plan` and deployments only through CI on their MR.
 - Tokens per call are recorded; formats and tool designs are compared with the template metrics.
 - Rust only: `rmcp` (official MCP Rust SDK).
 - Proxying an upstream MCP server (Datadog, Sentry, GitLab, Jira) stays possible for long-tail tools, with results passed through the same shaping and spill rules.
