@@ -9,6 +9,8 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
   config.toml
   index.db                          # rebuildable, machine-local (repo paths live here)
   knowledge/                        # shared pages, survive a context purge
+  profiles/<name>.toml              # shared profiles, see agents.md
+  skills/<name>/                    # shared skills
   contexts/<ctx>/
     queue/mrs/<provider>-<key>.json   # daemon-owned: MRs waiting on me, no task yet (see reviews.md)
     tasks/<id>/
@@ -25,6 +27,8 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
     glossary.md                       # terms, names to avoid, promotion flags
     out-of-scope/<slug>.md            # rejected ideas, with the reason
     specialists/<name>/               # prompts, skills, model and provider, as plain files
+    profiles/<name>.toml              # context profiles
+    skills/<name>/                    # context skills
     pipelines/<name>.toml             # stages, gates, loop caps
     journal/<yyyy>/<mm>.jsonl       # events not tied to a task
 ```
