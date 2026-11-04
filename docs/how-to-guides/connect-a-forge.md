@@ -4,7 +4,7 @@
 
 Before you start, make sure that `loom` and `loomd` are installed and that your contexts are defined ([configure contexts](configure-contexts.md)).
 
-`loomd` never stores the token. It gets the token from a command (`token_cmd`) or from a variable of its environment (`token_env`), and keeps it in memory only. The keys are in the [configuration reference](../reference/configuration.md#forges).
+`loomd` never stores the token. It gets the token from a command (`token_cmd`) or from a variable of its environment (`token_env`), and keeps it in memory only. git, its hooks and its helpers do not get a `token_env` variable. The keys are in the [configuration reference](../reference/configuration.md#forges).
 
 ## Get a token
 

@@ -17,6 +17,7 @@ use std::thread;
 use std::time::Instant;
 
 use loom_api::{BackupOutcome, BackupReport, ContextName, ReindexResult, TaskId, Timestamp};
+use loom_config::config::Config;
 use loom_core::{Actor, Event, Kind, MachineId, NewTask, Origin, Relations, Status};
 use loom_store::files::FileStore;
 use loom_store::port::TaskLocation;
@@ -406,7 +407,7 @@ fn each_mutation_through_the_store_is_one_commit() {
     store.init().unwrap();
     let index = TaskIndex::open(&sandbox.loom_home().join("index.db")).unwrap();
     let mut tasks = Tasks::new(vec![store], index);
-    let mut runner = GitRunner::from_env();
+    let mut runner = GitRunner::from_config(&Config::default());
     runner.env = sandbox.env();
     let mut commits =
         StoreCommits::new(runner, BTreeMap::from([(context("work"), sandbox.store())]));

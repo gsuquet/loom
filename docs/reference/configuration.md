@@ -174,7 +174,7 @@ token_cmd = "op read op://company-a/github/token"
 | Key | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `[forges."<host>"] token_cmd` | string: shell command | none | Not empty. `loomd` runs it with `sh -c`, with no input, and stops it after 10 s. Its standard output, trimmed, is the token. Not with `token_env`. |
-| `[forges."<host>"] token_env` | string: variable name | none | ASCII letters, digits and `_`, not starting with a digit. The variable of the environment of `loomd` that holds the token. Not with `token_cmd`. |
+| `[forges."<host>"] token_env` | string: variable name | none | ASCII letters, digits and `_`, not starting with a digit. The variable of the environment of `loomd` that holds the token. git, its hooks and helpers, and `ssh -G` do not get this variable. A change applies when `loomd` starts. Not with `token_cmd`. |
 | `[forges."<host>"] poll_interval` | string: duration | `"5m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. Interval of the [forge metadata](api.md#forge-metadata) poll of the host, per credential, and of the MR poll of the host ([reviews](api.md#reviews)). |
 | `[forges."<host>"] review_requests` | string: `"teams"`, `"direct"` | `"teams"` | GitHub review requests that count: to me and my teams (`teams`), or to me only (`direct`). The search of the MR poll uses it. |
 | `[contexts.<name>.forges."<host>"]` | table | none | `<host>`: the rules of `[forges."<host>"]`. The host is `github.com`, `gitlab.com`, or has a `[forges."<host>"]` table: a host with no known forge is an error. |
@@ -533,6 +533,7 @@ The fetch and the push use the environment of the [repository updates](#contexts
 
 - `GIT_TERMINAL_PROMPT=0`.
 - SSH `BatchMode`, unless `core.sshCommand` or `GIT_SSH_COMMAND` is set.
+- No [`token_env`](#forges) variable. The local commits of a store also run without these variables.
 
 `loomd` stops the fetch and the push after 120 s, with their process group. It also stops them when it shuts down: the process group receives `SIGTERM`, and `SIGKILL` 5 s later. The sync thread ends before `loomd` exits, no git process of a sync stays after `loomd`, and no other store is synced after the shutdown began. See [exit codes](cli/conventions.md#exit-codes).
 

@@ -153,6 +153,7 @@ impl Fixture {
         GitRunner {
             program: PathBuf::from("git"),
             env: self.env(),
+            withheld_env: Vec::new(),
             ssh_in_env: false,
             fetch_timeout: Duration::from_secs(60),
             merge_timeout: Duration::from_secs(30),

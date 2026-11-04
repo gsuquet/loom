@@ -59,6 +59,7 @@ use loomd::forge::client::HttpForge;
 use loomd::forge::open::{OpenRefusal, delivery, new_mr, open_or_link, requests, target_of};
 use loomd::forge::token::TokenResolver;
 use loomd::hooks;
+use loomd::repo_update::GitRunner;
 use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, SHUTDOWN_GRACE};
 use loomd::task_api::{
     FocusQuery, TEST_TODAY_ENV, TaskListQuery, action_command, action_name_of, action_request,
@@ -161,10 +162,19 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
     }
     // The git commands that the daemon stops at shutdown: the store sync and the remote checks.
     let children = Arc::new(ChildGroups::default());
+    // One runner for every git command of the daemon, built from the configuration.
+    let git_runner = GitRunner::from_config(&config);
     // Opened under the lock: this daemon is the only writer of the index.
     let poll = forge_poll(&config, &forges);
-    let (index, repo_handle) = repos::start(&layout.index_db, &config, &user_home, &children, poll)
-        .wrap_err("cannot start the repository index")?;
+    let (index, repo_handle) = repos::start(
+        &layout.index_db,
+        &config,
+        &user_home,
+        git_runner.clone(),
+        &children,
+        poll,
+    )
+    .wrap_err("cannot start the repository index")?;
     let store_paths = stores
         .held
         .iter()
@@ -177,6 +187,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         MachineId(machine.as_str().to_owned()),
         config.tasks.archive_after.get(),
         Arc::clone(&events),
+        git_runner.clone(),
     )
     .wrap_err("cannot start the task store")?;
     let schedule_thread = schedules::start(&config, &stores.held, &machine, task_handle.clone())?;
@@ -188,6 +199,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         },
         config.tasks.sync_interval.get(),
         task_handle.clone(),
+        git_runner,
         children,
     )?;
     let (review_poller, review_handle) = reviews::start(

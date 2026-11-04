@@ -21,6 +21,7 @@ use loom_api::{
     LastUpdate, RemoteCheckOutcome, RemoteProblem, RepoState, RepoUpdatePolicy, SkipReason,
     Timestamp, UpdateOutcome, UpdateStep,
 };
+use loom_config::config::Config;
 use loom_repo::state::UpdateRefs;
 use loom_repo::{
     Action, FetchDecision, StateOptions, classify_remote_failure, decide_fetch, decide_update,
@@ -64,6 +65,10 @@ pub struct GitRunner {
     /// Variables set (`Some`) or removed (`None`) for every command, over the inherited
     /// environment.
     pub env: Vec<(OsString, Option<OsString>)>,
+    /// Variables that hold a forge token (`token_env`), removed last, over `env`: git uses the
+    /// credentials of the user, and its hooks and helpers run with its environment (ADR-0016,
+    /// decision 6). [`Self::from_config`] sets them.
+    pub withheld_env: Vec<OsString>,
     /// `GIT_SSH_COMMAND` or `GIT_SSH` is in the environment git inherits: the user chose an SSH
     /// command, `BatchMode` is not forced.
     pub ssh_in_env: bool,
@@ -80,15 +85,23 @@ pub struct GitRunner {
 }
 
 impl GitRunner {
-    /// `git` from `PATH`, the environment of this process, the default timeouts.
+    /// `git` from `PATH`, the environment of this process without the `token_env` variables of
+    /// `config`, the default timeouts. The only constructor, so that a git command cannot miss
+    /// these variables. The names are read now: loomd reads its configuration once, at start.
+    /// A reload of the configuration must build the runner again.
     #[must_use]
-    pub fn from_env() -> Self {
+    pub fn from_config(config: &Config) -> Self {
         let ssh_in_env = ["GIT_SSH_COMMAND", "GIT_SSH"]
             .iter()
             .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
         Self {
             program: PathBuf::from("git"),
             env: Vec::new(),
+            withheld_env: config
+                .token_env_names()
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
             ssh_in_env,
             fetch_timeout: FETCH_TIMEOUT,
             merge_timeout: MERGE_TIMEOUT,
@@ -571,6 +584,9 @@ impl<'a> Git<'a> {
                 Some(value) => command.env(name, value),
                 None => command.env_remove(name),
             };
+        }
+        for name in &self.runner.withheld_env {
+            command.env_remove(name);
         }
         for name in REPOSITORY_VARIABLES {
             command.env_remove(name);

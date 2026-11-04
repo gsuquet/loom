@@ -264,6 +264,29 @@ impl Config {
         })
     }
 
+    /// Every `token_env` name of the configuration: each host table and each context table,
+    /// also of a host table that the context tables replace, and of a context not held on this
+    /// machine. These variables can hold a token, so the git commands of loomd do not get them.
+    #[must_use]
+    pub fn token_env_names(&self) -> BTreeSet<&str> {
+        let hosts = self
+            .forges
+            .values()
+            .filter_map(|forge| forge.token.as_ref());
+        let contexts = self
+            .contexts
+            .values()
+            .flat_map(|context| context.forges.values())
+            .map(|forge| &forge.get_ref().token);
+        hosts
+            .chain(contexts)
+            .filter_map(|token| match token {
+                TokenSource::Env(name) => Some(name.as_str()),
+                TokenSource::Command(_) => None,
+            })
+            .collect()
+    }
+
     /// Every credential of every context, by context, then host. A context without any
     /// credential for a host does not appear for it.
     #[must_use]
@@ -284,6 +307,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
     use std::time::Duration;
 
@@ -483,6 +507,54 @@ kind = "gitlab"
             let message = error(text);
             assert!(message.contains(needle), "{text}\n{message}");
         }
+    }
+
+    #[test]
+    fn token_env_names_are_those_of_every_table() {
+        let config = parse(
+            r#"
+[contexts.personal]
+[contexts.work]
+
+[contexts.personal.forges."gitlab.example"]
+token_env = "PERSONAL_TOKEN"
+
+[contexts.work.forges."gitlab.example"]
+token_env = "WORK_TOKEN"
+
+[contexts.work.forges."github.com"]
+token_cmd = "print-token"
+
+[forges."gitlab.example"]
+kind = "gitlab"
+token_env = "REPLACED_IN_EVERY_CONTEXT"
+
+[forges."github.com"]
+kind = "github"
+token_env = "WORK_TOKEN"
+"#,
+        );
+        assert_eq!(
+            config.token_env_names().into_iter().collect::<Vec<_>>(),
+            ["PERSONAL_TOKEN", "REPLACED_IN_EVERY_CONTEXT", "WORK_TOKEN"]
+        );
+    }
+
+    #[test]
+    fn token_env_names_do_not_need_a_context() {
+        let config = parse("[forges.\"gitlab.com\"]\nkind = \"gitlab\"\ntoken_env = \"TOKEN\"\n");
+        assert_eq!(config.forge_credentials(), []);
+        assert_eq!(
+            config.token_env_names().into_iter().collect::<Vec<_>>(),
+            ["TOKEN"]
+        );
+    }
+
+    #[test]
+    fn token_env_names_are_empty_without_token_env() {
+        assert_eq!(parse("").token_env_names(), BTreeSet::new());
+        let commands = "[forges.\"gitlab.com\"]\nkind = \"gitlab\"\ntoken_cmd = \"print-token\"\n";
+        assert_eq!(parse(commands).token_env_names(), BTreeSet::new());
     }
 
     #[test]
