@@ -24,7 +24,7 @@ A connector is an instance, not a tool. Several GitLab, GitHub or Datadog connec
 
 ## Ingestion
 
-Everything assigned goes to the Inbox, except Datadog p0 and p1 alerts, which go straight to Urgent by default. This can be changed per context. Flapping alerts are grouped by monitor. Dismissing clears what is there, and a monitor that fires again comes back as a new row.
+Everything assigned goes to the Inbox, except Datadog p0 and p1 alerts, which go straight to Urgent by default, and MRs, which are [queue entries](reviews.md#waiting-on-me) on Reviews. This can be changed per context. Flapping alerts are grouped by monitor. Dismissing clears what is there, and a monitor that fires again comes back as a new row.
 
 Each connector shows its status and last successful sync, so an empty queue never looks like "nothing to do".
 

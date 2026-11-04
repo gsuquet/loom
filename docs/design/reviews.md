@@ -2,14 +2,14 @@
 
 > Merge requests to review (v0.4): discovery, the MR mirror, fetched refs and diffs, drafts, publish through the forge APIs, credentials. Decisions in [ADR-0016](../adr/0016-mr-review-mirror.md). The page is in [User workflow](user-workflow.md#review).
 
-> The data, git and forge sides below stand. The flow and keys of the page are in [User workflow](user-workflow.md#review), which overrides any TUI gesture named here. Multi-repo MRs show as a group, and a task can hold one worktree per repo.
+> The data, git and forge sides below stand, except that a Review task now starts when I start on the MR, not at discovery: see [Waiting on me](#waiting-on-me), which replaces that part of ADR-0016 decision 1. The flow and keys of the page are in [User workflow](user-workflow.md#review), which overrides any TUI gesture named here. Multi-repo MRs show as a group, and a task can hold one worktree per repo.
 
 "MR" means a GitLab merge request or a GitHub pull request. The forge facts below come from the v0.4 spike (2026-10-27); the requests and responses are recorded in [`fixtures/forge/`](../../fixtures/forge/README.md).
 
 ## Discovery
 
 - **Who asks**: loomd, per context, per forge host that the context has a credential for (see [Credentials](#credentials)). One token can see several contexts' projects; an MR is kept only by the context its project matches.
-- **Which MRs**: open MRs where I am a requested reviewer.
+- **Which MRs**: open MRs where I am a requested reviewer. The other reasons an MR waits on me are in [Waiting on me](#waiting-on-me).
   - GitHub: `GET /search/issues?q=is:pr is:open archived:false review-requested:@me`. `review-requested` includes requests to my teams; `user-review-requested` is direct requests only. Default: `review-requested`, configurable per forge host (`review_requests = "direct" | "teams"`).
   - GitLab: `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` set to the last successful poll minus a margin.
 - **Context of an MR**, first match wins: the context of an indexed clone of the target project (so `match.paths` and repo overrides count); the `match.hosts` rules of [Repositories](repos.md#contexts) on `<host>/<project path>`; otherwise the context whose token found it, when each other context with a credential for the host (held here or not) is polled on this machine with a token of another account (the logins differ). One token, or two tokens of one account, find the same MRs, so then the finder tells nothing: the MR goes to no store and each poll reports it as failed, asking for a `match.hosts` rule. Never `default_context`: a client MR found by a client token must not land in the personal store. A context never stores an MR that belongs to another context, even when its token sees it.
@@ -17,16 +17,42 @@
 - **Poll**: every `[forges."<host>"] poll_interval` (default 5 min, jittered ±10 %), and on `loom review sync`. GitHub search is limited to 30 requests per minute; one search per host and context per poll stays far below.
 - **Open Review tasks are polled too**, one by one with their ETag, not only the search results: GitHub removes me from `requested_reviewers` once I submit a review, and GitLab `updated_after` does not show a removed request. Without this, a new head after my verdict would never reopen the task.
 
+## Waiting on me
+
+An MR that waits on me is a queue entry, not a task. It shows on Reviews and in the "Waiting on you" section of Today, and creates no task and no mirror until I start on it. This keeps requested reviews out of the Inbox and spares a task for an MR I only open at the forge.
+
+- **Reasons**: an entry holds one or more reasons, and leaves the queue when none is left, or when the MR is merged or closed.
+
+| Reason | GitLab | Gone when |
+| --- | --- | --- |
+| `review_requested` | `GET /merge_requests?scope=reviews_for_me&state=opened` | Request removed, or my verdict is on the current head |
+| `assigned` | `scope=assigned_to_me`, when I am not the author | Unassigned |
+| `mentioned` | `GET /todos?type=MergeRequest&state=pending&action=mentioned`, and `directly_addressed` | The to-do is done at the forge |
+| `own_new_comments` | `scope=created_by_me`: a note from someone else, newer than my latest note and than `seen_at`. Discussions are read only when the MR changed | I open the entry, or I reply |
+| `own_pipeline_failed` | `head_pipeline.status = failed`, on the single MR request (the list does not return it) | A new pipeline on the head is not failed |
+| `own_ready_to_merge` | `detailed_merge_status = mergeable` and at least one approval | Not mergeable any more |
+
+- **Assigned**: my own MRs are often assigned to me, so that case counts only through the `own_` reasons.
+- **Ready to merge**: a project with no approvals on an MR never shows this reason, otherwise each green MR would ask for me.
+- **Polling**: the three lists and the to-dos on each poll, four requests. Open MRs of mine are also read one by one on each poll with their ETag: it is not known that a pipeline result changes `updated_at`, so `updated_after` does not cover them.
+- **GitHub**: `review_requested` only until the GitHub connector is delivered (step 5), through the existing search. Its other reasons are designed then.
+- **Files**: `contexts/<ctx>/queue/mrs/<provider>-<key>.json`, daemon-owned, deleted when the entry leaves. It holds the key, title, author, web URL, head SHA, forge `updated_at`, reasons and `seen_at`. It is one file per MR and is written only when its bytes change, like the mirror, so a poll with no change makes no commit, and a store sync and a context purge carry it.
+- **Context**: the rules of [Discovery](#discovery). An entry for an MR of no store is reported as failed, as a task was.
+- **Failures**: a failed list or read changes no entry. Connector status tells that the queue may be stale.
+- **Start**: opening the review, sending a reviewer or `loom review start <key>` creates the Review task in `active` with its mirror, and removes the entry of a `review_requested`, `assigned` or `mentioned` MR. From then on the task follows the rules below.
+- **My own MRs**: no Review task, ever. The entry stays while a reason holds, and shows under the task that has the MR as a `delivery` link, read when the page is built. `Enter` opens that task, or the forge when there is none.
+- **Existing tasks**: an MR with an open Review task gets no `review_requested` entry. A closed Review task keeps its reopening rules. An MR whose Review task is archived can return as an entry.
+
 ## Review task
 
-- One Review task per MR, created in `inbox` with an `origin` link: provider, key, URL. Keys: `acme/shop#412` (GitHub), `company-a/checkout!88` (GitLab). The key is an alias of the task (storage IDs): `/v1/tasks/{id}` accepts an exact MR key (percent-encoded by the CLI) and resolves it to the Review task whose `origin` link names it; two tasks with that origin (two contexts) is an `invalid_request` that asks for the ID.
+- One Review task per MR, created when I [start on it](#waiting-on-me), with an `origin` link: provider, key, URL. Keys: `acme/shop#412` (GitHub), `company-a/checkout!88` (GitLab). The key is an alias of the task (storage IDs): `/v1/tasks/{id}` accepts an exact MR key (percent-encoded by the CLI) and resolves it to the Review task whose `origin` link names it; two tasks with that origin (two contexts) is an `invalid_request` that asks for the ID.
 - **Fields the sync owns**: title, kind and origin link at creation only; afterwards the status, only on the transitions below, each preceded by a daemon note giving the reason. Importance, due, pinned, notes and later title edits are mine and never touched. Archived Review tasks are not changed.
 - **Transitions are edges between two polls**, not levels: "request removed" is requested at the last poll and not now, "requested again" the reverse (kept in `sync.json`). Closing a task by hand while still requested therefore sticks until a new head or a new request.
 - Done (domain model): a verdict posted for the current head SHA. A new head after my verdict reopens the task (`ready`), with an event.
 - MR merged or closed: the task is `done` or `cancelled` with an event (a terminal remote state closes the local task). My review request removed: `cancelled`, unless I already posted a verdict (then `done`).
 - An MR I am asked to review again (GitHub re-request, GitLab request added again) reopens the task. A GitLab reviewer state reset without a new request is not seen in v0.4 (the reviewer states are not read).
 - Verdict: GitHub, my latest submitted review that approves, requests changes or comments, on a commit (a new review ID is a new verdict); GitLab, my approval (`approvals.user_has_approved`), dated to the head of the poll that first shows it: an approval still shown after a push is not a new verdict (projects that do not reset approvals), one shown again after a reset is. A comment without approval is not a verdict. The last verdict is kept in `sync.json`, so an approval reset by a push is not forgotten.
-- A request removed after a verdict on an older head (I reviewed, the author pushed before the poll) leaves the task open: the new head is still to review. No task is created for an MR whose current head already has my verdict (GitLab lists approved MRs): nothing to review. A done task reopens on a new head only when my verdict is not on it, so a head that a failed mirror write missed does not reopen it. A cancelled task reopens when the MR is open again after a close and I am requested. An archived Review task is never changed: its mirror is the previous state, and only a new head or a new request creates a new task. Merged and closed are edges too: a task I reopen by hand on a closed MR stays open.
+- A request removed after a verdict on an older head (I reviewed, the author pushed before the poll) leaves the task open: the new head is still to review. No entry is created for an MR whose current head already has my verdict (GitLab lists approved MRs): nothing to review. A done task reopens on a new head only when my verdict is not on it, so a head that a failed mirror write missed does not reopen it. A cancelled task reopens when the MR is open again after a close and I am requested. An archived Review task is never changed: its mirror is the previous state, and only a new head or a new request brings the MR back as an entry. Merged and closed are edges too: a task I reopen by hand on a closed MR stays open.
 - An incomplete GitHub search does not count as a removed request: an MR missing from it keeps the request state of the last poll. A `done` or `cancelled` task of a merged or closed MR is not polled any more.
 
 ## MR mirror

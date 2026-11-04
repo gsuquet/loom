@@ -106,7 +106,7 @@ Data, git and forge side: [Code review](reviews.md).
 - The diff is unified by default, with a side-by-side view. Draft comments sit in a side column. Files can be marked as viewed.
 - Approving is refused while a blocking comment remains. A diff must be opened before its proposal can be approved.
 - **Waiting on me:** review requested, assigned, mentions, and my own MRs with new comments, failed pipelines or approval to merge. There is no pool of all team MRs.
-- An MR is a queue entry until I start on it. Any reviewer launch creates the Review task, and tasks from a pre-review rule stay out of Today until opened.
+- An MR is a [queue entry](reviews.md#waiting-on-me) until I start on it. Opening the review or any reviewer launch creates the Review task, and tasks from a pre-review rule stay out of Today until opened.
 - An opt-in rule can pre-review MRs from chosen repos.
 - An agent can address comments on my own MRs. Its changes come back as a proposal before any push.
 - **Pipeline retry** is an Immediate write: a letter, then the hold.

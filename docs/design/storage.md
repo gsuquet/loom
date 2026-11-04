@@ -10,6 +10,7 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
   index.db                          # rebuildable, machine-local (repo paths live here)
   knowledge/                        # shared pages, survive a context purge
   contexts/<ctx>/
+    queue/mrs/<provider>-<key>.json   # daemon-owned: MRs waiting on me, no task yet (see reviews.md)
     tasks/<id>/
       task.md                       # mine: frontmatter + free notes
       events.jsonl                  # append-only

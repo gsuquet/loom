@@ -16,6 +16,15 @@ Multi-repo tasks, the Source entity, the conception kind, links, pipelines and t
 
 The central instance and unattended delivery stay later options with no date. Unattended delivery needs my go-ahead, see [Autonomy policy](design/agents.md#autonomy-policy).
 
+## Step 1 tasks
+
+Tasks so far, from the gaps found against [Waiting on me](design/reviews.md#waiting-on-me). The app itself is broken down once the toolkit is chosen. The v0.4 tasks below on diffs, drafts and publish (#185 to #189) belong to step 4.
+
+| Issue | Task | Kind | Depends on |
+| --- | --- | --- | --- |
+| [#211](https://github.com/gsuquet/loom/issues/211) | Queue entries: an MR has no task until I start on it, `loom review queue`, `loom review start` | Story | This design |
+| [#212](https://github.com/gsuquet/loom/issues/212) | GitLab reasons: assigned, mentions, my own MRs with new comments, a failed pipeline or approval to merge | Story | #211 |
+
 ## v0.1 tasks
 
 Done: released as [v0.1.0](https://github.com/gsuquet/loom/releases/tag/v0.1.0) on 2026-10-12. Issue numbers match task numbers up to 14. Each task is a GitHub issue in the `v0.1` milestone, labelled `agent-ready`, written with the [agent task template](../.github/ISSUE_TEMPLATE/agent-task.md).

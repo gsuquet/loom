@@ -26,7 +26,7 @@ Kind = nature of the work. It drives the body template, the done condition and t
 | Chore | Me, Jira tech tasks, cron | Done |
 | Research | Me | Conclusion written (findings + decision) |
 | Investigation | Datadog alert, Freshservice incident | Cause identified + disposition (spawned task, noise, upstream) |
-| Review | MR/PR where my review is requested | Verdict posted for the current head SHA; a new push reopens it |
+| Review | MR/PR I started reviewing; before that it is a [queue entry](reviews.md#waiting-on-me) | Verdict posted for the current head SHA; a new push reopens it |
 | Support | Freshservice request | Requester has an answer |
 | Content | Me | Delivered or published (optional `format`: talk, article, training, workshop) |
 | Admin | Me, cron (timesheets, expenses, staffing) | Done |
