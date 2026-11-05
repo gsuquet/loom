@@ -1,5 +1,10 @@
 //! `loom` with no command prints the help and exits 0, on a pipe and on a terminal.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "`allow-unwrap-in-tests` covers `#[test]` functions only; a failing helper must fail the test"
+)]
+
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read as _};
 use std::os::unix::net::UnixListener;
