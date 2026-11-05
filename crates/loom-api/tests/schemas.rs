@@ -827,6 +827,9 @@ fn last_updates(at: Timestamp) -> Vec<LastUpdate> {
                     ahead: 1,
                     behind: 2,
                 }),
+                skipped(SkipReason::OtherWorkTree {
+                    detail: s("git names /home/me/elsewhere, the read used /home/me/work"),
+                }),
                 skipped(SkipReason::MergeRefused {
                     stderr_tail: s("error: untracked working tree files would be overwritten"),
                 }),

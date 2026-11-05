@@ -16,7 +16,7 @@ The backup host keeps your private notes. For a client context, use a host that 
 
 1. Create an empty private repository on the backup host, for example `git@github.com:me/work-store.git`. Do not add a README. The remote must be empty or contain a store from an earlier backup.
 
-2. Make sure that the git of loomd can reach the repository without a prompt. For this, the SSH key is in the agent that loomd sees, or a credential helper holds an HTTPS token.
+2. Make sure that the git of loomd can reach the repository without a prompt. For this, the SSH key is in the agent that loomd sees, or a credential helper holds an HTTPS token. A credential helper that reads a `token_env` variable does not get it, and git then has no credential. For example, `gh auth git-credential` reads `GH_TOKEN`, and `glab` reads `GITLAB_TOKEN`. To prevent this, use a dedicated variable name such as `LOOM_GITLAB_TOKEN`, use `token_cmd`, or store a login for the helper. `LOOM_GITHUB_TOKEN` and `GITHUB_TOKEN`, which `loomd` reads for its release checks, are removed in the same way. A helper that reads them, such as `gh auth git-credential` with `GITHUB_TOKEN`, also has no credential under `loomd`.
 
    ```bash
    git ls-remote git@github.com:me/work-store.git

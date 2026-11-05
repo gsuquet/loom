@@ -62,6 +62,8 @@ pub struct SyncHandle {
     tasks: TaskHandle,
     /// The git commands of a sync: stopped at shutdown.
     children: Arc<ChildGroups>,
+    /// Runs them, registered in `children`.
+    runner: GitRunner,
 }
 
 /// Starts the sync thread: a first sync of every store with a remote at once, then one every
@@ -70,6 +72,7 @@ pub fn start(
     stores: Stores,
     interval: Duration,
     tasks: TaskHandle,
+    runner: GitRunner,
     children: Arc<ChildGroups>,
 ) -> Result<(SyncThread, SyncHandle)> {
     let (commands, received) = mpsc::channel();
@@ -78,6 +81,10 @@ pub fn start(
         stores: Arc::new(stores),
         synced: Arc::new(Mutex::new(BTreeMap::new())),
         tasks,
+        runner: GitRunner {
+            children: Some(Arc::clone(&children)),
+            ..runner
+        },
         children,
     };
     let worker = handle.clone();
@@ -184,8 +191,6 @@ impl SyncHandle {
     }
 
     fn sync_all(&self, contexts: &[ContextName]) {
-        let mut runner = GitRunner::from_env();
-        runner.children = Some(Arc::clone(&self.children));
         for context in contexts {
             // The shutdown began: no command would start, and the local steps would write the
             // stores for a sync that cannot go on.
@@ -200,7 +205,7 @@ impl SyncHandle {
                 continue;
             };
             let _span = info_span!("tasks.sync", %context).entered();
-            let outcome = store_git::sync(&runner, path, url, &mut |step| {
+            let outcome = store_git::sync(&self.runner, path, url, &mut |step| {
                 self.tasks.sync_step(context, step)
             });
             if outcome.failed() {

@@ -164,7 +164,7 @@ token_cmd = "gh auth token --hostname github.com"
 
 [forges."gitlab.company-a.example"]
 kind = "gitlab"
-token_env = "GITLAB_TOKEN"
+token_env = "LOOM_GITLAB_TOKEN"
 poll_interval = "10m"
 
 [contexts.company-a.forges."github.com"]
@@ -174,7 +174,7 @@ token_cmd = "op read op://company-a/github/token"
 | Key | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `[forges."<host>"] token_cmd` | string: shell command | none | Not empty. `loomd` runs it with `sh -c`, with no input, and stops it after 10 s. Its standard output, trimmed, is the token. Not with `token_env`. |
-| `[forges."<host>"] token_env` | string: variable name | none | ASCII letters, digits and `_`, not starting with a digit. The variable of the environment of `loomd` that holds the token. Not with `token_cmd`. |
+| `[forges."<host>"] token_env` | string: variable name | none | ASCII letters, digits and `_`, not starting with a digit. The variable of the environment of `loomd` that holds the token, such as `LOOM_GITLAB_TOKEN`. git, its hooks and helpers, and `ssh -G` do not get this variable. A change applies when `loomd` starts. Not with `token_cmd`. |
 | `[forges."<host>"] poll_interval` | string: duration | `"5m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. Interval of the [forge metadata](api.md#forge-metadata) poll of the host, per credential, and of the MR poll of the host ([reviews](api.md#reviews)). |
 | `[forges."<host>"] review_requests` | string: `"teams"`, `"direct"` | `"teams"` | GitHub review requests that count: to me and my teams (`teams`), or to me only (`direct`). The search of the MR poll uses it. |
 | `[contexts.<name>.forges."<host>"]` | table | none | `<host>`: the rules of `[forges."<host>"]`. The host is `github.com`, `gitlab.com`, or has a `[forges."<host>"]` table: a host with no known forge is an error. |
@@ -183,6 +183,8 @@ token_cmd = "op read op://company-a/github/token"
 The credential of a context for a host is its `[contexts.<name>.forges."<host>"]` table, otherwise the `token_cmd` or `token_env` of `[forges."<host>"]`. Use a context table for another account on the same host. When two contexts have a credential for a host with one account, or when this machine does not poll one of them, a review request goes to a context only by a clone of its project or a `match.hosts` rule (see [review sync](../explanation/review-sync.md#the-context-of-an-mr)). A context without a credential for a host does not use that host. A `[forges."<host>"]` table without `token_cmd` and `token_env` gives the kind of the host only.
 
 `loomd` keeps a token in memory and never writes it. It does not log the token, put it in a trace, or give it to git or to an agent. git uses your own credentials. After a `401`, `loomd` gets the token again. `loomd` sends the token only to the API of its host: `https://api.github.com` for `github.com`, `https://<host>/api/v3` for another GitHub host (GitHub Enterprise Server), `https://<host>/api/v4` for GitLab. The token does not follow a redirect to another host.
+
+A credential helper that reads a `token_env` variable does not get it, and git then has no credential. For example, `gh auth git-credential` reads `GH_TOKEN`, and `glab` reads `GITLAB_TOKEN`. To prevent this, use a dedicated variable name such as `LOOM_GITLAB_TOKEN`, use `token_cmd`, or store a login for the helper.
 
 As a service, `loomd` has a minimal `PATH` and does not see the variables of your shell. Write the absolute path of the program in `token_cmd` (`command -v gh` gives it), and prefer `token_cmd` to `token_env`.
 
@@ -291,7 +293,7 @@ Schedule:
 - Each next check runs `check_interval` ± 10 % after the last check (`last_check` of `state/update.json`), but never before that first delay.
 - After a failed check, `loomd` tries again at the next interval.
 
-When its environment sets `LOOM_GITHUB_TOKEN` or `GITHUB_TOKEN`, `loomd` authenticates with it. `loomd` never runs `gh`.
+When its environment sets `LOOM_GITHUB_TOKEN` or `GITHUB_TOKEN`, `loomd` authenticates with it. `loomd` never runs `gh`. git, its hooks and helpers do not get these variables: a credential helper that reads one of them has no credential under `loomd`.
 
 ## User service
 
@@ -536,6 +538,7 @@ The fetch and the push use the environment of the [repository updates](#contexts
 
 - `GIT_TERMINAL_PROMPT=0`.
 - SSH `BatchMode`, unless `core.sshCommand` or `GIT_SSH_COMMAND` is set.
+- No [`token_env`](#forges) variable. The local commits of a store also run without these variables.
 
 `loomd` stops the fetch and the push after 120 s, with their process group. It also stops them when it shuts down: the process group receives `SIGTERM`, and `SIGKILL` 5 s later. The sync thread ends before `loomd` exits, no git process of a sync stays after `loomd`, and no other store is synced after the shutdown began. See [exit codes](cli/conventions.md#exit-codes).
 

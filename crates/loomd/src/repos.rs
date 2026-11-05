@@ -12,6 +12,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
 use std::fs;
 use std::io::Read as _;
 use std::num::NonZero;
@@ -139,12 +140,14 @@ struct Discovery {
 /// Opens `db` (created and migrated when needed), then starts the store thread, which scans
 /// at once. The configuration is read once: a change needs a restart.
 ///
-/// `children` registers the git commands of the remote checks (read-only), so that the daemon
-/// can stop them at shutdown. Repository updates are not registered: they finish on their own.
+/// `runner` runs the git commands. `children` registers those of the remote checks (read-only),
+/// so that the daemon can stop them at shutdown. Repository updates are not registered: they
+/// finish on their own.
 pub fn start(
     db: &Path,
     config: &Config,
     home: &Path,
+    runner: GitRunner,
     children: &Arc<ChildGroups>,
     forges: forge_metadata::Settings,
 ) -> Result<(RepoIndex, RepoHandle)> {
@@ -155,7 +158,7 @@ pub fn start(
         exclusions: Exclusions::new(&config.repos.exclude).into_diagnostic()?,
         rules: ContextRules::new(config, home).into_diagnostic()?,
         forges: config.forges.clone(),
-        ssh: ssh_resolver(),
+        ssh: ssh_resolver(runner.withheld_env.clone()),
     };
     let roots: Vec<String> = discovery
         .roots
@@ -197,7 +200,6 @@ pub fn start(
         })
         .into_diagnostic()
         .wrap_err("cannot start the repository index thread")?;
-    let runner = GitRunner::from_env();
     let (updater, update_handle) = updates::start(
         updates::Settings {
             interval: state_interval,
@@ -975,8 +977,9 @@ fn count(len: usize) -> u64 {
 /// SSH host alias resolution with `ssh -G <alias>`, cached per alias for the daemon's
 /// lifetime. Only names without a dot are looked up (a name with a dot is a host name), and
 /// only names of letters, digits, `-` and `_` not starting with `-`, so that a remote URL can
-/// never pass an option to `ssh`. Failures resolve to `None` and are logged at debug.
-fn ssh_resolver() -> Resolver {
+/// never pass an option to `ssh`. Failures resolve to `None` and are logged at debug. `ssh`
+/// runs without the variables `withheld`: `Match exec` of the SSH configuration starts commands.
+fn ssh_resolver(withheld: Vec<OsString>) -> Resolver {
     let cache: RefCell<HashMap<String, Option<String>>> = RefCell::default();
     Box::new(move |alias: &str| {
         let candidate = !alias.is_empty()
@@ -990,7 +993,7 @@ fn ssh_resolver() -> Resolver {
         if let Some(known) = cache.borrow().get(alias) {
             return known.clone();
         }
-        let resolved = ssh_g(alias)
+        let resolved = ssh_g(alias, &withheld)
             .map_err(|error| debug!(alias, %error, "cannot resolve the SSH alias"))
             .ok()
             .flatten();
@@ -1002,8 +1005,12 @@ fn ssh_resolver() -> Resolver {
 }
 
 /// The `hostname` that `ssh -G <alias>` prints, lowercased; `None` when it prints none.
-fn ssh_g(alias: &str) -> Result<Option<String>, String> {
-    let mut child = Process::new("ssh")
+fn ssh_g(alias: &str, withheld: &[OsString]) -> Result<Option<String>, String> {
+    let mut command = Process::new("ssh");
+    for name in withheld {
+        command.env_remove(name);
+    }
+    let mut child = command
         .arg("-G")
         .arg(alias)
         .stdin(Stdio::null())
@@ -1062,7 +1069,7 @@ mod tests {
 
     #[test]
     fn names_with_a_dot_or_unsafe_characters_are_not_looked_up() {
-        let resolve = ssh_resolver();
+        let resolve = ssh_resolver(Vec::new());
         for host in ["github.com", "-oProxyCommand=x", "a b", "", "x;y"] {
             assert_eq!(resolve(host), None, "{host}");
         }

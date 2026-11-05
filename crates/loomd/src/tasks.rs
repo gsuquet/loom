@@ -211,6 +211,7 @@ pub fn start(
     machine_id: MachineId,
     archive_after: Duration,
     events: Arc<Bus>,
+    runner: GitRunner,
 ) -> Result<(TaskStore, TaskHandle)> {
     let mut files = Vec::with_capacity(stores.len());
     for (context, root) in stores {
@@ -234,7 +235,7 @@ pub fn start(
     let worker = Worker {
         ready: Some(ready_sender),
         tasks: Tasks::new(files, index),
-        commits: StoreCommits::new(GitRunner::from_env(), stores.clone()),
+        commits: StoreCommits::new(runner, stores.clone()),
         stores: stores.clone(),
         watching: watcher.is_some(),
         unwatched,

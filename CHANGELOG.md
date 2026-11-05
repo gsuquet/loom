@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `loomd` no longer gives forge tokens to git, its hooks or its helpers. It removes each `token_env` variable of the configuration, `LOOM_GITHUB_TOKEN` and `GITHUB_TOKEN` from the environment of every git process, and of `ssh -G`.
+
+### Changed
+
+- A credential helper that reads one of these variables now has no credential under `loomd`, so its fetches, remote checks and store syncs fail. For example, `gh auth git-credential` reads `GH_TOKEN` and `GITHUB_TOKEN`, and `glab` reads `GITLAB_TOKEN`. Use a dedicated name such as `LOOM_GITLAB_TOKEN`, `token_cmd`, or a stored helper login.
+- `dirty` of a repository state reads every gitlink of the index, also without a `.gitmodules` entry, and at each depth. `.gitmodules` `ignore` now comes before `diff.ignoreSubmodules`.
+
+### Fixed
+
+- A state read no longer runs the filter drivers of a submodule.
+- A state read no longer follows `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_NAMESPACE` of the environment of `loomd`. With `GIT_INDEX_FILE` set, `dirty` of a repository with a gitlink and no `.gitmodules` file in its working tree is unknown.
+- An update no longer moves a branch when git would act on another working tree than the one that `loomd` read. Right before it moves a branch, `loomd` asks git which working tree it would act on. On a hand-built configuration, a state read can still disagree with git, and the update stops (`other_work_tree`). `core.worktree` that a state read cannot follow also leaves every field of the state unknown.
+- git no longer inherits `GIT_CONFIG_PARAMETERS` from the environment of `loomd`.
+
 ### Removed
 
 - The TUI. `loom` with no command now prints the help and exits 0 on a terminal too. The CLI commands are the interface. `[contexts.<name>] color` stays valid in `config.toml`, and no command uses it.

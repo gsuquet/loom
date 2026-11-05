@@ -153,6 +153,7 @@ impl Fixture {
         GitRunner {
             program: PathBuf::from("git"),
             env: self.env(),
+            withheld_env: Vec::new(),
             ssh_in_env: false,
             fetch_timeout: Duration::from_secs(60),
             merge_timeout: Duration::from_secs(30),
@@ -1147,4 +1148,73 @@ fn a_repository_without_remote_or_unreadable_runs_no_git() {
     };
     assert_eq!(*step, UpdateStep::Fetch);
     assert!(error.starts_with("cannot run git"), "{error}");
+}
+
+/// git names the working tree that the read used, so these still update.
+#[test]
+fn the_working_tree_check_lets_ordinary_layouts_update() {
+    let fixture = Fixture::new();
+
+    // A linked worktree.
+    let repo = fixture.clone("work");
+    let linked = fixture.path("linked");
+    fixture.git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--track",
+            "-b",
+            "other",
+            linked.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+    let to = fixture.advance("main", "f.txt", "two\n");
+    let report = fixture.update(&linked, RepoUpdatePolicy::Ff);
+    assert!(
+        matches!(outcomes(&report), [UpdateOutcome::FastForwarded { to: head, .. }] if *head == to),
+        "{report:?}"
+    );
+
+    // A clean submodule.
+    let sub = fixture.path("sub-origin");
+    fixture.git(fixture.dir.path(), &["init", "-q", sub.to_str().unwrap()]);
+    fixture.commit(&sub, "s.txt", "s\n", "first");
+    let with_sub = fixture.clone("with-sub");
+    fixture.git(
+        &with_sub,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    fixture.git(&with_sub, &["commit", "-q", "-m", "submodule"]);
+    fixture.git(&with_sub, &["push", "-q", "origin", "HEAD:main"]);
+    let seed = fixture.seed();
+    fixture.git(&seed, &["pull", "-q", "origin", "main"]);
+    let to = fixture.advance("main", "f.txt", "three\n");
+    let report = fixture.update(&with_sub, RepoUpdatePolicy::Ff);
+    assert!(
+        matches!(outcomes(&report), [UpdateOutcome::FastForwarded { to: head, .. }] if *head == to),
+        "{report:?}"
+    );
+
+    // A `core.worktree` that git and the read both follow.
+    let elsewhere = fixture.clone("elsewhere-clone");
+    let tree = fixture.path("elsewhere-tree");
+    // The submodule is not checked out here either.
+    fs::create_dir_all(tree.join("sub")).unwrap();
+    for file in ["f.txt", ".gitmodules"] {
+        fs::copy(elsewhere.join(file), tree.join(file)).unwrap();
+    }
+    fixture.git(
+        &elsewhere,
+        &["config", "core.worktree", tree.to_str().unwrap()],
+    );
+    let to = fixture.advance("main", "f.txt", "four\n");
+    let report = fixture.update(&elsewhere, RepoUpdatePolicy::Ff);
+    assert!(
+        matches!(outcomes(&report), [UpdateOutcome::FastForwarded { to: head, .. }] if *head == to),
+        "{report:?}"
+    );
+    assert_eq!(fs::read_to_string(tree.join("f.txt")).unwrap(), "four\n");
 }
