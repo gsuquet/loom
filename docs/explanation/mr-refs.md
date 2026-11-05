@@ -22,7 +22,9 @@ If several clones or worktrees have such a remote, `loomd` uses this order:
 
 ## When loomd fetches
 
-A separate thread does this work after each poll of a context and a forge host. It reads the Review tasks of that poll, and looks at the current head of each open MR. If that head has no recorded patch, the thread fetches the MR and writes the patch.
+A separate thread does this work after each poll of a context and a forge host, and after each start that creates a task. It reads the Review tasks of that context and host, and looks at the current head of each open MR. If that head has no recorded patch, the thread fetches the MR and writes the patch.
+
+An MR with only a [queue entry](review-sync.md#when-an-entry-comes-and-goes) has no Review task. Thus, it gets no fetch, no refs and no patch. `loom review start` creates the task and starts this work at once, without a poll. The start does not wait for the end of this work: the refs and the patch come a short time after its answer.
 
 This step has its own failures:
 
@@ -106,7 +108,7 @@ If a clone comes later, the next poll replaces the reduced patch of the current 
 
 ## Cleanup
 
-After a task is archived, the next poll of its context and host deletes its refs with `git update-ref -d`. Only the three refs of that MR go. The patches stay in the archived task. If the remote now names another project, its refs stay, because they can be of another MR.
+After a task is archived, the next poll of its context and host deletes its refs with `git update-ref -d`. Only the three refs of that MR go. The patches stay in the archived task. If the MR comes back as a queue entry, it has no refs until you start on it. The new task then fetches them again and writes a new patch for the current head. If the remote now names another project, its refs stay, because they can be of another MR.
 
 When another clone replaces the clone of an MR, the old clone loses its refs. Until then, `index.db` keeps its path.
 
@@ -117,6 +119,7 @@ The refs stay when an active Review task of any context has the same MR, because
 ## Limits
 
 - If you delete `index.db`, or a clone leaves the index, refs in a clone that is not in the index stay. Delete them with `git update-ref -d`.
+- The `reviewed` ref needs the commit of your last verdict in the clone. After a rebase with no earlier fetch, for example when you approved at the forge and started after the push, the clone does not have that commit: the ref is absent. `sync.json` still has the verdict.
 - Your last verdict gives the `reviewed` ref. If you never gave a verdict on a version, `git gc` can remove its commit after a force push. Its patch stays.
 - `.git/info/attributes` still changes a patch: git has no option to ignore it.
 - The mode of a new or deleted file with hunks does not count in the hash, because the forges do not give it. For the same reason, a mode change next to hunks counts as a change between a local and a reduced patch.
@@ -125,6 +128,7 @@ The refs stay when an active Review task of any context has the same MR, because
 - A task that you remove, and do not archive, leaves its row in `index.db` and its refs.
 - A task that you restore and archive again keeps its refs until the next start of `loomd`.
 - A lazy fetch that `loomd` stops can leave `tmp_pack_*` files in the clone.
+- A start that creates a task also counts as a poll for the wait of an MR that failed. Thus, many starts shorten that wait.
 - A task whose file is not valid does not protect the refs of its MR from a cleanup.
 - If two contexts have one MR with different verdicts, the `reviewed` ref follows the last poll.
 - If the target branch absorbs commits of the head, the local diff can show more hunks than a three-dot diff of the current tip, until the next push. A draft on such a hunk gets a flag from check 2 of the publish.

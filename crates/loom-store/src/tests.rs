@@ -891,7 +891,7 @@ fn forge_at(refreshed_at: u64, archived: bool) -> ForgeMetadata {
 }
 
 #[test]
-fn version_7_database_migrates_to_8_with_its_repositories_and_no_forge_metadata() {
+fn version_7_database_migrates_with_its_repositories_and_no_forge_metadata() {
     let dir = TempDir::new().unwrap();
     let path = db(&dir);
     let mut conn = Connection::open(&path).unwrap();

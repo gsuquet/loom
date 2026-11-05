@@ -588,6 +588,13 @@ pub trait GitlabForge: Forge {
     /// [`ForgeError`].
     fn approvals(&self, mr: GitlabMr) -> Result<Approvals, ForgeError>;
 
+    /// The reviewers of `mr`, with their state: `GET .../reviewers`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`] when the request fails or the answer cannot be parsed.
+    fn reviewers(&self, mr: GitlabMr) -> Result<Vec<crate::gitlab::MrReviewer>, ForgeError>;
+
     /// Resolves the discussion `discussion_id`.
     ///
     /// # Errors

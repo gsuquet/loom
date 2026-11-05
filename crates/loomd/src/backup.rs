@@ -32,6 +32,8 @@ pub enum Scope {
         /// Where its directory is.
         location: TaskLocation,
     },
+    /// The queue of the store: what the poll wrote that belongs to no task.
+    Queue,
     /// Every change of the store.
     All,
 }

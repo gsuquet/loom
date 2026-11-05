@@ -341,19 +341,54 @@ pub enum ReviewCommand {
     /// Poll the forges now for the merge requests where I am a requested reviewer.
     ///
     /// Polls every forge host that has a credential for a context of this machine, or only the
-    /// hosts of the context that `-c` names. Each MR to review gets a Review task in the inbox,
-    /// with a copy of the MR in the task directory (`mrs/`). A new head after my verdict reopens
-    /// the task; a merged or closed MR closes it. An MR of another context is not written to
-    /// this store. The command fails if a poll or an MR fails; the copies of its MRs stay as they were. A rate limit of a forge is not a failure.
+    /// hosts of the context that `-c` names. Each MR to review gets a queue entry
+    /// (`loom review queue`) and no task, until `loom review start`. An MR whose request is
+    /// removed, whose head has my verdict, or that is merged or closed leaves the queue. A new
+    /// head after my verdict reopens a Review task; a merged or closed MR closes it. An MR of
+    /// another context is not written to this store. The command fails if a poll or an MR
+    /// fails; its entries and the copies of its MRs stay as they were. A rate limit of a forge
+    /// is not a failure.
     /// loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it
     /// is stopped.
     Sync(ReviewSyncArgs),
+    /// List the merge requests that wait on me and have no Review task.
+    ///
+    /// Lists the entries of every context of this machine, or only of the context that `-c`
+    /// names. Reads the files of the stores: the forges are not called. Run `loom review sync`
+    /// for a poll now. Starts loomd if it is stopped.
+    Queue(ReviewQueueArgs),
+    /// Start on a merge request of the queue: create its Review task.
+    ///
+    /// Reads the MR on the forge, creates the Review task in `active` with a copy of the MR in
+    /// the task directory (`mrs/`), and removes the entry. If the MR already has a Review task,
+    /// the command shows this task and creates nothing. If the forge fails, the entry stays and
+    /// no task is created: run the command again. Use `-c` when two contexts have this key.
+    /// Starts loomd if it is stopped.
+    Start(ReviewStartArgs),
 }
 
 /// Options of `loom review sync`.
 #[derive(Debug, clap::Args)]
 pub struct ReviewSyncArgs {
     /// Print the result as JSON (`ReviewSyncResult` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom review queue`.
+#[derive(Debug, clap::Args)]
+pub struct ReviewQueueArgs {
+    /// Print the result as JSON (`ReviewQueue` schema).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options of `loom review start`.
+#[derive(Debug, clap::Args)]
+pub struct ReviewStartArgs {
+    /// The key of the merge request, such as `acme/shop#412` or `company-a/checkout!88`.
+    pub key: String,
+    /// Print the result as JSON (`ReviewStartResult` schema).
     #[arg(long)]
     pub json: bool,
 }

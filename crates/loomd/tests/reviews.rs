@@ -15,13 +15,13 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::SystemTime;
 
 use loom_api::{
-    Actor, Event, ReviewSync, ReviewSyncOutcome, ReviewSyncResult, Status, TaskDetail, TaskEvents,
-    TaskList,
+    Actor, Event, QueueReason, ReviewQueue, ReviewStartResult, ReviewSync, ReviewSyncOutcome,
+    ReviewSyncResult, Status, TaskDetail, TaskEvents, TaskList,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -260,6 +260,10 @@ fn gitlab() -> Server {
         ),
         (format!("GET {mr}/approvals"), route(approvals.to_string())),
         (
+            format!("GET {mr}/reviewers"),
+            route(fixture("gitlab/merge-request-88-reviewers.json")),
+        ),
+        (
             format!("GET {mr}/discussions"),
             Route {
                 headers: vec![("x-next-page", "2".to_owned())],
@@ -345,7 +349,22 @@ impl Sandbox {
 
     /// Starts loomd, archiving as on `today` (`LOOM_TEST_TODAY`) when given.
     fn start_on(&self, today: Option<&str>) -> Daemon {
+        self.start_with(today, "LOOM_TEST_FULL_LIST_PERIOD", "1h")
+    }
+
+    /// Starts loomd, with this time between two full GitLab lists.
+    fn start_with_full_list_period(&self, period: &str) -> Daemon {
+        self.start_with(None, "LOOM_TEST_FULL_LIST_PERIOD", period)
+    }
+
+    /// Starts loomd, with this test hook.
+    fn start_with_env(&self, name: &str, value: &str) -> Daemon {
+        self.start_with(None, name, value)
+    }
+
+    fn start_with(&self, today: Option<&str>, name: &str, value: &str) -> Daemon {
         let mut command = Command::new(env!("CARGO_BIN_EXE_loomd"));
+        command.env(name, value);
         if let Some(today) = today {
             command.env("LOOM_TEST_TODAY", today);
         }
@@ -446,16 +465,50 @@ impl Sandbox {
             .count()
     }
 
+    /// The passes of MR refs asked for by this trigger: `poll` or `start`.
+    fn passes_of(&self, trigger: &str) -> usize {
+        fs::read_to_string(self.pass_file())
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == trigger)
+            .count()
+    }
+
     /// A sync, then the end of the pass of MR refs of each poll that it ran.
     fn sync_and_settle(&self) -> ReviewSyncResult {
-        let before = self.passes();
+        let before = self.passes_of("poll");
         let result = self.sync();
         let polls = result
             .forges
             .iter()
             .filter(|forge| matches!(forge.outcome, ReviewSyncOutcome::Synced { .. }))
             .count();
-        wait_for("the pass of each poll", || self.passes() >= before + polls);
+        wait_for("the pass of each poll", || {
+            self.passes_of("poll") >= before + polls
+        });
+        result
+    }
+
+    /// No start asked for a pass of MR refs since `before` starts: a poll queues its pass behind
+    /// the pass of a start of the same context and host, so it is written by then.
+    fn assert_no_start_pass_since(&self, before: usize) {
+        self.sync_and_settle();
+        assert_eq!(self.passes_of("start"), before);
+    }
+
+    /// A sync, then a start on each entry, each with the end of its pass of MR refs.
+    fn sync_and_start(&self) -> ReviewSyncResult {
+        let result = self.sync_and_settle();
+        for entry in queue(&self.socket(), None).entries {
+            let encoded = entry
+                .key
+                .replace('/', "%2F")
+                .replace('#', "%23")
+                .replace('!', "%21");
+            let before = self.passes_of("start");
+            start(&self.socket(), &encoded);
+            wait_for("the pass of the start", || self.passes_of("start") > before);
+        }
         result
     }
 }
@@ -468,18 +521,20 @@ fn poll<'a>(result: &'a ReviewSyncResult, context: &str, host: &str) -> &'a Revi
         .unwrap_or_else(|| panic!("no poll of {context} {host}: {result:?}"))
 }
 
-/// `(mrs, created, changed, other_context, failed)` of a poll that succeeded.
-fn counts(poll: &ReviewSync) -> (usize, usize, usize, usize, usize) {
+/// `(mrs, added, removed, changed, other_context, failed)` of a poll that succeeded.
+fn counts(poll: &ReviewSync) -> (usize, usize, usize, usize, usize, usize) {
     match &poll.outcome {
         ReviewSyncOutcome::Synced {
             mrs,
-            created,
+            added,
+            removed,
             changed,
             other_context,
             failed,
         } => (
             *mrs,
-            created.len(),
+            added.len(),
+            removed.len(),
             changed.len(),
             *other_context,
             failed.len(),
@@ -492,7 +547,7 @@ fn tasks(socket: &Path, context: &str) -> TaskList {
     ok(&request(
         socket,
         "GET",
-        &format!("/v1/tasks?context={context}&status=inbox"),
+        &format!("/v1/tasks?context={context}&status=active"),
         None,
     ))
 }
@@ -542,36 +597,39 @@ fn commits(store: &Path) -> usize {
 
 #[test]
 #[expect(clippy::too_many_lines, reason = "one scenario, step by step")]
-fn mrs_to_review_become_review_tasks_with_a_mirror() {
+fn mrs_to_review_are_entries_then_review_tasks_with_a_mirror() {
     let sandbox = Sandbox::new();
     let daemon = sandbox.start();
     let socket = sandbox.socket();
 
-    // 1. First poll: one Review task per forge, each in the store of its MR's context.
+    // 1. First poll: one entry per forge, each in the store of its MR's context. Then I start
+    // on both.
     let result = sandbox.sync();
     assert_eq!(result.forges.len(), 4, "{result:?}");
     assert_eq!(
         counts(poll(&result, "personal", "github.com")),
-        (1, 1, 0, 0, 0)
+        (1, 1, 0, 0, 0, 0)
     );
     assert_eq!(
         counts(poll(&result, "personal", "gitlab.example.com")),
-        (0, 0, 0, 1, 0)
+        (0, 0, 0, 0, 1, 0)
     );
     assert_eq!(
         counts(poll(&result, "company-a", "github.com")),
-        (0, 0, 0, 1, 0)
+        (0, 0, 0, 0, 1, 0)
     );
     assert_eq!(
         counts(poll(&result, "company-a", "gitlab.example.com")),
-        (1, 1, 0, 0, 0)
+        (1, 1, 0, 0, 0, 0)
     );
+    start(&socket, GITHUB_KEY);
+    start(&socket, GITLAB_KEY);
     let personal = tasks(&socket, "personal").tasks;
     let company = tasks(&socket, "company-a").tasks;
     assert_eq!((personal.len(), company.len()), (1, 1));
     let review = personal[0].task.clone().unwrap();
     assert_eq!(review.kind, loom_api::Kind::Review);
-    assert_eq!(review.status, Status::Inbox);
+    assert_eq!(review.status, Status::Active);
     assert_eq!(review.title, "Review acme/shop#412: Auth refactor");
     let id = review.id.to_string();
     let gitlab_id = company[0].id.to_string();
@@ -634,11 +692,11 @@ fn mrs_to_review_become_review_tasks_with_a_mirror() {
     let result = sandbox.sync();
     assert_eq!(
         counts(poll(&result, "personal", "github.com")),
-        (1, 0, 0, 0, 0)
+        (1, 0, 0, 0, 0, 0)
     );
     assert_eq!(
         counts(poll(&result, "company-a", "gitlab.example.com")),
-        (1, 0, 0, 0, 0)
+        (1, 0, 0, 0, 0, 0)
     );
     assert_eq!(
         (
@@ -699,7 +757,7 @@ fn mrs_to_review_become_review_tasks_with_a_mirror() {
     let result = sandbox.sync();
     assert_eq!(
         counts(poll(&result, "personal", "github.com")),
-        (1, 0, 1, 0, 0)
+        (1, 0, 0, 1, 0, 0)
     );
     assert_eq!(
         task(&socket, &id).summary.task.unwrap().status,
@@ -717,7 +775,7 @@ fn mrs_to_review_become_review_tasks_with_a_mirror() {
     let result = sandbox.sync();
     assert_eq!(
         counts(poll(&result, "personal", "github.com")),
-        (1, 0, 1, 0, 0)
+        (1, 0, 0, 1, 0, 0)
     );
     assert_eq!(
         task(&socket, &id).summary.task.unwrap().status,
@@ -753,7 +811,7 @@ fn mrs_to_review_become_review_tasks_with_a_mirror() {
     assert!(failed.last_success.is_some());
     assert_eq!(
         counts(poll(&result, "company-a", "gitlab.example.com")),
-        (1, 0, 0, 0, 0)
+        (1, 0, 0, 0, 0, 0)
     );
     assert_eq!(files(&sandbox.store("personal")), before);
 
@@ -789,7 +847,7 @@ fn a_gitlab_approval_closes_once_a_new_head_reopens_and_a_merge_closes() {
     let daemon = sandbox.start();
     let socket = sandbox.socket();
     sandbox.sync();
-    let id = tasks(&socket, "company-a").tasks[0].id.to_string();
+    let id = start(&socket, GITLAB_KEY).task.summary.id.to_string();
 
     // My approval on the current head: done.
     sandbox
@@ -828,7 +886,7 @@ fn a_gitlab_approval_closes_once_a_new_head_reopens_and_a_merge_closes() {
     let result = sandbox.sync();
     assert_eq!(
         counts(poll(&result, "company-a", "gitlab.example.com")),
-        (1, 0, 0, 0, 0)
+        (1, 0, 0, 0, 0, 0)
     );
     assert_eq!(
         (
@@ -851,7 +909,7 @@ fn a_gitlab_approval_closes_once_a_new_head_reopens_and_a_merge_closes() {
     let result = sandbox.sync();
     assert_eq!(
         counts(poll(&result, "company-a", "gitlab.example.com")),
-        (0, 0, 0, 0, 0)
+        (0, 0, 0, 0, 0, 0)
     );
     assert!(
         !sandbox.gitlab.requests()[polled..]
@@ -896,10 +954,10 @@ fn a_poll_that_stops_on_one_mr_applies_the_mrs_read_before_it() {
         matches!(stopped.outcome, ReviewSyncOutcome::Failed { .. }),
         "{stopped:?}"
     );
-    // 412, read before 413 stopped the poll, has its task.
-    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+    // 412, read before 413 stopped the poll, has its entry.
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
 
-    // 413 is gone: only that MR fails; 412 is unchanged (its ETag matches), no second task.
+    // 413 is gone: only that MR fails; 412 is unchanged (its ETag matches), no second entry.
     sandbox.github.set(
         PULL_413,
         Route {
@@ -910,15 +968,15 @@ fn a_poll_that_stops_on_one_mr_applies_the_mrs_read_before_it() {
     let result = sandbox.sync();
     assert_eq!(
         counts(poll(&result, "personal", "github.com")),
-        (2, 0, 0, 0, 1)
+        (2, 0, 0, 0, 0, 1)
     );
-    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
 
     daemon.stop();
 }
 
 #[test]
-fn an_mr_whose_web_url_is_on_another_host_gets_no_task() {
+fn an_mr_whose_web_url_is_on_another_host_gets_no_entry() {
     let sandbox = Sandbox::new();
     let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
     mr["web_url"] = json!("https://gitlab.public.example/company-a/checkout/-/merge_requests/88");
@@ -932,11 +990,1754 @@ fn an_mr_whose_web_url_is_on_another_host_gets_no_task() {
         let result = sandbox.sync();
         assert_eq!(
             counts(poll(&result, "company-a", "gitlab.example.com")),
-            (1, 0, 0, 0, 1)
+            (1, 0, 0, 0, 0, 1)
         );
     }
-    assert_eq!(tasks(&socket, "company-a").tasks.len(), 0);
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
     daemon.stop();
+}
+
+const GITHUB_KEY: &str = "acme%2Fshop%23412";
+const GITLAB_KEY: &str = "company-a%2Fcheckout%2188";
+const PULL: &str = "GET /repos/acme/shop/pulls/412";
+const MR_88: &str = "GET /projects/77/merge_requests/88";
+/// The two forges: `(context, percent-encoded key, key, entry file, mirror directory)`.
+const FORGES: [(&str, &str, &str, &str, &str); 2] = [
+    (
+        "personal",
+        GITHUB_KEY,
+        "acme/shop#412",
+        "github-acme%2Fshop%23412.json",
+        MIRROR,
+    ),
+    (
+        "company-a",
+        GITLAB_KEY,
+        "company-a/checkout!88",
+        "gitlab-company-a%2Fcheckout%2188.json",
+        "mrs/gitlab-company-a%2Fcheckout%2188",
+    ),
+];
+
+/// The task directories of a store.
+fn task_dirs(store: &Path) -> Vec<PathBuf> {
+    fs::read_dir(store.join("tasks")).map_or_else(
+        |_| Vec::new(),
+        |entries| entries.map(|entry| entry.unwrap().path()).collect(),
+    )
+}
+
+/// What a test compares to tell that nothing changed in a store.
+fn snapshot(store: &Path) -> (Vec<(PathBuf, SystemTime)>, usize) {
+    (files(store), commits(store))
+}
+
+/// The bytes of each entry file of a store.
+fn entry_files(store: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = fs::read_dir(store.join("queue/mrs")) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, String)> = entries
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                fs::read_to_string(entry.path()).unwrap(),
+            )
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The GitHub pull request with no reviewer, as a new version of it.
+fn github_without_request(sandbox: &Sandbox) {
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"no-request\""));
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+}
+
+/// The GitLab merge request with no reviewer, as a new version of it.
+fn gitlab_without_request(sandbox: &Sandbox) {
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["reviewers"] = json!([]);
+    sandbox
+        .gitlab
+        .set(MR_88, with_etag(mr.to_string(), "W/\"no-request\""));
+    sandbox.gitlab.set(
+        "GET /merge_requests",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+}
+
+/// The GitHub pull request in `state`, as a new version of it.
+fn github_in_state(sandbox: &Sandbox, state: &str, merged: bool) {
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["state"] = json!(state);
+    pull["merged"] = json!(merged);
+    if merged {
+        pull["merged_at"] = json!("2026-10-23T09:00:00Z");
+    }
+    pull["closed_at"] = json!("2026-10-23T09:00:00Z");
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), &format!("\"{state}\"")));
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+}
+
+#[test]
+fn a_poll_that_finds_a_requested_mr_writes_an_entry_no_task_and_no_mirror() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let result = sandbox.sync();
+    for (context, host) in [
+        ("personal", "github.com"),
+        ("company-a", "gitlab.example.com"),
+    ] {
+        let ReviewSyncOutcome::Synced {
+            added,
+            removed,
+            changed,
+            ..
+        } = &poll(&result, context, host).outcome
+        else {
+            panic!("{result:?}");
+        };
+        assert_eq!(
+            (added.len(), removed.len(), changed.len()),
+            (1, 0, 0),
+            "{result:?}"
+        );
+    }
+    for (context, _, key, file, _) in FORGES {
+        let store = sandbox.store(context);
+        assert_eq!(
+            task_dirs(&store),
+            Vec::<PathBuf>::new(),
+            "{context}: a task"
+        );
+        assert_eq!(tasks(&socket, context).tasks.len(), 0);
+        // One file per MR, committed.
+        let entries = entry_files(&store);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].0, file);
+        assert!(commits(&store) >= 1, "{context}: no commit");
+        let entry: Value = serde_json::from_str(&entries[0].1).unwrap();
+        assert_eq!(entry["key"], key);
+        assert_eq!(entry["reasons"], json!(["review_requested"]));
+        for field in [
+            "title",
+            "author",
+            "web_url",
+            "head_sha",
+            "updated_at",
+            "forge_ids",
+        ] {
+            assert!(entry.get(field).is_some(), "{field} missing: {entry}");
+        }
+        // The API lists it, with its context.
+        let listed = queue(&socket, Some(context));
+        assert_eq!(listed.entries.len(), 1, "{listed:?}");
+        assert_eq!(listed.entries[0].key, key);
+        assert_eq!(listed.entries[0].context.as_str(), context);
+        assert_eq!(
+            listed.entries[0].reasons,
+            vec![QueueReason::ReviewRequested]
+        );
+    }
+    assert_eq!(queue(&socket, None).entries.len(), 2);
+    // An entry has no mirror: nothing reads the threads or versions of the MR.
+    assert!(
+        !sandbox
+            .github
+            .requests()
+            .iter()
+            .any(|line| line.contains("graphql") || line.contains("comments")),
+        "{:?}",
+        sandbox.github.requests()
+    );
+    assert!(
+        !sandbox
+            .gitlab
+            .requests()
+            .iter()
+            .any(|line| line.contains("discussions") || line.contains("versions")),
+        "{:?}",
+        sandbox.gitlab.requests()
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_start_creates_the_active_task_with_its_mirror_and_removes_the_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    for (context, encoded, key, _, mirror) in FORGES {
+        let store = sandbox.store(context);
+        let commits_before = commits(&store);
+        let started = start(&socket, encoded);
+        assert!(started.created, "{key}");
+        let task = started.task.summary.task.clone().unwrap();
+        assert_eq!(task.status, Status::Active, "{key}");
+        assert_eq!(task.kind, loom_api::Kind::Review);
+        assert_eq!(task.context.as_str(), context);
+        let id = started.task.summary.id.to_string();
+        // Without waiting for a poll.
+        let dir = store.join("tasks").join(&id).join(mirror);
+        for name in [
+            "mr.json",
+            "description.md",
+            "versions.json",
+            "threads.json",
+            "sync.json",
+        ] {
+            assert!(dir.join(name).is_file(), "{key}: {name} missing");
+        }
+        assert_eq!(entry_files(&store), Vec::<(String, String)>::new(), "{key}");
+        assert_eq!(queue(&socket, Some(context)).entries.len(), 0);
+        // The task and the removal of the entry are committed: the tree is clean.
+        assert!(commits(&store) > commits_before, "{key}");
+        let status = common::git(&PathBuf::from("/tmp"), &store, &["status", "--porcelain"]);
+        assert_eq!(status.trim(), "", "{key}");
+        // The start is my act: the creation is not of the daemon.
+        let log: TaskEvents = ok(&request(
+            &socket,
+            "GET",
+            &format!("/v1/tasks/{id}/events"),
+            None,
+        ));
+        assert_ne!(log.events[0].actor, Actor::Daemon, "{key}");
+        // The key is an alias of the task.
+        assert_eq!(task_summary_id(&socket, encoded), id);
+
+        // A second start: the same task, nothing written.
+        let before = snapshot(&store);
+        let again = start(&socket, encoded);
+        assert!(!again.created, "{key}");
+        assert_eq!(again.task.summary.id.to_string(), id);
+        assert_eq!(snapshot(&store), before, "{key}");
+        assert_eq!(task_dirs(&store).len(), 1, "{key}");
+    }
+    // The next poll has nothing to change, and gives no entry to a task.
+    let before = (
+        snapshot(&sandbox.store("personal")),
+        snapshot(&sandbox.store("company-a")),
+    );
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")),
+        (1, 0, 0, 0, 0, 0)
+    );
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (1, 0, 0, 0, 0, 0)
+    );
+    assert_eq!(
+        (
+            snapshot(&sandbox.store("personal")),
+            snapshot(&sandbox.store("company-a"))
+        ),
+        before
+    );
+    daemon.stop();
+}
+
+#[test]
+fn starts_racing_a_poll_give_one_task() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    for (context, encoded, key, _, _) in FORGES {
+        // Two starts and a poll at once, released together.
+        let gate = Arc::new(Barrier::new(3));
+        #[expect(
+            clippy::needless_collect,
+            reason = "both threads must run before the first join"
+        )]
+        let starters: Vec<_> = (0..2)
+            .map(|_| {
+                let (gate, socket) = (Arc::clone(&gate), socket.clone());
+                thread::spawn(move || {
+                    gate.wait();
+                    start(&socket, encoded)
+                })
+            })
+            .collect();
+        let poller = {
+            let (gate, socket) = (Arc::clone(&gate), socket.clone());
+            thread::spawn(move || {
+                gate.wait();
+                let _: ReviewSyncResult = ok(&request(
+                    &socket,
+                    "POST",
+                    "/v1/reviews/sync",
+                    Some(&json!({})),
+                ));
+            })
+        };
+        let started: Vec<_> = starters
+            .into_iter()
+            .map(|one| one.join().unwrap())
+            .collect();
+        poller.join().unwrap();
+        assert_eq!(
+            started[0].task.summary.id, started[1].task.summary.id,
+            "{key}"
+        );
+        assert_eq!(
+            started.iter().filter(|one| one.created).count(),
+            1,
+            "{key}: {started:?}"
+        );
+        // One more poll sees the task, and adds no entry.
+        sandbox.sync();
+        let store = sandbox.store(context);
+        assert_eq!(task_dirs(&store).len(), 1, "{key}");
+        assert_eq!(entry_files(&store), Vec::<(String, String)>::new(), "{key}");
+    }
+    daemon.stop();
+}
+
+#[test]
+fn a_start_with_the_forge_down_changes_nothing_and_can_be_done_again() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    for (context, encoded, key, _, _) in FORGES {
+        let server = if context == "personal" {
+            &sandbox.github
+        } else {
+            &sandbox.gitlab
+        };
+        let store = sandbox.store(context);
+        let before = snapshot(&store);
+        server.down.store(true, Ordering::SeqCst);
+        let refused = start_response(&socket, encoded);
+        assert_eq!(refused.status, 502, "{key}: {}", refused.body);
+        assert!(refused.body.contains("\"forge\""), "{}", refused.body);
+        for token in [GITHUB_TOKEN, GITLAB_TOKEN] {
+            assert!(!refused.body.contains(token), "{}", refused.body);
+        }
+        assert_eq!(snapshot(&store), before, "{key}");
+        server.down.store(false, Ordering::SeqCst);
+        let started = start(&socket, encoded);
+        assert!(started.created, "{key}");
+        assert_eq!(task_dirs(&store).len(), 1);
+    }
+    daemon.stop();
+}
+
+#[test]
+fn a_start_of_an_mr_merged_since_the_last_poll_is_refused_and_removes_the_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    github_in_state(&sandbox, "closed", true);
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T11:00:00.000Z", "closed", "W/\"closed\""),
+    );
+    for (context, encoded, key, _, _) in FORGES {
+        let refused = start_response(&socket, encoded);
+        assert_eq!(refused.status, 409, "{key}: {}", refused.body);
+        assert!(refused.body.contains("\"conflict\""), "{}", refused.body);
+        let store = sandbox.store(context);
+        assert_eq!(task_dirs(&store), Vec::<PathBuf>::new(), "{key}");
+        assert_eq!(entry_files(&store), Vec::<(String, String)>::new(), "{key}");
+    }
+    daemon.stop();
+}
+
+#[test]
+fn a_start_is_refused_without_an_entry_with_a_bad_key_and_on_a_machine_that_does_not_poll() {
+    let sandbox = Sandbox::new();
+    // `personal` is held here, but polled by the first machine of its list.
+    let config = CONFIG.replace(
+        "[contexts.personal]\n",
+        "[contexts.personal]\nmachines = [\"work\", \"laptop\"]\n",
+    );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+
+    // Nothing polled yet: no entry, no task. The forge is not called.
+    let before = sandbox.gitlab.requests().len();
+    let missing = start_response(&socket, GITLAB_KEY);
+    assert_eq!(missing.status, 404, "{}", missing.body);
+    assert_eq!(sandbox.gitlab.requests().len(), before);
+    assert_eq!(start_response(&socket, "not-a-key").status, 400);
+
+    // An entry that came with a store sync from the machine that polls.
+    let dir = sandbox.store("personal").join("queue/mrs");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(FORGES[0].3),
+        json!({
+            "v": 1,
+            "key": "acme/shop#412",
+            "forge_ids": {"forge": "github", "node_id": "PR_x", "id": 1},
+            "title": "Auth refactor",
+            "author": "alice",
+            "web_url": "https://github.com/acme/shop/pull/412",
+            "head_sha": V1,
+            "updated_at": "2026-10-22T09:00:00Z",
+            "reasons": ["review_requested"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    let refused = start_response(&socket, GITHUB_KEY);
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert!(refused.body.contains("first machine"), "{}", refused.body);
+    assert_eq!(task_dirs(&sandbox.store("personal")), Vec::<PathBuf>::new());
+    daemon.stop();
+}
+
+#[test]
+fn an_mr_with_my_verdict_on_the_current_head_has_no_entry() {
+    let sandbox = Sandbox::new();
+    // GitHub: my review on the head, and a request through a team: the search lists me, and I
+    // am not in the reviewers, since GitHub removes me when I submit. A known limit.
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412/reviews",
+        reviews_with_mine_on(V1),
+    );
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"team\""));
+    // GitLab lists the MRs that I approved.
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, None).entries.len(), 0);
+    for (context, _, _, _, _) in FORGES {
+        assert_eq!(task_dirs(&sandbox.store(context)), Vec::<PathBuf>::new());
+    }
+    // A push without my verdict on it.
+    let mut v2 = fixture_json("github/pull-412.v2.json");
+    v2["requested_reviewers"] = json!([]);
+    v2["updated_at"] = json!("2026-10-23T09:00:00Z");
+    sandbox
+        .github
+        .set(PULL, with_etag(v2.to_string(), "\"v2\""));
+    sandbox.sync();
+    let listed = queue(&socket, None);
+    assert_eq!(listed.entries.len(), 1, "{listed:?}");
+    assert_eq!(listed.entries[0].key, "acme/shop#412");
+    assert_eq!(listed.entries[0].head_sha, V2);
+    daemon.stop();
+}
+
+#[test]
+fn my_verdict_after_the_entry_removes_it() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, None).entries.len(), 2);
+    let mut reviews = fixture_json("github/pull-412-reviews.json");
+    let mut mine = reviews[0].clone();
+    mine["node_id"] = json!("PRR_mine");
+    mine["user"]["login"] = json!("carol");
+    mine["state"] = json!("COMMENTED");
+    mine["commit_id"] = json!(V1);
+    mine["submitted_at"] = json!("2026-10-22T09:00:00Z");
+    reviews.as_array_mut().unwrap().push(mine);
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412/reviews",
+        route(reviews.to_string()),
+    );
+    // GitHub removes me from the reviewers; the search still lists me through a team.
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    pull["updated_at"] = json!("2026-10-22T09:00:00Z");
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"reviewed\""));
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T08:00:00.000Z", "opened", "W/\"a\""),
+    );
+    let result = sandbox.sync();
+    assert_eq!(counts(poll(&result, "personal", "github.com")).2, 1);
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).2,
+        1
+    );
+    assert_eq!(queue(&socket, None).entries.len(), 0);
+    // It stays gone at the next polls, though GitLab still lists the MR.
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.json")),
+    );
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).1,
+        0,
+        "{result:?}"
+    );
+    assert_eq!(queue(&socket, None).entries.len(), 0);
+    daemon.stop();
+}
+
+/// The entry is gone, no task and no event came of it, and its removal is committed.
+fn assert_left_the_queue(sandbox: &Sandbox, context: &str, host: &str, result: &ReviewSyncResult) {
+    let ReviewSyncOutcome::Synced { removed, added, .. } = &poll(result, context, host).outcome
+    else {
+        panic!("{result:?}");
+    };
+    assert_eq!((added.len(), removed.len()), (0, 1), "{result:?}");
+    let store = sandbox.store(context);
+    assert_eq!(entry_files(&store), Vec::<(String, String)>::new());
+    assert_eq!(
+        task_dirs(&store),
+        Vec::<PathBuf>::new(),
+        "no task, so no event"
+    );
+    let status = common::git(&PathBuf::from("/tmp"), &store, &["status", "--porcelain"]);
+    assert_eq!(status.trim(), "");
+    let log = common::git(
+        &PathBuf::from("/tmp"),
+        &store,
+        &["log", "-1", "--format=%s"],
+    );
+    assert_eq!(log.trim(), "queue: 0 added, 0 updated, 1 removed");
+}
+
+#[test]
+fn the_entry_goes_when_the_request_is_removed() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    github_without_request(&sandbox);
+    gitlab_without_request(&sandbox);
+    let result = sandbox.sync();
+    assert_left_the_queue(&sandbox, "personal", "github.com", &result);
+    assert_left_the_queue(&sandbox, "company-a", "gitlab.example.com", &result);
+    daemon.stop();
+}
+
+#[test]
+fn the_entry_goes_when_the_mr_is_merged() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    github_in_state(&sandbox, "closed", true);
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T11:00:00.000Z", "merged", "W/\"m\""),
+    );
+    let result = sandbox.sync();
+    assert_left_the_queue(&sandbox, "personal", "github.com", &result);
+    assert_left_the_queue(&sandbox, "company-a", "gitlab.example.com", &result);
+    daemon.stop();
+}
+
+#[test]
+fn the_entry_goes_when_the_mr_is_closed() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    github_in_state(&sandbox, "closed", false);
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T11:00:00.000Z", "closed", "W/\"c\""),
+    );
+    let result = sandbox.sync();
+    assert_left_the_queue(&sandbox, "personal", "github.com", &result);
+    assert_left_the_queue(&sandbox, "company-a", "gitlab.example.com", &result);
+    daemon.stop();
+}
+
+#[test]
+fn a_request_that_comes_back_after_the_entry_left_gives_a_new_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    github_without_request(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 0);
+    // Same pull request answer (a team request does not change it): no 304 hides the request.
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.json")),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn an_entry_follows_the_mr_and_keeps_its_file_when_nothing_changes() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let mut v2 = fixture_json("github/pull-412.v2.json");
+    v2["title"] = json!("Auth refactor, part 2");
+    sandbox
+        .github
+        .set(PULL, with_etag(v2.to_string(), "\"v2\""));
+    let result = sandbox.sync();
+    // Not added, not removed: its fields follow.
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")),
+        (1, 0, 0, 0, 0, 0)
+    );
+    let listed = queue(&socket, Some("personal"));
+    assert_eq!(listed.entries[0].title, "Auth refactor, part 2");
+    assert_eq!(listed.entries[0].head_sha, V2);
+    let log = common::git(
+        &PathBuf::from("/tmp"),
+        &sandbox.store("personal"),
+        &["log", "-1", "--format=%s"],
+    );
+    assert_eq!(log.trim(), "queue: 0 added, 1 updated, 0 removed");
+    daemon.stop();
+}
+
+#[test]
+fn an_incomplete_search_removes_no_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let mut search = fixture_json("github/search-review-requested.empty.json");
+    search["incomplete_results"] = json!(true);
+    sandbox
+        .github
+        .set("GET /search/issues", route(search.to_string()));
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"team\""));
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_gitlab_entry_is_read_by_its_project_id_after_a_restart() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    daemon.stop();
+    // The list no longer shows it, and loomd has no memory of the project.
+    sandbox.gitlab.set(
+        "GET /merge_requests",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    let daemon = sandbox.start();
+    let before = snapshot(&sandbox.store("company-a"));
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (1, 0, 0, 0, 0, 0)
+    );
+    assert_eq!(snapshot(&sandbox.store("company-a")), before);
+    // The start too reads it by that ID.
+    assert!(start(&sandbox.socket(), GITLAB_KEY).created);
+    daemon.stop();
+}
+
+#[test]
+fn a_failed_list_or_read_changes_no_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    let stores = || {
+        (
+            snapshot(&sandbox.store("personal")),
+            snapshot(&sandbox.store("company-a")),
+        )
+    };
+    let before = stores();
+    let broken = || Route {
+        status: 500,
+        ..route(r#"{"message":"boom"}"#)
+    };
+
+    // The lists fail.
+    sandbox.github.set("GET /search/issues", broken());
+    sandbox.gitlab.set("GET /merge_requests+after", broken());
+    let result = sandbox.sync();
+    for (context, host) in [
+        ("personal", "github.com"),
+        ("company-a", "gitlab.example.com"),
+    ] {
+        assert!(
+            matches!(
+                poll(&result, context, host).outcome,
+                ReviewSyncOutcome::Failed { .. }
+            ),
+            "{result:?}"
+        );
+    }
+    assert_eq!(stores(), before);
+
+    // The lists answer, with the MRs gone, and the reads fail.
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    sandbox.github.set(PULL, broken());
+    sandbox.gitlab.set(MR_88, broken());
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")),
+        (1, 0, 0, 0, 0, 1)
+    );
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (1, 0, 0, 0, 0, 1)
+    );
+    assert_eq!(stores(), before);
+
+    // The host is unreachable.
+    sandbox.github.down.store(true, Ordering::SeqCst);
+    sandbox.gitlab.down.store(true, Ordering::SeqCst);
+    sandbox.sync();
+    assert_eq!(stores(), before);
+    daemon.stop();
+}
+
+#[test]
+fn a_poll_with_no_change_writes_and_commits_nothing() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    let stores = || {
+        (
+            snapshot(&sandbox.store("personal")),
+            snapshot(&sandbox.store("company-a")),
+        )
+    };
+    let before = stores();
+    assert!(before.0.1 >= 1 && before.1.1 >= 1, "{before:?}");
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")),
+        (1, 0, 0, 0, 0, 0)
+    );
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (1, 0, 0, 0, 0, 0)
+    );
+    assert_eq!(stores(), before);
+    // After a restart, a full read of each MR: the same bytes.
+    daemon.stop();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(stores(), before);
+    daemon.stop();
+}
+
+#[test]
+fn an_mr_of_another_context_writes_nothing() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let result = sandbox.sync();
+    assert_eq!(counts(poll(&result, "personal", "gitlab.example.com")).4, 1);
+    assert_eq!(counts(poll(&result, "company-a", "github.com")).4, 1);
+    for (context, _, _, file, _) in FORGES {
+        let names: Vec<String> = entry_files(&sandbox.store(context))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, vec![file.to_owned()], "{context}");
+    }
+    daemon.stop();
+}
+
+#[test]
+fn an_entry_whose_mr_now_belongs_to_another_context_leaves_this_store() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    daemon.stop();
+    // `acme` now belongs to `company-a`.
+    let config = CONFIG
+        .replace(
+            "match.hosts = [\"github.com/acme\"]",
+            "match.hosts = [\"github.com/nobody\"]",
+        )
+        .replace(
+            "match.hosts = [\"gitlab.example.com/company-a\"]",
+            "match.hosts = [\"gitlab.example.com/company-a\", \"github.com/acme\"]",
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(
+        entry_files(&sandbox.store("personal")),
+        Vec::<(String, String)>::new()
+    );
+    let names: Vec<String> = entry_files(&sandbox.store("company-a"))
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(names.contains(&FORGES[0].3.to_owned()), "{names:?}");
+    daemon.stop();
+}
+
+#[test]
+fn my_own_mr_gets_no_entry_and_no_task() {
+    let sandbox = Sandbox::new();
+    let login = fixture_json("gitlab/user.json")["username"].clone();
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["author"]["username"] = login;
+    sandbox
+        .gitlab
+        .set(MR_88, with_etag(mr.to_string(), "W/\"mine\""));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    assert_eq!(start_response(&socket, GITLAB_KEY).status, 404);
+    assert_eq!(
+        task_dirs(&sandbox.store("company-a")),
+        Vec::<PathBuf>::new()
+    );
+    daemon.stop();
+}
+
+#[test]
+fn an_existing_review_task_behaves_as_before_and_has_no_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    // A Review task of before the queue: in `inbox`, created by a poll, with no mirror yet.
+    let created: TaskDetail = ok(&request(
+        &socket,
+        "POST",
+        "/v1/tasks",
+        Some(&json!({
+            "title": "Review acme/shop#412: Auth refactor",
+            "kind": "review",
+            "context": "personal",
+            "status": "inbox",
+            "links": [{"role": "origin", "provider": "github", "key": "acme/shop#412", "url": "https://github.com/acme/shop/pull/412"}],
+        })),
+    ));
+    let id = created.summary.id.to_string();
+
+    // It stays tracked, in its status, gets its mirror, and the MR has no entry.
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")),
+        (1, 0, 0, 1, 0, 0)
+    );
+    assert_eq!(status(&socket, &id), Status::Inbox);
+    assert_eq!(
+        entry_files(&sandbox.store("personal")),
+        Vec::<(String, String)>::new()
+    );
+    assert_eq!(task_dirs(&sandbox.store("personal")).len(), 1);
+    assert!(
+        sandbox
+            .store("personal")
+            .join("tasks")
+            .join(&id)
+            .join(MIRROR)
+            .join("mr.json")
+            .is_file()
+    );
+
+    // My verdict closes it.
+    let mut reviews = fixture_json("github/pull-412-reviews.json");
+    let mut mine = reviews[0].clone();
+    mine["node_id"] = json!("PRR_mine");
+    mine["user"]["login"] = json!("carol");
+    mine["state"] = json!("APPROVED");
+    mine["commit_id"] = json!(V1);
+    mine["submitted_at"] = json!("2026-10-22T09:00:00Z");
+    reviews.as_array_mut().unwrap().push(mine);
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412/reviews",
+        route(reviews.to_string()),
+    );
+    let mut reviewed = fixture_json("github/pull-412.v1.json");
+    reviewed["updated_at"] = json!("2026-10-22T09:00:00Z");
+    sandbox
+        .github
+        .set(PULL, with_etag(reviewed.to_string(), "\"reviewed\""));
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Done);
+    assert_eq!(
+        entry_files(&sandbox.store("personal")),
+        Vec::<(String, String)>::new()
+    );
+
+    // A new head reopens it; still no entry, still one task.
+    sandbox.github.set(
+        PULL,
+        with_etag(fixture("github/pull-412.v2.json"), "\"v2\""),
+    );
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Ready);
+    assert_eq!(
+        entry_files(&sandbox.store("personal")),
+        Vec::<(String, String)>::new()
+    );
+    assert_eq!(task_dirs(&sandbox.store("personal")).len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn an_entry_left_by_a_crash_in_a_start_goes_at_the_next_poll() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let entries = entry_files(&sandbox.store("personal"));
+    let started = start(&socket, GITHUB_KEY);
+    // The task exists, and the entry is back, as after a crash before its removal.
+    let dir = sandbox.store("personal").join("queue/mrs");
+    fs::write(dir.join(&entries[0].0), &entries[0].1).unwrap();
+    // A start still gives the task.
+    let again = start(&socket, GITHUB_KEY);
+    assert!(!again.created);
+    assert_eq!(again.task.summary.id, started.task.summary.id);
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")).2,
+        1,
+        "{result:?}"
+    );
+    assert_eq!(
+        entry_files(&sandbox.store("personal")),
+        Vec::<(String, String)>::new()
+    );
+    assert_eq!(task_dirs(&sandbox.store("personal")).len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn an_mr_of_an_archived_review_task_can_return_as_an_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let id = start(&socket, GITHUB_KEY).task.summary.id.to_string();
+    // Close it, then archive it: loomd indexes the move at its next start.
+    let done = request(
+        &socket,
+        "POST",
+        &format!("/v1/tasks/{id}/actions/done"),
+        None,
+    );
+    assert_eq!(done.status, 200, "{}", done.body);
+    daemon.stop();
+    let store = sandbox.store("personal");
+    fs::create_dir_all(store.join("archive/2026")).unwrap();
+    fs::rename(
+        store.join("tasks").join(&id),
+        store.join("archive/2026").join(&id),
+    )
+    .unwrap();
+    // Its version has a patch, in the archived task.
+    let archived_versions = store
+        .join("archive/2026")
+        .join(&id)
+        .join(MIRROR)
+        .join("versions.json");
+    let mut versions = json_file(&archived_versions);
+    versions[0]["diff"] = json!("local");
+    fs::write(&archived_versions, versions.to_string()).unwrap();
+
+    // Same head, still requested: nothing is new.
+    let daemon = sandbox.start();
+    assert_eq!(status(&socket, &id), Status::Done);
+    sandbox.sync();
+    assert_eq!(entry_files(&store), Vec::<(String, String)>::new());
+    assert_eq!(task_dirs(&store), Vec::<PathBuf>::new());
+
+    // A new head: an entry, and the archived task does not change.
+    let archived_task =
+        fs::read_to_string(store.join("archive/2026").join(&id).join("task.md")).unwrap();
+    sandbox.github.set(
+        PULL,
+        with_etag(fixture("github/pull-412.v2.json"), "\"v2\""),
+    );
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")).1,
+        1,
+        "{result:?}"
+    );
+    assert_eq!(queue(&socket, Some("personal")).entries[0].head_sha, V2);
+    assert_eq!(
+        fs::read_to_string(store.join("archive/2026").join(&id).join("task.md")).unwrap(),
+        archived_task
+    );
+
+    // A start gives a second task for a new round of review, in `active`.
+    let started = start(&socket, GITHUB_KEY);
+    assert!(started.created);
+    let new_id = started.task.summary.id.to_string();
+    assert_ne!(new_id, id);
+    assert_eq!(entry_files(&store), Vec::<(String, String)>::new());
+    // The new mirror knows the versions of the archived one.
+    let versions: Value = serde_json::from_str(
+        &fs::read_to_string(
+            store
+                .join("tasks")
+                .join(&new_id)
+                .join(MIRROR)
+                .join("versions.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(versions.as_array().unwrap().len(), 2, "{versions}");
+    // Its patch stays in the archive: the new mirror does not claim it.
+    assert!(versions[0].get("diff").is_none(), "{versions}");
+    daemon.stop();
+}
+
+/// `mine` as my review of `head`, added to the reviews of the fixture.
+fn reviews_with_mine_on(head: &str) -> Route {
+    let mut reviews = fixture_json("github/pull-412-reviews.json");
+    let mut mine = reviews[0].clone();
+    mine["node_id"] = json!("PRR_mine");
+    mine["user"]["login"] = json!("carol");
+    mine["state"] = json!("COMMENTED");
+    mine["commit_id"] = json!(head);
+    mine["submitted_at"] = json!("2026-10-22T09:00:00Z");
+    reviews.as_array_mut().unwrap().push(mine);
+    route(reviews.to_string())
+}
+
+/// The state of my reviewer on the GitLab MR.
+fn my_reviewer_state(state: &str) -> Route {
+    let mut reviewers = fixture_json("gitlab/merge-request-88-reviewers.json");
+    reviewers[0]["state"] = json!(state);
+    route(reviewers.to_string())
+}
+
+/// The GitLab list shows the MR again, as it does for an MR that changed.
+fn gitlab_lists_it(sandbox: &Sandbox) {
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.json")),
+    );
+}
+
+#[test]
+fn a_github_request_again_without_a_push_gives_an_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    // I review at the forge: GitHub removes me from the reviewers.
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412/reviews",
+        reviews_with_mine_on(V1),
+    );
+    github_without_request(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 0);
+    // The author requests me again, with no push: I am a reviewer again, on a reviewed head.
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["updated_at"] = json!("2026-10-24T09:00:00Z");
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"again\""));
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.json")),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    // It stays at the next poll.
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_gitlab_push_on_a_kept_approval_gives_an_entry_and_the_head_survives_a_restart() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    // I approve at the forge: the entry goes.
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-23T09:00:00.000Z", "opened", "W/\"approved\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    // The head of the approval is machine-local: no store commit for it.
+    let before = snapshot(&sandbox.store("company-a"));
+    sandbox.sync();
+    assert_eq!(snapshot(&sandbox.store("company-a")), before);
+
+    // After a restart, loomd still knows the head of my approval.
+    daemon.stop();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+
+    // A push: the project keeps the approval, and I did not review the push.
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it(&sandbox);
+    sandbox.sync();
+    let listed = queue(&socket, Some("company-a"));
+    assert_eq!(listed.entries.len(), 1, "{listed:?}");
+    assert_eq!(listed.entries[0].head_sha, V3);
+    // It stays: the approval is still of the older head.
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn an_approval_with_no_row_counts_for_the_head_of_the_poll() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    daemon.stop();
+    // A rebuilt index has lost the head of the approval.
+    for name in ["index.db", "index.db-wal", "index.db-shm"] {
+        let _ = fs::remove_file(sandbox.loom_home().join(name));
+    }
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    daemon.stop();
+}
+
+#[test]
+fn an_approval_reset_by_a_push_gives_an_entry_and_a_new_approval_counts_on_the_new_head() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    // A push resets the approval.
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(false));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"reset\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    // I approve again: this time on V3, not on the head of the first approval.
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T10:00:00.000Z", "opened", "W/\"again\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    daemon.stop();
+}
+
+#[test]
+fn an_approved_mr_is_polled_until_it_leaves_and_then_no_more() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    sandbox.sync();
+    // Not listed any more, still read: only that shows that it leaves.
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    assert!(
+        sandbox.gitlab.requests()[seen..].contains(&MR_88.to_owned()),
+        "{:?}",
+        &sandbox.gitlab.requests()[seen..]
+    );
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T11:00:00.000Z", "merged", "W/\"m\""),
+    );
+    sandbox.sync();
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    assert!(
+        !sandbox.gitlab.requests()[seen..].contains(&MR_88.to_owned()),
+        "{:?}",
+        &sandbox.gitlab.requests()[seen..]
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_gitlab_request_again_on_an_approved_mr_gives_an_entry() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    // Removed and added again: my approval stays, and my reviewer state is `unreviewed`.
+    sandbox.gitlab.set(
+        &format!("{MR_88}/reviewers"),
+        my_reviewer_state("unreviewed"),
+    );
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T09:00:00.000Z", "opened", "W/\"again\""),
+    );
+    gitlab_lists_it(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    // The reviewers are read only for an approved MR without a task.
+    let seen = sandbox.gitlab.requests().len();
+    let id = start(&socket, GITLAB_KEY).task.summary.id.to_string();
+    assert!(
+        !sandbox.gitlab.requests()[seen..]
+            .iter()
+            .any(|line| line.ends_with("/reviewers")),
+        "{id}"
+    );
+    daemon.stop();
+}
+
+#[test]
+fn the_reviewers_are_not_read_without_an_approval() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert!(
+        !sandbox
+            .gitlab
+            .requests()
+            .iter()
+            .any(|line| line.ends_with("/reviewers"))
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_failed_read_of_the_reviewers_changes_nothing() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        &format!("{MR_88}/reviewers"),
+        Route {
+            status: 404,
+            ..route(r#"{"message":"404 Not Found"}"#)
+        },
+    );
+    let daemon = sandbox.start();
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (1, 0, 0, 0, 0, 0)
+    );
+    assert_eq!(queue(&sandbox.socket(), Some("company-a")).entries.len(), 0);
+    daemon.stop();
+}
+
+/// A sandbox on GitLab only, where `personal` holds the clones under `~/work`, so a clone of
+/// `company-a/checkout` moves its MR to `personal`. `personal` has `credential`.
+fn sandbox_for_a_move(credential: &str) -> Sandbox {
+    let sandbox = Sandbox::new();
+    let config = format!(
+        r#"
+[repos]
+roots = []
+
+[contexts.personal]
+match.paths = ["{}"]
+
+[contexts.company-a]
+
+[forges."gitlab.example.com"]
+kind = "gitlab"
+token_env = "LOOM_TEST_GITLAB_TOKEN"
+{credential}
+"#,
+        sandbox.user_home().join("work").display()
+    );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    sandbox
+}
+
+/// A clone of `company-a/checkout`, held by `personal`.
+fn register_the_clone(sandbox: &Sandbox) {
+    let repo = sandbox.user_home().join("work/checkout");
+    fs::create_dir_all(&repo).unwrap();
+    let home = sandbox.user_home();
+    common::git(&home, &repo, &["init", "-q"]);
+    common::git(
+        &home,
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://gitlab.example.com/company-a/checkout.git",
+        ],
+    );
+    let registered = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/register",
+        Some(&json!({ "path": repo })),
+    );
+    assert_eq!(registered.status, 200, "{}", registered.body);
+}
+
+#[test]
+fn a_moved_entry_goes_to_the_store_of_its_context_when_the_same_account_polls_it() {
+    let sandbox = sandbox_for_a_move("");
+    // Two contexts on one account find the same MRs, so a rule gives the MR its context. A repo
+    // override beats that rule once the clone exists.
+    let home = sandbox.user_home();
+    let config = fs::read_to_string(sandbox.loom_home().join("config.toml"))
+        .unwrap()
+        .replace(
+            "[contexts.company-a]\n",
+            &format!(
+                "[contexts.company-a]\nmatch.hosts = [\"gitlab.example.com/company-a\"]\n\n[repos.\"{}\"]\ncontext = \"personal\"\n",
+                home.join("work/checkout").display()
+            ),
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    register_the_clone(&sandbox);
+
+    // No restart: `updated_after` of `personal` does not list this unchanged MR.
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    let moved = queue(&socket, Some("personal"));
+    assert_eq!(moved.entries.len(), 1, "{moved:?}");
+    assert_eq!(moved.entries[0].key, "company-a/checkout!88");
+    // Both stores are committed, and it stays at the next poll.
+    for context in ["personal", "company-a"] {
+        let status = common::git(
+            &PathBuf::from("/tmp"),
+            &sandbox.store(context),
+            &["status", "--porcelain"],
+        );
+        assert_eq!(status.trim(), "", "{context}");
+    }
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    daemon.stop();
+}
+
+#[test]
+fn a_moved_entry_stays_and_is_reported_when_another_account_polls_its_context() {
+    let sandbox = sandbox_for_a_move(
+        "\n[contexts.personal.forges.\"gitlab.example.com\"]\ntoken_env = \"LOOM_TEST_CLIENT_TOKEN\"\n",
+    );
+    let mut other = fixture_json("gitlab/user.json");
+    other["username"] = json!("carol-client");
+    sandbox.gitlab.set(
+        &format!("GET /user@{CLIENT_TOKEN}"),
+        route(other.to_string()),
+    );
+    sandbox.gitlab.set(
+        &format!("GET /merge_requests@{CLIENT_TOKEN}"),
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    register_the_clone(&sandbox);
+
+    let result = sandbox.sync();
+    let ReviewSyncOutcome::Synced { failed, .. } =
+        &poll(&result, "company-a", "gitlab.example.com").outcome
+    else {
+        panic!("{result:?}");
+    };
+    assert_eq!(failed.len(), 1, "{result:?}");
+    assert!(failed[0].error.contains("personal"), "{failed:?}");
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 0);
+
+    // It is still read: a merge removes it.
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T11:00:00.000Z", "merged", "W/\"m\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_on_an_entry_means_the_mr_is_gone() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    sandbox.github.routes.lock().unwrap().remove(PULL);
+    sandbox.gitlab.routes.lock().unwrap().remove(MR_88);
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+    let result = sandbox.sync();
+    assert_left_the_queue(&sandbox, "personal", "github.com", &result);
+    assert_left_the_queue(&sandbox, "company-a", "gitlab.example.com", &result);
+    for (context, host) in [
+        ("personal", "github.com"),
+        ("company-a", "gitlab.example.com"),
+    ] {
+        assert_eq!(counts(poll(&result, context, host)).5, 0, "{result:?}");
+    }
+    daemon.stop();
+}
+
+#[test]
+fn a_403_on_an_entry_stays_a_failure() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    let before = snapshot(&sandbox.store("personal"));
+    sandbox.github.set(
+        PULL,
+        Route {
+            status: 403,
+            ..route(r#"{"message":"Must have admin rights"}"#)
+        },
+    );
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")).5,
+        1,
+        "{result:?}"
+    );
+    assert_eq!(snapshot(&sandbox.store("personal")), before);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_at_a_start_removes_the_entry_and_answers_not_found() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync_and_settle();
+    sandbox.github.routes.lock().unwrap().remove(PULL);
+    sandbox.gitlab.routes.lock().unwrap().remove(MR_88);
+    let passes = sandbox.passes_of("start");
+    for (context, encoded, key, _, _) in FORGES {
+        let refused = start_response(&socket, encoded);
+        assert_eq!(refused.status, 404, "{key}: {}", refused.body);
+        assert!(refused.body.contains("\"not_found\""), "{}", refused.body);
+        let store = sandbox.store(context);
+        assert_eq!(entry_files(&store), Vec::<(String, String)>::new(), "{key}");
+        assert_eq!(task_dirs(&store), Vec::<PathBuf>::new(), "{key}");
+    }
+    // A start that creates nothing runs no pass of MR refs.
+    sandbox.assert_no_start_pass_since(passes);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_on_a_review_task_stays_a_failure() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let github = start(&socket, GITHUB_KEY).task.summary.id.to_string();
+    let gitlab = start(&socket, GITLAB_KEY).task.summary.id.to_string();
+    // No list shows them any more, and the forge answers 404.
+    sandbox.github.routes.lock().unwrap().remove(PULL);
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+    sandbox.gitlab.routes.lock().unwrap().remove(MR_88);
+    let before = (
+        snapshot(&sandbox.store("personal")),
+        snapshot(&sandbox.store("company-a")),
+    );
+    let result = sandbox.sync();
+    for (context, host, id) in [
+        ("personal", "github.com", &github),
+        ("company-a", "gitlab.example.com", &gitlab),
+    ] {
+        assert_eq!(counts(poll(&result, context, host)).5, 1, "{result:?}");
+        assert_eq!(status(&socket, id), Status::Active);
+    }
+    assert_eq!(
+        (
+            snapshot(&sandbox.store("personal")),
+            snapshot(&sandbox.store("company-a"))
+        ),
+        before
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_task_in_another_context_means_no_entry_and_no_second_task() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let first = start(&socket, GITHUB_KEY).task.summary.id;
+    daemon.stop();
+    // `acme` now belongs to `company-a`: the task stays in `personal`.
+    let config = CONFIG
+        .replace(
+            "match.hosts = [\"github.com/acme\"]",
+            "match.hosts = [\"github.com/nobody\"]",
+        )
+        .replace(
+            "match.hosts = [\"gitlab.example.com/company-a\"]",
+            "match.hosts = [\"gitlab.example.com/company-a\", \"github.com/acme\"]",
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert!(
+        !queue(&socket, Some("company-a"))
+            .entries
+            .iter()
+            .any(|entry| entry.key == "acme/shop#412")
+    );
+    // Without a context, and with the context that the rule now names: the same task.
+    let plain = start(&socket, GITHUB_KEY);
+    assert!(!plain.created);
+    assert_eq!(plain.task.summary.id, first);
+    let named: ReviewStartResult = ok(&request(
+        &socket,
+        "POST",
+        &format!("/v1/reviews/queue/{GITHUB_KEY}/start"),
+        Some(&json!({"context": "company-a"})),
+    ));
+    assert!(!named.created);
+    assert_eq!(named.task.summary.id, first);
+    assert_eq!(task_dirs(&sandbox.store("company-a")).len(), 0);
+    assert_eq!(task_dirs(&sandbox.store("personal")).len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn an_entry_of_another_host_with_this_key_is_not_touched_and_the_mr_is_reported() {
+    let sandbox = Sandbox::new();
+    let dir = sandbox.store("company-a").join("queue/mrs");
+    fs::create_dir_all(&dir).unwrap();
+    let foreign = json!({
+        "v": 1,
+        "key": "company-a/checkout!88",
+        "forge_ids": {"forge": "gitlab", "id": 1, "iid": 88, "project_id": 5},
+        "title": "On another host",
+        "author": "alice",
+        "web_url": "https://gitlab.other.example/company-a/checkout/-/merge_requests/88",
+        "head_sha": V1,
+        "updated_at": "2026-10-22T09:00:00Z",
+        "reasons": ["review_requested"]
+    })
+    .to_string();
+    fs::write(dir.join(FORGES[1].3), &foreign).unwrap();
+    let daemon = sandbox.start();
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")),
+        (1, 0, 0, 0, 0, 1)
+    );
+    assert_eq!(fs::read_to_string(dir.join(FORGES[1].3)).unwrap(), foreign);
+    daemon.stop();
+}
+
+#[test]
+fn an_entry_that_fails_does_not_hold_back_updated_after() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    daemon.stop();
+    // After a restart the list has no `updated_after`, and only the entry is read.
+    sandbox.gitlab.set(
+        "GET /merge_requests",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            status: 500,
+            ..route(r#"{"message":"boom"}"#)
+        },
+    );
+    let daemon = sandbox.start();
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).5,
+        1
+    );
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    // `personal` polls this host too: both contexts must ask for the changes only.
+    let lists = requests[seen..]
+        .iter()
+        .filter(|line| *line == "GET /merge_requests+after")
+        .count();
+    assert_eq!(lists, 2, "{:?}", &requests[seen..]);
+    daemon.stop();
+}
+
+#[test]
+fn a_start_while_the_forge_limits_the_rate_does_not_call_the_forge() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox.github.set(
+        "GET /search/issues",
+        Route {
+            status: 429,
+            headers: vec![("retry-after", "3600".to_owned())],
+            ..route(r#"{"message":"slow down"}"#)
+        },
+    );
+    let result = sandbox.sync();
+    assert!(matches!(
+        poll(&result, "personal", "github.com").outcome,
+        ReviewSyncOutcome::RateLimited { .. }
+    ));
+    let seen = sandbox.github.requests().len();
+    let refused = start_response(&socket, GITHUB_KEY);
+    assert_eq!(refused.status, 502, "{}", refused.body);
+    assert!(refused.body.contains("limits the rate"), "{}", refused.body);
+    assert_eq!(sandbox.github.requests().len(), seen);
+    assert_eq!(entry_files(&sandbox.store("personal")).len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_failed_task_sync_leaves_its_entry() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let entries = entry_files(&sandbox.store("personal"));
+    let id = start(&socket, GITHUB_KEY).task.summary.id.to_string();
+    // The entry is back, as after a crash, and the mirror of the task cannot be written.
+    let dir = sandbox.store("personal").join("queue/mrs");
+    fs::write(dir.join(&entries[0].0), &entries[0].1).unwrap();
+    let mirror = sandbox
+        .store("personal")
+        .join("tasks")
+        .join(&id)
+        .join(MIRROR);
+    fs::set_permissions(&mirror, fs::Permissions::from_mode(0o500)).unwrap();
+    sandbox.github.set(
+        PULL,
+        with_etag(fixture("github/pull-412.v2.json"), "\"v2\""),
+    );
+    let result = sandbox.sync();
+    fs::set_permissions(&mirror, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")).5,
+        1,
+        "{result:?}"
+    );
+    assert_eq!(entry_files(&sandbox.store("personal")).len(), 1);
+    // The next poll writes the mirror and removes the entry.
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "personal", "github.com")).2,
+        1,
+        "{result:?}"
+    );
+    assert_eq!(entry_files(&sandbox.store("personal")).len(), 0);
+    daemon.stop();
+}
+
+fn queue(socket: &Path, context: Option<&str>) -> ReviewQueue {
+    let path = context.map_or_else(
+        || "/v1/reviews/queue".to_owned(),
+        |context| format!("/v1/reviews/queue?context={context}"),
+    );
+    ok(&request(socket, "GET", &path, None))
+}
+
+fn start_response(socket: &Path, encoded_key: &str) -> common::HttpResponse {
+    request(
+        socket,
+        "POST",
+        &format!("/v1/reviews/queue/{encoded_key}/start"),
+        Some(&json!({})),
+    )
+}
+
+fn start(socket: &Path, encoded_key: &str) -> ReviewStartResult {
+    ok(&start_response(socket, encoded_key))
+}
+
+fn task_summary_id(socket: &Path, encoded_key: &str) -> String {
+    task(socket, encoded_key).summary.id.to_string()
 }
 
 /// `orphan/app#5`: no clone and no `match.hosts` rule.
@@ -977,7 +2778,7 @@ fn an_mr_that_no_rule_assigns_goes_to_no_store_when_another_machine_polls_the_ot
     };
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0].key, "orphan/app#5");
-    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
     daemon.stop();
 }
 
@@ -1025,16 +2826,16 @@ fn an_mr_that_no_rule_assigns_goes_to_the_context_whose_account_found_it() {
         panic!("{second:?}");
     };
     assert!(failed.is_empty(), "{second:?}");
-    let company = tasks(&socket, "company-a");
+    let company = queue(&socket, Some("company-a"));
     assert!(
-        company.tasks.iter().any(|task| task
-            .task
-            .as_ref()
-            .is_some_and(|task| task.title.starts_with("Review orphan/app#5"))),
+        company
+            .entries
+            .iter()
+            .any(|entry| entry.key == "orphan/app#5"),
         "{company:?}"
     );
     // `personal` keeps acme/shop#412 only.
-    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
     daemon.stop();
 }
 
@@ -1073,9 +2874,9 @@ fn an_mr_that_no_rule_assigns_goes_to_no_store(config: &str) {
         assert_eq!(failed[0].key, "orphan/app#5");
         assert!(failed[0].error.contains("match.hosts"), "{failed:?}");
     }
-    // Only acme/shop#412, which a rule assigns, has a task.
-    assert_eq!(tasks(&socket, "personal").tasks.len(), 1);
-    assert_eq!(tasks(&socket, "company-a").tasks.len(), 1);
+    // Only acme/shop#412, which a rule assigns, has an entry; each MR of a rule, one.
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
     assert!(
         !sandbox
             .github
@@ -1257,7 +3058,7 @@ fn a_review_task_gets_the_refs_and_a_diff_per_version_of_its_mr() {
     let git = |args: &[&str]| common::git(&home, &clone, args).trim().to_owned();
 
     // 1. V1: the head and the base are fetched, the patch is kept, and the clone is recorded.
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let id = the_review_id(&sandbox);
     let mirror = sandbox
         .store("personal")
@@ -1407,6 +3208,57 @@ fn a_review_task_gets_the_refs_and_a_diff_per_version_of_its_mr() {
 }
 
 #[test]
+fn an_entry_gets_no_refs_and_a_start_fetches_them_without_a_poll() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, _forge, clone) = clone_of_the_scenario(&sandbox);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+
+    // An entry: a pass runs after the poll, with no Review task to fetch for.
+    sandbox.sync_and_settle();
+    assert_eq!(
+        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
+        0
+    );
+    assert_eq!(queue(&sandbox.socket(), Some("personal")).entries.len(), 1);
+
+    // The start runs a pass, with no poll.
+    let polls = sandbox
+        .github
+        .requests()
+        .iter()
+        .filter(|line| *line == "GET /search/issues")
+        .count();
+    let before = sandbox.passes();
+    let started = start(&sandbox.socket(), GITHUB_KEY);
+    wait_for("the pass of the start", || sandbox.passes() > before);
+    assert_eq!(
+        sandbox
+            .github
+            .requests()
+            .iter()
+            .filter(|line| *line == "GET /search/issues")
+            .count(),
+        polls
+    );
+    assert_eq!(
+        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
+        1
+    );
+    let refs = common::git(&home, &clone, &["for-each-ref", "refs/loom/mr"]);
+    assert!(refs.contains("/412/head"), "{refs}");
+    let mirror = sandbox
+        .store("personal")
+        .join("tasks")
+        .join(started.task.summary.id.to_string())
+        .join(MIRROR);
+    let versions = json_file(&mirror.join("versions.json"));
+    assert_eq!(versions[0]["diff"], "local", "{versions}");
+    daemon.stop();
+}
+
+#[test]
 fn a_git_failure_never_fails_the_sync_and_the_next_poll_does_the_work() {
     let sandbox = Sandbox::new();
     index_the_clones(&sandbox);
@@ -1415,10 +3267,10 @@ fn a_git_failure_never_fails_the_sync_and_the_next_poll_does_the_work() {
     fs::rename(&forge, &moved).unwrap();
     let daemon = sandbox.start();
     scan(&sandbox);
-    let result = sandbox.sync_and_settle();
+    let result = sandbox.sync_and_start();
     assert_eq!(
         counts(poll(&result, "personal", "github.com")),
-        (1, 1, 0, 0, 0)
+        (1, 1, 0, 0, 0, 0)
     );
     let id = the_review_id(&sandbox);
     let mirror = sandbox
@@ -1470,7 +3322,7 @@ fn without_a_clone_the_diff_comes_from_the_forge_and_is_reduced_until_a_clone_co
         route(fixture("gitlab/merge-request-88-diffs.json")),
     );
     let daemon = sandbox.start();
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
 
     let github = sandbox
         .store("personal")
@@ -1607,7 +3459,7 @@ fn one_mr_that_fails_costs_the_others_nothing_and_backs_off() {
     );
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
 
     let list: TaskList = ok(&request(
         &sandbox.socket(),
@@ -1672,7 +3524,7 @@ fn the_policy_off_stops_updates_and_not_the_refs_of_an_mr() {
     let (home, _forge, clone) = clone_of_the_scenario(&sandbox);
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let mirror = sandbox
         .store("personal")
         .join("tasks")
@@ -1698,7 +3550,7 @@ fn a_new_clone_gets_the_refs_and_the_old_one_loses_them() {
     let (home, _forge, first) = clone_of_the_scenario(&sandbox);
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let mirror = sandbox
         .store("personal")
         .join("tasks")
@@ -1778,7 +3630,7 @@ fn git_does_not_inherit_the_forge_tokens() {
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let env = fs::read_to_string(&seen).unwrap();
     assert!(env.contains("GIT_TERMINAL_PROMPT=0"), "{env}");
     for secret in [
@@ -1799,7 +3651,7 @@ fn a_retargeted_mr_gets_a_new_diff_with_the_same_head() {
     let (_home, _forge, _clone) = clone_of_the_scenario(&sandbox);
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let mirror = sandbox
         .store("personal")
         .join("tasks")
@@ -1837,7 +3689,7 @@ fn a_moved_tip_of_the_github_target_branch_does_nothing() {
     let (_home, _forge, _clone) = clone_of_the_scenario(&sandbox);
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let mirror = sandbox
         .store("personal")
         .join("tasks")
@@ -1875,7 +3727,7 @@ fn a_moved_tip_of_the_gitlab_target_branch_does_nothing() {
         route(fixture("gitlab/merge-request-88-diffs.json")),
     );
     let daemon = sandbox.start();
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let list: TaskList = ok(&request(
         &sandbox.socket(),
         "GET",
@@ -1920,7 +3772,7 @@ fn a_patch_of_the_forge_is_recorded_on_the_base_of_versions_json_after_a_moved_t
     fs::create_dir_all(sandbox.dir.path().join("work")).unwrap();
     // No patch at the first poll.
     let daemon = sandbox.start();
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let mirror = sandbox
         .store("personal")
         .join("tasks")
@@ -1961,7 +3813,7 @@ fn a_gitlab_head_missing_from_the_versions_is_still_a_version() {
         route(listed.to_string()),
     );
     let daemon = sandbox.start();
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let list: TaskList = ok(&request(
         &sandbox.socket(),
         "GET",
@@ -2029,7 +3881,7 @@ fn a_diff_over_the_cap_falls_back_to_the_forge_and_says_so() {
     );
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let mirror = sandbox
         .store("personal")
         .join("tasks")
@@ -2136,136 +3988,13 @@ fn fetches_of_500(sandbox: &Sandbox) -> usize {
 }
 
 #[test]
-fn an_http_refusal_for_one_project_stops_only_its_clone() {
-    let sandbox = Sandbox::new();
-    index_the_clones(&sandbox);
-    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
-    clone_of_the_private_project(&sandbox, &home, &forge);
-    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
-    for number in [413, 414] {
-        common::git(
-            &home,
-            &forge,
-            &["update-ref", &format!("refs/pull/{number}/head"), V1],
-        );
-    }
-    private_mr(&sandbox, &[(413, "main"), (414, "main")]);
-    fs::write(
-        sandbox.git_fail(),
-        "fatal: unable to access 'https://github.com/acme/private.git/': The requested URL returned error: 403\n",
-    )
-    .unwrap();
-    let daemon = sandbox.start();
-    scan(&sandbox);
-    sandbox.sync_and_settle();
-
-    // Whatever the order of the tasks: the same endpoint serves the others in the same poll.
-    let mirrors = mirrors(&sandbox);
-    assert_eq!(mirrors.len(), 4);
-    for number in [412, 413, 414] {
-        assert_eq!(
-            json_file(&mirrors[&number].join("versions.json"))[0]["diff"],
-            "local",
-            "{number}"
-        );
-    }
-    // 500 has the patches of the forge, and backs off.
-    assert_eq!(
-        json_file(&mirrors[&500].join("versions.json"))[0]["diff"],
-        "reduced"
-    );
-    for _ in 0..5 {
-        sandbox.sync_and_settle();
-    }
-    // Polls 1, 2 and 4 of 6.
-    assert_eq!(fetches_of_500(&sandbox), 3);
-    daemon.stop();
-}
-
-#[test]
-fn a_network_failure_stops_its_endpoint_for_one_poll_and_its_mr_cannot_hold_the_others() {
-    let sandbox = Sandbox::new();
-    index_the_clones(&sandbox);
-    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
-    clone_of_the_private_project(&sandbox, &home, &forge);
-    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
-    private_mr(&sandbox, &[]);
-    fs::write(
-        sandbox.git_fail(),
-        "fatal: unable to access 'https://github.com/': Could not resolve host: github.com\n",
-    )
-    .unwrap();
-    let daemon = sandbox.start();
-    scan(&sandbox);
-    // Poll 1 and 2 may try 500 first, and stop 412 behind it. At poll 3, 500 waits.
-    for _ in 0..3 {
-        sandbox.sync_and_settle();
-    }
-    let mirrors = mirrors(&sandbox);
-    assert_eq!(
-        json_file(&mirrors[&412].join("versions.json"))[0]["diff"],
-        "local"
-    );
-    assert_eq!(
-        json_file(&mirrors[&500].join("versions.json"))[0]["diff"],
-        "reduced"
-    );
-    assert!(fetches_of_500(&sandbox) <= 2);
-    daemon.stop();
-}
-
-#[test]
-fn a_remote_that_is_gone_is_tried_once_for_all_the_mrs_of_its_clone() {
-    let sandbox = Sandbox::new();
-    index_the_clones(&sandbox);
-    let (_home, forge, _clone) = clone_of_the_scenario(&sandbox);
-    fs::rename(&forge, forge.with_extension("moved")).unwrap();
-    more_mrs(&sandbox, &[(413, "main"), (414, "main")]);
-    let daemon = sandbox.start();
-    scan(&sandbox);
-    sandbox.sync_and_settle();
-    assert_eq!(
-        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
-        1
-    );
-    daemon.stop();
-}
-
-#[test]
-fn a_forge_that_refuses_the_token_is_read_once_for_all_the_mrs_without_a_clone() {
-    let sandbox = Sandbox::new();
-    index_the_clones(&sandbox);
-    fs::create_dir_all(sandbox.dir.path().join("work")).unwrap();
-    more_mrs(&sandbox, &[(413, "main"), (414, "main")]);
-    for number in [412, 413, 414] {
-        sandbox.github.set(
-            &format!("GET /repos/acme/shop/pulls/{number}/files"),
-            Route {
-                status: 401,
-                ..route(r#"{"message":"Bad credentials"}"#)
-            },
-        );
-    }
-    let daemon = sandbox.start();
-    sandbox.sync_and_settle();
-    let reads = sandbox
-        .github
-        .requests()
-        .iter()
-        .filter(|request| request.ends_with("/files"))
-        .count();
-    assert_eq!(reads, 1);
-    daemon.stop();
-}
-
-#[test]
 fn the_cleanup_leaves_the_refs_of_a_remote_that_now_names_another_project() {
     let sandbox = Sandbox::new();
     index_the_clones(&sandbox);
     let (home, _forge, clone) = clone_of_the_scenario(&sandbox);
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let id = the_review_id(&sandbox);
     approve_v1(&sandbox);
     sandbox.sync_and_settle();
@@ -2306,7 +4035,7 @@ fn a_new_index_chooses_the_clone_again_and_the_cleanup_still_finds_the_refs() {
     let (home, _forge, clone) = clone_of_the_scenario(&sandbox);
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let id = the_review_id(&sandbox);
     let mirror = sandbox
         .store("personal")
@@ -2406,7 +4135,7 @@ fn an_older_version_over_the_cap_keeps_a_note_and_the_head_its_diff() {
     );
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let list: TaskList = ok(&request(
         &sandbox.socket(),
         "GET",
@@ -2447,7 +4176,7 @@ fn a_merged_mr_keeps_its_local_diff_when_its_base_moves() {
     );
     let daemon = sandbox.start();
     scan(&sandbox);
-    sandbox.sync_and_settle();
+    sandbox.sync_and_start();
     let mirror = sandbox
         .store("personal")
         .join("tasks")
@@ -2485,25 +4214,196 @@ fn a_merged_mr_keeps_its_local_diff_when_its_base_moves() {
     daemon.stop();
 }
 
+/// A new head on the GitHub MR `project#number`: it needs a patch again, as a first head does.
+fn new_head_on(sandbox: &Sandbox, project: &str, number: u64) {
+    let path = format!("GET /repos/{project}/pulls/{number}");
+    let mut pull: Value = serde_json::from_str(&sandbox.github.body(&path)).unwrap();
+    pull["head"]["sha"] = json!(V2);
+    pull["updated_at"] = json!("2026-10-30T09:00:00Z");
+    sandbox.github.set(
+        &path,
+        with_etag(pull.to_string(), &format!("\"new{number}\"")),
+    );
+}
+
 #[test]
 fn a_host_that_cannot_be_reached_is_tried_once_for_all_its_clones() {
     let sandbox = Sandbox::new();
     index_the_clones(&sandbox);
     let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
     clone_of_the_private_project(&sandbox, &home, &forge);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
     private_mr(&sandbox, &[]);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_start();
+    let before = sandbox.git_commands("fetch --no-tags --no-write-fetch-head");
     fs::write(
         format!("{}.all", sandbox.git_fail().display()),
         "fatal: unable to access 'https://github.com/': Could not resolve host: github.com\n",
     )
     .unwrap();
-    let daemon = sandbox.start();
-    scan(&sandbox);
+    new_head_on(&sandbox, "acme/shop", 412);
+    new_head_on(&sandbox, "acme/private", 500);
     sandbox.sync_and_settle();
     assert_eq!(
         sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
-        1
+        before + 1
     );
+    daemon.stop();
+}
+
+#[test]
+fn a_remote_that_is_gone_is_tried_once_for_all_the_mrs_of_its_clone() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    common::git(&home, &forge, &["update-ref", "refs/pull/413/head", V1]);
+    common::git(&home, &forge, &["update-ref", "refs/pull/414/head", V1]);
+    more_mrs(&sandbox, &[(413, "main"), (414, "main")]);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_start();
+    let before = sandbox.git_commands("fetch --no-tags --no-write-fetch-head");
+    fs::rename(&forge, forge.with_extension("moved")).unwrap();
+    for number in [412, 413, 414] {
+        new_head_on(&sandbox, "acme/shop", number);
+    }
+    sandbox.sync_and_settle();
+    assert_eq!(
+        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
+        before + 1
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_forge_that_refuses_the_token_is_read_once_for_all_the_mrs_without_a_clone() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    fs::create_dir_all(sandbox.dir.path().join("work")).unwrap();
+    more_mrs(&sandbox, &[(413, "main"), (414, "main")]);
+    let daemon = sandbox.start();
+    sandbox.sync_and_start();
+    let reads = |sandbox: &Sandbox| {
+        sandbox
+            .github
+            .requests()
+            .iter()
+            .filter(|request| request.ends_with("/files"))
+            .count()
+    };
+    let before = reads(&sandbox);
+    for number in [412, 413, 414] {
+        sandbox.github.set(
+            &format!("GET /repos/acme/shop/pulls/{number}/files"),
+            Route {
+                status: 401,
+                ..route(r#"{"message":"Bad credentials"}"#)
+            },
+        );
+        new_head_on(&sandbox, "acme/shop", number);
+    }
+    sandbox.sync_and_settle();
+    assert_eq!(reads(&sandbox), before + 1);
+    daemon.stop();
+}
+
+#[test]
+fn an_http_refusal_for_one_project_stops_only_its_clone() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    clone_of_the_private_project(&sandbox, &home, &forge);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
+    for number in [413, 414] {
+        common::git(
+            &home,
+            &forge,
+            &["update-ref", &format!("refs/pull/{number}/head"), V1],
+        );
+    }
+    private_mr(&sandbox, &[(413, "main"), (414, "main")]);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_start();
+    let at_the_starts = fetches_of_500(&sandbox);
+    for number in [412, 413, 414, 500] {
+        common::git(
+            &home,
+            &forge,
+            &["update-ref", &format!("refs/pull/{number}/head"), V2],
+        );
+    }
+    fs::write(
+        sandbox.git_fail(),
+        "fatal: unable to access 'https://github.com/acme/private.git/': The requested URL returned error: 403\n",
+    )
+    .unwrap();
+    for number in [412, 413, 414] {
+        new_head_on(&sandbox, "acme/shop", number);
+    }
+    new_head_on(&sandbox, "acme/private", 500);
+    sandbox.sync_and_settle();
+
+    // Whatever the order of the tasks: the same endpoint serves the others in the same poll.
+    let mirrors = mirrors(&sandbox);
+    assert_eq!(mirrors.len(), 4);
+    for number in [412, 413, 414] {
+        assert_eq!(
+            json_file(&mirrors[&number].join("versions.json"))[1]["diff"],
+            "local",
+            "{number}"
+        );
+    }
+    // 500 has the patches of the forge, and backs off.
+    assert_eq!(
+        json_file(&mirrors[&500].join("versions.json"))[1]["diff"],
+        "reduced"
+    );
+    for _ in 0..5 {
+        sandbox.sync_and_settle();
+    }
+    // Polls 1, 2 and 4 of 6.
+    assert_eq!(fetches_of_500(&sandbox) - at_the_starts, 3);
+    daemon.stop();
+}
+
+#[test]
+fn a_network_failure_stops_its_endpoint_for_one_poll_and_its_mr_cannot_hold_the_others() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    clone_of_the_private_project(&sandbox, &home, &forge);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
+    private_mr(&sandbox, &[]);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_start();
+    let at_the_starts = fetches_of_500(&sandbox);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V2]);
+    common::git(&home, &forge, &["update-ref", "refs/pull/412/head", V2]);
+    fs::write(
+        sandbox.git_fail(),
+        "fatal: unable to access 'https://github.com/': Could not resolve host: github.com\n",
+    )
+    .unwrap();
+    new_head_on(&sandbox, "acme/shop", 412);
+    new_head_on(&sandbox, "acme/private", 500);
+    // Poll 1 and 2 may try 500 first, and stop 412 behind it. At poll 3, 500 waits.
+    for _ in 0..3 {
+        sandbox.sync_and_settle();
+    }
+    let mirrors = mirrors(&sandbox);
+    assert_eq!(
+        json_file(&mirrors[&412].join("versions.json"))[1]["diff"],
+        "local"
+    );
+    assert_eq!(
+        json_file(&mirrors[&500].join("versions.json"))[1]["diff"],
+        "reduced"
+    );
+    assert!(fetches_of_500(&sandbox) - at_the_starts <= 2);
     daemon.stop();
 }
 
@@ -2515,25 +4415,29 @@ fn a_success_ends_the_backoff_of_an_mr() {
     let private = clone_of_the_private_project(&sandbox, &home, &forge);
     common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
     private_mr(&sandbox, &[]);
-    let refused = "fatal: The requested URL returned error: 403\n";
-    fs::write(sandbox.git_fail(), refused).unwrap();
     let daemon = sandbox.start();
     scan(&sandbox);
+    sandbox.sync_and_start();
+    let at_the_starts = fetches_of_500(&sandbox);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V2]);
+    let refused = "fatal: The requested URL returned error: 403\n";
+    fs::write(sandbox.git_fail(), refused).unwrap();
+    new_head_on(&sandbox, "acme/private", 500);
     // Tries at polls 1 and 2; poll 3 waits; a success at poll 4.
     for _ in 0..3 {
         sandbox.sync_and_settle();
     }
-    assert_eq!(fetches_of_500(&sandbox), 2);
+    assert_eq!(fetches_of_500(&sandbox) - at_the_starts, 2);
     fs::remove_file(sandbox.git_fail()).unwrap();
     sandbox.sync_and_settle();
     let head = "refs/loom/mr/upstream/500/head";
     assert_eq!(
         common::git(&home, &private, &["rev-parse", head]).trim(),
-        V1
+        V2
     );
     let mirror = &mirrors(&sandbox)[&500];
     let versions = json_file(&mirror.join("versions.json"));
-    assert_eq!(versions[0]["diff"], "local");
+    assert_eq!(versions[1]["diff"], "local");
 
     // A new failure starts from the first step: a try at each of the next two polls.
     let before = fetches_of_500(&sandbox);
@@ -2543,5 +4447,1070 @@ fn a_success_ends_the_backoff_of_an_mr() {
         sandbox.sync_and_settle();
     }
     assert_eq!(fetches_of_500(&sandbox), before + 2);
+    daemon.stop();
+}
+
+/// The start with the host down, as a user sees it: the patches of the forge, then the local diff.
+#[test]
+fn a_start_with_failing_git_gets_the_patches_of_the_forge_then_recovers() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    clone_of_the_private_project(&sandbox, &home, &forge);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
+    private_mr(&sandbox, &[]);
+    fs::write(
+        sandbox.git_fail(),
+        "fatal: The requested URL returned error: 403\n",
+    )
+    .unwrap();
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_start();
+    let started = mirrors(&sandbox);
+    assert_eq!(
+        json_file(&started[&412].join("versions.json"))[0]["diff"],
+        "local"
+    );
+    assert_eq!(
+        json_file(&started[&500].join("versions.json"))[0]["diff"],
+        "reduced"
+    );
+    fs::remove_file(sandbox.git_fail()).unwrap();
+    for _ in 0..4 {
+        sandbox.sync_and_settle();
+    }
+    assert_eq!(
+        json_file(&mirrors(&sandbox)[&500].join("versions.json"))[0]["diff"],
+        "local"
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_start_on_a_kept_approval_dates_the_verdict_to_the_approved_head() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    // I approve V2 at the forge. The project keeps approvals, and the author pushes V3.
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-23T09:00:00.000Z", "opened", "W/\"approved\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+
+    let id = start(&socket, GITLAB_KEY).task.summary.id.to_string();
+    let sync_file = sandbox
+        .store("company-a")
+        .join("tasks")
+        .join(&id)
+        .join(FORGES[1].4)
+        .join("sync.json");
+    let state = json_file(&sync_file);
+    assert_eq!(state["verdict"]["sha"], V2, "{state}");
+    assert_eq!(state["shown"], true, "{state}");
+
+    // The approval still shows at the next read: it stays on V2.
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["sha"] = json!(V3);
+    mr["diff_refs"]["head_sha"] = json!(V3);
+    mr["updated_at"] = json!("2026-10-25T09:00:00.000Z");
+    sandbox
+        .gitlab
+        .set(MR_88, with_etag(mr.to_string(), "W/\"changed\""));
+    sandbox.sync();
+    assert_eq!(json_file(&sync_file)["verdict"]["sha"], V2);
+    assert_eq!(status(&socket, &id), Status::Active);
+
+    // My request goes: V3 is still to review, so the task stays open.
+    mr["reviewers"] = json!([]);
+    mr["updated_at"] = json!("2026-10-26T09:00:00.000Z");
+    sandbox
+        .gitlab
+        .set(MR_88, with_etag(mr.to_string(), "W/\"norequest\""));
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Active);
+    daemon.stop();
+}
+
+#[test]
+fn a_start_on_a_kept_approval_leaves_the_reviewed_ref_on_the_approved_head() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _) = clone_of_the_scenario(&sandbox);
+    common::git(
+        &home,
+        &forge,
+        &["update-ref", "refs/merge-requests/88/head", V1],
+    );
+    // A clone of the GitLab project, which has both commits.
+    let clone = sandbox.dir.path().join("work/checkout");
+    common::git(
+        &home,
+        sandbox.dir.path(),
+        &[
+            "clone",
+            "-q",
+            "-o",
+            "upstream",
+            forge.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let project = "git@gitlab.example.com:company-a/checkout.git";
+    common::git(&home, &clone, &["remote", "set-url", "upstream", project]);
+    let rewrite = format!("url.{}.insteadOf", forge.display());
+    common::git(&home, &clone, &["config", &rewrite, project]);
+    common::git(
+        &home,
+        &clone,
+        &["fetch", "-q", "upstream", "refs/merge-requests/88/head"],
+    );
+    common::git(&home, &clone, &["update-ref", "refs/keep/v1", V1]);
+
+    // I approve V1 at the forge, and the entry goes.
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V1, "2026-10-23T09:00:00.000Z", "opened", "W/\"approved\""),
+    );
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+
+    // The author pushes V2, and the approval stays.
+    common::git(
+        &home,
+        &forge,
+        &["update-ref", "refs/merge-requests/88/head", V2],
+    );
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it(&sandbox);
+    sandbox.sync_and_settle();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+
+    let before = sandbox.passes();
+    start(&socket, GITLAB_KEY);
+    wait_for("the pass of the start", || sandbox.passes() > before);
+    let git = |args: &[&str]| common::git(&home, &clone, args).trim().to_owned();
+    assert_eq!(git(&["rev-parse", "refs/loom/mr/upstream/88/head"]), V2);
+    assert_eq!(git(&["rev-parse", "refs/loom/mr/upstream/88/reviewed"]), V1);
+    daemon.stop();
+}
+
+#[test]
+fn a_gitlab_404_on_an_entry_lists_in_full_so_the_entry_comes_back_with_the_access() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    let body = sandbox.gitlab.body(MR_88);
+    // The access goes for one poll: GitLab answers 404, and the list does not show the MR.
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            status: 404,
+            ..route(r#"{"message":"404 Project Not Found"}"#)
+        },
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    // The access is back, and the MR did not change: `updated_after` would not list it.
+    sandbox.gitlab.set(MR_88, route(body));
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    // That full list was one: the next one asks for the changes only.
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    assert!(
+        !requests[seen..].contains(&"GET /merge_requests".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_gitlab_404_at_a_start_lists_in_full_at_the_next_poll() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let body = sandbox.gitlab.body(MR_88);
+    sandbox.gitlab.routes.lock().unwrap().remove(MR_88);
+    assert_eq!(start_response(&socket, GITLAB_KEY).status, 404);
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    sandbox.gitlab.set(MR_88, route(body));
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_on_a_sub_read_keeps_the_entry_and_is_a_failure() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let before = (
+        entry_files(&sandbox.store("personal")),
+        entry_files(&sandbox.store("company-a")),
+    );
+    // The MRs exist and changed; only their reviews and approvals answer 404, and no list shows
+    // them this time.
+    let not_found = || Route {
+        status: 404,
+        ..route(r#"{"message":"Not Found"}"#)
+    };
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["updated_at"] = json!("2026-10-30T09:00:00Z");
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"changed\""));
+    sandbox
+        .github
+        .set("GET /repos/acme/shop/pulls/412/reviews", not_found());
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-30T09:00:00.000Z", "opened", "W/\"changed\""),
+    );
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), not_found());
+    let result = sandbox.sync();
+    for (context, host) in [
+        ("personal", "github.com"),
+        ("company-a", "gitlab.example.com"),
+    ] {
+        let (mrs, _, removed, _, _, failed) = counts(poll(&result, context, host));
+        assert_eq!((mrs, removed, failed), (1, 0, 1), "{result:?}");
+    }
+    assert_eq!(
+        (
+            entry_files(&sandbox.store("personal")),
+            entry_files(&sandbox.store("company-a"))
+        ),
+        before
+    );
+    // A start on such an MR is a failure too: the entry stays, for the next try.
+    for (context, encoded, key, _, _) in FORGES {
+        let refused = start_response(&socket, encoded);
+        assert_eq!(refused.status, 502, "{key}: {}", refused.body);
+        assert_eq!(entry_files(&sandbox.store(context)).len(), 1, "{key}");
+        assert_eq!(task_dirs(&sandbox.store(context)).len(), 0, "{key}");
+    }
+    daemon.stop();
+}
+
+#[test]
+fn a_404_on_a_listed_mr_stays_a_failure() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    let before = (
+        entry_files(&sandbox.store("personal")),
+        entry_files(&sandbox.store("company-a")),
+    );
+    // The lists still show them: a search can lag behind a deletion.
+    gitlab_lists_it(&sandbox);
+    sandbox.github.routes.lock().unwrap().remove(PULL);
+    sandbox.gitlab.routes.lock().unwrap().remove(MR_88);
+    let result = sandbox.sync();
+    for (context, host) in [
+        ("personal", "github.com"),
+        ("company-a", "gitlab.example.com"),
+    ] {
+        assert_eq!(counts(poll(&result, context, host)).5, 1, "{result:?}");
+    }
+    assert_eq!(
+        (
+            entry_files(&sandbox.store("personal")),
+            entry_files(&sandbox.store("company-a"))
+        ),
+        before
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_start_after_my_direct_request_is_gone_is_refused_and_removes_the_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync_and_settle();
+    github_without_request(&sandbox);
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["reviewers"] = json!([]);
+    sandbox
+        .gitlab
+        .set(MR_88, with_etag(mr.to_string(), "W/\"no-request\""));
+    let passes = sandbox.passes_of("start");
+    for (context, encoded, key, _, _) in FORGES {
+        let refused = start_response(&socket, encoded);
+        assert_eq!(refused.status, 409, "{key}: {}", refused.body);
+        assert!(refused.body.contains("\"conflict\""), "{}", refused.body);
+        let store = sandbox.store(context);
+        assert_eq!(task_dirs(&store), Vec::<PathBuf>::new(), "{key}");
+        assert_eq!(entry_files(&store), Vec::<(String, String)>::new(), "{key}");
+    }
+    // A start that creates nothing runs no pass of MR refs.
+    sandbox.assert_no_start_pass_since(passes);
+    daemon.stop();
+}
+
+/// A known limit: a read does not show a request through a team, so the start creates the task.
+#[test]
+fn a_start_after_a_team_request_is_gone_creates_the_task_and_the_next_poll_cancels_it() {
+    let sandbox = Sandbox::new();
+    // A request through a team: I am not in the reviewers, and the search lists me.
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"team\""));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox.github.set(
+        "GET /search/issues",
+        route(fixture("github/search-review-requested.empty.json")),
+    );
+    let started = start(&socket, GITHUB_KEY);
+    assert!(started.created);
+    let id = started.task.summary.id.to_string();
+    sandbox.sync();
+    assert_eq!(status(&socket, &id), Status::Cancelled);
+    daemon.stop();
+}
+
+#[test]
+fn a_held_entry_that_a_list_shows_does_not_hold_back_updated_after() {
+    let sandbox = sandbox_for_a_move(
+        "\n[contexts.personal.forges.\"gitlab.example.com\"]\ntoken_env = \"LOOM_TEST_CLIENT_TOKEN\"\n",
+    );
+    let mut other = fixture_json("gitlab/user.json");
+    other["username"] = json!("carol-client");
+    sandbox.gitlab.set(
+        &format!("GET /user@{CLIENT_TOKEN}"),
+        route(other.to_string()),
+    );
+    sandbox.gitlab.set(
+        &format!("GET /merge_requests@{CLIENT_TOKEN}"),
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    sandbox.gitlab.set(
+        &format!("GET /merge_requests+after@{CLIENT_TOKEN}"),
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    register_the_clone(&sandbox);
+    // A restart: no `updated_after`, so the full list of `company-a` shows the held MR.
+    daemon.stop();
+    let daemon = sandbox.start();
+    let result = sandbox.sync();
+    let ReviewSyncOutcome::Synced { failed, .. } =
+        &poll(&result, "company-a", "gitlab.example.com").outcome
+    else {
+        panic!("{result:?}");
+    };
+    assert_eq!(failed.len(), 1, "{result:?}");
+    sandbox.sync();
+    // Both contexts now ask for the changes only.
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    let lists = requests[seen..]
+        .iter()
+        .filter(|line| *line == "GET /merge_requests+after")
+        .count();
+    assert_eq!(lists, 2, "{:?}", &requests[seen..]);
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+const NOT_FOUND_PROJECT: &str = r#"{"message":"404 Project Not Found"}"#;
+
+/// The full list of `company-a` lists the MR; a list limited by `updated_after` does not.
+fn gitlab_lists_it_in_full_only(sandbox: &Sandbox) {
+    sandbox.gitlab.set(
+        "GET /merge_requests",
+        route(fixture("gitlab/merge-requests-reviews-for-me.json")),
+    );
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+}
+
+/// The lists of GitLab, full or limited, do not show the MR, and its read answers 404.
+fn gitlab_access_lost(sandbox: &Sandbox) {
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            status: 404,
+            ..route(NOT_FOUND_PROJECT)
+        },
+    );
+    sandbox.gitlab.set(
+        "GET /merge_requests",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+}
+
+#[test]
+fn a_loss_of_access_for_two_polls_comes_back_at_the_next_full_list() {
+    let sandbox = Sandbox::new();
+    // Each full list is due at once: the hour has passed.
+    let daemon = sandbox.start_with_full_list_period("0s");
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    let body = sandbox.gitlab.body(MR_88);
+    gitlab_access_lost(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    sandbox.sync();
+    // The access is back, and the MR did not change.
+    sandbox.gitlab.set(MR_88, route(body));
+    gitlab_lists_it_in_full_only(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn inside_the_period_a_longer_loss_of_access_waits_for_the_next_full_list() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let body = sandbox.gitlab.body(MR_88);
+    gitlab_access_lost(&sandbox);
+    sandbox.sync();
+    // Still lost: this is the full list that the 404 asked for, and it counts.
+    sandbox.sync();
+    sandbox.gitlab.set(MR_88, route(body));
+    gitlab_lists_it_in_full_only(&sandbox);
+    // The bound of the design: not before the hour, and each list is limited until then.
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    assert!(
+        !requests[seen..].contains(&"GET /merge_requests".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    daemon.stop();
+}
+
+#[test]
+fn a_full_list_whose_read_fails_does_not_count_as_a_full_list() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let body = sandbox.gitlab.body(MR_88);
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            status: 404,
+            ..route(NOT_FOUND_PROJECT)
+        },
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    // The full list shows the MR, and its read fails.
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            status: 500,
+            ..route(r#"{"message":"boom"}"#)
+        },
+    );
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).5,
+        1
+    );
+    // The next list is full again, and the read works.
+    sandbox.gitlab.set(MR_88, route(body));
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_poll_that_stops_does_not_count_as_a_full_list() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let body = sandbox.gitlab.body(MR_88);
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            status: 404,
+            ..route(NOT_FOUND_PROJECT)
+        },
+    );
+    sandbox.sync();
+    // The full list shows the MR, and the token is refused at its read: the poll stops.
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            status: 401,
+            ..route(r#"{"message":"401 Unauthorized"}"#)
+        },
+    );
+    let result = sandbox.sync();
+    assert!(
+        matches!(
+            poll(&result, "company-a", "gitlab.example.com").outcome,
+            ReviewSyncOutcome::Failed { .. }
+        ),
+        "{result:?}"
+    );
+    sandbox.gitlab.set(MR_88, route(body));
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_full_list_comes_again_after_the_period_and_not_inside_it() {
+    // Inside the period: the first list is full, and the next ones are limited.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    assert!(
+        !requests[seen..].contains(&"GET /merge_requests".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
+    daemon.stop();
+
+    // After the period: a full list, also with no 404 and no change of the MR.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start_with_full_list_period("0s");
+    sandbox.sync();
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    assert!(
+        requests[seen..].contains(&"GET /merge_requests".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
+    assert!(
+        !requests[seen..].contains(&"GET /merge_requests+after".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_reviewed_ref_after_a_rebase_with_no_earlier_fetch_is_absent() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _) = clone_of_the_scenario(&sandbox);
+    common::git(
+        &home,
+        &forge,
+        &["update-ref", "refs/merge-requests/88/head", V1],
+    );
+    // A clone that does not have the approved commit, as no fetch came before the rebase.
+    let clone = sandbox.dir.path().join("work/checkout");
+    common::git(
+        &home,
+        sandbox.dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--no-local",
+            "-o",
+            "upstream",
+            forge.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let project = "git@gitlab.example.com:company-a/checkout.git";
+    common::git(&home, &clone, &["remote", "set-url", "upstream", project]);
+    let rewrite = format!("url.{}.insteadOf", forge.display());
+    common::git(&home, &clone, &["config", &rewrite, project]);
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V1, "2026-10-23T09:00:00.000Z", "opened", "W/\"approved\""),
+    );
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    common::git(
+        &home,
+        &forge,
+        &["update-ref", "refs/merge-requests/88/head", V2],
+    );
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it(&sandbox);
+    sandbox.sync_and_settle();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+
+    let before = sandbox.passes();
+    let id = start(&socket, GITLAB_KEY).task.summary.id.to_string();
+    wait_for("the pass of the start", || sandbox.passes() > before);
+    sandbox.sync_and_settle();
+    let refs = common::git(&home, &clone, &["for-each-ref", "refs/loom"]);
+    assert!(refs.contains("/88/head"), "{refs}");
+    assert!(!refs.contains("/88/reviewed"), "{refs}");
+    // The verdict is not lost: `sync.json` has it.
+    let state = json_file(
+        &sandbox
+            .store("company-a")
+            .join("tasks")
+            .join(&id)
+            .join(FORGES[1].4)
+            .join("sync.json"),
+    );
+    assert_eq!(state["verdict"]["sha"], V1, "{state}");
+    daemon.stop();
+}
+
+#[test]
+fn a_retry_after_a_failed_start_still_sees_that_my_direct_request_is_gone() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox.github.set(
+        PULL,
+        Route {
+            status: 500,
+            ..route(r#"{"message":"boom"}"#)
+        },
+    );
+    assert_eq!(start_response(&socket, GITHUB_KEY).status, 502);
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"gone\""));
+    let retried = start_response(&socket, GITHUB_KEY);
+    assert_eq!(retried.status, 409, "{}", retried.body);
+    assert_eq!(task_dirs(&sandbox.store("personal")).len(), 0);
+    daemon.stop();
+}
+
+#[test]
+fn a_failed_poll_read_keeps_what_tells_that_a_request_is_direct() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox.github.set(
+        PULL,
+        Route {
+            status: 500,
+            ..route(r#"{"message":"boom"}"#)
+        },
+    );
+    let result = sandbox.sync();
+    assert_eq!(counts(poll(&result, "personal", "github.com")).5, 1);
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"gone\""));
+    assert_eq!(start_response(&socket, GITHUB_KEY).status, 409);
+    daemon.stop();
+}
+
+/// A known limit: a read shows only that the direct request is gone.
+#[test]
+fn a_direct_request_replaced_by_a_team_is_refused_and_heals_at_the_next_poll() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let mut pull = fixture_json("github/pull-412.v1.json");
+    pull["requested_reviewers"] = json!([]);
+    sandbox
+        .github
+        .set(PULL, with_etag(pull.to_string(), "\"team\""));
+    assert_eq!(start_response(&socket, GITHUB_KEY).status, 409);
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 0);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("personal")).entries.len(), 1);
+    daemon.stop();
+}
+
+/// The state that a crash or a failed mirror write in a start leaves: an active task with no
+/// `sync.json`, and the head of my approval still in the index.
+#[test]
+fn a_task_with_no_sync_state_dates_a_kept_approval_from_the_index() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-23T09:00:00.000Z", "opened", "W/\"approved\""),
+    );
+    sandbox.sync();
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it(&sandbox);
+    sandbox.sync();
+    let created: TaskDetail = ok(&request(
+        &socket,
+        "POST",
+        "/v1/tasks",
+        Some(&json!({
+            "title": "Review company-a/checkout!88",
+            "kind": "review",
+            "context": "company-a",
+            "status": "active",
+            "links": [{
+                "role": "origin",
+                "provider": "gitlab",
+                "key": "company-a/checkout!88",
+                "url": "https://gitlab.example.com/company-a/checkout/-/merge_requests/88",
+            }],
+        })),
+    ));
+    let id = created.summary.id.to_string();
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-25T09:00:00.000Z", "opened", "W/\"changed\""),
+    );
+    sandbox.sync();
+    let state = json_file(
+        &sandbox
+            .store("company-a")
+            .join("tasks")
+            .join(&id)
+            .join(FORGES[1].4)
+            .join("sync.json"),
+    );
+    assert_eq!(state["verdict"]["sha"], V2, "{state}");
+    assert_eq!(status(&socket, &id), Status::Active);
+    daemon.stop();
+}
+
+#[test]
+fn a_gitlab_start_after_a_restart_still_sees_that_my_request_is_gone() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    daemon.stop();
+    // GitLab has no team requests: a read always tells, with nothing in memory.
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["reviewers"] = json!([]);
+    sandbox
+        .gitlab
+        .set(MR_88, with_etag(mr.to_string(), "W/\"no-request\""));
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    let refused = start_response(&socket, GITLAB_KEY);
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(entry_files(&sandbox.store("company-a")).len(), 0);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_at_a_start_whose_entry_cannot_be_removed_says_so() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    sandbox.github.routes.lock().unwrap().remove(PULL);
+    let dir = sandbox.store("personal").join("queue/mrs");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let refused = start_response(&socket, GITHUB_KEY);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(refused.status, 500, "{}", refused.body);
+    assert!(refused.body.contains("cannot delete"), "{}", refused.body);
+    assert_eq!(entry_files(&sandbox.store("personal")).len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_in_a_poll_with_a_full_list_still_asks_for_the_next_full_list() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let body = sandbox.gitlab.body(MR_88);
+    daemon.stop();
+    // A restart: the first list is full, and the entry answers 404 in that same poll.
+    gitlab_access_lost(&sandbox);
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    // The access is back, and the MR did not change.
+    sandbox.gitlab.set(MR_88, route(body));
+    gitlab_lists_it_in_full_only(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_limited_list_does_not_put_off_the_next_full_list() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start_with_full_list_period("2s");
+    sandbox.sync();
+    let seen = sandbox.gitlab.requests().len();
+    // Polls come faster than the period: if a limited one counted, no full list would come.
+    wait_for("a full list after the period", || {
+        sandbox.sync();
+        sandbox.gitlab.requests()[seen..].contains(&"GET /merge_requests".to_owned())
+    });
+    daemon.stop();
+}
+
+/// Approve V2, and a push to V3 on a project that keeps approvals: an entry on V3.
+fn kept_approval_with_an_entry(sandbox: &Sandbox) {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    sandbox.sync();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-23T09:00:00.000Z", "opened", "W/\"approved\""),
+    );
+    sandbox.sync();
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it(sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&sandbox.socket(), Some("company-a")).entries.len(), 1);
+}
+
+fn approval_heads(sandbox: &Sandbox) -> Vec<String> {
+    loom_store::Reader::open(&sandbox.loom_home().join("index.db"))
+        .unwrap()
+        .mr_approvals(&"company-a".parse().unwrap(), "gitlab.example.com")
+        .unwrap()
+        .into_iter()
+        .map(|approval| approval.head_sha)
+        .collect()
+}
+
+#[test]
+fn a_kept_approval_entry_returns_after_a_404_and_the_row_survives() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    kept_approval_with_an_entry(&sandbox);
+    gitlab_access_lost(&sandbox);
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    // The access is back, on the same head, with the same approval: still to review.
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it_in_full_only(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    // A start dates my approval to the head that I reviewed.
+    let id = start(&socket, GITLAB_KEY).task.summary.id.to_string();
+    let state = json_file(
+        &sandbox
+            .store("company-a")
+            .join("tasks")
+            .join(&id)
+            .join(FORGES[1].4)
+            .join("sync.json"),
+    );
+    assert_eq!(state["verdict"]["sha"], V2, "{state}");
+    daemon.stop();
+}
+
+#[test]
+fn an_approval_row_stays_through_several_404_and_the_entry_comes_back_without_a_list() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    kept_approval_with_an_entry(&sandbox);
+    gitlab_access_lost(&sandbox);
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    for _ in 0..3 {
+        sandbox.sync();
+    }
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    // No list shows the MR: its row keeps it read, so the entry returns with the access.
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_on_an_mr_with_only_a_row_does_not_ask_for_a_full_list() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    assert_eq!(queue(&sandbox.socket(), Some("company-a")).entries.len(), 0);
+    gitlab_access_lost(&sandbox);
+    sandbox.sync();
+    // Polls with nothing to remove: each list stays limited, and the row stays.
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    assert!(
+        !requests[seen..].contains(&"GET /merge_requests".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_drops_an_approval_row_past_its_age() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start_with_env("LOOM_TEST_APPROVAL_EXPIRY", "0s");
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    gitlab_access_lost(&sandbox);
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), Vec::<String>::new());
+    daemon.stop();
+}
+
+#[test]
+fn only_a_404_drops_an_old_approval_row() {
+    let sandbox = Sandbox::new();
+    // Each row is past its age, and the MR keeps answering.
+    let daemon = sandbox.start_with_env("LOOM_TEST_APPROVAL_EXPIRY", "0s");
+    kept_approval_with_an_entry(&sandbox);
+    sandbox.sync();
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    daemon.stop();
+}
+
+#[test]
+fn the_approval_row_of_an_mr_of_another_context_goes() {
+    let sandbox = sandbox_for_a_move("");
+    let home = sandbox.user_home();
+    let config = fs::read_to_string(sandbox.loom_home().join("config.toml"))
+        .unwrap()
+        .replace(
+            "[contexts.company-a]\n",
+            &format!(
+                "[contexts.company-a]\nmatch.hosts = [\"gitlab.example.com/company-a\"]\n\n[repos.\"{}\"]\ncontext = \"personal\"\n",
+                home.join("work/checkout").display()
+            ),
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    register_the_clone(&sandbox);
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), Vec::<String>::new());
+    daemon.stop();
+}
+
+#[test]
+fn a_merge_that_removes_an_entry_does_not_ask_for_a_full_list() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T11:00:00.000Z", "merged", "W/\"m\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    assert!(
+        !requests[seen..].contains(&"GET /merge_requests".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
     daemon.stop();
 }

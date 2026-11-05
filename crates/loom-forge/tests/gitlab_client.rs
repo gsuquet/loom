@@ -727,3 +727,16 @@ fn project_without_a_count_or_not_visible() {
     ));
     assert_eq!(forge.requests().len(), 1);
 }
+
+#[test]
+fn the_reviewers_of_an_mr_come_with_their_state() {
+    let forge = FakeForge::start();
+    forge.route(
+        Route::get("/projects/77/merge_requests/88/reviewers")
+            .fixture("gitlab/merge-request-88-reviewers.json"),
+    );
+    let reviewers = client(&forge).reviewers(MR_88).unwrap();
+    assert_eq!(reviewers.len(), 1);
+    assert_eq!(reviewers[0].username, "carol");
+    assert_eq!(reviewers[0].state, "approved");
+}

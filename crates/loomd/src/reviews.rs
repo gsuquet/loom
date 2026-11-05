@@ -1,7 +1,11 @@
 //! The review poller of loomd (ADR-0016, decisions 1 and 8): one thread polls, for each held
-//! context and forge host with a credential, the MRs where I am a requested reviewer and the
-//! MRs of its Review tasks, then hands what it fetched to the task thread, which writes the
-//! tasks and the mirrors (`tasks::reviews`). The decisions are in `loomd::review_sync`.
+//! context and forge host with a credential, the MRs where I am a requested reviewer, the MRs of
+//! its queue and the MRs of its Review tasks, then hands what it fetched to the task thread,
+//! which writes the tasks, the mirrors and the queue entries (`tasks::reviews`). The decisions
+//! are in `loomd::review_sync` and `loomd::review_queue`.
+//!
+//! A start (`POST /v1/reviews/queue/{key}/start`) runs on this thread too: it never runs during
+//! a poll, so a poll cannot hand over what it read before the start.
 //!
 //! - Every `[forges."<host>"] poll_interval`, jittered by ±10 %, and on `POST /v1/reviews/sync`.
 //! - GitHub: the search, then each MR with its `ETag`: a 304 costs nothing and changes nothing.
@@ -31,6 +35,7 @@ use loom_forge::client::{
     ApiBase, Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient,
     GitlabForge as _, GitlabMr, ReviewRequests, Token,
 };
+use loom_forge::gitlab::MrReviewer;
 use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, MrSummary, Sha, Thread};
 use loom_forge::{MrContexts, mr_context};
 use loom_repo::ContextRules;
@@ -46,15 +51,18 @@ use loomd::repo_update::GitRunner;
 use loomd::review_sync::{
     Belongs, MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, belongs, clone_of,
     finder_tells, github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
+    url_host,
 };
 use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, join_within};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::{Span, debug, info, info_span, warn};
 
-use crate::mr_worker::{self, MrWorker, MrWorkerHandle};
+use crate::mr_worker::{self, MrWorker, MrWorkerHandle, PassTrigger};
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
+
+mod start;
 
 /// How many other contexts have a credential for the host of `target`, held here or not:
 /// another machine can poll them with the same account.
@@ -83,6 +91,13 @@ struct ToRead {
     other_context: usize,
     /// The MRs of no context.
     unassigned: Vec<ReviewSyncFailure>,
+    /// What needs no read of the forge: the entries that move to their context, and the
+    /// approved MRs of another context.
+    settled: Vec<MrUpdate>,
+    /// The entries of another context that cannot move: read, and reported.
+    held: Vec<ReviewSyncFailure>,
+    /// The project of each approved MR that no list may show, by mirror directory name.
+    projects: HashMap<String, u64>,
 }
 
 /// The first poll of each host, after the start: the task store reconciles first.
@@ -90,6 +105,9 @@ const START_DELAY: Duration = Duration::from_secs(30);
 /// GitLab `updated_after` is the start of the last poll that succeeded, minus this margin: a
 /// change made while that poll ran is listed again.
 const UPDATED_AFTER_MARGIN: Duration = Duration::from_mins(1);
+/// A GitLab list is full at least this often: `updated_after` does not show an unchanged MR, so
+/// this bounds the time for which a lost entry stays lost when the access comes back.
+const FULL_LIST_PERIOD: Duration = THREADS_REFRESH;
 
 /// A request to the poller.
 enum Request {
@@ -97,6 +115,13 @@ enum Request {
     Sync {
         context: Option<ContextName>,
         reply: oneshot::Sender<ReviewSyncResult>,
+        parent: Span,
+    },
+    /// Start on the MR `key`: its Review task, and whether this request created it.
+    Start {
+        context: Option<ContextName>,
+        key: MrKey,
+        reply: oneshot::Sender<Result<(loom_api::TaskId, bool), crate::repos::Failure>>,
         parent: Span,
     },
     Stop,
@@ -135,7 +160,7 @@ pub struct Setup {
 }
 
 /// Whether this machine polls `target`: the first of `machines`, or any machine without them.
-/// As for schedules: two machines would both create each Review task.
+/// As for schedules: two machines would both write each entry, and both could start on it.
 fn polled_here(
     target: &ForgeTarget,
     machines: Option<&[MachineName]>,
@@ -151,11 +176,21 @@ fn polled_here(
             warn!(
                 context = %target.context,
                 host = %target.host,
-                "MRs are polled on every machine holding the context: set `machines` so that only its first machine creates their Review tasks"
+                "MRs are polled on every machine holding the context: set `machines` so that only its first machine writes their queue entries"
             );
             true
         }
     }
+}
+
+/// The duration of the test hook `name`, otherwise `default`.
+pub fn hooked_duration(name: &str, default: Duration) -> Duration {
+    hooks::duration_hook(name, env::var(name).ok().as_deref())
+        .unwrap_or_else(|message| {
+            warn!("{message}");
+            None
+        })
+        .unwrap_or(default)
 }
 
 /// Starts the poller thread.
@@ -163,15 +198,8 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     let rules = ContextRules::new(config, &setup.user_home)
         .into_diagnostic()
         .wrap_err("cannot read the context rules for the MR polls")?;
-    let start_delay = hooks::duration_hook(
-        hooks::REVIEW_START_DELAY_ENV,
-        env::var(hooks::REVIEW_START_DELAY_ENV).ok().as_deref(),
-    )
-    .unwrap_or_else(|message| {
-        warn!("{message}");
-        None
-    })
-    .unwrap_or(START_DELAY);
+    let start_delay = hooked_duration(hooks::REVIEW_START_DELAY_ENV, START_DELAY);
+    let full_list_period = hooked_duration(hooks::FULL_LIST_PERIOD_ENV, FULL_LIST_PERIOD);
     let now = Instant::now();
     let mut hosts = Vec::new();
     let credentials = config.forge_credentials();
@@ -217,6 +245,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             last_login: None,
             last_success: None,
             updated_after: None,
+            last_full_list: None,
             mrs: HashMap::new(),
             target,
         });
@@ -242,6 +271,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
         resolver: setup.resolver,
         tasks: setup.tasks,
         user_agent,
+        full_list_period,
         refs: refs_handle,
     };
     let thread = thread::Builder::new()
@@ -307,6 +337,10 @@ struct Host {
     last_success: Option<Timestamp>,
     /// GitLab `updated_after` of the next poll.
     updated_after: Option<Timestamp>,
+    /// When the last poll with a full GitLab list succeeded. `None`: the next list is full. A 404
+    /// that removes an entry sets it: a lost access also answers 404, and `updated_after` would
+    /// not list an unchanged MR again.
+    last_full_list: Option<Instant>,
     /// What the last polls read of each MR, by mirror directory name.
     mrs: HashMap<String, MrCache>,
 }
@@ -332,6 +366,8 @@ struct Poller {
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
     user_agent: String,
+    /// The time between two full GitLab lists.
+    full_list_period: Duration,
     /// The thread of the MR refs and diffs: a pass after each poll, outside of its outcome.
     refs: MrWorkerHandle,
 }
@@ -340,6 +376,36 @@ struct Poller {
 enum Stopped {
     Forge(ForgeError),
     Other(String),
+}
+
+/// Why a read of one MR failed.
+enum ReadFailure {
+    /// A 404 on the MR itself: it is gone, or I lost the access.
+    MrGone(ForgeError),
+    /// Another failure, such as a 404 on its reviews.
+    Other(ForgeError),
+}
+
+impl ReadFailure {
+    /// A failure of the read of the MR itself.
+    const fn of_the_mr(error: ForgeError) -> Self {
+        match error {
+            ForgeError::NotFound { .. } => Self::MrGone(error),
+            other => Self::Other(other),
+        }
+    }
+
+    fn into_error(self) -> ForgeError {
+        match self {
+            Self::MrGone(error) | Self::Other(error) => error,
+        }
+    }
+}
+
+impl From<ForgeError> for ReadFailure {
+    fn from(error: ForgeError) -> Self {
+        Self::Other(error)
+    }
 }
 
 impl From<ForgeError> for Stopped {
@@ -379,6 +445,8 @@ struct Fetched {
     untracked: Vec<String>,
     /// Why the poll stopped before its last MR: the MRs read before are applied all the same.
     stopped: Option<Stopped>,
+    /// The time of the GitLab list of this poll, when it was full.
+    full_list: Option<Instant>,
 }
 
 impl Poller {
@@ -423,6 +491,15 @@ impl Poller {
                         }
                     }
                     let _ = reply.send(ReviewSyncResult { forges });
+                }
+                Ok(Request::Start {
+                    context,
+                    key,
+                    reply,
+                    parent,
+                }) => {
+                    let _span = info_span!(parent: &parent, "reviews.start", %key).entered();
+                    let _ = reply.send(self.start_review(context.as_ref(), &key));
                 }
                 Ok(Request::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => {
@@ -519,7 +596,7 @@ impl Poller {
                 match fetched.stopped.take() {
                     // One MR that stops the host does not hold back the MRs read before it.
                     Some(stopped) => {
-                        let _ = self.hand_over(index, fetched.updates);
+                        let _ = self.hand_over(index, fetched.updates, PassTrigger::Poll);
                         self.stopped(index, stopped, &token)
                     }
                     None => self.apply(index, fetched, started),
@@ -531,7 +608,19 @@ impl Poller {
 
     /// Hands `updates` of host `index` to the task thread. What the task thread did not write
     /// is read in full next time, or its cached `ETag` would hide the change with a 304.
-    fn hand_over(&mut self, index: usize, updates: Vec<MrUpdate>) -> Option<ReviewsApplied> {
+    fn hand_over(
+        &mut self,
+        index: usize,
+        updates: Vec<MrUpdate>,
+        trigger: PassTrigger,
+    ) -> Option<ReviewsApplied> {
+        let applied = self.write_updates(index, updates)?;
+        self.refs.pass(&self.hosts[index].target, trigger);
+        Some(applied)
+    }
+
+    /// [`Self::hand_over`], with no pass of MR refs after it: a start that creates no task.
+    fn write_updates(&mut self, index: usize, updates: Vec<MrUpdate>) -> Option<ReviewsApplied> {
         let keys: Vec<String> = updates.iter().map(|update| update.key.dir_name()).collect();
         let host = &mut self.hosts[index];
         let batch = MrBatch {
@@ -545,9 +634,17 @@ impl Poller {
             }
             return None;
         };
-        self.refs.pass(&host.target);
+        if applied.entry_gone {
+            host.last_full_list = None;
+        }
         for failure in &applied.failed {
             if let Ok(key) = MrKey::parse(&failure.key) {
+                host.mrs.remove(&key.dir_name());
+            }
+        }
+        // An MR that comes back is read in full: a 304 would hide it, as it has no entry to read.
+        for removed in &applied.removed {
+            if let Ok(key) = MrKey::parse(removed) {
                 host.mrs.remove(&key.dir_name());
             }
         }
@@ -557,13 +654,14 @@ impl Poller {
     /// Hands the MRs fetched from host `index` to the task thread.
     fn apply(&mut self, index: usize, fetched: Fetched, started: Timestamp) -> ReviewSyncOutcome {
         let mrs = fetched.updates.len() + fetched.failed.len();
-        let Some(applied) = self.hand_over(index, fetched.updates) else {
+        let Some(applied) = self.hand_over(index, fetched.updates, PassTrigger::Poll) else {
             return ReviewSyncOutcome::Failed {
                 error: "loomd is stopping".to_owned(),
             };
         };
         let host = &mut self.hosts[index];
         let mut failed = fetched.failed;
+        let entry_gone = applied.entry_gone;
         failed.extend(applied.failed);
         host.last_success = Some(started);
         // An MR that failed before its task exists is listed again only from the same time; an
@@ -577,18 +675,23 @@ impl Poller {
                     .unix_secs()
                     .saturating_sub(UPDATED_AFTER_MARGIN.as_secs()),
             );
+            if !entry_gone {
+                host.last_full_list = fetched.full_list.or(host.last_full_list);
+            }
         }
         host.rate_limited = None;
         info!(
             mrs,
-            created = applied.created.len(),
+            added = applied.added.len(),
+            removed = applied.removed.len(),
             changed = applied.changed.len(),
             failed = failed.len(),
             "MRs polled"
         );
         ReviewSyncOutcome::Synced {
             mrs,
-            created: applied.created,
+            added: applied.added,
+            removed: applied.removed,
             changed: applied.changed,
             other_context: fetched.other_context,
             failed,
@@ -649,7 +752,12 @@ impl Poller {
     }
 
     /// Where an MR found by the search of host `index` goes.
-    fn ours(&self, index: usize, key: &MrKey, repos: &[loom_api::RepoSummary]) -> Belongs {
+    fn ours(
+        &self,
+        index: usize,
+        key: &MrKey,
+        repos: &[loom_api::RepoSummary],
+    ) -> (Belongs, ContextName) {
         let target = &self.hosts[index].target;
         let clone = clone_of(repos, &target.host, key.project());
         let contexts = MrContexts {
@@ -674,7 +782,22 @@ impl Poller {
         if belongs == Belongs::Elsewhere {
             debug!(key = %key, other = %context.context(), "MR of another context, not written here");
         }
-        belongs
+        (belongs, context.context().clone())
+    }
+
+    /// Whether the entry of host `index` can move to `target`: this machine polls that context
+    /// and host with the same account. With another account, that poll would see no request and
+    /// delete the entry.
+    fn can_move_to(&self, index: usize, target: &ContextName) -> bool {
+        let here = &self.hosts[index];
+        self.hosts.iter().any(|other| {
+            other.target.context == *target
+                && other.target.host == here.target.host
+                && matches!(
+                    (&other.last_login, &here.last_login),
+                    (Some(theirs), Some(mine)) if theirs.eq_ignore_ascii_case(mine)
+                )
+        })
     }
 
     /// The MRs found by the search that belong to the context of host `index`, then the MRs of
@@ -691,6 +814,7 @@ impl Poller {
             .map_err(|error| Stopped::Other(format!("cannot read the tasks: {error}")))?;
         let tracked = tracked_reviews(&rows, &target.context, &target.host);
         let mut other_context = 0;
+        let mut elsewhere = Vec::new();
         let mut unassigned = Vec::new();
         let mut keys: Vec<Key> = Vec::new();
         for summary in found {
@@ -703,10 +827,11 @@ impl Poller {
                 .map(|(id, _, _)| id.clone());
             // A tracked MR stays in its task's context: a task does not move.
             if task.is_none() {
-                match self.ours(index, &summary.key, &repos) {
+                match self.ours(index, &summary.key, &repos).0 {
                     Belongs::Here => {}
                     Belongs::Elsewhere => {
                         other_context += 1;
+                        elsewhere.push(summary);
                         continue;
                     }
                     Belongs::Unassigned => {
@@ -739,11 +864,103 @@ impl Poller {
             }
             keys.push((key, None, Some(id)));
         }
+        let (settled, held) =
+            self.keys_of_the_queue(index, &repos, &mut keys, &unassigned, &elsewhere);
+        let (approved, projects) = self.keys_of_the_approvals(index, &reader, &repos, &mut keys)?;
         Ok(ToRead {
             mrs: keys,
             other_context,
             unassigned,
+            settled: settled.into_iter().chain(approved).collect(),
+            held,
+            projects,
         })
+    }
+
+    /// Adds to `keys` the entries of the queue of host `index`: GitHub and GitLab do not list an
+    /// MR whose request was removed, or that is merged or closed. Returns what needs no read: the
+    /// entries that move; and the entries of another context that cannot move.
+    fn keys_of_the_queue(
+        &self,
+        index: usize,
+        repos: &[loom_api::RepoSummary],
+        keys: &mut Vec<Key>,
+        unassigned: &[ReviewSyncFailure],
+        elsewhere: &[MrSummary],
+    ) -> (Vec<MrUpdate>, Vec<ReviewSyncFailure>) {
+        let target = &self.hosts[index].target;
+        let mut settled = Vec::new();
+        let mut held = Vec::new();
+        let stored = self
+            .stores
+            .get(&target.context)
+            .map(|root| crate::tasks::read_queue(root))
+            .unwrap_or_default();
+        for entry in stored {
+            if url_host(&entry.web_url).as_deref() != Some(target.host.as_str())
+                || keys.iter().any(|(known, _, _)| *known == entry.key)
+                // No context for now (maybe a login not read yet): the entry stays.
+                || unassigned
+                    .iter()
+                    .any(|failure| failure.key == entry.key.to_string())
+            {
+                continue;
+            }
+            match self.ours(index, &entry.key, repos) {
+                (Belongs::Elsewhere, other) if self.can_move_to(index, &other) => {
+                    settled.push(moved_update(entry.key, other));
+                }
+                (Belongs::Elsewhere, other) => {
+                    held.push(ReviewSyncFailure {
+                        key: entry.key.to_string(),
+                        error: format!(
+                            "the MR belongs to context `{other}` now, which this machine does not poll on {} with the same account: the entry stays in this context",
+                            target.host
+                        ),
+                    });
+                    // Still read: a request removed or a merge removes the entry.
+                    let found = elsewhere
+                        .iter()
+                        .find(|summary| summary.key == entry.key)
+                        .cloned();
+                    keys.push((entry.key, found, None));
+                }
+                (Belongs::Here | Belongs::Unassigned, _) => keys.push((entry.key, None, None)),
+            }
+        }
+        (settled, held)
+    }
+
+    /// Adds to `keys` the approved MRs of host `index` without an entry: only a read shows that
+    /// they leave. Returns the rows of another context to drop, and the project of each MR.
+    fn keys_of_the_approvals(
+        &self,
+        index: usize,
+        reader: &Reader,
+        repos: &[loom_api::RepoSummary],
+        keys: &mut Vec<Key>,
+    ) -> Result<(Vec<MrUpdate>, HashMap<String, u64>), Stopped> {
+        let target = &self.hosts[index].target;
+        let mut settled = Vec::new();
+        let mut projects = HashMap::new();
+        let approved = reader
+            .mr_approvals(&target.context, &target.host)
+            .map_err(|error| Stopped::Other(format!("cannot read the approvals: {error}")))?;
+        for approval in approved {
+            let Ok(key) = MrKey::parse(&approval.key) else {
+                continue;
+            };
+            projects.insert(key.dir_name(), approval.project_id);
+            if keys.iter().any(|(known, _, _)| *known == key) {
+                continue;
+            }
+            match self.ours(index, &key, repos).0 {
+                Belongs::Here => keys.push((key, None, None)),
+                Belongs::Elsewhere => settled.push(unread_update(key, None, false)),
+                Belongs::Unassigned => {}
+            }
+        }
+        Ok((settled, projects))
     }
 
     fn poll_github(&mut self, index: usize, client: &GithubClient) -> Result<Fetched, Stopped> {
@@ -758,21 +975,26 @@ impl Poller {
             mrs: keys,
             other_context,
             unassigned,
+            settled,
+            held,
+            projects: _,
         } = self.keys(index, page.items)?;
         let mut untracked = untracked(&keys);
         untracked.extend(unassigned.iter().map(|failure| failure.key.clone()));
         let mut fetched = Fetched {
-            updates: Vec::new(),
+            updates: settled,
             other_context,
-            failed: unassigned,
+            failed: unassigned.into_iter().chain(held).collect(),
             untracked,
             stopped: None,
+            full_list: None,
         };
-        for (key, found, _) in keys {
+        for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
                 fetched.stopped = Some(stopped);
                 break;
             }
+            let unlisted = found.is_none() && task.is_none();
             // Missing from an incomplete search: unknown.
             let found = match found {
                 Some(_) => Some(true),
@@ -780,14 +1002,20 @@ impl Poller {
                 None => Some(false),
             };
             let cache = self.hosts[index].mrs.entry(key.dir_name()).or_default();
-            match github_update(client, &key, found, &login, cache) {
+            match github_update(client, &key, found, &login, cache, task.is_some()) {
                 Ok(update) => fetched.updates.push(update),
-                Err(error) if stops_the_host(&error) => {
-                    fetched.stopped = Some(error.into());
-                    break;
-                }
-                Err(error) => {
+                // Gone from a host that answers: as for a closed MR. A task keeps its rules.
+                Err(ReadFailure::MrGone(_)) if unlisted => {
                     self.hosts[index].mrs.remove(&key.dir_name());
+                    fetched.updates.push(gone_update(key));
+                }
+                Err(read) => {
+                    let error = read.into_error();
+                    if stops_the_host(&error) {
+                        fetched.stopped = Some(error.into());
+                        break;
+                    }
+                    forget_etag(self.hosts[index].mrs.get_mut(&key.dir_name()));
                     fetched.failed.push(failure(&key, &error));
                 }
             }
@@ -798,20 +1026,32 @@ impl Poller {
     fn poll_gitlab(&mut self, index: usize, client: &GitlabClient) -> Result<Fetched, Stopped> {
         self.go_on()?;
         let login = self.login(index, client)?;
-        let listed = client.review_requests(self.hosts[index].updated_after)?;
+        let host = &self.hosts[index];
+        let full_list = host
+            .last_full_list
+            .is_none_or(|at| at.elapsed() >= self.full_list_period);
+        let since = if full_list { None } else { host.updated_after };
+        let listed_at = full_list.then(Instant::now);
+        let listed = client.review_requests(since)?;
         let ToRead {
             mrs: keys,
             other_context,
             unassigned,
+            settled,
+            held,
+            projects,
         } = self.keys(index, listed)?;
         let mut untracked = untracked(&keys);
         untracked.extend(unassigned.iter().map(|failure| failure.key.clone()));
+        // A held entry fails at each poll, and is read one by one: it holds back no list.
+        untracked.retain(|key| !held.iter().any(|failure| failure.key == *key));
         let mut fetched = Fetched {
-            updates: Vec::new(),
+            updates: settled,
             other_context,
-            failed: unassigned,
+            failed: unassigned.into_iter().chain(held).collect(),
             untracked,
             stopped: None,
+            full_list: listed_at,
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
@@ -824,7 +1064,12 @@ impl Poller {
                 .get(&key.dir_name())
                 .and_then(|cache| cache.project_id)
                 .or_else(|| found.as_ref().and_then(|summary| summary.project_id))
-                .or_else(mirror_project);
+                .or_else(mirror_project)
+                .or_else(|| {
+                    let root = self.stores.get(&self.hosts[index].target.context)?;
+                    project_id(&crate::tasks::read_entry(root, &key)?.forge_ids)
+                })
+                .or_else(|| projects.get(&key.dir_name()).copied());
             let Some(project_id) = project_id else {
                 fetched.failed.push(ReviewSyncFailure {
                     key: key.to_string(),
@@ -838,14 +1083,30 @@ impl Poller {
                 project_id,
                 iid: key.number(),
             };
-            match gitlab_update(client, &key, mr, Some(found.is_some()), &login, cache) {
+            let mirrored = task.is_some();
+            let unlisted = found.is_none() && !mirrored;
+            match gitlab_update(
+                client,
+                &key,
+                mr,
+                Some(found.is_some()),
+                &login,
+                cache,
+                mirrored,
+            ) {
                 Ok(update) => fetched.updates.push(update),
-                Err(error) if stops_the_host(&error) => {
-                    fetched.stopped = Some(error.into());
-                    break;
-                }
-                Err(error) => {
+                // Gone from a host that answers: as for a closed MR. A task keeps its rules.
+                Err(ReadFailure::MrGone(_)) if unlisted => {
                     self.hosts[index].mrs.remove(&key.dir_name());
+                    fetched.updates.push(gone_update(key));
+                }
+                Err(read) => {
+                    let error = read.into_error();
+                    if stops_the_host(&error) {
+                        fetched.stopped = Some(error.into());
+                        break;
+                    }
+                    forget_etag(self.hosts[index].mrs.get_mut(&key.dir_name()));
                     fetched.failed.push(failure(&key, &error));
                 }
             }
@@ -854,10 +1115,46 @@ impl Poller {
     }
 }
 
-/// The keys of the MRs of `keys` without a Review task.
+/// An update with no read of the forge.
+const fn unread_update(key: MrKey, moved_to: Option<ContextName>, gone: bool) -> MrUpdate {
+    MrUpdate {
+        key,
+        requested: Some(false),
+        mr: None,
+        versions: Vec::new(),
+        threads: None,
+        verdict: None,
+        own: false,
+        start: false,
+        requested_after_verdict: false,
+        gone,
+        moved_to,
+    }
+}
+
+/// What removes the entry of an MR that the forge no longer shows.
+const fn gone_update(key: MrKey) -> MrUpdate {
+    unread_update(key, None, true)
+}
+
+/// What moves the entry of an MR to the store of its context.
+const fn moved_update(key: MrKey, context: ContextName) -> MrUpdate {
+    unread_update(key, Some(context), false)
+}
+
+/// A read of this MR is to be in full next time, or its cached `ETag` would hide a change with a
+/// 304. The rest stays: `direct` tells a start that a request was direct.
+fn forget_etag(cache: Option<&mut MrCache>) {
+    if let Some(cache) = cache {
+        cache.etag = None;
+    }
+}
+
+/// The keys of the MRs of `keys` that a list found, without a Review task: only a later list
+/// shows them again. An entry alone is read one by one anyway.
 fn untracked(keys: &[Key]) -> Vec<String> {
     keys.iter()
-        .filter(|(_, _, task)| task.is_none())
+        .filter(|(_, found, task)| found.is_some() && task.is_none())
         .map(|(key, _, _)| key.to_string())
         .collect()
 }
@@ -881,9 +1178,24 @@ fn failure(key: &MrKey, error: &ForgeError) -> ReviewSyncFailure {
 
 /// The project of a GitLab merge request.
 const fn project_of(mr: &Mr) -> Option<u64> {
-    match mr.forge_ids {
-        MrForgeIds::Gitlab { project_id, .. } => Some(project_id),
+    project_id(&mr.forge_ids)
+}
+
+/// The project in the identifiers of a GitLab merge request.
+const fn project_id(ids: &MrForgeIds) -> Option<u64> {
+    match ids {
+        MrForgeIds::Gitlab { project_id, .. } => Some(*project_id),
         MrForgeIds::Github { .. } => None,
+    }
+}
+
+/// The `ETag` of a read. An MR without a mirror is read in full when its hourly read is due: a 304
+/// gives nothing to compare my verdict with.
+fn conditional(cache: &MrCache, mirrored: bool) -> Option<&str> {
+    if !mirrored && threads_due(cache) {
+        None
+    } else {
+        cache.etag.as_deref()
     }
 }
 
@@ -894,26 +1206,38 @@ fn threads_due(cache: &MrCache) -> bool {
         .is_none_or(|at| at.elapsed() >= THREADS_REFRESH)
 }
 
+fn is_author(mr: &Mr, login: &str) -> bool {
+    mr.author.eq_ignore_ascii_case(login)
+}
+
 fn is_reviewer(mr: &Mr, login: &str) -> bool {
     mr.reviewers
         .iter()
         .any(|reviewer| reviewer.eq_ignore_ascii_case(login))
 }
 
-/// The GitHub pull request `key`: in full when it changed since the `ETag` of `cache`.
+/// The GitHub pull request `key`: in full when it changed since the `ETag` of `cache`. Only an
+/// MR with a mirror (`mirrored`) needs its threads: an entry does not hold them.
 fn github_update(
     client: &GithubClient,
     key: &MrKey,
     found: Option<bool>,
     login: &str,
     cache: &mut MrCache,
-) -> Result<MrUpdate, ForgeError> {
-    let threads = |client: &GithubClient| -> Result<Vec<Thread>, ForgeError> {
+    mirrored: bool,
+) -> Result<MrUpdate, ReadFailure> {
+    let threads = |client: &GithubClient| -> Result<Option<Vec<Thread>>, ForgeError> {
+        if !mirrored {
+            return Ok(None);
+        }
         let mut threads = client.review_threads(key)?.threads;
         threads.extend(client.issue_comments(key)?);
-        Ok(threads)
+        Ok(Some(threads))
     };
-    match client.pull(key, cache.etag.as_deref())? {
+    let read = client
+        .pull(key, conditional(cache, mirrored))
+        .map_err(ReadFailure::of_the_mr)?;
+    match read {
         Conditional::Modified { value: mr, etag } => {
             let verdict = github_verdict(&client.reviews(key)?, login);
             let threads = threads(client)?;
@@ -925,9 +1249,15 @@ fn github_update(
                 key: key.clone(),
                 requested: requested(found, cache.direct),
                 versions: vec![mr.version.clone()],
+                own: is_author(&mr, login),
                 mr: Some(mr),
-                threads: Some(threads),
+                threads,
                 verdict: Some(verdict),
+                start: false,
+                // GitHub removes me from the reviewers when I submit: listed is newer.
+                requested_after_verdict: cache.direct,
+                gone: false,
+                moved_to: None,
             })
         }
         Conditional::NotModified => {
@@ -936,7 +1266,7 @@ fn github_update(
                 let threads = threads(client)?;
                 let verdict = github_verdict(&client.reviews(key)?, login);
                 cache.threads_at = Some(Instant::now());
-                (Some(threads), Some(verdict))
+                (threads, Some(verdict))
             } else {
                 (None, None)
             };
@@ -947,12 +1277,39 @@ fn github_update(
                 versions: Vec::new(),
                 threads,
                 verdict,
+                own: false,
+                start: false,
+                requested_after_verdict: cache.direct,
+                gone: false,
+                moved_to: None,
             })
         }
     }
 }
 
-/// The GitLab merge request `key`: in full when it changed since the `ETag` of `cache`.
+/// Whether my GitLab reviewer state tells a request newer than my approval: only for an approved
+/// MR without a task. The state of a re-request is not in the GitLab docs: `unreviewed` is taken
+/// as newer. A failure of this one read is logged and changes nothing.
+fn gitlab_requested_again(
+    client: &GitlabClient,
+    reference: GitlabMr,
+    login: &str,
+) -> Result<bool, ForgeError> {
+    match client.reviewers(reference) {
+        Ok(reviewers) => Ok(reviewers.iter().any(|reviewer| {
+            reviewer.username.eq_ignore_ascii_case(login)
+                && reviewer.state == MrReviewer::UNREVIEWED
+        })),
+        Err(error) if stops_the_host(&error) => Err(error),
+        Err(error) => {
+            warn!(%error, "cannot read the reviewers of an MR");
+            Ok(false)
+        }
+    }
+}
+
+/// The GitLab merge request `key`: in full when it changed since the `ETag` of `cache`. Only an
+/// MR with a mirror (`mirrored`) needs its versions and threads: an entry does not hold them.
 fn gitlab_update(
     client: &GitlabClient,
     key: &MrKey,
@@ -960,13 +1317,28 @@ fn gitlab_update(
     found: Option<bool>,
     login: &str,
     cache: &mut MrCache,
-) -> Result<MrUpdate, ForgeError> {
-    match client.merge_request(reference, cache.etag.as_deref())? {
+    mirrored: bool,
+) -> Result<MrUpdate, ReadFailure> {
+    let read = client
+        .merge_request(reference, conditional(cache, mirrored))
+        .map_err(ReadFailure::of_the_mr)?;
+    match read {
         Conditional::Modified { value: mr, etag } => {
             let head = mr.version.head_sha.clone();
-            let versions = client.versions(reference)?;
+            let versions = if mirrored {
+                client.versions(reference)?
+            } else {
+                Vec::new()
+            };
             let approvals = client.approvals(reference)?;
-            let threads = client.discussions(reference, &head)?;
+            let requested_after_verdict = approvals.user_has_approved
+                && !mirrored
+                && gitlab_requested_again(client, reference, login)?;
+            let threads = if mirrored {
+                Some(client.discussions(reference, &head)?)
+            } else {
+                None
+            };
             cache.etag = etag;
             cache.direct = is_reviewer(&mr, login);
             cache.threads_at = Some(Instant::now());
@@ -974,21 +1346,30 @@ fn gitlab_update(
             Ok(MrUpdate {
                 key: key.clone(),
                 requested: requested(found, cache.direct),
+                own: is_author(&mr, login),
                 mr: Some(mr),
                 versions,
-                threads: Some(threads),
+                threads,
                 verdict: Some(gitlab_verdict(approvals.user_has_approved, &head)),
+                start: false,
+                requested_after_verdict,
+                gone: false,
+                moved_to: None,
             })
         }
         Conditional::NotModified => {
             // Hourly, the threads and my approval, in case they changed without the MR.
             let (threads, verdict) = match &cache.head {
                 Some(head) if threads_due(cache) => {
-                    let threads = client.discussions(reference, head)?;
+                    let threads = if mirrored {
+                        Some(client.discussions(reference, head)?)
+                    } else {
+                        None
+                    };
                     let approvals = client.approvals(reference)?;
                     cache.threads_at = Some(Instant::now());
                     (
-                        Some(threads),
+                        threads,
                         Some(gitlab_verdict(approvals.user_has_approved, head)),
                     )
                 }
@@ -1001,6 +1382,11 @@ fn gitlab_update(
                 versions: Vec::new(),
                 threads,
                 verdict,
+                own: false,
+                start: false,
+                requested_after_verdict: false,
+                gone: false,
+                moved_to: None,
             })
         }
     }

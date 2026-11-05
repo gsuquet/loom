@@ -219,6 +219,25 @@ A line that is not replayed is never an error for the rest of the log. Lines are
 
 A line reported as `newer_version` stops the recording of hand edits of the task: `loomd` indexes the file without an `edited` event, and logs a warning. A line reported as `unknown_type` or `invalid` does not stop it: `loomd` replays the other lines. `loom show` lists the lines that are not replayed as a warning on standard error.
 
+## `queue/mrs/`: queue entry
+
+An MR that waits on me and has no Review task has one file: `<store>/queue/mrs/<provider>-<key>.json`. `loomd` writes these files: do not change them. `<provider>-<key>` is the name of the [MR mirror](#mrs-mr-mirror) directory. `loomd` deletes the file when the MR leaves the queue.
+
+| Key | Content |
+| --- | --- |
+| `v` | The version of the format: `1`. |
+| `key` | The key of the MR, such as `acme/shop#412`. |
+| `forge_ids` | The identifiers of the forge, as in `mr.json`. The poll reads a GitLab MR by its project ID when the list does not show it. |
+| `title` | The title. |
+| `author` | The login of the author. |
+| `web_url` | The page of the MR. Its host is the forge host of the entry. |
+| `head_sha` | The head SHA at the last read of the MR. |
+| `updated_at` | The time of the last change of the MR on the forge. |
+| `reasons` | Why the MR waits on me. A list with at least one value. Values: `review_requested`. |
+| `seen_at` | Optional. The time when I last opened the entry. No command sets it now. |
+
+The file is JSON with two-space indentation and a final newline. `loomd` writes it only when its content changes, with an atomic rename. The entries that a poll changes give one commit of the store: `queue: <n> added, <n> updated, <n> removed`. When an entry comes and goes: [review sync](../explanation/review-sync.md#when-an-entry-comes-and-goes).
+
 ## `mrs/`: MR mirror
 
 A Review task of an MR has a copy of the MR in `<store>/tasks/<id>/mrs/<provider>-<key>/`. `loomd` writes these files: do not change them. `<provider>` is `github` or `gitlab`. `<key>` is the MR key in lowercase, with each byte other than `A-Z`, `a-z`, `0-9`, `_` and `-` as `%XX` (for example `github-acme%2Fshop%23412` for `acme/shop#412`).

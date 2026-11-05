@@ -834,7 +834,7 @@ Global options apply.
 
 Poll the forges now for the merge requests where I am a requested reviewer.
 
-Polls every forge host that has a credential for a context of this machine, or only the hosts of the context that `-c` names. Each MR to review gets a Review task in the inbox, with a copy of the MR in the task directory (`mrs/`). A new head after my verdict reopens the task; a merged or closed MR closes it. An MR of another context is not written to this store. The command fails if a poll or an MR fails; the copies of its MRs stay as they were. A rate limit of a forge is not a failure. loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it is stopped.
+Polls every forge host that has a credential for a context of this machine, or only the hosts of the context that `-c` names. Each MR to review gets a queue entry (`loom review queue`) and no task, until `loom review start`. An MR whose request is removed, whose head has my verdict, or that is merged or closed leaves the queue. A new head after my verdict reopens a Review task; a merged or closed MR closes it. An MR of another context is not written to this store. The command fails if a poll or an MR fails; its entries and the copies of its MRs stay as they were. A rate limit of a forge is not a failure. loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it is stopped.
 
 ```text
 loom review sync [OPTIONS]
@@ -845,6 +845,50 @@ loom review sync [OPTIONS]
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
 | `--json` |  |  | Print the result as JSON (`ReviewSyncResult` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom review queue`
+
+List the merge requests that wait on me and have no Review task.
+
+Lists the entries of every context of this machine, or only of the context that `-c` names. Reads the files of the stores: the forges are not called. Run `loom review sync` for a poll now. Starts loomd if it is stopped.
+
+```text
+loom review queue [OPTIONS]
+```
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the result as JSON (`ReviewQueue` schema) |
+| `-h`, `--help` |  |  | Print help (see a summary with '-h') |
+
+Global options apply.
+
+### `loom review start`
+
+Start on a merge request of the queue: create its Review task.
+
+Reads the MR on the forge, creates the Review task in `active` with a copy of the MR in the task directory (`mrs/`), and removes the entry. If the MR already has a Review task, the command shows this task and creates nothing. If the forge fails, the entry stays and no task is created: run the command again. Use `-c` when two contexts have this key. Starts loomd if it is stopped.
+
+```text
+loom review start [OPTIONS] <KEY>
+```
+
+#### Arguments
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `<KEY>` |  |  | The key of the merge request, such as `acme/shop#412` or `company-a/checkout!88` |
+
+#### Options
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--json` |  |  | Print the result as JSON (`ReviewStartResult` schema) |
 | `-h`, `--help` |  |  | Print help (see a summary with '-h') |
 
 Global options apply.

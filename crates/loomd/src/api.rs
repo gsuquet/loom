@@ -60,6 +60,19 @@ pub const TASKS_HEALTH_PATH: &str = "/v1/tasks/health";
 pub const TASKS_SYNC_PATH: &str = "/v1/tasks/sync";
 /// Polls the forges for the MRs to review now.
 pub const REVIEWS_SYNC_PATH: &str = "/v1/reviews/sync";
+/// The queue of MRs that wait on me.
+pub const REVIEWS_QUEUE_PATH: &str = "/v1/reviews/queue";
+/// Starts on an MR of the queue: `{key}` is its percent-encoded key.
+pub const REVIEWS_QUEUE_START_PATH: &str = "/v1/reviews/queue/{key}/start";
+
+/// Query parameters of `GET /v1/reviews/queue`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewQueueQuery {
+    /// Only the entries of this context.
+    #[serde(default)]
+    pub context: Option<ContextName>,
+}
 
 /// Query parameters of `POST /v1/repos/scan`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

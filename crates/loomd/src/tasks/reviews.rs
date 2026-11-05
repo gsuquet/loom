@@ -1,5 +1,6 @@
-//! The Review tasks and MR mirrors of a poll, written on the task thread (ADR-0016, decisions 1
-//! and 2): the decisions are in `loomd::review_sync`.
+//! The Review tasks, MR mirrors and queue entries of a poll, written on the task thread
+//! (ADR-0016, decisions 1 and 2): the decisions are in `loomd::review_sync` and
+//! `loomd::review_queue`.
 //!
 //! A mirror file is written (atomically) only when its bytes change, and a task whose status
 //! or mirror changed is committed once: a poll that sees no change writes and commits nothing.
@@ -9,9 +10,9 @@ use std::io;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
-use loom_api::{ReviewSyncFailure, Status, StatusName, TaskId};
+use loom_api::{ForgeKind, ReviewSyncFailure, Status, StatusName, TaskId};
 use loom_core::{Actor, Origin};
-use loom_forge::model::{Mr, MrKey};
+use loom_forge::model::{Mr, MrKey, Sha};
 use loom_store::IndexedTask;
 use loom_store::atomic::write_file;
 use loom_store::files::{ARCHIVE_DIR, TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
@@ -21,19 +22,29 @@ use loomd::backup::commit_message;
 use loomd::mr_refs::{DIFFS_DIR, DiffRecord, diffs_to_write, patch_name, record_diffs};
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
-    SyncState, VERSIONS_FILE, VersionRecord, apply_retarget, decide, find_review, is_retarget,
-    merge_current, merge_versions, mirror, mirror_dir, new_review_task, next_verdict, read_mr,
-    review_key, url_host, with_recorded_base,
+    SeenVerdict, SyncState, VERSIONS_FILE, VersionRecord, apply_retarget, decide, find_review,
+    is_retarget, merge_current, merge_versions, mirror, mirror_dir, new_review_task, next_verdict,
+    read_mr, review_key, url_host, with_recorded_base,
 };
 use tracing::{info, info_span, warn};
 
 use super::{Worker, log_commit, now};
 
+mod queue;
+
+pub use queue::{read_entry, read_queue};
+
 /// What the task thread did with a batch.
 #[derive(Debug, Default)]
 pub struct ReviewsApplied {
-    /// The Review tasks created.
+    /// The Review tasks created: only a start creates one.
     pub created: Vec<TaskId>,
+    /// The keys of the MRs added to the queue.
+    pub added: Vec<String>,
+    /// The keys of the MRs removed from the queue.
+    pub removed: Vec<String>,
+    /// A 404 removed an entry: the next GitLab list is full.
+    pub entry_gone: bool,
     /// The Review tasks whose status or mirror changed.
     pub changed: Vec<TaskId>,
     /// The MRs whose task or mirror could not be written.
@@ -49,8 +60,9 @@ struct Previous {
 }
 
 impl Worker {
-    /// Applies the poll `batch`: creates, reopens and closes Review tasks, and writes their MR
-    /// mirrors. Events are of the actor `daemon`.
+    /// Applies the poll `batch`: reopens and closes Review tasks, writes their MR mirrors and
+    /// the queue entries. A start also creates its Review task. One commit of the queue, none
+    /// when no entry changes. Events of a poll are of the actor `daemon`.
     pub(super) fn sync_reviews(&mut self, batch: &MrBatch) -> ReviewsApplied {
         let _span =
             info_span!("tasks.reviews", context = %batch.context, host = %batch.host).entered();
@@ -70,6 +82,7 @@ impl Worker {
                 return applied;
             }
         };
+        let mut updated = 0;
         for update in &batch.updates {
             match self.sync_review(batch, &rows, update) {
                 Ok(Some((id, created))) => {
@@ -86,8 +99,26 @@ impl Worker {
                         key: update.key.to_string(),
                         error,
                     });
+                    // The entry stays: the next start or poll sees what was written.
+                    continue;
                 }
             }
+            if let Err(error) = self.sync_entry(batch, &rows, update, &mut applied, &mut updated) {
+                warn!(context = %batch.context, key = %update.key, %error, "cannot sync a queue entry");
+                applied.failed.push(ReviewSyncFailure {
+                    key: update.key.to_string(),
+                    error,
+                });
+            }
+        }
+        if !applied.added.is_empty() || !applied.removed.is_empty() || updated > 0 {
+            let message = loomd::review_queue::queue_message(
+                applied.added.len(),
+                updated,
+                applied.removed.len(),
+            );
+            let result = self.commits.commit_queue(&batch.context, &message);
+            log_commit(&batch.context, None, result);
         }
         applied
     }
@@ -111,12 +142,18 @@ impl Worker {
                 (Some((id, status)), previous)
             }
             // What the poll saw before the archive: a new task needs a new head or request.
+            Some((_, _, TaskLocation::Archived(_))) | None if !update.start => return Ok(None),
             Some((id, _, TaskLocation::Archived(year))) => {
                 let dir = root
                     .join(ARCHIVE_DIR)
                     .join(format!("{year:04}"))
                     .join(id.as_str());
-                (None, read_previous(&mirror_dir(&dir, &update.key)))
+                let mut previous = read_previous(&mirror_dir(&dir, &update.key));
+                // The patches stay in the archived task: the new mirror has none yet.
+                for record in &mut previous.versions {
+                    record.diff = None;
+                }
+                (None, previous)
             }
             None => (None, Previous::default()),
         };
@@ -129,34 +166,36 @@ impl Worker {
                 None => Ok(None),
             };
         };
-        let (observation, state) = observe(&mr, &previous, update);
-        let decision = decide(found.as_ref().map(|(_, status)| *status), &observation);
+        // A task with no sync state: a start, or a start that a crash or a failed write stopped.
+        let first_state = update.start || previous.state.is_none();
+        let dated = first_state
+            .then(|| self.dated_approval(batch, update))
+            .flatten();
+        let (observation, state) = observe(&mr, &previous, dated.as_ref().unwrap_or(update));
         let daemon = Origin {
             actor: Actor::Daemon,
             machine_id: self.user.machine_id.clone(),
         };
-        let (id, created, before, decision) = match (decision, found) {
-            // `decide` creates when there is no task.
-            (Decision::Ignore, _) | (Decision::Keep | Decision::SetStatus { .. }, None) => {
-                return Ok(None);
-            }
-            (Decision::Create, _) => {
+        let (id, created, before, decision) = match found {
+            // Without a task, only a start comes here: see above.
+            None => {
                 can_create(&root, rows, batch, &mr)?;
+                // A start is my act, not the daemon's.
                 let task = self
                     .tasks
                     .create(
                         new_review_task(&mr, context),
                         now(),
-                        &daemon,
+                        &self.user,
                         &mut self.random,
                     )
                     .map_err(|error| error.to_string())?;
                 info!(%context, key = %mr.key, id = %task.id, "Review task created");
                 (task.id, true, 0, Decision::Keep)
             }
-            (decision @ (Decision::Keep | Decision::SetStatus { .. }), Some((id, _))) => {
+            Some((id, status)) => {
                 let before = self.event_count(&id);
-                (id, false, before, decision)
+                (id, false, before, decide(status, &observation))
             }
         };
         let dir = mirror_dir(&task_dir(&root, &id), &update.key);
@@ -254,6 +293,33 @@ impl Worker {
             self.changed(context, id);
         }
         Ok(())
+    }
+
+    /// A GitLab MR that I approved, whose task has no sync state yet: `update` with the head of the
+    /// poll that first showed my approval, from the index, which `sync.json` takes over. `None`
+    /// otherwise. Without it, the task would date my approval to a head that I did not review.
+    fn dated_approval(&mut self, batch: &MrBatch, update: &MrUpdate) -> Option<MrUpdate> {
+        if update.key.forge() != ForgeKind::Gitlab {
+            return None;
+        }
+        let verdict = update.verdict.as_ref()?.as_ref()?;
+        let head = self
+            .tasks
+            .index()
+            .mr_approval_head(
+                &batch.context,
+                &batch.host,
+                &loomd::review_queue::approval_key(&update.key),
+            )
+            .map_err(|error| warn!(%error, "cannot read the head of an approval"))
+            .ok()??;
+        let sha = Sha::try_from(head).ok()?;
+        let mut dated = update.clone();
+        dated.verdict = Some(Some(SeenVerdict {
+            sha,
+            ..verdict.clone()
+        }));
+        Some(dated)
     }
 
     /// Logs `note` on task `id`, then sets its status.

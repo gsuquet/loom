@@ -417,6 +417,8 @@ Error: cannot start the repository index
 - The states are read again.
 - The results of the last updates are lost: every repository is then updated at once.
 
+The index also holds, for each GitLab MR without a Review task that I approved, the head of the poll that first showed my approval ([review sync](../explanation/review-sync.md#when-an-entry-comes-and-goes)). If it is rebuilt, my approval counts for the head of the next poll. `loomd` deletes such a row when the MR leaves, or at a `404` when the row is older than 30 days.
+
 The index also holds the tasks of the [context stores](#context-stores), read from their files. `loomd` reconciles them when it starts and when their files change. While `loomd` runs, `loom reindex` ([`POST /v1/tasks/reindex`](api.md#tasks)) rebuilds them from the files and does not change the repositories. If `index.db` is deleted, the next start gives back the same task rows.
 
 ## `machine.toml`
@@ -443,6 +445,7 @@ Each context of `config.toml` held by this machine (see [`machines`](#contexts-a
 
 | Path | Mode | Content |
 | --- | --- | --- |
+| `queue/mrs/<provider>-<key>.json` | `0600` | An MR that waits on me and has no task ([format](task-file.md#queuemrs-queue-entry)). `loomd` creates the directories (mode `0700`) at the first entry. |
 | `tasks/<id>/` | `0700` | One directory per task, named by its ID (8 lowercase Crockford base32 characters). Other names in `tasks/` are ignored. |
 | `tasks/<id>/task.md` | `0600` | The task: TOML frontmatter between `+++` lines, then free notes ([format](task-file.md)). Replaced atomically: written to `.task.md.tmp` beside it, synced, renamed over it, and the directory synced. |
 | `tasks/<id>/events.jsonl` | `0600` | The task's events, one JSON object per line, appended and synced, never rewritten. If a crash cuts the last line, `loomd` adds a line ending to it before the next append. |

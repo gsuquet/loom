@@ -1,11 +1,94 @@
-//! `loom review sync`: the request path and the text output (ADR-0016).
+//! `loom review sync`, `queue` and `start`: the request paths and the text output.
 
 use std::fmt::Write as _;
 
-use loom_api::{ReviewSyncOutcome, ReviewSyncResult};
+use loom_api::{
+    ContextName, QueueReason, ReviewQueue, ReviewStartResult, ReviewSyncOutcome, ReviewSyncResult,
+};
+
+use crate::repo::encode_segment;
 
 /// `POST /v1/reviews/sync`.
 pub const SYNC_PATH: &str = "/v1/reviews/sync";
+
+/// `GET /v1/reviews/queue`, of one context when `context` names it.
+#[must_use]
+pub fn queue_path(context: Option<&ContextName>) -> String {
+    context.map_or_else(
+        || "/v1/reviews/queue".to_owned(),
+        |context| {
+            format!(
+                "/v1/reviews/queue?context={}",
+                encode_segment(context.as_str())
+            )
+        },
+    )
+}
+
+/// `POST /v1/reviews/queue/{key}/start`: `key` holds `/` and `#` or `!`, which are
+/// percent-encoded.
+#[must_use]
+pub fn start_path(key: &str) -> String {
+    format!("/v1/reviews/queue/{}/start", encode_segment(key))
+}
+
+/// The text of an empty queue. It does not claim that nothing waits: a poll that fails changes no
+/// entry, and this command calls no forge.
+const EMPTY_QUEUE: &str = "The queue is empty. Run `loom review sync` to poll the forges now.\n";
+
+const fn reason_name(reason: QueueReason) -> &'static str {
+    match reason {
+        QueueReason::ReviewRequested => "review_requested",
+    }
+}
+
+/// One line per entry: context, key, reasons, title, author, URL.
+#[must_use]
+pub fn render_queue(queue: &ReviewQueue) -> String {
+    if queue.entries.is_empty() {
+        return EMPTY_QUEUE.to_owned();
+    }
+    let mut text = String::new();
+    for entry in &queue.entries {
+        let reasons: Vec<&str> = entry.reasons.iter().copied().map(reason_name).collect();
+        let _ = writeln!(
+            text,
+            "{} {} [{}] {} ({}) {}",
+            entry.context,
+            entry.key,
+            reasons.join(", "),
+            entry.title,
+            entry.author,
+            entry.web_url
+        );
+    }
+    text
+}
+
+/// One line: the task, and whether this start created it. A task that exists can be in any
+/// status, such as `inbox` for a task of before the queue.
+#[must_use]
+pub fn render_start(result: &ReviewStartResult) -> String {
+    let id = &result.task.summary.id;
+    let title = result
+        .task
+        .summary
+        .task
+        .as_ref()
+        .map_or("", |task| task.title.as_str());
+    if result.created {
+        format!("Started {id}: {title}\n")
+    } else {
+        let status = result
+            .task
+            .summary
+            .task
+            .as_ref()
+            .and_then(|task| task.status.name())
+            .map_or_else(|| "unknown".to_owned(), |status| status.to_string());
+        format!("Review task {id} already exists ({status}): {title}\n")
+    }
+}
 
 /// One line per context and forge host, then one indented line per MR that failed.
 #[must_use]
@@ -20,15 +103,17 @@ pub fn render_sync(result: &ReviewSyncResult) -> String {
         match &forge.outcome {
             ReviewSyncOutcome::Synced {
                 mrs,
-                created,
+                added,
+                removed,
                 changed,
                 other_context,
                 failed,
             } => {
                 let _ = write!(
                     text,
-                    "{mrs} MR(s), {} new Review task(s), {} changed",
-                    created.len(),
+                    "{mrs} MR(s), {} added to the queue, {} removed, {} changed",
+                    added.len(),
+                    removed.len(),
                     changed.len()
                 );
                 if *other_context > 0 {
@@ -70,10 +155,61 @@ pub fn failures(result: &ReviewSyncResult) -> usize {
 #[cfg(test)]
 mod tests {
     use loom_api::{
-        ForgeKind, ReviewSync, ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncResult, Timestamp,
+        ForgeKind, QueueReason, ReviewQueue, ReviewQueueEntry, ReviewSync, ReviewSyncFailure,
+        ReviewSyncOutcome, ReviewSyncResult, Timestamp,
     };
 
-    use super::{failures, render_sync};
+    use super::{
+        EMPTY_QUEUE, failures, queue_path, reason_name, render_queue, render_sync, start_path,
+    };
+
+    #[test]
+    fn the_paths_encode_the_key_and_the_context() {
+        assert_eq!(
+            start_path("acme/shop#412"),
+            "/v1/reviews/queue/acme%2Fshop%23412/start"
+        );
+        assert_eq!(
+            start_path("company-a/checkout!88"),
+            "/v1/reviews/queue/company-a%2Fcheckout%2188/start"
+        );
+        assert_eq!(queue_path(None), "/v1/reviews/queue");
+        assert_eq!(
+            queue_path(Some(&"company-a".parse().unwrap())),
+            "/v1/reviews/queue?context=company-a"
+        );
+    }
+
+    #[test]
+    fn renders_the_queue_and_says_when_it_is_empty() {
+        assert_eq!(
+            render_queue(&ReviewQueue {
+                entries: Vec::new()
+            }),
+            EMPTY_QUEUE
+        );
+        let queue = ReviewQueue {
+            entries: vec![ReviewQueueEntry {
+                context: "personal".parse().unwrap(),
+                key: "acme/shop#412".to_owned(),
+                title: "Auth refactor".to_owned(),
+                author: "alice".to_owned(),
+                web_url: "https://github.com/acme/shop/pull/412".to_owned(),
+                head_sha: "7ebf283bfee25ab48f95c0c55181a4ca66b4c990".to_owned(),
+                updated_at: Timestamp::from_unix_secs(0).unwrap(),
+                reasons: vec![QueueReason::ReviewRequested],
+                seen_at: None,
+            }],
+        };
+        assert_eq!(
+            render_queue(&queue),
+            "personal acme/shop#412 [review_requested] Auth refactor (alice) https://github.com/acme/shop/pull/412\n"
+        );
+        assert_eq!(
+            reason_name(QueueReason::ReviewRequested),
+            "review_requested"
+        );
+    }
 
     fn forge(host: &str, outcome: ReviewSyncOutcome) -> ReviewSync {
         ReviewSync {
@@ -93,8 +229,9 @@ mod tests {
                     "github.com",
                     ReviewSyncOutcome::Synced {
                         mrs: 2,
-                        created: vec!["k3q7zm2a".parse().unwrap()],
-                        changed: Vec::new(),
+                        added: vec!["acme/shop#7".to_owned()],
+                        removed: vec!["acme/shop#6".to_owned(), "acme/shop#5".to_owned()],
+                        changed: vec!["k3q7zm2a".parse().unwrap()],
                         other_context: 1,
                         failed: vec![ReviewSyncFailure {
                             key: "acme/shop#412".to_owned(),
@@ -118,7 +255,7 @@ mod tests {
         };
         assert_eq!(
             render_sync(&result),
-            "company-a github.com: 2 MR(s), 1 new Review task(s), 0 changed, 1 of another context, 1 failed\n  acme/shop#412: not found on the forge (404): Not Found\ncompany-a gitlab.example.com: rate limited until 1970-01-01T00:00:00Z\ncompany-a gitlab.company-a.example: failed: no usable answer from the forge: timeout\n"
+            "company-a github.com: 2 MR(s), 1 added to the queue, 2 removed, 1 changed, 1 of another context, 1 failed\n  acme/shop#412: not found on the forge (404): Not Found\ncompany-a gitlab.example.com: rate limited until 1970-01-01T00:00:00Z\ncompany-a gitlab.company-a.example: failed: no usable answer from the forge: timeout\n"
         );
         assert_eq!(failures(&result), 2);
         assert!(

@@ -15,6 +15,7 @@ pub mod hooks;
 pub mod mr_refs;
 pub mod recurring;
 pub mod repo_update;
+pub mod review_queue;
 pub mod review_sync;
 pub mod schedule;
 pub mod shutdown;

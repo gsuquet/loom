@@ -90,6 +90,7 @@ Host `gitlab.example.com`, API `https://gitlab.example.com/api/v4`, project `com
 | `POST /projects/77/merge_requests/88/approve` | 201 | | `approve.request.json`, `approve.response.json` |
 | same, after a new push | 409 | | `error-409-sha-mismatch.json` |
 | `GET /projects/77/merge_requests/88/approvals` | 200 | | `approve.response.json` (same shape) |
+| `GET /projects/77/merge_requests/88/reviewers` | 200 | | `merge-request-88-reviewers.json` (shape of the API docs, not recorded live) |
 | `PUT /projects/77/merge_requests/88/discussions/6a9c1750b37d513a43987b574953fceb50b03ce7?resolved=true` | 200 | | (the discussion; not read) |
 | any, bad token | 401 | | `error-401.json` |
 | a write with a `read_api` token | 403 | | `error-403-insufficient-scope.json` |

@@ -41,7 +41,7 @@ use tracing::debug_span;
 
 pub use migrate::SCHEMA_VERSION;
 pub use repos::RepoFilter;
-pub use tasks::{FocusRow, GoOutcome, IndexedTask};
+pub use tasks::{FocusRow, GoOutcome, IndexedTask, MrApproval};
 
 /// Mode of `index.db` and of the WAL files SQLite creates beside it: owner read and write.
 pub const INDEX_FILE_MODE: u32 = 0o600;
@@ -396,6 +396,19 @@ impl Reader {
     /// [`StoreError`] when the query fails.
     pub fn mr_clones(&self, id: &TaskId, key: &str) -> Result<mr_clones::MrClones, StoreError> {
         mr_clones::get(&self.conn, id, key)
+    }
+
+    /// The MRs whose approval is recorded for `context` and `host`, sorted by key.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails or a row is invalid.
+    pub fn mr_approvals(
+        &self,
+        context: &ContextName,
+        host: &str,
+    ) -> Result<Vec<tasks::MrApproval>, StoreError> {
+        tasks::mr_approvals(&self.conn, context, host)
     }
 
     /// The focused tasks of `context`, or of every context when `None`, sorted by context, read
