@@ -77,10 +77,14 @@ The poller thread does the start. A start waits for a poll that runs, and a poll
 | The MR has a Review task that is not archived, in any context | That task, with `created` false. Nothing is written, and the forge is not called. |
 | The forge does not answer, refuses the token or limits the rate | `502 forge`. The entry stays, no task is created. Do the start again. |
 | The MR is merged or closed since the last poll | `409 conflict`. No task, and the entry is deleted. |
+| The read shows that your direct request is gone | `409 conflict`. No task, and the entry is deleted. |
 | The forge answers `404` for the MR | `404 not_found`. No task, and the entry is deleted. |
+| The forge answers `404` for another read of the MR | `502 forge`. The entry stays, no task is created. |
 | No entry and no Review task | `404 not_found`. A start creates no task for an MR that is not in the queue. |
 | Two contexts have this key | `400 invalid_request`. Name the context with `-c`. |
 | This machine does not poll the context and host of the entry (another machine polls it, or the credential was removed) | `400 invalid_request`. Start on the first machine of the context, or add the credential. A task created on another machine is not known to the poll until a store sync, and a second task could come from it. |
+
+If you approved the MR before the start (GitLab), the task keeps the head of the poll that first showed your approval, not the current head. Thus, the `reviewed` ref stays on that head, and a request removed later leaves the task open: the current head is still to review.
 
 If `loomd` stops between the creation of the task and the removal of the entry, the next start answers with the task, and the next poll deletes the entry.
 
@@ -149,7 +153,7 @@ A poll writes nothing when nothing changed:
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.
-- A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` for an MR with only an entry is not a failure: the entry is deleted. A lost access looks the same: the entry comes back when a list shows the MR again.
+- A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` on the MR itself, for an MR with only an entry and not in the list, is not a failure: the entry is deleted, and the next GitLab list is full, without `updated_after`. A lost access looks the same: the entry comes back at the first list that shows the MR again, also when the MR did not change. A `404` on another read of the MR, such as its reviews or approvals, is a failure, and the entry stays.
 - When `loomd` stops, a poll that runs stops before its next forge call.
 
 ## Limits
@@ -160,6 +164,7 @@ A poll writes nothing when nothing changed:
 - An archived Review task is not changed. After the archive, a new entry comes only when you are requested: on a new head without your verdict, or by a new request, against what the last poll saw.
 - GitHub: a request again through a team, on a head that has your verdict, gives no entry when the MR has no Review task. A team request does not put you in the requested reviewers, so `loomd` cannot see that it is after your verdict. A Review task that exists opens again in this case: it compares two polls.
 - GitLab, without a task: an approval that stays after a push is not a verdict on the new head, and the entry stays even when you read the push. Approve again after a reset, or start on the MR.
+- GitHub: a start after a request through a team is removed creates the task, because a read does not show team requests. The next poll cancels the task. The same occurs for a direct request when `loomd` restarted after the last poll, because it keeps that state in memory.
 - If you remove the credential of a context, its entries stay in the list and are not polled. A start answers `400 invalid_request`.
 - An MR whose web URL is on another host than the forge host of `[forges]` gets no entry: the poll reports it as failed.
 - Two forge hosts of one kind, in one context, with the same key: the first MR has the entry, and the poll reports the second as failed until the first entry goes.
