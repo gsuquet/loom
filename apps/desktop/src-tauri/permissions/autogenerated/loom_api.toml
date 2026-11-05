@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-loom-api"
+description = "Enables the loom_api command without any pre-configured scope."
+commands.allow = ["loom_api"]
+
+[[permission]]
+identifier = "deny-loom-api"
+description = "Denies the loom_api command without any pre-configured scope."
+commands.deny = ["loom_api"]

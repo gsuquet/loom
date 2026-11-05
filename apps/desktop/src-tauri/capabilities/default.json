@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The one window: the allow-listed commands, and nothing else.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-loom-api",
+    "allow-loom-events",
+    "allow-spike-patch",
+    "allow-spike-notify",
+    "core:event:default",
+    "core:window:allow-start-dragging"
+  ]
+}

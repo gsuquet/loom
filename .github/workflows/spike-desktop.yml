@@ -1,0 +1,124 @@
+name: Spike desktop app
+
+# Runs on this one branch only. The branch and this file are thrown away with the spike.
+on:
+  push:
+    branches: [spike/desktop-app]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-desktop
+  cancel-in-progress: false
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  TAURI_WEBDRIVER_PORT: "14445"
+
+jobs:
+  app:
+    name: app (${{ matrix.os }})
+    if: github.ref == 'refs/heads/spike/desktop-app'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust node npm cargo-deny
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev xvfb
+      - name: Versions and machine
+        run: |
+          node --version; npm --version; cargo --version; uname -a
+          if [ "$RUNNER_OS" = macOS ]; then sw_vers; sysctl -n hw.model machdep.cpu.brand_string; xcode-select -p; fi
+          if [ "$RUNNER_OS" = Linux ]; then dpkg -s libwebkit2gtk-4.1-0 | grep Version; fi
+      - name: npm ci
+        run: npm ci
+      - name: Typecheck, lint, unit tests (layer 1)
+        run: |
+          npx tsc --noEmit
+          npx biome check src e2e scripts
+          npx vitest run
+      - name: Web builds
+        run: |
+          npx vite build
+          VITE_SPIKE_UNSAFE=1 npx vite build
+      - name: Playwright on WebKit against the fake API (layer 2)
+        run: |
+          npx playwright install --with-deps webkit
+          npx playwright test
+      - name: Build loomd
+        working-directory: .
+        run: cargo build --locked -p loomd
+      - name: Rust tests and contract with real loomd (layer 3)
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          npx vitest run --config vitest.contract.config.ts
+      - name: Clean release build, timed
+        run: |
+          /usr/bin/time -p npx tauri build --ci $([ "$RUNNER_OS" = macOS ] && echo "--bundles app" || echo "--no-bundle")
+          ls -la src-tauri/target/release/loom-desktop
+          du -sh src-tauri/target/release/bundle/macos/*.app || true
+      - name: Build the real-app binary and the unprotected control
+        run: |
+          mkdir -p .e2e
+          npx tauri build --debug --no-bundle --features e2e --ci --config '{"build":{"frontendDist":"../dist-unsafe"},"app":{"security":{"csp":null}}}'
+          cp src-tauri/target/debug/loom-desktop .e2e/app-both-off
+          npx tauri build --debug --no-bundle --features e2e --ci
+          cp src-tauri/target/debug/loom-desktop .e2e/app-protected
+      - name: Real app, three runs in a row (layer 4)
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+        run: |
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          for n in 1 2 3; do
+            echo "::group::run $n"
+            $prefix node e2e/real-app.ts .e2e/app-protected --notify --label "run-$n"
+            echo "::endgroup::"
+          done
+      - name: Real app, protections removed, the attack must run
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+        run: |
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          $prefix node e2e/real-app.ts .e2e/app-both-off --expect-attack --label attack
+      - name: Release build holds no WebDriver server
+        run: |
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          RUN_PREFIX="$prefix" bash scripts/prove-release.sh
+      - name: Permissions on the runner (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # TCC database of the runner, read only: what the run was granted, if readable.
+          sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "select service, client, auth_value from access" 2>&1 | head -20 || true
+      - name: Licences
+        run: |
+          cargo deny --manifest-path src-tauri/Cargo.toml --locked check licenses 2>&1 | tail -30 || true
+          npx license-checker-rseidelsohn --production --summary || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-${{ matrix.os }}
+          path: |
+            apps/desktop/.e2e/*.json
+            apps/desktop/.e2e/*.png
+          retention-days: 7

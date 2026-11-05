@@ -1,0 +1,20 @@
+# Only for this workspace. The allow-list is the decided one; the named exceptions are the MPL-2.0
+# crates and the others the graph really has, unmodified. See the PR report for the list.
+[graph]
+all-features = true
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+
+[advisories]
+ignore = []
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[licenses]
+confidence-threshold = 0.9
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+exceptions = []
