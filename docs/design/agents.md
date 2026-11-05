@@ -192,7 +192,7 @@ Structural links (same files, same labels, same monitor) are ranked above text s
 Example: Datadog logs, metrics, monitors, dashboards.
 
 - **Transport: MCP.** Loom MCP server is the only MCP server an agent sees. It keeps credentials inside loomd, gives typed parameters, logs every call as an event, and needs no Bash access. Claude Code loads MCP tool definitions on demand, so the upfront schema cost stays small.
-- **Credentials**: per context, a fine-grained Datadog PAT with read scopes only. Datadog enforces read-only; loom's allowlist per template is the second layer. The run's context selects the credential: an agent in context A cannot reach context B's Datadog.
+- **Credentials**: per context, a Datadog API key and an application key limited to read scopes ([real check](connector-ports.md#datadog)). Datadog enforces read-only; loom's allowlist per template is the second layer. The run's context selects the credential: an agent in context A cannot reach context B's Datadog.
 - **Loom-owned tools, not upstream pass-through**: a handful of task-shaped tools (`logs_search`, `logs_patterns`, `metric_summary`, `monitor_status`, `dashboard_summary`, `trace_get`) implemented on the direct Datadog API client loom already needs for alert ingestion. Loom controls the result shape end to end.
 - **Token efficiency comes from result shaping**:
   - aggregate first: log patterns with counts, metric summaries (min/max/avg/p95, anomalies, change points), raw rows only on request;
