@@ -60,7 +60,7 @@ An entry has one or more reasons. The only reason now is `review_requested`.
 
 A request is newer than your verdict in these cases. On GitHub, you are in the requested reviewers: GitHub removes you when you submit a review. On GitLab, your reviewer state is `unreviewed` on an MR that you approved. `loomd` reads the state only for an approved MR without a task. The GitLab documentation does not tell what a new request does to the state: this behavior is not verified on a real GitLab.
 
-GitLab does not tell on which head you approved. For an MR without a task, `loomd` keeps the head of the poll that first shows your approval, in `index.db` (machine-local, no commit). It reads such an MR one by one until it leaves, then deletes the row. A push after your approval, in a project that keeps the approvals, gives an entry. If you delete `index.db`, your approval counts for the head of the next poll.
+GitLab does not tell on which head you approved. For an MR without a task, `loomd` keeps the head of the poll that first shows your approval, in `index.db` (machine-local, no commit). It reads such an MR one by one until it leaves, then deletes the row. A `404` deletes the entry but keeps the row, because a lost access also answers `404`, and a new head after your approval is still to review when the access comes back. Such an MR costs one request per poll. If the forge answers only `404` for 30 days, `loomd` deletes the row. A push after your approval, in a project that keeps the approvals, gives an entry. If you delete `index.db`, your approval counts for the head of the next poll.
 
 Your own MR never has an entry for `review_requested`, even when GitLab lets you request your own review.
 
@@ -166,6 +166,7 @@ A poll writes nothing when nothing changed:
 - GitLab, without a task: an approval that stays after a push is not a verdict on the new head, and the entry stays even when you read the push. Approve again after a reset, or start on the MR.
 - GitHub: a start after a request through a team is removed creates the task, because a read does not show team requests. The next poll cancels the task. The same occurs for a direct request when `loomd` restarted after the last poll, because it keeps that state in memory.
 - GitHub: a start after a direct request is replaced by a request through a team answers `409 conflict` and deletes the entry, because a read shows only that the direct request is gone. The next poll adds the entry again.
+- GitLab: a listed MR that keeps failing makes that host list in full at each poll, after the first hour, because no poll counts as a full list. The poll reports the failure each time.
 - If you remove the credential of a context, its entries stay in the list and are not polled. A start answers `400 invalid_request`.
 - An MR whose web URL is on another host than the forge host of `[forges]` gets no entry: the poll reports it as failed.
 - Two forge hosts of one kind, in one context, with the same key: the first MR has the entry, and the poll reports the second as failed until the first entry goes.
