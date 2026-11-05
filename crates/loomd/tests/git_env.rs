@@ -162,6 +162,11 @@ impl Sandbox {
     }
 
     fn start(&self) -> Daemon {
+        self.start_with(&[])
+    }
+
+    /// With these variables set in the environment of `loomd`.
+    fn start_with(&self, variables: &[(&str, &Path)]) -> Daemon {
         let mut path = vec![self.bin()];
         path.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
@@ -184,6 +189,7 @@ impl Sandbox {
             .env_remove("GIT_SSH")
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
+            .envs(variables.iter().copied())
             .arg("--color=never")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -355,4 +361,64 @@ fn a_runner_removes_the_tokens_over_its_env() {
         "{outcome:?}"
     );
     sandbox.assert_no_token("repo-ssh");
+}
+
+/// git never gets these variables (`REPOSITORY_VARIABLES`): a state read must not use them
+/// either. `gix` reads some of them from the environment of the process.
+#[test]
+fn the_repository_variables_of_loomd_do_not_change_a_state_read() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    // A submodule with an edit: `Known(1)` needs the index, the objects and the working tree.
+    let top = sandbox.dir.path();
+    let sub = top.join("sub-origin");
+    sandbox.git(top, &["init", "-q", sub.to_str().unwrap()]);
+    fs::write(sub.join("s.txt"), "one\n").unwrap();
+    sandbox.git(&sub, &["add", "-A"]);
+    sandbox.git(&sub, &["commit", "-q", "-m", "first"]);
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    fs::write(repo.join("sub/s.txt"), "two\n").unwrap();
+    let elsewhere = top.join("elsewhere");
+    sandbox.git(top, &["init", "-q", elsewhere.to_str().unwrap()]);
+    let dot_git = elsewhere.join(".git");
+    let objects = dot_git.join("objects");
+    let index = dot_git.join("no-index");
+    let namespace = PathBuf::from("other");
+
+    for (name, value) in [
+        ("GIT_DIR", &dot_git),
+        ("GIT_WORK_TREE", &elsewhere),
+        ("GIT_INDEX_FILE", &index),
+        ("GIT_OBJECT_DIRECTORY", &objects),
+        ("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects),
+        ("GIT_COMMON_DIR", &dot_git),
+        ("GIT_NAMESPACE", &namespace),
+        ("GIT_PREFIX", &elsewhere),
+    ] {
+        let daemon = sandbox.start_with(&[(name, value.as_path())]);
+        let deadline = Instant::now() + common::TIMEOUT;
+        let body = loop {
+            let response = request(
+                &sandbox.socket(),
+                "GET",
+                "/v1/repos/personal/app?refresh=true",
+                None,
+            );
+            if response.status == 200 {
+                break response.body;
+            }
+            assert!(Instant::now() < deadline, "{name}: {}", response.body);
+            thread::sleep(POLL);
+        };
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let state = &body["state"];
+        assert_eq!(state["dirty"]["known"], 1, "{name}: {state}");
+        assert_eq!(state["untracked"]["known"]["count"], 0, "{name}: {state}");
+        assert_eq!(state["head"]["known"]["name"], "main", "{name}: {state}");
+        daemon.stop();
+    }
 }

@@ -972,7 +972,7 @@ fn the_ignore_value_of_a_submodule_applies() {
 }
 
 #[test]
-fn diff_ignore_submodules_overrides_the_ignore_value() {
+fn the_ignore_value_overrides_diff_ignore_submodules() {
     let fixture = Fixture::new();
     let repo = fixture.parent_of_clean_submodule("parent");
     fixture.git(&repo, &["config", "submodule.sub.ignore", "all"]);
@@ -980,11 +980,134 @@ fn diff_ignore_submodules_overrides_the_ignore_value() {
     assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
 
     fixture.git(&repo, &["config", "diff.ignoreSubmodules", "none"]);
-    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
 
     fixture.git(&repo, &["config", "submodule.sub.ignore", "none"]);
     fixture.git(&repo, &["config", "diff.ignoreSubmodules", "all"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+
+    // Without an `ignore` value, `diff.ignoreSubmodules` applies.
+    fixture.git(&repo, &["config", "--unset", "submodule.sub.ignore"]);
     assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+}
+
+/// Each `diff.ignoreSubmodules` with each `ignore` value of `.gitmodules`, for each kind of
+/// change, against `git status` with no option.
+#[test]
+fn the_ignore_precedence_is_the_one_of_git() {
+    type Change = fn(&Fixture, &Path);
+    let changes: [(&str, Change); 3] = [
+        ("untracked", |_, inside| {
+            fs::write(inside.join("new.txt"), "new\n").unwrap();
+        }),
+        ("edit", |_, inside| {
+            fs::write(inside.join("f.txt"), "two\n").unwrap();
+        }),
+        ("moved head", |fixture, inside| {
+            fixture.commit(inside, "g.txt", "g\n", "local commit");
+        }),
+    ];
+    let mut read = Vec::new();
+    for (change, apply) in changes {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        apply(&fixture, &repo.join("sub"));
+        for diff in ["all", "dirty", "untracked"] {
+            fixture.git(&repo, &["config", "diff.ignoreSubmodules", diff]);
+            for ignore in ["none", "dirty", "all"] {
+                fixture.git(
+                    &repo,
+                    &[
+                        "config",
+                        "-f",
+                        ".gitmodules",
+                        "submodule.sub.ignore",
+                        ignore,
+                    ],
+                );
+                fixture.git(&repo, &["add", ".gitmodules"]);
+                // The index of `.gitmodules` may have no change for `git commit` to record.
+                fixture.git(&repo, &["commit", "-q", "--allow-empty", "-m", "ignore"]);
+                let git = fixture.git_status_changes(&repo);
+                assert_eq!(
+                    dirty_of(&repo),
+                    MaybeKnown::Known(git),
+                    "{change}, diff.ignoreSubmodules={diff}, ignore={ignore}"
+                );
+                read.push(((change, diff, ignore), git));
+            }
+        }
+    }
+    // The cases of the table that the wrong order reads as clean.
+    for case in [
+        ("edit", "dirty", "none"),
+        ("edit", "all", "none"),
+        ("untracked", "untracked", "none"),
+        ("moved head", "all", "dirty"),
+    ] {
+        assert!(read.contains(&(case, 1)), "{case:?}: {read:?}");
+    }
+}
+
+/// `.gitmodules` entries that name no gitlink protect nothing, and git calls the repository clean.
+#[test]
+fn a_malformed_gitmodules_entry_that_names_no_gitlink_is_left_out() {
+    let good = "[submodule \"sub\"]\n\tpath = sub\n\turl = ../elsewhere\n";
+    for bad in [
+        "[submodule \"bad\"]\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath =\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath = ../x\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath = /absolute/x\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath = other\n\tignore = bogus\n",
+    ] {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        fixture.commit_gitmodules(&repo, Some(&format!("{good}{bad}")));
+        assert_eq!(fixture.git_status_changes(&repo), 0, "{bad}");
+        assert_eq!(dirty_of(&repo), MaybeKnown::Known(0), "{bad}");
+        fs::write(repo.join("sub/f.txt"), "two\n").unwrap();
+        assert_eq!(fixture.git_status_changes(&repo), 1, "{bad}");
+        assert_eq!(dirty_of(&repo), MaybeKnown::Known(1), "{bad}");
+    }
+}
+
+#[test]
+fn a_gitmodules_that_can_affect_a_gitlink_and_cannot_be_read_leaves_the_count_unknown() {
+    for gitmodules in [
+        "[not a section\n",
+        "[submodule \"sub\"]\n\tpath = sub\n\tignore = bogus\n",
+    ] {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        fixture.commit_gitmodules(&repo, Some(gitmodules));
+        assert_eq!(dirty_of(&repo), MaybeKnown::Unknown, "{gitmodules}");
+    }
+}
+
+/// Two entries with one path: the last one decides, also when it has no `ignore` value.
+#[test]
+fn the_last_gitmodules_entry_of_a_path_decides() {
+    for (gitmodules, expected) in [
+        (
+            "[submodule \"a\"]\n\tpath = sub\n\tignore = all\n[submodule \"b\"]\n\tpath = sub\n",
+            1,
+        ),
+        (
+            "[submodule \"a\"]\n\tpath = sub\n[submodule \"b\"]\n\tpath = sub\n\tignore = all\n",
+            0,
+        ),
+        (
+            "[submodule \"a\"]\n\tpath = sub\n\tignore = all\n[submodule \"b\"]\n\tpath = sub\n\tignore = none\n",
+            1,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        fixture.commit_gitmodules(&repo, Some(gitmodules));
+        fs::write(repo.join("sub/f.txt"), "two\n").unwrap();
+        assert_eq!(fixture.git_status_changes(&repo), expected, "{gitmodules}");
+        assert_eq!(dirty_of(&repo), MaybeKnown::Known(expected), "{gitmodules}");
+    }
 }
 
 #[test]
@@ -1026,27 +1149,6 @@ fn a_submodule_without_a_checkout_reads_as_git_status_does() {
     assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
 }
 
-/// Stricter than what gix does, which leaves out such an entry.
-#[test]
-fn a_gitmodules_entry_with_an_unsafe_path_leaves_the_count_unknown() {
-    let fixture = Fixture::new();
-    let repo = fixture.parent_of_clean_submodule("parent");
-    fixture.git(
-        &repo,
-        &[
-            "config",
-            "-f",
-            ".gitmodules",
-            "submodule.bad.path",
-            "../outside",
-        ],
-    );
-    fixture.git(&repo, &["add", ".gitmodules"]);
-    fixture.git(&repo, &["commit", "-q", "-m", "bad entry"]);
-    let state = Fixture::state(&repo);
-    assert_eq!(state.dirty, MaybeKnown::Unknown, "{state:?}");
-}
-
 impl Fixture {
     /// A repository `<repo>/<name>` with one commit, added to the index of `repo` as a gitlink
     /// that `.gitmodules` does not name, and committed.
@@ -1071,6 +1173,14 @@ impl Fixture {
             ],
         );
         u64::try_from(status.lines().count()).unwrap()
+    }
+
+    /// The paths that `git status` with no option reports as changed, so that the configuration
+    /// applies. Its untracked files of `repo` are left out.
+    fn git_status_changes(&self, repo: &Path) -> u64 {
+        let status = self.git(repo, &["status", "--porcelain"]);
+        let changed = status.lines().filter(|line| !line.starts_with("??"));
+        u64::try_from(changed.count()).unwrap()
     }
 
     /// `state` and `git status` count the same changed paths, `expected` of them.

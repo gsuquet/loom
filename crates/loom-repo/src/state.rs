@@ -29,6 +29,7 @@ use gix::state::InProgress;
 use gix::status::UntrackedFiles;
 use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
 use gix::submodule::config::Ignore;
+use gix::worktree::IndexPersistedOrInMemory;
 use loom_api::{MaybeKnown, RepoHead, RepoOperation, RepoState, Timestamp, Untracked, Upstream};
 
 use crate::scan::git;
@@ -92,7 +93,7 @@ pub fn state(
     let mut errors = Errors::default();
     let watchdog = Watchdog::start(options.budget);
     let last_fetch = errors.field("last_fetch", last_fetch(git_dir, common_dir));
-    let mut repo = match gix::open_opts(workdir, open_options(options.config)) {
+    let mut repo = match open_repository(workdir, &open_options(options.config)) {
         Ok(repo) => repo,
         Err(error) => {
             errors.push(format!("cannot open the repository: {error}"));
@@ -216,7 +217,7 @@ pub fn update_refs(
 ) -> UpdateRefs {
     let mut errors = Errors::default();
     let watchdog = Watchdog::start(options.budget);
-    let repo = match gix::open_opts(workdir, open_options(options.config)) {
+    let repo = match open_repository(workdir, &open_options(options.config)) {
         Ok(repo) => repo,
         Err(error) => {
             errors.push(format!("cannot open the repository: {error}"));
@@ -413,7 +414,50 @@ fn open_options(config: GitConfig) -> gix::open::Options {
     // start git to locate its installation files.
     permissions.config.git_binary = false;
     permissions.attributes.git_binary = false;
+    // The object directories, see [`open_repository`]. `git_prefix`, which would cover more, is
+    // not denied: it would also drop `GIT_CONFIG_GLOBAL`.
+    permissions.env.objects = gix::sec::Permission::Deny;
     gix::open::Options::default().permissions(permissions)
+}
+
+/// The repository with its working tree at `workdir`.
+///
+/// git never gets the variables that point at another repository (`loomd` removes them), and a
+/// read must not use them either. `gix` follows some of them from the environment of this
+/// process, without a public switch for all of them: [`open_options`] covers the object
+/// directories, [`own_index`] covers `GIT_INDEX_FILE`, and this function covers `GIT_WORK_TREE`
+/// and `GIT_NAMESPACE`. It also replaces `core.worktree`: the directory to read is `workdir`.
+fn open_repository(
+    workdir: &Path,
+    options: &gix::open::Options,
+) -> Result<gix::Repository, String> {
+    let mut repo = gix::open_opts(workdir, options.clone()).map_err(|error| error.to_string())?;
+    repo.set_workdir(Some(workdir.to_owned()))
+        .map_err(|error| error.to_string())?;
+    repo.clear_namespace();
+    Ok(repo)
+}
+
+/// The index of `repo` in its git directory, or an empty one when it has none. `gix` follows
+/// `GIT_INDEX_FILE` of this process, which must not change what is read.
+fn own_index(repo: &gix::Repository) -> Result<gix::worktree::Index, String> {
+    let path = repo.git_dir().join("index");
+    if repo.index_path() == path {
+        return repo.index_or_empty().map_err(|error| error.to_string());
+    }
+    let skip_hash = repo
+        .config_snapshot()
+        .boolean("index.skipHash")
+        .unwrap_or_default();
+    let options = gix::index::decode::Options::default();
+    let file = match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            gix::index::File::from_state(gix::index::State::new(repo.object_hash()), path)
+        }
+        _ => gix::index::File::at(&path, repo.object_hash(), skip_hash, options)
+            .map_err(|error| error.to_string())?,
+    };
+    Ok(gix::worktree::Index::new(gix::fs::FileSnapshot::new(file)))
 }
 
 /// The reasons why fields are unknown.
@@ -677,6 +721,8 @@ fn disable_filter_drivers(repo: &mut gix::Repository) -> Result<BTreeSet<String>
     config
         .commit()
         .map_err(|error| format!("cannot disable the filter drivers: {error}"))?;
+    // The commit reads the configuration again, with `GIT_NAMESPACE`: see `open_repository`.
+    repo.clear_namespace();
     Ok(drivers)
 }
 
@@ -741,6 +787,7 @@ fn changes(
         status = status.untracked_files(untracked);
     }
     let status = status
+        .index(IndexPersistedOrInMemory::Persisted(own_index(repo)?))
         .index_worktree_rewrites(None)
         .index_worktree_submodules(gix::status::Submodule::Given {
             ignore: Ignore::All,
@@ -815,9 +862,7 @@ fn dirty_submodules(
     open: &gix::open::Options,
     watchdog: &Watchdog,
 ) -> Result<Vec<BString>, String> {
-    // First: a `.gitmodules` that cannot be read leaves the count unknown, as for gix.
-    let ignores = configured_ignores(repo)?;
-    let index = repo.index_or_empty().map_err(|error| error.to_string())?;
+    let index = own_index(repo)?;
     // One path per gitlink: a conflict has several stages of one path.
     let gitlinks: BTreeMap<BString, gix::ObjectId> = index
         .entries()
@@ -828,18 +873,17 @@ fn dirty_submodules(
     if gitlinks.is_empty() {
         return Ok(Vec::new());
     }
+    let ignores = configured_ignores(repo, &gitlinks)?;
     let workdir = repo
         .workdir()
         .ok_or_else(|| "the repository has no working tree".to_owned())?;
-    let forced = forced_ignore(repo)?;
+    let default = default_ignore(repo)?;
     let mut dirty = Vec::new();
     for (path, id) in gitlinks {
         if watchdog.expired() {
             return Err(watchdog.exceeded());
         }
-        let ignore = forced
-            .or_else(|| ignores.get(&path).copied())
-            .unwrap_or_default();
+        let ignore = ignores.get(&path).copied().or(default).unwrap_or_default();
         let relative = gix::path::from_bstr(BStr::new(&path))
             .map_err(|error| format!("submodule {path}: {error}"))?;
         let worktree = workdir.join(relative);
@@ -852,20 +896,33 @@ fn dirty_submodules(
     Ok(dirty)
 }
 
-/// The `ignore` value of each entry of `.gitmodules` that has one, by path.
-fn configured_ignores(repo: &gix::Repository) -> Result<BTreeMap<BString, Ignore>, String> {
+/// The `ignore` value of each of `gitlinks` that `.gitmodules` gives. For two entries of one
+/// path, the last one decides, as for git. An entry that names no gitlink cannot change the
+/// count: its errors do not matter. A file that cannot be parsed is an error.
+fn configured_ignores(
+    repo: &gix::Repository,
+    gitlinks: &BTreeMap<BString, gix::ObjectId>,
+) -> Result<BTreeMap<BString, Ignore>, String> {
     let mut ignores = BTreeMap::new();
     let submodules = repo.submodules().map_err(|error| error.to_string())?;
     for submodule in submodules.into_iter().flatten() {
-        let path = submodule.path().map_err(|error| error.to_string())?;
-        let ignore = submodule.ignore().map_err(|error| error.to_string())?;
-        ignores.extend(ignore.map(|ignore| (path.clone(), ignore)));
+        let Some(path) = submodule
+            .path()
+            .ok()
+            .filter(|path| gitlinks.contains_key(path.as_slice()))
+        else {
+            continue;
+        };
+        match submodule.ignore().map_err(|error| error.to_string())? {
+            Some(ignore) => ignores.insert(path, ignore),
+            None => ignores.remove(&path),
+        };
     }
     Ok(ignores)
 }
 
-/// `diff.ignoreSubmodules` of `repo`, which replaces the `ignore` value of each submodule.
-fn forced_ignore(repo: &gix::Repository) -> Result<Option<Ignore>, String> {
+/// `diff.ignoreSubmodules` of `repo`, for a gitlink that `.gitmodules` gives no `ignore` value.
+fn default_ignore(repo: &gix::Repository) -> Result<Option<Ignore>, String> {
     let config = repo.config_snapshot();
     config
         .string(gix::config::tree::Diff::IGNORE_SUBMODULES)
@@ -905,11 +962,7 @@ fn gitlink_is_dirty(
         }
         Err(error) => return Err(error.to_string()),
     }
-    let mut opened = gix::open_opts(worktree, open.clone()).map_err(|error| error.to_string())?;
-    // This directory is the one to read, whatever `core.worktree` of the submodule says.
-    opened
-        .set_workdir(Some(worktree.to_owned()))
-        .map_err(|error| error.to_string())?;
+    let mut opened = open_repository(worktree, open)?;
     let head = opened.head_id().map_err(|error| error.to_string())?;
     if head.detach() != id {
         return Ok(true);
@@ -944,7 +997,7 @@ fn needing_driver(
     if compared.is_empty() {
         return Ok(None);
     }
-    let index = repo.index_or_empty().map_err(|error| error.to_string())?;
+    let index = own_index(repo)?;
     let mut stack = repo
         .attributes_only(
             &index,
@@ -978,7 +1031,7 @@ fn untracked(repo: &gix::Repository, watchdog: &Watchdog, cap: u64) -> Result<Un
     if watchdog.expired() {
         return Err(watchdog.exceeded());
     }
-    let index = repo.index_or_empty().map_err(|error| error.to_string())?;
+    let index = own_index(repo)?;
     let options = repo
         .dirwalk_options()
         .map_err(|error| error.to_string())?
