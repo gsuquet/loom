@@ -1147,9 +1147,10 @@ fn scan(sandbox: &Sandbox) {
     assert_eq!(answer.status, 200, "{}", answer.body);
 }
 
-/// Waits for `done`: the worker of the MR refs runs after the answer of a sync.
+/// Waits for `done`: the worker of the MR refs runs after the answer of a sync. The long wait
+/// costs time only when a test fails, and a loaded machine can need it.
 fn wait_for(what: &str, done: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + common::TIMEOUT;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
     while !done() {
         assert!(std::time::Instant::now() < deadline, "never: {what}");
         thread::sleep(common::POLL);

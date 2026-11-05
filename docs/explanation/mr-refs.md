@@ -70,7 +70,7 @@ The diff of a version is `git diff -M <merge base> <head>`. GitLab gives the mer
 
 `loomd` sets the options of `git diff` itself, for example the prefixes, the number of context lines and the format of submodules. Thus, your diff configuration does not change the patch. The attributes come from the head commit, not from your working tree or from `core.attributesFile`. This needs git 2.41: an older git reads the `.gitattributes` of the working tree. It writes the patch to `diffs/<sha>.patch` in the task directory, and sets `diff` to `local` in `versions.json`. The patch stays after the clone is gone. The store backup holds the patches, as it holds the other files of the task.
 
-A new target branch of an open MR gives a new diff of its head. A new tip of the same target branch does not: GitHub shows that tip in `base.sha` with no push and no retarget, and the merge base of the head does not change. A new GitLab version of the same head with another base also gives a new diff.
+A new target branch of an open MR gives a new diff of its head. A new tip of the same target branch does not: GitHub shows that tip in `base.sha` with no push and no retarget, and the diff stays the one of the recorded base until the next push. The merge base of the head stays the same unless the target branch absorbs commits of the head. A new GitLab version of the same head with another base also gives a new diff.
 
 ## Limits of a patch
 
@@ -127,4 +127,7 @@ The refs stay when an active Review task of any context has the same MR, because
 - A lazy fetch that `loomd` stops can leave `tmp_pack_*` files in the clone.
 - A task whose file is not valid does not protect the refs of its MR from a cleanup.
 - If two contexts have one MR with different verdicts, the `reviewed` ref follows the last poll.
+- If the target branch absorbs commits of the head, the local diff can show more hunks than a three-dot diff of the current tip, until the next push. A draft on such a hunk gets a flag from check 2 of the publish.
+- `loomd` sees a retarget as a change against `mr.json`. A second write that fails, or a force push back to an older head, can keep the diff of the old branch until the next head.
+- If the forge gives a new head with an old `base.sha`, the merge base stays as it is until the next push. This is not checked against the real GitHub.
 - A version whose head is not in the clone gets no patch. This occurs for an old GitLab version: a later force push replaced its head before the first fetch.

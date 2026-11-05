@@ -174,6 +174,9 @@ fn runner(home: &Path) -> GitRunner {
             ("GIT_CONFIG_GLOBAL".into(), Some("/dev/null".into())),
             ("GIT_CONFIG_NOSYSTEM".into(), Some("1".into())),
         ],
+        // On a loaded machine, a stall past the grace gives an empty stderr tail, and the tests
+        // read that tail. A test that needs a short grace sets its own.
+        kill_grace: std::time::Duration::from_mins(1),
         ..GitRunner::from_env()
     }
 }
