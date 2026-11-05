@@ -71,7 +71,7 @@ An automated suite in CI, on Linux and macOS, covers both guards end to end. It 
 - rebase, merge, cherry-pick, bisect or `git am` in progress.
 - the default branch checked out in a linked worktree.
 - a dirty submodule.
-- a filter driver.
+- a filter driver, in the repository and in a submodule.
 - a `post-merge` hook that fails.
 - a moved local tag.
 - a tag moved upstream under `fetch.pruneTags` and `tagOpt = --tags`.

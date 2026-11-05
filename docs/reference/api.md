@@ -614,7 +614,7 @@ The status walk (`dirty`), the untracked count and the ahead/behind counts share
 | --- | --- | --- |
 | `refreshed_at` | `Timestamp` | When the state was read. |
 | `head` | object | What `HEAD` points to, tagged by `kind`: `{"kind": "branch", "name": "main"}`, `{"kind": "unborn", "name": "main"}` (a branch without commits) or `{"kind": "detached", "commit": "abc1234"}` (commit id abbreviated per `core.abbrev`, at least 7 digits). A rebase in progress detaches `HEAD`. |
-| `dirty` | integer (u64) | Tracked paths with a change between `HEAD`, the index and the working tree: modified, added, deleted, renamed (one path), type-changed or conflicted, staged or not, each path once. A submodule follows its `ignore` configuration. Untracked files are not counted. `loomd` never runs filter drivers (`filter.<driver>.clean` or `.process`, such as git-lfs). Built-in conversions (end of line, `ident`, `working-tree-encoding`) apply. When a file changed on disk has a `filter` attribute that names a configured driver, its content cannot be compared. Then `dirty` is unknown, and `error` names the driver and the file. |
+| `dirty` | integer (u64) | Tracked paths with a change between `HEAD`, the index and the working tree: modified, added, deleted, renamed (one path), type-changed or conflicted, staged or not, each path once. A submodule follows `diff.ignoreSubmodules`, otherwise its `ignore` configuration, and counts as one path. Untracked files of the repository are not counted; untracked files of a submodule make it count, unless its `ignore` value excludes them. `loomd` never runs filter drivers (`filter.<driver>.clean` or `.process`, such as git-lfs), also in a submodule at any depth. Built-in conversions (end of line, `ident`, `working-tree-encoding`) apply. When a file changed on disk has a `filter` attribute that names a configured driver, its content cannot be compared. Then `dirty` is unknown, and `error` names the driver and the file. `dirty` is also unknown when `loomd` cannot read a submodule. |
 | `untracked` | object | `count`: untracked files, each counted (an untracked directory counts its files, an untracked nested repository counts as one), `.gitignore`, `.git/info/exclude` and `core.excludesFile` applied, empty directories ignored; at most 1,000. `capped`: `true` when the count stopped at 1,000. |
 | `operation` | string \| `null` | Operation in progress, from the markers of the git directory of the working tree: `rebase` (either backend), `merge`, `cherry-pick`, `revert`, `bisect`, `am`. When several markers exist, the first in this order wins: `am`, `rebase`, `cherry-pick`, `merge`, `bisect`, `revert`. |
 | `upstream` | object \| `null` | Upstream of the `HEAD` branch: `name` (short ref name, such as `origin/main`), `ahead` and `behind` (commits of `HEAD` not in the upstream and the reverse, each a known integer or `"unknown"`). `null` when `HEAD` is detached, the branch has no upstream configured, or the upstream ref does not exist (never fetched, or pruned). |
@@ -1161,11 +1161,11 @@ Answer of [`POST /v1/diagnostics/forge-check`](#forge-check).
       "kind": "gitlab",
       "api": "https://gitlab.company-a.example/api/v4",
       "origin": "host",
-      "source": { "kind": "env", "name": "GITLAB_TOKEN" },
+      "source": { "kind": "env", "name": "LOOM_GITLAB_TOKEN" },
       "result": {
         "state": "token_unresolved",
         "problem": "env_unset",
-        "error": "the environment variable `GITLAB_TOKEN` is not set for loomd (a service does not see the variables of your shell: use token_cmd)"
+        "error": "the environment variable `LOOM_GITLAB_TOKEN` is not set for loomd (a service does not see the variables of your shell: use token_cmd)"
       }
     }
   ]

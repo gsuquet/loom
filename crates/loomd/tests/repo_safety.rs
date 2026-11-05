@@ -421,7 +421,7 @@ impl Fixture {
 }
 
 /// Every risky state, built as a user would leave it, in the order of the issue.
-const FIXTURES: [fn(&Suite) -> Fixture; 25] = [
+const FIXTURES: [fn(&Suite) -> Fixture; 26] = [
     clean_behind,
     dirty_tracked,
     staged_only,
@@ -440,6 +440,7 @@ const FIXTURES: [fn(&Suite) -> Fixture; 25] = [
     worktree,
     submodule,
     filter,
+    filter_in_submodule,
     hook_fails,
     tag,
     moved_tag,
@@ -791,6 +792,69 @@ fn filter(suite: &Suite) -> Fixture {
     f.git(&["config", "filter.fake.smudge", &format!("{filter} smudge")]);
     f.write("data.dat", "data changed on disk, longer than before\n");
     f.filter_marker = Some(marker);
+    f
+}
+
+/// A filter driver inside a submodule that records each run; the filtered file changed on disk.
+/// `loomd` opens the submodule itself, with the configuration of the submodule.
+fn filter_in_submodule(suite: &Suite) -> Fixture {
+    let mut f = Fixture::new(
+        suite,
+        "filter-in-submodule",
+        Expect::Skipped(
+            |reason| {
+                matches!(
+                    reason,
+                    SkipReason::Unknown {
+                        field: StateField::Dirty
+                    } | SkipReason::Dirty { .. }
+                )
+            },
+            "skipped: dirty unknown or changed tracked paths",
+        ),
+    );
+    let sub_seed = f.root.join("sub-seed");
+    f.git_in(&f.root, &["init", "-q", "--bare", "sub.git"]);
+    f.git_in(&f.root, &["init", "-q", sub_seed.to_str().unwrap()]);
+    f.commit(
+        &sub_seed,
+        &[
+            (".gitattributes", "*.dat filter=fake\n"),
+            ("data.dat", "data\n"),
+        ],
+        "filtered data",
+    );
+    let sub_url = format!("file://{}", f.root.join("sub.git").display());
+    f.git_in(&sub_seed, &["push", "-q", &sub_url, "HEAD:main"]);
+    let seed = f.seed();
+    f.git_in(&seed, &["submodule", "add", "-q", &sub_url, "sub"]);
+    f.git_in(&seed, &["commit", "-q", "-m", "submodule"]);
+    f.git_in(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    f.clone_work();
+    f.git(&["submodule", "update", "-q", "--init"]);
+    let marker = f.root.join("filter-ran");
+    let filter = f.script(
+        "filter",
+        &format!("echo \"$@\" >> '{}'\ncat", marker.display()),
+    );
+    let filter = filter.to_str().unwrap();
+    let inside = f.repo.join("sub");
+    f.git_in(
+        &inside,
+        &["config", "filter.fake.clean", &format!("{filter} clean")],
+    );
+    f.git_in(
+        &inside,
+        &["config", "filter.fake.smudge", &format!("{filter} smudge")],
+    );
+    // The same size: only the content can tell, so that gix has to compare it.
+    f.write("sub/data.dat", "DATA\n");
+    f.filter_marker = Some(marker);
+    f.extras.push(Extra {
+        label: "submodule",
+        path: inside,
+        fetch: false,
+    });
     f
 }
 
