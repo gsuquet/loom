@@ -8,7 +8,7 @@
 //! configuration before each status walk, of the repository and of each of its submodules, at
 //! each depth.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -111,7 +111,8 @@ pub fn state(
         errors.field("last_commit", last_commit(&repo, head))
     });
     let default_branch = errors.field("default_branch", default_branch(&repo, common_dir));
-    let dirty = errors.field("dirty", dirty(&repo, &drivers, &watchdog));
+    let open = open_options(options.config);
+    let dirty = errors.field("dirty", dirty(&repo, &drivers, &open, &watchdog));
     let untracked = errors.field(
         "untracked",
         untracked(&repo, &watchdog, options.untracked_cap),
@@ -688,6 +689,7 @@ fn disable_filter_drivers(repo: &mut gix::Repository) -> Result<BTreeSet<String>
 fn dirty(
     repo: &gix::Repository,
     drivers: &Result<BTreeSet<String>, String>,
+    open: &gix::open::Options,
     watchdog: &Watchdog,
 ) -> Result<u64, String> {
     let drivers = drivers.as_ref().map_err(Clone::clone)?;
@@ -702,7 +704,7 @@ fn dirty(
     if let Some(reason) = driver_needed(repo, drivers, &compared)? {
         return Err(reason);
     }
-    paths.extend(dirty_submodules(repo, watchdog)?);
+    paths.extend(dirty_submodules(repo, open, watchdog)?);
     Ok(count(paths.len()))
 }
 
@@ -801,59 +803,65 @@ fn driver_needed(
 
 /// The paths of the submodules of `repo` that have a change, as `git status` reads them.
 ///
-/// gix would open each submodule with its own configuration and run its filter drivers. Thus,
-/// loom walks them itself and removes the drivers first, at each depth. A submodule that
-/// cannot be read makes the whole count unknown, as a dirty working tree must never read as
-/// clean. A submodule without a clone or a checkout has no change, as for `git status`.
-fn dirty_submodules(repo: &gix::Repository, watchdog: &Watchdog) -> Result<Vec<BString>, String> {
-    let submodules = repo.submodules().map_err(|error| error.to_string())?;
-    let Some(submodules) = submodules else {
+/// A submodule is a gitlink of the index: `.gitmodules` only gives its `ignore` value, and a
+/// gitlink without an entry is read as well. gix would open each submodule with its own
+/// configuration and run its filter drivers, and it looks only at the entries of `.gitmodules`.
+/// Thus, loom walks the gitlinks itself and removes the drivers first, at each depth. A
+/// submodule that cannot be read makes the whole count unknown, as a dirty working tree must
+/// never read as clean. A gitlink whose directory has no `.git` is not checked out and has no
+/// change, as for `git status`.
+fn dirty_submodules(
+    repo: &gix::Repository,
+    open: &gix::open::Options,
+    watchdog: &Watchdog,
+) -> Result<Vec<BString>, String> {
+    // First: a `.gitmodules` that cannot be read leaves the count unknown, as for gix.
+    let ignores = configured_ignores(repo)?;
+    let index = repo.index_or_empty().map_err(|error| error.to_string())?;
+    // One path per gitlink: a conflict has several stages of one path.
+    let gitlinks: BTreeMap<BString, gix::ObjectId> = index
+        .entries()
+        .iter()
+        .filter(|entry| entry.mode == gix::index::entry::Mode::COMMIT)
+        .map(|entry| (entry.path(&index).to_owned(), entry.id))
+        .collect();
+    if gitlinks.is_empty() {
         return Ok(Vec::new());
-    };
+    }
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| "the repository has no working tree".to_owned())?;
     let forced = forced_ignore(repo)?;
     let mut dirty = Vec::new();
-    for submodule in submodules {
+    for (path, id) in gitlinks {
         if watchdog.expired() {
             return Err(watchdog.exceeded());
         }
-        let name = submodule.name().to_owned();
-        let read = || {
-            // Not a gitlink of the index: `git status` does not look at it.
-            if submodule
-                .index_id()
-                .map_err(|error| error.to_string())?
-                .is_none()
-            {
-                return Ok(None);
-            }
-            // Gone or replaced by a file: the status walk already counted its path.
-            let worktree = submodule.work_dir().map_err(|error| error.to_string())?;
-            match fs::symlink_metadata(worktree) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => return Ok(None),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(error.to_string()),
-            }
-            let ignore = match forced {
-                Some(ignore) => ignore,
-                None => submodule
-                    .ignore()
-                    .map_err(|error| error.to_string())?
-                    .unwrap_or_default(),
-            };
-            if !submodule_is_dirty(&submodule, ignore, watchdog)? {
-                return Ok(None);
-            }
-            submodule
-                .path()
-                .map(Some)
-                .map_err(|error| error.to_string())
-        };
-        let path: Option<BString> =
-            read().map_err(|error: String| format!("submodule {name}: {error}"))?;
-        dirty.extend(path);
+        let ignore = forced
+            .or_else(|| ignores.get(&path).copied())
+            .unwrap_or_default();
+        let relative = gix::path::from_bstr(BStr::new(&path))
+            .map_err(|error| format!("submodule {path}: {error}"))?;
+        let worktree = workdir.join(relative);
+        if gitlink_is_dirty(&worktree, id, ignore, open, watchdog)
+            .map_err(|error| format!("submodule {path}: {error}"))?
+        {
+            dirty.push(path);
+        }
     }
     Ok(dirty)
+}
+
+/// The `ignore` value of each entry of `.gitmodules` that has one, by path.
+fn configured_ignores(repo: &gix::Repository) -> Result<BTreeMap<BString, Ignore>, String> {
+    let mut ignores = BTreeMap::new();
+    let submodules = repo.submodules().map_err(|error| error.to_string())?;
+    for submodule in submodules.into_iter().flatten() {
+        let path = submodule.path().map_err(|error| error.to_string())?;
+        let ignore = submodule.ignore().map_err(|error| error.to_string())?;
+        ignores.extend(ignore.map(|ignore| (path.clone(), ignore)));
+    }
+    Ok(ignores)
 }
 
 /// `diff.ignoreSubmodules` of `repo`, which replaces the `ignore` value of each submodule.
@@ -866,10 +874,13 @@ fn forced_ignore(repo: &gix::Repository) -> Result<Option<Ignore>, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Whether `submodule` has a change that `ignore` does not exclude.
-fn submodule_is_dirty(
-    submodule: &gix::Submodule<'_>,
+/// Whether the checkout at `worktree` of the gitlink `id` has a change that `ignore` does not
+/// exclude.
+fn gitlink_is_dirty(
+    worktree: &Path,
+    id: gix::ObjectId,
     ignore: Ignore,
+    open: &gix::open::Options,
     watchdog: &Watchdog,
 ) -> Result<bool, String> {
     let untracked = match ignore {
@@ -877,21 +888,35 @@ fn submodule_is_dirty(
         Ignore::Dirty | Ignore::None => None,
         Ignore::Untracked => Some(UntrackedFiles::None),
     };
-    // `Dirty` compares its `HEAD` to the gitlink, and starts no status walk in the submodule.
-    let head_status = submodule
-        .status(Ignore::Dirty, true)
+    // Gone or replaced by a file: the status walk already counted its path.
+    match fs::symlink_metadata(worktree) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    }
+    match fs::symlink_metadata(worktree.join(".git")) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // Not checked out, if the absence of `.git` can be trusted.
+            return fs::read_dir(worktree)
+                .map(|_| false)
+                .map_err(|error| error.to_string());
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+    let mut opened = gix::open_opts(worktree, open.clone()).map_err(|error| error.to_string())?;
+    // This directory is the one to read, whatever `core.worktree` of the submodule says.
+    opened
+        .set_workdir(Some(worktree.to_owned()))
         .map_err(|error| error.to_string())?;
-    match head_status.is_dirty() {
-        None => return Ok(false),
-        Some(true) => return Ok(true),
-        Some(false) => {}
+    let head = opened.head_id().map_err(|error| error.to_string())?;
+    if head.detach() != id {
+        return Ok(true);
     }
     if ignore == Ignore::Dirty {
         return Ok(false);
     }
-    let Some(mut opened) = submodule.open().map_err(|error| error.to_string())? else {
-        return Err("its repository cannot be opened".to_owned());
-    };
     let drivers = disable_filter_drivers(&mut opened)?;
     let walk = Walk {
         untracked,
@@ -907,7 +932,7 @@ fn submodule_is_dirty(
     if !paths.is_empty() {
         return Ok(true);
     }
-    Ok(!dirty_submodules(&opened, watchdog)?.is_empty())
+    Ok(!dirty_submodules(&opened, open, watchdog)?.is_empty())
 }
 
 /// The first of `compared` whose `filter` attribute names one of `drivers`, with the driver.

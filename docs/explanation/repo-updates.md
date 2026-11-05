@@ -114,6 +114,6 @@ Under `loom service`, `loomd` does not start from a terminal. Thus, its fetches 
 | `<b> diverged from its upstream` | Rebase or merge by hand. |
 | `git refused the fast-forward: …` | Usually an untracked file that the remote now tracks. Move it to a different location. |
 | `repository busy: another git process holds a lock (<step>)` | Nothing: the next update tries again. If it continues, make sure that no git process runs in the repository. A process that crashed leaves its lock file. |
-| `<field> unknown` | The state could not be read in time, or a file needs a filter driver for the comparison. Check `error` in the state, and run `git status`. |
+| `<field> unknown` | The state could not be read in time, a file needs a filter driver for the comparison, or a submodule cannot be read. Check `error` in the state, and run `git status`. |
 | `update policy is off` | Set `update` in `config.toml` if the repository should be updated. |
 | `repository unreadable: …` | The repository cannot be opened: check its `.git`. |
