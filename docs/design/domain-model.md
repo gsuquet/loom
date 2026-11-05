@@ -96,7 +96,7 @@ match.hosts = ["gitlab.com/company-a"]
 match.paths = ["~/work/company-a"]
 store.path = "~/.loom/contexts/company-a"
 machines = ["laptop"]                       # absent: every machine
-store.backup.remote = "git@…"
+store.backup.remote = "git@…"               # encryption is not built, see storage.md
 
 [contexts.company-a.forges."gitlab.com"]     # see reviews.md
 token_cmd = "op read op://…"

@@ -77,7 +77,7 @@ Sections, in this order: **Urgent, In progress, Due, Waiting on you, Follow-ups,
 - A task leaves its section when started or moved to later, and returns to it saying it came back.
 - Due holds overdue and due today only.
 - **Follow-ups:** an automatic flag after N days without movement, plus an optional due date.
-- **Urgent** ignores the filter and cannot fold. Anything urgent and untreated shows on a strip wherever it sits, including the Inbox and items moved to later, and a p1 notifies.
+- **Urgent** ignores the filter and cannot fold. Anything urgent and untreated shows on a strip wherever it sits, including the Inbox and items moved to later, and a p0 or p1 alert notifies.
 - An agent's proposal shows first on its task and on Today.
 - **Filter:** `w` shows one context on the current page and clears on leaving it. Counts and search ignore it.
 - There is no context lock and no focus task.

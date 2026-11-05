@@ -34,11 +34,11 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
     journal/<yyyy>/<mm>.jsonl       # events not tied to a task
 ```
 
-- One root per context: separate backup, and purge with one `rm`.
+- One root per context: separate encryption, backup, and purge with one `rm`.
 - One owner per file: `task.md` is mine, `remote/` is the daemon's, `events.jsonl` only grows. Issue mirrors are the exception, co-owned and protected by a 3-way merge. In an MR mirror, `review.json` is mine, written through loomd; the other files are the daemon's.
 - `task.md` is private and never pushed to a tracker: it is backed up with its store (see [Backup](#backup-v03)). What goes upstream lives only in issue mirrors.
 - IDs: 8 random Crockford base32 chars, shown as shortest unique prefix. External keys (`CORE-1042`, `!88`) resolve as aliases. Directory named by ID, so renaming never moves it.
-- Backup: one git repo per client context (purging from a shared repo requires a history rewrite). A shared repo for personal and employer contexts needs one branch per context, a later option (see [Backup](#backup-v03)). Backup host must be allowed by the client: loom does not encrypt a store, so a host that is not allowed cannot be used as it is. With connectors, see [Security](connector-ports.md#security).
+- Backup: one git repo per client context (purging from a shared repo requires a history rewrite). A shared repo for personal and employer contexts needs one branch per context, a later option (see [Backup](#backup-v03)). Backup host must be allowed by the client, otherwise encrypt (`age`, `git-crypt`). Encryption is not built: `store.backup` has only `remote` today. With connectors, see [Security](connector-ports.md#security).
 
 ```markdown
 +++
@@ -86,7 +86,7 @@ Free notes, kind template sections.
 ## Backup (v0.3)
 
 - Each context store is a git repository. loomd commits each change, unsigned (store repositories only: private data, no forge review).
-- `store.backup.remote` set: push and fast-forward pull on a timer and on `loom sync`. A divergence stops the sync of that context and is reported by `loom doctor`, never merged automatically.
+- `store.backup.remote` set: push and fast-forward pull on a timer and on `loom sync`. A divergence stops the sync of that context and is reported by `loom repo doctor`, never merged automatically.
 - In v0.3 each context needs its own backup remote: the same `store.backup.remote` in two contexts is rejected when the configuration is loaded, since both stores would push to the same branch. One branch per context in a shared repository is a later option.
 - `~/.loom/machine.toml` (local, unversioned) names the machine; `[contexts.<name>] machines = [...]` lists the machines holding a context (absent: all). `config.toml` stays identical on every machine.
 

@@ -7,14 +7,14 @@ Edit issues locally, in the file or the app, and push them upstream.
 ### Mirror layout
 
 ```
-tasks/<id>/issues/jira-CORE-1042/
+tasks/<id>/issues/jira-core-1042/
   issue.md          # editable: frontmatter (title, status, labels, assignee, priority) + description in Markdown
   comments.md       # read-only rendered thread
   drafts/*.md       # new comments waiting to be pushed
   .base/issue.md    # last synced state, base of the 3-way merge
   .base/description.adf.json   # source of the description at base (`.html` on Freshservice)
   raw.json          # last full remote payload
-  sync.json         # remote ID, remote updated, listed, version of the Markdown conversion
+  sync.json         # key, remote ID, remote updated, listed, noted, assignee ID, version of the Markdown conversion
 ```
 
 ### Synced fields (v1)
