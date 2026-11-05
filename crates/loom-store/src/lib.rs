@@ -16,6 +16,7 @@
 pub mod atomic;
 pub mod files;
 mod migrate;
+pub mod mr_clones;
 pub mod port;
 pub mod reconcile;
 mod repos;
@@ -386,6 +387,15 @@ impl Reader {
     pub fn tasks(&self, context: Option<&ContextName>) -> Result<Vec<IndexedTask>, StoreError> {
         let _span = debug_span!("store.tasks").entered();
         tasks::list(&self.conn, context)
+    }
+
+    /// The clones of the MR `key` of task `id` on this machine.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails.
+    pub fn mr_clones(&self, id: &TaskId, key: &str) -> Result<mr_clones::MrClones, StoreError> {
+        mr_clones::get(&self.conn, id, key)
     }
 
     /// The focused tasks of `context`, or of every context when `None`, sorted by context, read

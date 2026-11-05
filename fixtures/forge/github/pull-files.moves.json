@@ -1,0 +1,35 @@
+[
+  {
+    "filename": "docs/README.md",
+    "status": "renamed",
+    "additions": 0,
+    "deletions": 0,
+    "changes": 0,
+    "previous_filename": "README.md"
+  },
+  {
+    "filename": "src/api/signin.rs",
+    "status": "renamed",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "previous_filename": "src/api/login.rs",
+    "patch": "@@ -2,7 +2,7 @@ use crate::auth::jwt;\n \n pub fn login(token: &str) -> Response {\n     match jwt::verify(token) {\n-        Ok(claims) => Response::ok(claims.sub),\n+        Ok(claims) => Response::ok(claims.exp),\n         Err(_) => Response::unauthorized(),\n     }\n }"
+  },
+  {
+    "filename": "src/auth/mod.rs",
+    "status": "removed",
+    "additions": 0,
+    "deletions": 5,
+    "changes": 5,
+    "patch": "@@ -1,5 +0,0 @@\n-pub mod jwt;\n-\n-pub fn login_required(path: &str) -> bool {\n-    path.starts_with(\"/account\")\n-}"
+  },
+  {
+    "filename": "src/new.rs",
+    "status": "added",
+    "additions": 1,
+    "deletions": 0,
+    "changes": 1,
+    "patch": "@@ -0,0 +1 @@\n+pub fn new() {}"
+  }
+]

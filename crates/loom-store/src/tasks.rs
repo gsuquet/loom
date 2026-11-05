@@ -210,6 +210,20 @@ impl TaskIndex {
         insert(&self.conn, task)
     }
 
+    /// Replaces the clones of the MR `key` of task `id` on this machine; none leaves no row.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails or a path is not UTF-8.
+    pub fn set_mr_clones(
+        &self,
+        id: &TaskId,
+        key: &str,
+        clones: &crate::mr_clones::MrClones,
+    ) -> Result<(), StoreError> {
+        crate::mr_clones::set(&self.conn, id, key, clones)
+    }
+
     /// Removes the row of task `id`; `false` when there was none.
     ///
     /// # Errors

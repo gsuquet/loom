@@ -18,10 +18,12 @@ use loom_store::files::{ARCHIVE_DIR, TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
 use loom_store::port::TaskLocation;
 use loom_store::tasks::IndexedState;
 use loomd::backup::commit_message;
+use loomd::mr_refs::{DIFFS_DIR, DiffRecord, diffs_to_write, patch_name, record_diffs};
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
-    SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_versions, mirror,
-    mirror_dir, new_review_task, next_verdict, read_mr, review_key, url_host,
+    SyncState, VERSIONS_FILE, VersionRecord, apply_retarget, decide, find_review, is_retarget,
+    merge_current, merge_versions, mirror, mirror_dir, new_review_task, next_verdict, read_mr,
+    review_key, url_host, with_recorded_base,
 };
 use tracing::{info, info_span, warn};
 
@@ -164,8 +166,9 @@ impl Worker {
                 self.set_review_status(&id, *status, &reason.note(&update.key), &daemon)?;
                 info!(%context, key = %update.key, %id, %status, ?reason, "Review task status changed");
             }
-            let versions = merge_versions(&previous.versions, &update.versions, now());
-            let files = mirror(&mr, &versions, update.threads.as_deref(), &state)
+            let versions = merged_versions(&previous, update, &mr);
+            let snapshot = with_recorded_base(&mr, &versions);
+            let files = mirror(&snapshot, &versions, update.threads.as_deref(), &state)
                 .map_err(|error| error.to_string())?;
             write_mirror(&dir, &files.files())
                 .map_err(|error| format!("cannot write the mirror {}: {error}", dir.display()))
@@ -192,6 +195,65 @@ impl Worker {
         }
         written?;
         Ok((!new.is_empty() || wrote).then_some((id, created)))
+    }
+
+    /// Writes the diffs of `record` in the mirror of its MR, then its clones in the index: they
+    /// are paths of this machine, never in the store.
+    pub(super) fn record_mr_diffs(&mut self, record: &DiffRecord) -> Result<(), String> {
+        self.write_mr_diffs(record)?;
+        self.tasks
+            .index()
+            .set_mr_clones(&record.id, &record.key.to_string(), &record.clones)
+            .map_err(|error| format!("cannot write the clones of the MR: {error}"))
+    }
+
+    /// The patches first, so that a record always has its patch. One commit, none when no byte
+    /// changes. A task archived since the worker read it has no mirror here: nothing to write.
+    fn write_mr_diffs(&mut self, record: &DiffRecord) -> Result<(), String> {
+        let DiffRecord {
+            context, id, key, ..
+        } = record;
+        let root = self
+            .stores
+            .get(context)
+            .ok_or_else(|| format!("no store for context `{context}`"))?;
+        let dir = mirror_dir(&task_dir(root, id), key);
+        let Ok(versions) = fs::read(dir.join(VERSIONS_FILE)) else {
+            return Ok(());
+        };
+        let cannot = |error: &dyn std::fmt::Display| {
+            format!("cannot write the mirror {}: {error}", dir.display())
+        };
+        let versions: Vec<VersionRecord> =
+            serde_json::from_slice(&versions).map_err(|error| cannot(&error))?;
+        let diffs = diffs_to_write(&versions, &record.diffs);
+        if diffs.is_empty() {
+            return Ok(());
+        }
+        let mut new_versions = serde_json::to_vec_pretty(&record_diffs(&versions, &record.diffs))
+            .map_err(|error| cannot(&error))?;
+        new_versions.push(b'\n');
+        let names: Vec<String> = diffs.iter().map(|diff| patch_name(&diff.head)).collect();
+        let patches: Vec<(&str, &[u8])> = names
+            .iter()
+            .zip(&diffs)
+            .map(|(name, diff)| (name.as_str(), diff.patch.as_slice()))
+            .collect();
+        let mut wrote =
+            write_mirror(&dir.join(DIFFS_DIR), &patches).map_err(|error| cannot(&error))?;
+        wrote |= write_mirror(&dir, &[(VERSIONS_FILE, new_versions.as_slice())])
+            .map_err(|error| cannot(&error))?;
+        if wrote {
+            let result = self.commits.commit_task(
+                context,
+                id,
+                TaskLocation::Active,
+                &mirror_message(id, key),
+            );
+            log_commit(context, Some(id), result);
+            self.changed(context, id);
+        }
+        Ok(())
     }
 
     /// Logs `note` on task `id`, then sets its status.
@@ -223,6 +285,16 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+/// The versions after a poll: those of the mirror, those of the forge, and the current one.
+fn merged_versions(previous: &Previous, update: &MrUpdate, mr: &Mr) -> Vec<VersionRecord> {
+    let seen = now();
+    let mut versions = merge_versions(&previous.versions, &update.versions, mr.state, seen);
+    if is_retarget(previous.mr.as_ref(), mr) {
+        versions = apply_retarget(versions, &mr.version);
+    }
+    merge_current(versions, &mr.version, seen)
 }
 
 /// What the poll saw of `mr` against the `previous` mirror, and the sync state to record.

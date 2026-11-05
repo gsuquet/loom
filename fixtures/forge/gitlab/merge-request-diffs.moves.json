@@ -1,0 +1,54 @@
+[
+  {
+    "old_path": "README.md",
+    "new_path": "docs/README.md",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "diff": "",
+    "new_file": false,
+    "renamed_file": true,
+    "deleted_file": false,
+    "generated_file": false,
+    "too_large": false,
+    "collapsed": false
+  },
+  {
+    "old_path": "src/api/login.rs",
+    "new_path": "src/api/signin.rs",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "diff": "@@ -2,7 +2,7 @@ use crate::auth::jwt;\n \n pub fn login(token: &str) -> Response {\n     match jwt::verify(token) {\n-        Ok(claims) => Response::ok(claims.sub),\n+        Ok(claims) => Response::ok(claims.exp),\n         Err(_) => Response::unauthorized(),\n     }\n }\n",
+    "new_file": false,
+    "renamed_file": true,
+    "deleted_file": false,
+    "generated_file": false,
+    "too_large": false,
+    "collapsed": false
+  },
+  {
+    "old_path": "src/auth/mod.rs",
+    "new_path": "src/auth/mod.rs",
+    "a_mode": "100644",
+    "b_mode": "0",
+    "diff": "@@ -1,5 +0,0 @@\n-pub mod jwt;\n-\n-pub fn login_required(path: &str) -> bool {\n-    path.starts_with(\"/account\")\n-}\n",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": true,
+    "generated_file": false,
+    "too_large": false,
+    "collapsed": false
+  },
+  {
+    "old_path": "src/new.rs",
+    "new_path": "src/new.rs",
+    "a_mode": "0",
+    "b_mode": "100644",
+    "diff": "@@ -0,0 +1 @@\n+pub fn new() {}\n",
+    "new_file": true,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": false,
+    "too_large": false,
+    "collapsed": false
+  }
+]
