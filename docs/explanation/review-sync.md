@@ -34,25 +34,33 @@ One token, or two tokens of one account, find the same MRs. Then rule 3 tells no
 
 `default_context` never applies: an MR that a client token finds must not go to your personal store. An MR of another context is not written, and the answer counts it in `other_context`.
 
-For the same reason, `loomd` refuses to move a Review task to another context. The context of the MR sets the context of the task, and the next poll would create a second task in that context.
+For the same reason, `loomd` refuses to move a Review task to another context. A task stays in its context: a start and a poll find it in any context, so the MR gets no entry and no second task in the context that a rule now names.
 
 ## When an entry comes and goes
 
-An MR has an entry when all these conditions are true: the MR is open, you are a requested reviewer, your verdict is not on its current head, you are not its author, and it has no Review task. `loomd` adds the entry at the first poll that sees this. `loomd` deletes the entry at the first poll that sees that one condition is false. The removal writes no event, because no task exists.
+An MR has an entry when all these conditions are true: the MR is open, you are a requested reviewer, your verdict is not on its current head or a request is newer than your verdict, you are not its author, and it has no Review task in any context. `loomd` adds the entry at the first poll that sees this. `loomd` deletes the entry at the first poll that sees that one condition is false. The removal writes no event, because no task exists.
 
 | The poll sees | Entry before | Entry after |
 | --- | --- | --- |
 | An open MR where you are requested, no task | none | added |
 | The same MR, changed on the forge (title, head) | present | stays, its fields follow the MR |
 | Your request is removed | present | deleted |
-| Your verdict on the current head | present | deleted |
+| Your verdict on the current head, and no newer request | present | deleted |
+| You are requested again after your verdict, on the same head | none | added |
+| A push on an MR that you approved, in a project that keeps the approvals | none | added |
 | The MR is merged or closed | present | deleted |
-| The MR has a Review task that is not archived, in any status | present | deleted |
-| The MR is of another context now | present | deleted: the poll of that context adds it there |
-| A list or a read fails | any | no change |
+| The MR has a Review task that is not archived, in any status, in any context | present | deleted |
+| The MR is of another context now, that this machine polls with the same account | present | moved to the store of that context |
+| The MR is of another context now, in other cases | present | no change, and the poll reports it as failed |
+| The forge answers `404` for the MR, and the host answers | present | deleted, as for a closed MR |
+| A list or another read fails (a `403`, a `500`, no answer) | any | no change |
 | An incomplete GitHub search does not show the MR | present | no change |
 
 An entry has one or more reasons. The only reason now is `review_requested`.
+
+A request is newer than your verdict in these cases. On GitHub, you are in the requested reviewers: GitHub removes you when you submit a review. On GitLab, your reviewer state is `unreviewed` on an MR that you approved. `loomd` reads the state only for an approved MR without a task. The GitLab documentation does not tell what a new request does to the state: this behavior is not verified on a real GitLab.
+
+GitLab does not tell on which head you approved. For an MR without a task, `loomd` keeps the head of the poll that first shows your approval, in `index.db` (machine-local, no commit). It reads such an MR one by one until it leaves, then deletes the row. A push after your approval, in a project that keeps the approvals, gives an entry. If you delete `index.db`, your approval counts for the head of the next poll.
 
 Your own MR never has an entry for `review_requested`, even when GitLab lets you request your own review.
 
@@ -66,12 +74,13 @@ The poller thread does the start. A start waits for a poll that runs, and a poll
 
 | Case | Result |
 | --- | --- |
-| The MR has a Review task that is not archived | That task, with `created` false. Nothing is written, and the forge is not called. |
+| The MR has a Review task that is not archived, in any context | That task, with `created` false. Nothing is written, and the forge is not called. |
 | The forge does not answer, refuses the token or limits the rate | `502 forge`. The entry stays, no task is created. Do the start again. |
 | The MR is merged or closed since the last poll | `409 conflict`. No task, and the entry is deleted. |
+| The forge answers `404` for the MR | `404 not_found`. No task, and the entry is deleted. |
 | No entry and no Review task | `404 not_found`. A start creates no task for an MR that is not in the queue. |
 | Two contexts have this key | `400 invalid_request`. Name the context with `-c`. |
-| This machine does not poll the context of the entry | `400 invalid_request`. Start on the first machine of the context. A task created on another machine is not known to the poll until a store sync, and a second task could come from it. |
+| This machine does not poll the context and host of the entry (another machine polls it, or the credential was removed) | `400 invalid_request`. Start on the first machine of the context, or add the credential. A task created on another machine is not known to the poll until a store sync, and a second task could come from it. |
 
 If `loomd` stops between the creation of the task and the removal of the entry, the next start answers with the task, and the next poll deletes the entry.
 
@@ -139,21 +148,22 @@ A poll writes nothing when nothing changed:
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.
-- A failure of one MR (for example, a `404`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full.
+- A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` for an MR with only an entry is not a failure: the entry is deleted. A lost access looks the same: the entry comes back when a list shows the MR again.
 - When `loomd` stops, a poll that runs stops before its next forge call.
 
 ## Limits
 
 - GitLab: only the approvals give a verdict. A comment without an approval is not a verdict, and a reset of the state of a reviewer is not a new request.
 - GitHub: a request to one of your teams counts as a request to you, unless `review_requests = "direct"`.
-- Rule 3 of the context: when the tokens of two accounts are both requested on one MR (for example, both accounts are in the requested team), each context creates a task for it.
+- Rule 3 of the context: when the tokens of two accounts are both requested on one MR (for example, both accounts are in the requested team), each context has an entry for it. The first start gives the one task, and the entry of the other context goes at its next poll.
 - An archived Review task is not changed. After the archive, a new entry comes only when you are requested: on a new head without your verdict, or by a new request, against what the last poll saw.
-- A request again on a head that has your verdict gives no entry, when the MR has no Review task. `loomd` cannot see that the request is after the verdict. A Review task that exists opens again in this case: it compares two polls.
+- GitHub: a request again through a team, on a head that has your verdict, gives no entry when the MR has no Review task. A team request does not put you in the requested reviewers, so `loomd` cannot see that it is after your verdict. A Review task that exists opens again in this case: it compares two polls.
+- GitLab, without a task: an approval that stays after a push is not a verdict on the new head, and the entry stays even when you read the push. Approve again after a reset, or start on the MR.
+- If you remove the credential of a context, its entries stay in the list and are not polled. A start answers `400 invalid_request`.
 - An MR whose web URL is on another host than the forge host of `[forges]` gets no entry: the poll reports it as failed.
 - Two forge hosts of one kind, in one context, with the same key: the first MR has the entry, and the poll reports the second as failed until the first entry goes.
 - A review and a new request that both occur between two polls are not seen as a new request.
-- GitLab, without a task: your approval is taken as a verdict on each new head. Thus, an MR that you approved has no entry, even after a push, in a project that keeps the approvals.
-- An MR that the forge no longer shows (deleted project, lost access) fails at each poll until you close its task. If it has only an entry, delete the file of the entry: a failed read does not change an entry.
+- An MR with a Review task that the forge no longer shows (deleted project, lost access) fails at each poll until you close its task.
 - An entry file that `loomd` cannot read (a broken hand edit) is not in the list and is not polled. The next poll that finds the MR writes it again.
 - GitLab, in a project that keeps the approvals: after a push opens the task again, the approval that stays does not close it. Approve again after a reset, or close the task.
 - If a task that `loomd` cannot read (a broken hand edit) holds the mirror of an MR, the MR gets no entry and no second task: the poll reports it as failed until you fix the file.
