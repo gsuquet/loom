@@ -166,7 +166,8 @@ A poll writes nothing when nothing changed:
 - GitLab, without a task: an approval that stays after a push is not a verdict on the new head, and the entry stays even when you read the push. Approve again after a reset, or start on the MR.
 - GitHub: a start after a request through a team is removed creates the task, because a read does not show team requests. The next poll cancels the task. The same occurs for a direct request when `loomd` restarted after the last poll, because it keeps that state in memory.
 - GitHub: a start after a direct request is replaced by a request through a team answers `409 conflict` and deletes the entry, because a read shows only that the direct request is gone. The next poll adds the entry again.
-- GitLab: a listed MR that keeps failing makes that host list in full at each poll, after the first hour, because no poll counts as a full list. The poll reports the failure each time.
+- GitLab: a listed MR that keeps failing makes that host list in full at each poll until a poll succeeds, once a full list is due, because no poll counts as a full list. The poll reports the failure each time.
+- GitLab: an MR with only an approval row and a permanent failure other than a `404`, such as a `403`, is read and reported at each poll until it leaves or `index.db` is rebuilt.
 - If you remove the credential of a context, its entries stay in the list and are not polled. A start answers `400 invalid_request`.
 - An MR whose web URL is on another host than the forge host of `[forges]` gets no entry: the poll reports it as failed.
 - Two forge hosts of one kind, in one context, with the same key: the first MR has the entry, and the poll reports the second as failed until the first entry goes.
