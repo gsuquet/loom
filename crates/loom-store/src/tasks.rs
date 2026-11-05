@@ -181,6 +181,17 @@ pub fn link_keys(links: &[Link]) -> String {
         .join(" ")
 }
 
+/// The head of the poll that first showed my approval of a GitLab MR without a Review task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MrApproval {
+    /// The key of the MR.
+    pub key: String,
+    /// The head SHA.
+    pub head_sha: String,
+    /// The project of the MR: it is read by this ID when no list shows it.
+    pub project_id: u64,
+}
+
 /// The writer of the tasks of the index: the only connection that changes them.
 #[derive(Debug)]
 pub struct TaskIndex {
@@ -290,6 +301,74 @@ impl TaskIndex {
         context: Option<&ContextName>,
     ) -> Result<Vec<(FocusRow, IndexedTask)>, StoreError> {
         focus(&self.conn, context)
+    }
+
+    /// The head of the poll that first showed my approval of the MR `key` on `host` in `context`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the query fails.
+    pub fn mr_approval_head(
+        &self,
+        context: &ContextName,
+        host: &str,
+        key: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT head_sha FROM mr_approvals WHERE context = ?1 AND host = ?2 AND mr_key = ?3",
+                params![context.as_str(), host, key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Records `approval` for `context` and `host`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails.
+    pub fn set_mr_approval(
+        &self,
+        context: &ContextName,
+        host: &str,
+        approval: &MrApproval,
+    ) -> Result<(), StoreError> {
+        let project_id = i64::try_from(approval.project_id)
+            .map_err(|_| StoreError::Corrupt(format!("project ID {}", approval.project_id)))?;
+        self.conn.execute(
+            "INSERT INTO mr_approvals (context, host, mr_key, head_sha, project_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT (context, host, mr_key) DO UPDATE SET \
+                 head_sha = excluded.head_sha, project_id = excluded.project_id",
+            params![
+                context.as_str(),
+                host,
+                approval.key,
+                approval.head_sha,
+                project_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the approval of the MR `key` on `host` in `context`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails.
+    pub fn drop_mr_approval(
+        &self,
+        context: &ContextName,
+        host: &str,
+        key: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM mr_approvals WHERE context = ?1 AND host = ?2 AND mr_key = ?3",
+            params![context.as_str(), host, key],
+        )?;
+        Ok(())
     }
 
     /// The repository with `slug`.
@@ -1397,6 +1476,32 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<IndexedTask, StoreError>> 
 }
 
 /// The focus row of `context`, when one is recorded.
+/// The MRs whose approval is recorded for `context` and `host`, sorted by key.
+pub(crate) fn mr_approvals(
+    conn: &Connection,
+    context: &ContextName,
+    host: &str,
+) -> Result<Vec<MrApproval>, StoreError> {
+    let mut statement = conn.prepare(
+        "SELECT mr_key, head_sha, project_id FROM mr_approvals \
+         WHERE context = ?1 AND host = ?2 ORDER BY mr_key",
+    )?;
+    let rows = statement.query_map(params![context.as_str(), host], |row| {
+        let project_id: i64 = row.get(2)?;
+        Ok((row.get(0)?, row.get(1)?, project_id))
+    })?;
+    rows.map(|row| {
+        let (key, head_sha, project_id): (String, String, i64) = row?;
+        Ok(MrApproval {
+            key,
+            head_sha,
+            project_id: u64::try_from(project_id)
+                .map_err(|_| StoreError::Corrupt(format!("project ID {project_id}")))?,
+        })
+    })
+    .collect()
+}
+
 fn focus_row(conn: &Connection, context: &ContextName) -> Result<Option<FocusRow>, StoreError> {
     conn.query_row(
         "SELECT context, task_id, since FROM focus WHERE context = ?1",

@@ -891,7 +891,7 @@ fn forge_at(refreshed_at: u64, archived: bool) -> ForgeMetadata {
 }
 
 #[test]
-fn version_7_database_migrates_to_8_with_its_repositories_and_no_forge_metadata() {
+fn version_7_database_migrates_with_its_repositories_and_no_forge_metadata() {
     let dir = TempDir::new().unwrap();
     let path = db(&dir);
     let mut conn = Connection::open(&path).unwrap();
@@ -912,7 +912,7 @@ fn version_7_database_migrates_to_8_with_its_repositories_and_no_forge_metadata(
     drop(conn);
 
     let mut store = Store::open(&path).unwrap();
-    assert_eq!(user_version(&store.conn).unwrap(), 8);
+    assert_eq!(user_version(&store.conn).unwrap(), SCHEMA_VERSION);
     let repo = store.get("unassigned/a").unwrap().unwrap();
     assert_eq!(repo.state.unwrap().dirty, MaybeKnown::Known(0));
     assert_eq!(repo.forge_metadata, None);

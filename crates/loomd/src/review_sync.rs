@@ -151,8 +151,6 @@ fn short(sha: &Sha) -> &str {
 /// What to do with the Review task of an MR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// Create the task, in `active`: I start on the MR. `decide` never answers this.
-    Create,
     /// Keep the status; the mirror is updated.
     Keep,
     /// Set the status, for `reason`; the mirror is updated.
@@ -580,6 +578,10 @@ pub struct MrUpdate {
     pub own: bool,
     /// I start on this MR: create its Review task when it has none. A poll never sets it.
     pub start: bool,
+    /// A request is known to be newer than my verdict: see `review_queue::EntrySeen`.
+    pub requested_after_verdict: bool,
+    /// The MR is of this context now: the entry goes to its store. Its other fields are not used.
+    pub moved_to: Option<ContextName>,
 }
 
 /// One poll of a context and forge host, for the task thread.

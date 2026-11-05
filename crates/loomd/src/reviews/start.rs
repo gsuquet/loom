@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use axum::http::StatusCode;
 use loom_api::{ApiError, ContextName, ErrorCode, ForgeKind, ReviewSyncOutcome, TaskId};
-use loom_forge::client::{GithubClient, GitlabClient, GitlabMr};
+use loom_forge::client::{ForgeError, GithubClient, GitlabClient, GitlabMr};
 use loom_forge::model::{MrKey, MrState};
 use loom_store::Reader;
 use loomd::api::{internal, invalid_request, unavailable};
@@ -16,7 +16,9 @@ use loomd::review_sync::{MrUpdate, url_host};
 use tokio::sync::oneshot;
 use tracing::Span;
 
-use super::{Poller, Request, ReviewHandle, Stopped, github_update, gitlab_update, project_id};
+use super::{
+    Poller, Request, ReviewHandle, Stopped, github_update, gitlab_update, gone_update, project_id,
+};
 use crate::repos::Failure;
 use crate::tasks::read_entry;
 
@@ -135,15 +137,9 @@ impl Poller {
             return Err((
                 StatusCode::BAD_REQUEST,
                 invalid_request(format!(
-                    "this machine does not poll {host} for context `{context}`: start on MR `{key}` on the first machine of the context"
+                    "this machine does not poll {host} for context `{context}`: start on MR `{key}` on the first machine of the context, or add a credential for the host if it was removed"
                 )),
             ));
-        };
-        let forge_failure = |message: String| {
-            (
-                StatusCode::BAD_GATEWAY,
-                ApiError::new(ErrorCode::Forge, message),
-            )
         };
         if let Some((until, at)) = self.hosts[index].rate_limited
             && until > Instant::now()
@@ -173,6 +169,23 @@ impl Poller {
         };
         let mut update = match read {
             Ok(update) => update,
+            // Gone: as for a closed MR, the entry goes.
+            Err(Stopped::Forge(ForgeError::NotFound { .. })) => {
+                self.hosts[index].mrs.remove(&key.dir_name());
+                if self
+                    .hand_over(index, vec![gone_update(key.clone())])
+                    .is_none()
+                {
+                    return Err(stopping());
+                }
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    ApiError::new(
+                        ErrorCode::NotFound,
+                        format!("the forge no longer shows MR `{key}`: its entry is removed"),
+                    ),
+                ));
+            }
             Err(stopped) => {
                 self.hosts[index].mrs.remove(&key.dir_name());
                 return Err(match self.stopped(index, stopped, &token) {
@@ -194,10 +207,7 @@ impl Poller {
             .and_then(|mr| can_start(mr.state, update.own).err());
         update.start = refusal.is_none();
         let Some(applied) = self.hand_over(index, vec![update]) else {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                unavailable("loomd is stopping"),
-            ));
+            return Err(stopping());
         };
         if let Some(failure) = applied.failed.first() {
             return Err((
@@ -207,18 +217,7 @@ impl Poller {
         }
         // The poll rules removed the entry of an MR that cannot start.
         if let Some(refusal) = refusal {
-            let reason = match refusal {
-                StartRefusal::NotOpen(MrState::Merged) => "is merged",
-                StartRefusal::NotOpen(MrState::Closed | MrState::Open) => "is closed",
-                StartRefusal::Own => "is my own MR",
-            };
-            return Err((
-                StatusCode::CONFLICT,
-                ApiError::new(
-                    ErrorCode::Conflict,
-                    format!("MR `{key}` {reason}: it gets no Review task"),
-                ),
-            ));
+            return Err(refused(key, refusal));
         }
         applied.created.first().map_or_else(
             || {
@@ -268,4 +267,33 @@ impl Poller {
             true,
         )?)
     }
+}
+
+fn forge_failure(message: String) -> Failure {
+    (
+        StatusCode::BAD_GATEWAY,
+        ApiError::new(ErrorCode::Forge, message),
+    )
+}
+
+fn stopping() -> Failure {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        unavailable("loomd is stopping"),
+    )
+}
+
+fn refused(key: &MrKey, refusal: StartRefusal) -> Failure {
+    let reason = match refusal {
+        StartRefusal::NotOpen(MrState::Merged) => "is merged",
+        StartRefusal::NotOpen(MrState::Closed | MrState::Open) => "is closed",
+        StartRefusal::Own => "is my own MR",
+    };
+    (
+        StatusCode::CONFLICT,
+        ApiError::new(
+            ErrorCode::Conflict,
+            format!("MR `{key}` {reason}: it gets no Review task"),
+        ),
+    )
 }

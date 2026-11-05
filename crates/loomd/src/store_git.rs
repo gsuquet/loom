@@ -583,3 +583,18 @@ fn compare(git: &Git<'_>, tracking: &str) -> Result<(Sides, Option<String>), Git
     };
     Ok((sides, remote))
 }
+
+#[cfg(test)]
+mod queue_tests {
+    use std::fs;
+
+    use super::has_tasks;
+
+    #[test]
+    fn a_store_with_only_a_queue_has_something_to_commit() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!has_tasks(root.path()));
+        fs::create_dir_all(root.path().join("queue/mrs")).unwrap();
+        assert!(has_tasks(root.path()));
+    }
+}

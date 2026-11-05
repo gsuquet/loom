@@ -5,25 +5,27 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use loom_api::{ContextName, ReviewQueue};
-use loom_forge::model::{Mr, MrKey, MrState};
-use loom_store::IndexedTask;
+use loom_api::{ContextName, ForgeKind, ReviewQueue};
+use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, Sha};
 use loom_store::files::ARCHIVE_DIR;
 use loom_store::port::TaskLocation;
+use loom_store::{IndexedTask, MrApproval};
 use loomd::review_queue::{
-    ArchivedSeen, EntryDecision, EntrySeen, QueueEntry, decide_entry, entry_bytes, entry_name,
-    entry_of, queue_dir, read_entry_bytes,
+    ApprovalStep, EntryDecision, EntryInput, QueueEntry, active_reviews_of, approval_key,
+    approval_step, decide_entry, entry_bytes, entry_name, entry_of, entry_seen, queue_dir,
+    queue_message, read_entry_bytes,
 };
-use loomd::review_sync::{MrBatch, MrUpdate, find_review, mirror_dir, next_verdict, url_host};
+use loomd::review_sync::{MrBatch, MrUpdate, SeenVerdict, find_review, mirror_dir, url_host};
 use tracing::{info, warn};
 
 use super::{Previous, ReviewsApplied, Worker, can_create, read_previous, write_mirror};
+use crate::tasks::log_commit;
 
 impl Worker {
     /// The queue entry of one MR, after its Review task: adds, keeps or removes it. A failed
     /// read comes with no update, so it changes no entry.
     pub(super) fn sync_entry(
-        &self,
+        &mut self,
         batch: &MrBatch,
         rows: &[IndexedTask],
         update: &MrUpdate,
@@ -34,15 +36,24 @@ impl Worker {
         let root = self
             .stores
             .get(context)
-            .ok_or_else(|| format!("no store for context `{context}`"))?;
+            .ok_or_else(|| format!("no store for context `{context}`"))?
+            .clone();
         let review = find_review(rows, context, &batch.host, &update.key);
-        let tracked = update.start || matches!(review, Some((_, _, TaskLocation::Active)));
-        let stored = read_entry(root, &update.key);
+        // In any context: the MR stays in the context of its task.
+        let tracked = update.start
+            || active_reviews_of(rows, &update.key)
+                .iter()
+                .any(|(_, _, host)| host.as_deref() == Some(batch.host.as_str()));
+        let stored = read_entry(&root, &update.key);
         // Two forge hosts can have the same key, and their entries the same file name.
         let foreign = stored
             .as_ref()
             .is_some_and(|entry| url_host(&entry.web_url).as_deref() != Some(batch.host.as_str()));
         let stored = stored.filter(|_| !foreign);
+        let verdict = self.approval_head(batch, update, tracked)?;
+        if let Some(target) = &update.moved_to {
+            return self.move_entry(batch, update, stored.as_ref(), target, tracked, applied);
+        }
         if tracked && stored.is_none() {
             return Ok(());
         }
@@ -60,20 +71,30 @@ impl Worker {
         let read = update.mr.as_ref();
         let known = read.or(previous.mr.as_ref());
         // A 304, and neither an entry nor a mirror: nothing changed.
-        let Some(seen) = entry_seen(update, &previous, stored.as_ref(), tracked, archived) else {
+        let Some(seen) = entry_seen(&EntryInput {
+            read,
+            stored: stored.as_ref(),
+            archived_mr: previous.mr.as_ref(),
+            archived_state: previous.state.as_ref(),
+            archived,
+            verdict: verdict.as_ref(),
+            requested: update.requested,
+            tracked,
+            own: update.own,
+            requested_after_verdict: update.requested_after_verdict,
+        }) else {
             return Ok(());
         };
-        let decision = decide_entry(&seen);
         let name = entry_name(&update.key);
-        let dir = queue_dir(root);
+        let dir = queue_dir(&root);
         let write = |mr: &Mr| -> Result<bool, String> {
-            can_create(root, rows, batch, mr)?;
+            can_create(&root, rows, batch, mr)?;
             let bytes =
                 entry_bytes(&entry_of(mr, stored.as_ref())).map_err(|error| error.to_string())?;
             write_mirror(&dir, &[(name.as_str(), bytes.as_slice())])
                 .map_err(|error| format!("cannot write the entry {}: {error}", dir.display()))
         };
-        match decision {
+        match decide_entry(&seen) {
             EntryDecision::Absent => {}
             EntryDecision::Add => {
                 if foreign {
@@ -95,17 +116,123 @@ impl Worker {
                 }
             }
             EntryDecision::Remove => {
-                match fs::remove_file(dir.join(&name)) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(format!("cannot delete the entry {name}: {error}"));
-                    }
-                }
+                remove_entry(&root, &update.key)?;
                 info!(%context, key = %update.key, "MR removed from the queue");
                 applied.removed.push(update.key.to_string());
             }
         }
+        Ok(())
+    }
+
+    /// The verdict of `update`, with the head that my GitLab approval counts for: the head of the
+    /// poll that first showed it, kept in the index (machine-local, no store commit).
+    #[expect(
+        clippy::option_option,
+        reason = "as `MrUpdate::verdict`: not read, no verdict, or a verdict"
+    )]
+    fn approval_head(
+        &mut self,
+        batch: &MrBatch,
+        update: &MrUpdate,
+        tracked: bool,
+    ) -> Result<Option<Option<SeenVerdict>>, String> {
+        if update.key.forge() != ForgeKind::Gitlab {
+            return Ok(update.verdict.clone());
+        }
+        let cannot = |error: &dyn std::fmt::Display| format!("cannot use the index: {error}");
+        let index = self.tasks.index();
+        let key = approval_key(&update.key);
+        let row = index
+            .mr_approval_head(&batch.context, &batch.host, &key)
+            .map_err(|error| cannot(&error))?
+            .and_then(|head| Sha::try_from(head).ok());
+        let left = update.requested == Some(false)
+            || update.moved_to.is_some()
+            || update
+                .mr
+                .as_ref()
+                .is_some_and(|mr| mr.state != MrState::Open);
+        let shown = update.verdict.as_ref().map(Option::as_ref);
+        let (step, head) = approval_step(row.as_ref(), tracked, left, shown);
+        match step {
+            ApprovalStep::Keep => {}
+            ApprovalStep::Drop => index
+                .drop_mr_approval(&batch.context, &batch.host, &key)
+                .map_err(|error| cannot(&error))?,
+            ApprovalStep::Record(head) => {
+                // A verdict that the poll read comes with the MR, unless the MR has a task.
+                if let Some(MrForgeIds::Gitlab { project_id, .. }) =
+                    update.mr.as_ref().map(|mr| &mr.forge_ids)
+                {
+                    let approval = MrApproval {
+                        key,
+                        head_sha: head.to_string(),
+                        project_id: *project_id,
+                    };
+                    index
+                        .set_mr_approval(&batch.context, &batch.host, &approval)
+                        .map_err(|error| cannot(&error))?;
+                }
+            }
+        }
+        Ok(update.verdict.clone().map(|verdict| {
+            verdict.map(|verdict| SeenVerdict {
+                sha: head.unwrap_or_else(|| verdict.sha.clone()),
+                ..verdict
+            })
+        }))
+    }
+
+    /// Moves the entry of an MR of another context to the store of that context, and commits it
+    /// there: the poll of that context does not list an unchanged MR. The poller checked that
+    /// this machine polls that context with the same account.
+    fn move_entry(
+        &mut self,
+        batch: &MrBatch,
+        update: &MrUpdate,
+        stored: Option<&QueueEntry>,
+        target: &ContextName,
+        tracked: bool,
+        applied: &mut ReviewsApplied,
+    ) -> Result<(), String> {
+        let Some(entry) = stored else {
+            return Ok(());
+        };
+        let root = self
+            .stores
+            .get(&batch.context)
+            .ok_or_else(|| format!("no store for context `{}`", batch.context))?
+            .clone();
+        let target_root = self
+            .stores
+            .get(target)
+            .ok_or_else(|| format!("no store for context `{target}`"))?
+            .clone();
+        // A task means no entry anywhere; an entry there is already this one, or is of another
+        // host, which is reported.
+        if !tracked {
+            match read_entry(&target_root, &update.key) {
+                Some(other) if other.web_url != entry.web_url => {
+                    return Err(format!(
+                        "the queue of context `{target}` has an entry of this key on another forge host: the entry stays in this context"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    let bytes = entry_bytes(entry).map_err(|error| error.to_string())?;
+                    let dir = queue_dir(&target_root);
+                    let name = entry_name(&update.key);
+                    write_mirror(&dir, &[(name.as_str(), bytes.as_slice())]).map_err(|error| {
+                        format!("cannot write the entry {}: {error}", dir.display())
+                    })?;
+                    let result = self.commits.commit_queue(target, &queue_message(1, 0, 0));
+                    log_commit(target, None, result);
+                }
+            }
+        }
+        remove_entry(&root, &update.key)?;
+        info!(context = %batch.context, %target, key = %update.key, "MR moved to the queue of its context");
+        applied.removed.push(update.key.to_string());
         Ok(())
     }
 
@@ -121,55 +248,14 @@ impl Worker {
     }
 }
 
-/// What a poll knows of the MR of `update` for its entry: from its read, else from its `stored`
-/// entry, else from the `previous` mirror of an archived task. `None` without any of them.
-fn entry_seen(
-    update: &MrUpdate,
-    previous: &Previous,
-    stored: Option<&QueueEntry>,
-    tracked: bool,
-    archived: bool,
-) -> Option<EntrySeen> {
-    let of_mr = |mr: &Mr| (mr.state, mr.version.head_sha.clone());
-    let (state, head) = update
-        .mr
-        .as_ref()
-        .map(of_mr)
-        // An entry is of an MR that was open at its last read.
-        .or_else(|| stored.map(|entry| (MrState::Open, entry.head_sha.clone())))
-        .or_else(|| previous.mr.as_ref().map(of_mr))?;
-    let recorded = previous.state.as_ref();
-    let verdict = update.verdict.clone().map_or_else(
-        || recorded.and_then(|state| state.verdict.clone()),
-        |latest| {
-            let shown = recorded.is_some_and(|state| state.shown);
-            next_verdict(
-                recorded.and_then(|state| state.verdict.as_ref()),
-                shown,
-                latest,
-            )
-            .0
-        },
-    );
-    // Unknown (an incomplete search): as at the last poll.
-    let requested = update
-        .requested
-        .or_else(|| stored.map(|_| true))
-        .or_else(|| recorded.map(|state| state.requested))
-        .unwrap_or(false);
-    Some(EntrySeen {
-        tracked,
-        has_entry: stored.is_some(),
-        state,
-        verdict_on_head: verdict.is_some_and(|verdict| verdict.sha == head),
-        head,
-        requested,
-        own: update.own,
-        archived: archived.then(|| ArchivedSeen {
-            head: previous.mr.as_ref().map(|mr| mr.version.head_sha.clone()),
-            requested: recorded.map(|state| state.requested),
-        }),
-    })
+/// Deletes the entry of `key` in the store at `root`; already gone is not a failure.
+fn remove_entry(root: &Path, key: &MrKey) -> Result<(), String> {
+    let name = entry_name(key);
+    match fs::remove_file(queue_dir(root).join(&name)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot delete the entry {name}: {error}")),
+    }
 }
 
 /// The entry of `key` in the store at `root`; what cannot be read is missing.

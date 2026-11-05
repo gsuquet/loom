@@ -32,6 +32,10 @@ pub fn start_path(key: &str) -> String {
     format!("/v1/reviews/queue/{}/start", encode_segment(key))
 }
 
+/// The text of an empty queue. It does not claim that nothing waits: a poll that fails changes no
+/// entry, and this command calls no forge.
+const EMPTY_QUEUE: &str = "The queue is empty. Run `loom review sync` to poll the forges now.\n";
+
 const fn reason_name(reason: QueueReason) -> &'static str {
     match reason {
         QueueReason::ReviewRequested => "review_requested",
@@ -42,7 +46,7 @@ const fn reason_name(reason: QueueReason) -> &'static str {
 #[must_use]
 pub fn render_queue(queue: &ReviewQueue) -> String {
     if queue.entries.is_empty() {
-        return "No MR waits on you.\n".to_owned();
+        return EMPTY_QUEUE.to_owned();
     }
     let mut text = String::new();
     for entry in &queue.entries {
@@ -61,7 +65,8 @@ pub fn render_queue(queue: &ReviewQueue) -> String {
     text
 }
 
-/// One line: the task, and whether this start created it.
+/// One line: the task, and whether this start created it. A task that exists can be in any
+/// status, such as `inbox` for a task of before the queue.
 #[must_use]
 pub fn render_start(result: &ReviewStartResult) -> String {
     let id = &result.task.summary.id;
@@ -74,7 +79,14 @@ pub fn render_start(result: &ReviewStartResult) -> String {
     if result.created {
         format!("Started {id}: {title}\n")
     } else {
-        format!("Already started {id}: {title}\n")
+        let status = result
+            .task
+            .summary
+            .task
+            .as_ref()
+            .and_then(|task| task.status.name())
+            .map_or_else(|| "unknown".to_owned(), |status| status.to_string());
+        format!("Review task {id} already exists ({status}): {title}\n")
     }
 }
 
@@ -147,7 +159,9 @@ mod tests {
         ReviewSyncOutcome, ReviewSyncResult, Timestamp,
     };
 
-    use super::{failures, queue_path, reason_name, render_queue, render_sync, start_path};
+    use super::{
+        EMPTY_QUEUE, failures, queue_path, reason_name, render_queue, render_sync, start_path,
+    };
 
     #[test]
     fn the_paths_encode_the_key_and_the_context() {
@@ -172,7 +186,7 @@ mod tests {
             render_queue(&ReviewQueue {
                 entries: Vec::new()
             }),
-            "No MR waits on you.\n"
+            EMPTY_QUEUE
         );
         let queue = ReviewQueue {
             entries: vec![ReviewQueueEntry {

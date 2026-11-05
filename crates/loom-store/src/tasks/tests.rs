@@ -123,3 +123,61 @@ fn a_task_of_an_unknown_kind_is_valid_but_read_only() {
     assert!(matches!(indexed.state, IndexedState::Valid { .. }));
     assert!(indexed.read_only());
 }
+
+#[test]
+fn the_head_of_an_approval_is_kept_per_context_host_and_mr() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let index = super::TaskIndex::open(&db).unwrap();
+    let work = context("work");
+    let approval = super::MrApproval {
+        key: "acme/shop!1".to_owned(),
+        head_sha: "aaa".to_owned(),
+        project_id: 77,
+    };
+    assert_eq!(
+        index.mr_approval_head(&work, "h", "acme/shop!1").unwrap(),
+        None
+    );
+    index.set_mr_approval(&work, "h", &approval).unwrap();
+    assert_eq!(
+        index
+            .mr_approval_head(&work, "h", "acme/shop!1")
+            .unwrap()
+            .as_deref(),
+        Some("aaa")
+    );
+    // Another context or host is another row.
+    assert_eq!(
+        index
+            .mr_approval_head(&context("home"), "h", "acme/shop!1")
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        index
+            .mr_approval_head(&work, "other", "acme/shop!1")
+            .unwrap(),
+        None
+    );
+    // The reader lists them for the poller.
+    let reader = crate::Reader::open(&db).unwrap();
+    assert_eq!(
+        reader.mr_approvals(&work, "h").unwrap(),
+        vec![approval.clone()]
+    );
+    assert_eq!(reader.mr_approvals(&work, "other").unwrap(), Vec::new());
+    // A second write replaces the row; a drop removes only it.
+    let newer = super::MrApproval {
+        head_sha: "bbb".to_owned(),
+        ..approval
+    };
+    index.set_mr_approval(&work, "h", &newer).unwrap();
+    assert_eq!(reader.mr_approvals(&work, "h").unwrap(), vec![newer]);
+    index
+        .drop_mr_approval(&work, "other", "acme/shop!1")
+        .unwrap();
+    assert_eq!(reader.mr_approvals(&work, "h").unwrap().len(), 1);
+    index.drop_mr_approval(&work, "h", "acme/shop!1").unwrap();
+    assert_eq!(reader.mr_approvals(&work, "h").unwrap(), Vec::new());
+}

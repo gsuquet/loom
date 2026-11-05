@@ -25,6 +25,7 @@ const TOKEN_ENV: &str = "LOOM_REVIEW_TEST_TOKEN";
 const SEARCH: &str =
     "/search/issues?q=is:pr+is:open+archived:false+review-requested:@me&per_page=100";
 const PULL: &str = "/repos/acme/shop/pulls/412";
+const EMPTY: &str = "The queue is empty. Run `loom review sync` to poll the forges now.\n";
 const CONFIG: &str = r#"
 [repos]
 roots = []
@@ -133,7 +134,7 @@ fn stop_loomd(home: &Path) {
 #[test]
 fn queue_then_start_creates_one_active_task_and_empties_the_queue() {
     let sandbox = Sandbox::new();
-    assert_eq!(sandbox.ok(&["review", "queue"]), "No MR waits on you.\n");
+    assert_eq!(sandbox.ok(&["review", "queue"]), EMPTY);
 
     let synced = sandbox.ok(&["review", "sync"]);
     assert!(synced.contains("1 added to the queue"), "{synced}");
@@ -157,13 +158,13 @@ fn queue_then_start_creates_one_active_task_and_empties_the_queue() {
     assert!(started.created);
     let task = started.task.summary.task.as_ref().unwrap();
     assert_eq!(task.status, Status::Active);
-    assert_eq!(sandbox.ok(&["review", "queue"]), "No MR waits on you.\n");
+    assert_eq!(sandbox.ok(&["review", "queue"]), EMPTY);
 
     // A second start names the same task.
     let id = started.task.summary.id.to_string();
     assert_eq!(
         sandbox.ok(&["review", "start", "acme/shop#412"]),
-        format!("Already started {id}: Review acme/shop#412: Auth refactor\n")
+        format!("Review task {id} already exists (active): Review acme/shop#412: Auth refactor\n")
     );
 
     let missing = sandbox.loom(&["review", "start", "acme/shop#9"]);

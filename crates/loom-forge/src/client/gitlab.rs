@@ -10,10 +10,10 @@ use super::{
 use crate::error::ParseError;
 use crate::gitlab::request::{ApproveBody, BulkPublishBody, DraftNoteBody};
 use crate::gitlab::{
-    Approvals, DraftNote, TokenInfo, parse_approvals, parse_branch_merge_requests, parse_diffs,
-    parse_discussions, parse_draft_note, parse_draft_notes, parse_merge_request,
-    parse_merge_request_summary, parse_merge_requests, parse_project, parse_token, parse_user,
-    parse_versions,
+    Approvals, DraftNote, MrReviewer, TokenInfo, parse_approvals, parse_branch_merge_requests,
+    parse_diffs, parse_discussions, parse_draft_note, parse_draft_notes, parse_merge_request,
+    parse_merge_request_summary, parse_merge_requests, parse_project, parse_reviewers, parse_token,
+    parse_user, parse_versions,
 };
 use crate::model::{FileDiff, Mr, MrSummary, MrVersion, Sha, Thread};
 use crate::open::{NewMr, create_request, find_request};
@@ -343,6 +343,11 @@ impl GitlabForge for GitlabClient {
     fn approvals(&self, mr: GitlabMr) -> Result<Approvals, ForgeError> {
         let answer = self.get(&self.mr_path(mr, "/approvals", false))?;
         self.parse(&answer.body, parse_approvals)
+    }
+
+    fn reviewers(&self, mr: GitlabMr) -> Result<Vec<MrReviewer>, ForgeError> {
+        let answer = self.get(&self.mr_path(mr, "/reviewers", false))?;
+        self.parse(&answer.body, parse_reviewers)
     }
 
     fn resolve_discussion(&self, mr: GitlabMr, discussion_id: &str) -> Result<(), ForgeError> {

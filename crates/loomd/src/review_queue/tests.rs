@@ -36,6 +36,7 @@ fn seen() -> EntrySeen {
         head: sha(V2),
         requested: true,
         verdict_on_head: false,
+        requested_after_verdict: false,
         own: false,
         archived: None,
     }
@@ -73,6 +74,34 @@ fn entry_decision_table() {
                 ..entry()
             },
             Remove,
+        ),
+        (
+            "my verdict on the head, a newer request: an entry",
+            EntrySeen {
+                verdict_on_head: true,
+                requested_after_verdict: true,
+                ..seen()
+            },
+            Add,
+        ),
+        (
+            "my verdict on the head, a newer request: the entry stays",
+            EntrySeen {
+                verdict_on_head: true,
+                requested_after_verdict: true,
+                ..entry()
+            },
+            Keep,
+        ),
+        (
+            "a newer request does not count when the request is gone",
+            EntrySeen {
+                verdict_on_head: true,
+                requested_after_verdict: true,
+                requested: false,
+                ..seen()
+            },
+            Absent,
         ),
         (
             "not requested: no entry",
@@ -250,6 +279,7 @@ fn start_target_table() {
     let github = || Some("github.com".to_owned());
     let other = || Some("github.example.com".to_owned());
     let task = id("k3q7zm2a");
+    let second = id("r1000000");
     let table: Vec<StartRow<'_>> = vec![
         ("nothing", None, vec![], vec![], StartTarget::NotFound),
         (
@@ -281,21 +311,55 @@ fn start_target_table() {
             StartTarget::Entry(a.clone()),
         ),
         (
-            "two contexts",
+            "a task in one context, an entry in another: the task, never a second one",
             None,
             vec![(b.clone(), task.clone(), github())],
             vec![(a.clone(), github())],
+            StartTarget::Task(task.clone()),
+        ),
+        (
+            "the request names the context of the entry: still the task",
+            Some(&a),
+            vec![(b.clone(), task.clone(), github())],
+            vec![(a.clone(), github())],
+            StartTarget::Task(task.clone()),
+        ),
+        (
+            "two entries",
+            None,
+            vec![],
+            vec![(a.clone(), github()), (b.clone(), github())],
             StartTarget::Ambiguous(vec![a.clone(), b.clone()]),
         ),
         (
-            "two contexts, the request names one",
-            Some(&a),
-            vec![(b.clone(), task, github())],
-            vec![(a.clone(), github())],
-            StartTarget::Entry(a.clone()),
+            "two entries, the request names one",
+            Some(&b),
+            vec![],
+            vec![(a.clone(), github()), (b.clone(), github())],
+            StartTarget::Entry(b.clone()),
         ),
         (
-            "another context than the one named",
+            "two tasks",
+            None,
+            vec![
+                (a.clone(), task.clone(), github()),
+                (b.clone(), second.clone(), github()),
+            ],
+            vec![],
+            StartTarget::Ambiguous(vec![a.clone(), b.clone()]),
+        ),
+        (
+            "two tasks, the request names one",
+            Some(&b),
+            vec![
+                (a.clone(), task, github()),
+                (b.clone(), second.clone(), github()),
+            ],
+            vec![],
+            StartTarget::Task(second),
+        ),
+        (
+            "another context than the one named, and no task",
             Some(&b),
             vec![],
             vec![(context("a"), github())],
@@ -364,6 +428,218 @@ fn a_gitlab_entry_keeps_the_project_id_and_the_file_name_is_the_mirror_name() {
         queue_dir(std::path::Path::new("/s")),
         PathBuf::from("/s/queue/mrs")
     );
+}
+
+/// (name, row, tracked, left, shown, step, head)
+type ApprovalRow<'a> = (
+    &'a str,
+    Option<&'a Sha>,
+    bool,
+    bool,
+    Option<Option<&'a SeenVerdict>>,
+    ApprovalStep,
+    Option<Sha>,
+);
+
+#[test]
+fn approval_step_table() {
+    use ApprovalStep::{Drop, Keep, Record};
+    let (v1, v2) = (sha(V1), sha(V2));
+    let approved = SeenVerdict {
+        sha: sha(V2),
+        id: "approved".to_owned(),
+    };
+    let shown = Some(Some(&approved));
+    let old = Some(&v1);
+    let table: Vec<ApprovalRow<'_>> = vec![
+        (
+            "first shown: recorded",
+            None,
+            false,
+            false,
+            shown,
+            Record(v2.clone()),
+            Some(v2),
+        ),
+        (
+            "shown after a push: first head",
+            old,
+            false,
+            false,
+            shown,
+            Keep,
+            Some(sha(V1)),
+        ),
+        (
+            "not read (a 304): no change",
+            old,
+            false,
+            false,
+            None,
+            Keep,
+            Some(sha(V1)),
+        ),
+        ("not read, no row", None, false, false, None, Keep, None),
+        (
+            "reset: forgotten",
+            old,
+            false,
+            false,
+            Some(None),
+            Drop,
+            None,
+        ),
+        (
+            "no approval, no row",
+            None,
+            false,
+            false,
+            Some(None),
+            Keep,
+            None,
+        ),
+        (
+            "the MR left: forgotten",
+            old,
+            false,
+            true,
+            shown,
+            Drop,
+            None,
+        ),
+        (
+            "the MR left, no row: not recorded",
+            None,
+            false,
+            true,
+            shown,
+            Keep,
+            None,
+        ),
+        (
+            "a Review task takes over",
+            old,
+            true,
+            false,
+            shown,
+            Drop,
+            None,
+        ),
+        (
+            "a Review task, no row: not recorded",
+            None,
+            true,
+            false,
+            shown,
+            Keep,
+            None,
+        ),
+    ];
+    for (name, row, tracked, left, shown, step, head) in table {
+        assert_eq!(
+            approval_step(row, tracked, left, shown),
+            (step, head),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn entry_seen_takes_each_fact_from_the_best_source() {
+    let mr = parse_pull(&fixture("github/pull-412.v2.json")).unwrap();
+    let v1_mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
+    let entry = entry_of(&v1_mr, None);
+    let base = EntryInput {
+        read: None,
+        stored: None,
+        archived_mr: None,
+        archived_state: None,
+        archived: false,
+        verdict: None,
+        requested: None,
+        tracked: false,
+        own: false,
+        requested_after_verdict: false,
+    };
+    // Nothing to compare with: a 304 with neither an entry nor a mirror.
+    assert_eq!(entry_seen(&base), None);
+
+    // The read wins over the entry, and the entry over the archive.
+    let seen = entry_seen(&EntryInput {
+        read: Some(&mr),
+        stored: Some(&entry),
+        requested: Some(true),
+        ..base
+    })
+    .unwrap();
+    assert_eq!(seen.head, sha(V2));
+    assert!(seen.has_entry);
+    let seen = entry_seen(&EntryInput {
+        stored: Some(&entry),
+        archived_mr: Some(&mr),
+        ..base
+    })
+    .unwrap();
+    assert_eq!((seen.head.clone(), seen.state), (sha(V1), MrState::Open));
+    // Unknown request: an entry stays requested.
+    assert!(seen.requested);
+
+    // Unknown request, no entry: as in the mirror of the archived task.
+    let state = SyncState {
+        v: SyncState::VERSION,
+        requested: true,
+        verdict: Some(SeenVerdict {
+            sha: sha(V2),
+            id: "PRR_1".to_owned(),
+        }),
+        shown: true,
+    };
+    let seen = entry_seen(&EntryInput {
+        archived_mr: Some(&mr),
+        archived_state: Some(&state),
+        archived: true,
+        ..base
+    })
+    .unwrap();
+    assert!(seen.requested);
+    // A verdict not read: the one that the mirror remembers.
+    assert!(seen.verdict_on_head);
+    assert_eq!(
+        seen.archived,
+        Some(ArchivedSeen {
+            head: Some(sha(V2)),
+            requested: Some(true)
+        })
+    );
+
+    // A verdict read on another head is not on the head; none read at all, neither.
+    let on_v1 = Some(SeenVerdict {
+        sha: sha(V1),
+        id: "PRR_2".to_owned(),
+    });
+    let seen = entry_seen(&EntryInput {
+        read: Some(&mr),
+        verdict: Some(&on_v1),
+        requested: Some(false),
+        requested_after_verdict: true,
+        own: true,
+        tracked: true,
+        ..base
+    })
+    .unwrap();
+    assert!(!seen.verdict_on_head);
+    assert!(!seen.requested);
+    assert!(seen.requested_after_verdict && seen.own && seen.tracked);
+}
+
+#[test]
+fn an_entry_of_another_format_version_is_not_read() {
+    let mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
+    let entry = QueueEntry {
+        v: QueueEntry::VERSION + 1,
+        ..entry_of(&mr, None)
+    };
+    assert_eq!(read_entry_bytes(&entry_bytes(&entry).unwrap()), None);
 }
 
 #[test]

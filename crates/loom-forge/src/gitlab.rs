@@ -587,6 +587,42 @@ pub fn parse_approvals(body: &[u8]) -> Result<Approvals, ParseError> {
     })
 }
 
+/// A reviewer of a merge request, as `GET .../reviewers` gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MrReviewer {
+    /// The username.
+    pub username: String,
+    /// The state, such as `unreviewed`, `reviewed`, `requested_changes` or `approved`.
+    pub state: String,
+}
+
+impl MrReviewer {
+    /// The state of a reviewer that did not review since the request.
+    pub const UNREVIEWED: &'static str = "unreviewed";
+}
+
+#[derive(Deserialize)]
+struct RawReviewer {
+    user: User,
+    state: String,
+}
+
+/// Parses the reviewers of a merge request.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not the expected JSON.
+pub fn parse_reviewers(body: &[u8]) -> Result<Vec<MrReviewer>, ParseError> {
+    let reviewers: Vec<RawReviewer> = json("GitLab reviewers", body)?;
+    Ok(reviewers
+        .into_iter()
+        .map(|reviewer| MrReviewer {
+            username: reviewer.user.username,
+            state: reviewer.state,
+        })
+        .collect())
+}
+
 #[derive(Deserialize)]
 struct RestError {
     message: Option<serde_json::Value>,

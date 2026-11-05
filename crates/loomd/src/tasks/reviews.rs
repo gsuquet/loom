@@ -158,20 +158,13 @@ impl Worker {
             };
         };
         let (observation, state) = observe(&mr, &previous, update);
-        // Without a task, only a start comes here: see above.
-        let decision = found.as_ref().map_or(Decision::Create, |(_, status)| {
-            decide(*status, &observation)
-        });
         let daemon = Origin {
             actor: Actor::Daemon,
             machine_id: self.user.machine_id.clone(),
         };
-        let (id, created, before, decision) = match (decision, found) {
-            // `decide` answers only for a task.
-            (Decision::Keep | Decision::SetStatus { .. }, None) => {
-                return Ok(None);
-            }
-            (Decision::Create, _) => {
+        let (id, created, before, decision) = match found {
+            // Without a task, only a start comes here: see above.
+            None => {
                 can_create(&root, rows, batch, &mr)?;
                 // A start is my act, not the daemon's.
                 let task = self
@@ -186,9 +179,9 @@ impl Worker {
                 info!(%context, key = %mr.key, id = %task.id, "Review task created");
                 (task.id, true, 0, Decision::Keep)
             }
-            (decision @ (Decision::Keep | Decision::SetStatus { .. }), Some((id, _))) => {
+            Some((id, status)) => {
                 let before = self.event_count(&id);
-                (id, false, before, decision)
+                (id, false, before, decide(status, &observation))
             }
         };
         let dir = mirror_dir(&task_dir(&root, &id), &update.key);

@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0006_task_archive.sql"),
     include_str!("migrations/0007_focus.sql"),
     include_str!("migrations/0008_repo_forge.sql"),
+    include_str!("migrations/0009_mr_approvals.sql"),
 ];
 
 /// Schema version this code reads and writes: the number of migrations.
