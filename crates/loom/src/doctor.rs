@@ -13,7 +13,9 @@ use loom_api::{
     SshAgentSocket, TaskStoreHealth, TokenProblem, TokenSourceKind, UpdateOutcome, UpdateStep,
 };
 use loom_config::config::Config;
+use loom_config::forges::TokenSource;
 use loom_repo::{ContextRules, classify_remote_failure, remote_endpoint};
+use loom_update::github::TOKEN_ENVS;
 use loom_update::versions::{KEEP, to_prune};
 use semver::Version;
 
@@ -532,7 +534,7 @@ fn last_line(text: &str) -> Option<&str> {
 /// One check per remote endpoint loomd checked: `ok` when it answered, `fail` with the last
 /// line of git's error and the fix of its kind of failure otherwise.
 #[must_use]
-pub fn remote_checks(result: &RemoteCheckResult, token_env: &BTreeSet<&str>) -> Vec<DoctorCheck> {
+pub fn remote_checks(result: &RemoteCheckResult, config: &Config) -> Vec<DoctorCheck> {
     if result.remotes.is_empty() {
         return vec![check(
             "remote",
@@ -543,11 +545,11 @@ pub fn remote_checks(result: &RemoteCheckResult, token_env: &BTreeSet<&str>) -> 
     result
         .remotes
         .iter()
-        .map(|remote| remote_check(remote, token_env))
+        .map(|remote| remote_check(remote, config))
         .collect()
 }
 
-fn remote_check(remote: &RemoteCheck, token_env: &BTreeSet<&str>) -> DoctorCheck {
+fn remote_check(remote: &RemoteCheck, config: &Config) -> DoctorCheck {
     let name = format!(
         "remote {} ({}, via {})",
         remote.endpoint, remote.scheme, remote.via
@@ -567,30 +569,60 @@ fn remote_check(remote: &RemoteCheck, token_env: &BTreeSet<&str>) -> DoctorCheck
             };
             with_fix(
                 check(name, CheckStatus::Fail, detail),
-                remote_fix(*problem, remote, token_env),
+                remote_fix(*problem, remote, config),
             )
         }
     }
 }
 
-/// What an HTTPS failure adds for the variables that loomd reads as a token: its git does not
-/// get them, so a helper that reads one of them has no credential.
-fn token_env_note(token_env: &BTreeSet<&str>) -> String {
-    if token_env.is_empty() {
+/// What an HTTPS failure at `endpoint` adds for the variables of its host that loomd reads as a
+/// token: its git does not get them, so a helper that reads one of them has no credential.
+fn token_variables_note(config: &Config, endpoint: &str) -> String {
+    let authority = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, rest)| rest);
+    let host = authority.split(':').next().unwrap_or(authority);
+    let own: BTreeSet<&str> = config
+        .forges
+        .iter()
+        .filter(|(name, _)| name.as_str() == host)
+        .filter_map(|(_, forge)| forge.token.as_ref())
+        .chain(config.contexts.values().flat_map(|context| {
+            context
+                .forges
+                .iter()
+                .filter(|(name, _)| name.as_str() == host)
+                .map(|(_, forge)| &forge.get_ref().token)
+        }))
+        .filter_map(|token| match token {
+            TokenSource::Env(name) => Some(name.as_str()),
+            TokenSource::Command(_) => None,
+        })
+        .collect();
+    let mut names = own.clone();
+    if host == "github.com" {
+        names.extend(TOKEN_ENVS);
+    }
+    if names.is_empty() {
         return String::new();
     }
-    let names = token_env
+    let names = names
         .iter()
         .map(|name| format!("`{name}`"))
         .collect::<Vec<_>>()
         .join(", ");
+    let way_out = if own.is_empty() {
+        "store a login for the helper"
+    } else {
+        "for a token_env name, give the token another name or use token_cmd; otherwise, store a login for the helper"
+    };
     format!(
-        ". loomd's git does not get the token variables ({names}): a credential helper that reads one of them finds nothing. Give the token another variable name, or use token_cmd, or store a login for the helper"
+        ". loomd's git does not get the token variables ({names}): a credential helper that reads one of them finds nothing. To fix this, {way_out}"
     )
 }
 
 /// How to fix a remote loomd's git cannot reach.
-fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck, token_env: &BTreeSet<&str>) -> String {
+fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck, config: &Config) -> String {
     let RemoteCheck {
         endpoint,
         via,
@@ -606,7 +638,7 @@ fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck, token_env: &BTreeSet
         ),
         RemoteProblem::HttpsAuth => format!(
             "git has no credential for {endpoint} and cannot prompt: store one with a credential helper (run `{try_it}` once in a terminal with a helper configured), or switch the remote to SSH (`git -C {path} remote set-url {remote} <ssh url>`){}",
-            token_env_note(token_env)
+            token_variables_note(config, endpoint)
         ),
         RemoteProblem::NotFound => format!(
             "the project was moved or deleted upstream, or access to it was lost: update the remote (`git -C {path} remote set-url {remote} <new url>`), or forget the clone (`loom repo forget {via}`)"
@@ -1318,7 +1350,6 @@ mod backup_tests {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
     use loom_api::{
@@ -1725,59 +1756,75 @@ mod tests {
     }
 
     fn without_token_env(result: &RemoteCheckResult) -> Vec<DoctorCheck> {
-        remote_checks(result, &BTreeSet::new())
+        remote_checks(result, &loom_config::config::Config::default())
     }
 
-    #[test]
-    fn an_https_failure_names_the_token_env_variables() {
+    /// The fix of a failure at `endpoint`, with these `[forges]` tables.
+    fn fix_at(problem: RemoteProblem, endpoint: &str, forges: &str) -> String {
         let result = RemoteCheckResult {
             remotes: vec![RemoteCheck {
-                endpoint: "https://gitlab.example.com".to_owned(),
+                endpoint: endpoint.to_owned(),
                 scheme: RemoteScheme::Https,
                 via: "work/api".to_owned(),
                 path: "/home/me/work/api".into(),
                 remote: "origin".to_owned(),
                 result: RemoteCheckOutcome::Failed {
-                    problem: RemoteProblem::HttpsAuth,
+                    problem,
                     error: "exit status: 128".to_owned(),
-                    stderr_tail: "fatal: Authentication failed for 'https://gitlab.example.com/'\n"
-                        .to_owned(),
+                    stderr_tail: "fatal: Authentication failed\n".to_owned(),
                 },
             }],
         };
-        let fix = |names: &[&'static str]| {
-            let names = names.iter().copied().collect();
-            remote_checks(&result, &names)[0].fix.clone().unwrap()
-        };
+        remote_checks(&result, &config(forges))[0]
+            .fix
+            .clone()
+            .unwrap()
+    }
 
-        assert!(!fix(&[]).contains("token variables"));
-        let with_names = fix(&["GITLAB_TOKEN", "GH_TOKEN"]);
-        assert!(
-            with_names.contains("(`GH_TOKEN`, `GITLAB_TOKEN`)"),
-            "{with_names}"
+    const FORGES: &str = "[contexts.work]\n\n[contexts.work.forges.\"gitlab.example\"]\ntoken_env = \"WORK_TOKEN\"\n\n[forges.\"gitlab.example\"]\nkind = \"gitlab\"\ntoken_env = \"GITLAB_HOST_TOKEN\"\n\n[forges.\"github.com\"]\nkind = \"github\"\ntoken_env = \"GITHUB_HOST_TOKEN\"\n";
+
+    #[test]
+    fn an_https_failure_names_the_variables_of_its_host_only() {
+        let gitlab = fix_at(
+            RemoteProblem::HttpsAuth,
+            "https://gitlab.example:8443",
+            FORGES,
         );
-        assert!(with_names.contains("use token_cmd"), "{with_names}");
+        assert!(
+            gitlab.contains("(`GITLAB_HOST_TOKEN`, `WORK_TOKEN`)"),
+            "{gitlab}"
+        );
+        assert!(gitlab.contains("use token_cmd"), "{gitlab}");
+        assert!(!gitlab.contains("GITHUB"), "{gitlab}");
+
+        let github = fix_at(RemoteProblem::HttpsAuth, "https://github.com", FORGES);
+        assert!(
+            github.contains("(`GITHUB_HOST_TOKEN`, `GITHUB_TOKEN`, `LOOM_GITHUB_TOKEN`)"),
+            "{github}"
+        );
+        assert!(!github.contains("GITLAB"), "{github}");
     }
 
     #[test]
-    fn a_failure_other_than_https_does_not_name_the_token_env_variables() {
-        let result = RemoteCheckResult {
-            remotes: vec![RemoteCheck {
-                endpoint: "git@gitlab.example.com".to_owned(),
-                scheme: RemoteScheme::Ssh,
-                via: "work/api".to_owned(),
-                path: "/home/me/work/api".into(),
-                remote: "origin".to_owned(),
-                result: RemoteCheckOutcome::Failed {
-                    problem: RemoteProblem::SshAuth,
-                    error: "exit status: 128".to_owned(),
-                    stderr_tail: "git@gitlab.example.com: Permission denied (publickey).\n"
-                        .to_owned(),
-                },
-            }],
-        };
-        let names = BTreeSet::from(["GITLAB_TOKEN"]);
-        let fix = remote_checks(&result, &names)[0].fix.clone().unwrap();
+    fn token_cmd_is_not_advised_for_the_release_check_variables_alone() {
+        let github = fix_at(RemoteProblem::HttpsAuth, "https://github.com", "");
+        assert!(
+            github.contains("(`GITHUB_TOKEN`, `LOOM_GITHUB_TOKEN`)"),
+            "{github}"
+        );
+        assert!(!github.contains("token_cmd"), "{github}");
+        assert!(github.contains("store a login"), "{github}");
+    }
+
+    #[test]
+    fn no_note_without_a_variable_of_the_host() {
+        let other = fix_at(RemoteProblem::HttpsAuth, "https://other.example", FORGES);
+        assert!(!other.contains("token variables"), "{other}");
+    }
+
+    #[test]
+    fn a_failure_other_than_https_does_not_name_the_variables() {
+        let fix = fix_at(RemoteProblem::SshAuth, "https://github.com", FORGES);
         assert!(!fix.contains("token variables"), "{fix}");
     }
 

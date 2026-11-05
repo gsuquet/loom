@@ -426,6 +426,12 @@ fn open_repository(path: &Path, config: GitConfig) -> Result<gix::Repository, St
     let permissions = open_permissions(config);
     let options = gix::open::Options::default().permissions(permissions);
     let mut repo = gix::open_opts(path, options).map_err(|error| error.to_string())?;
+    if worktree_is_included(&repo) {
+        return Err(
+            "core.worktree comes from an included file: git does not follow it, and gix does"
+                .to_owned(),
+        );
+    }
     if std::env::var_os("GIT_WORK_TREE").is_some() {
         // A second open without that variable: as without it, `core.bare` gives no working tree
         // and `core.worktree` gives its path. git merges there, so a read must look there.
@@ -438,6 +444,22 @@ fn open_repository(path: &Path, config: GitConfig) -> Result<gix::Repository, St
     }
     repo.clear_namespace();
     Ok(repo)
+}
+
+/// Whether the repository configuration has `core.worktree` in an included file. git merges in
+/// another directory than the one that `gix` would read: the read cannot speak for that merge.
+fn worktree_is_included(repo: &gix::Repository) -> bool {
+    let config = repo.config_snapshot();
+    let sections = config.plumbing().sections_by_name("core");
+    sections.into_iter().flatten().any(|section| {
+        let meta = section.meta();
+        meta.level > 0
+            && matches!(
+                meta.source,
+                gix::config::Source::Local | gix::config::Source::Worktree
+            )
+            && section.value("worktree").is_some()
+    })
 }
 
 /// The index of `repo` in its git directory, or an empty one when it has none. `gix` follows
@@ -918,6 +940,12 @@ fn configured_ignores(
     repo: &gix::Repository,
     gitlinks: &BTreeMap<BString, gix::ObjectId>,
 ) -> Result<BTreeMap<BString, Ignore>, String> {
+    // Without the file, gix reads it from the index, and follows `GIT_INDEX_FILE` to do so.
+    if repo.index_path() != repo.git_dir().join("index")
+        && !repo.modules_path().is_some_and(|path| path.exists())
+    {
+        return Err("GIT_INDEX_FILE is set and the working tree has no .gitmodules".to_owned());
+    }
     let mut ignores = BTreeMap::new();
     let submodules = repo.submodules().map_err(|error| error.to_string())?;
     for submodule in submodules.into_iter().flatten() {

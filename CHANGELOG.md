@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A state read no longer runs the filter drivers of a submodule.
-- A state read no longer follows `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_NAMESPACE` of the environment of `loomd`.
+- A state read no longer follows `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_NAMESPACE` of the environment of `loomd`. With `GIT_INDEX_FILE` set, `dirty` of a repository with a gitlink and no `.gitmodules` file in its working tree is unknown.
+- git no longer inherits `GIT_CONFIG_PARAMETERS` from the environment of `loomd`.
 
 ### Removed
 

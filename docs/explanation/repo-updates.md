@@ -87,6 +87,8 @@ The commands run through the `git` CLI, in the working tree of the repository. T
 
 git never asks anything. `GIT_TERMINAL_PROMPT=0` disables password prompts. SSH runs with `BatchMode=yes` (no passphrase or host key question), unless the user configured an SSH command (`core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`). git is pinned to the repository: `loomd` removes the variables that it inherits, such as `GIT_DIR`. git never looks above the working tree for another repository.
 
+git does not inherit `GIT_CONFIG_PARAMETERS`, which a `git -c` that started `loomd` can leave in its environment. `gix` does not read this variable, so a read and git use one configuration.
+
 git gets no forge token. git uses the credentials of the user, and hooks and credential helpers run with the environment of git. Thus, `loomd` removes from the environment of git each variable that it reads as a token: each `token_env` of its configuration, `LOOM_GITHUB_TOKEN` and `GITHUB_TOKEN`. A token in another variable stays visible to git, because `loomd` cannot know it.
 
 Each command has a timeout: 120 s for a fetch, 10 min for a fast-forward. On timeout, the whole process group of the command (git, ssh, hooks, credential helpers) receives `SIGTERM`, so that git can remove its lock files. 5 s later, the process group receives `SIGKILL`.
@@ -106,6 +108,11 @@ When `loomd` stops, it does not interrupt an update that runs. The git command o
 - A submodule that cannot be read leaves `dirty` unknown. git can read it as clean.
 - A `.gitmodules` entry of a gitlink with an invalid `ignore` value, or a `.gitmodules` file that cannot be parsed, leaves `dirty` unknown.
 - A changed file that needs a filter driver leaves `dirty` unknown, because `loomd` never runs the driver.
+- `status.showUntrackedFiles = false` (the boolean form) in the repository does not hide the untracked files of its submodules. `no` hides them.
+- `core.worktree` from an included file leaves every field unknown. git does not follow includes for this key, and `gix` does.
+- With `GIT_INDEX_FILE` set in the environment of `loomd`, a repository or submodule with a gitlink and no `.gitmodules` file in its working tree leaves `dirty` unknown. `loomd` cannot find an `ignore` value there without that index.
+- An empty `GIT_WORK_TREE` or `GIT_INDEX_FILE` in the environment of `loomd` leaves every field unknown.
+- A sparse index leaves `dirty` unknown. A SHA-256 repository leaves every field unknown.
 
 ## SSH from a service
 

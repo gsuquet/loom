@@ -581,3 +581,176 @@ fn a_bare_repository_reads_unknown_with_a_reason() {
         }
     });
 }
+
+/// A commit that removes `.gitmodules` of `dir`, and an index saved before it, whose `.gitmodules`
+/// says `ignore = all` for `name` with its blob in the object store of `dir`.
+fn saved_index_that_ignores(sandbox: &Sandbox, dir: &Path, name: &str, saved: &Path) {
+    let key = format!("submodule.{name}.ignore");
+    sandbox.git(dir, &["config", "-f", ".gitmodules", &key, "all"]);
+    sandbox.git(dir, &["add", ".gitmodules"]);
+    sandbox.git(dir, &["commit", "-q", "-m", "ignore"]);
+    let git_dir = common::git(&sandbox.user_home(), dir, &["rev-parse", "--git-dir"]);
+    fs::copy(dir.join(git_dir.trim()).join("index"), saved).unwrap();
+    sandbox.git(dir, &["rm", "-q", ".gitmodules"]);
+    sandbox.git(dir, &["commit", "-q", "-m", "no gitmodules"]);
+}
+
+/// A new repository `name` beside the others, with one commit.
+fn new_origin(sandbox: &Sandbox, name: &str) -> PathBuf {
+    let top = sandbox.dir.path();
+    let path = top.join(name);
+    sandbox.git(top, &["init", "-q", path.to_str().unwrap()]);
+    fs::write(path.join("s.txt"), "one\n").unwrap();
+    sandbox.git(&path, &["add", "-A"]);
+    sandbox.git(&path, &["commit", "-q", "-m", "first"]);
+    path
+}
+
+/// Without `.gitmodules` in the working tree, gix reads it from the index of `GIT_INDEX_FILE`: an
+/// `ignore = all` there must not hide a change that git sees, so the update must not run.
+#[test]
+fn gitmodules_of_another_index_do_not_hide_a_change() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let sub = new_origin(&sandbox, "sub-origin");
+    let saved = sandbox.dir.path().join("saved-index");
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    saved_index_that_ignores(&sandbox, &repo, "sub", &saved);
+    sandbox.git(&repo, &["push", "-q", "origin", "HEAD:main"]);
+    sandbox.git(&seed, &["pull", "-q", "origin", "main"]);
+    sandbox.push(&seed, "two\n");
+    fs::write(repo.join("sub/s.txt"), "my edit\n").unwrap();
+    let head = sandbox.head(&repo);
+
+    let daemon = sandbox.start_with(&[("GIT_INDEX_FILE", saved.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+    daemon.stop();
+
+    // Without the variable, the change counts.
+    let daemon = sandbox.start();
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+    daemon.stop();
+}
+
+/// The same, one level down: the parent has its `.gitmodules`, the submodule has none.
+#[test]
+fn gitmodules_of_another_index_do_not_hide_a_nested_change() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    let sub = new_origin(&sandbox, "sub-origin");
+    let inner = new_origin(&sandbox, "inner-origin");
+    let saved = sandbox.dir.path().join("saved-index");
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    let inside = repo.join("sub");
+    sandbox.git(
+        &inside,
+        &["submodule", "add", "-q", inner.to_str().unwrap(), "inner"],
+    );
+    sandbox.git(&inside, &["commit", "-q", "-m", "nested"]);
+    saved_index_that_ignores(&sandbox, &inside, "inner", &saved);
+    sandbox.git(&repo, &["add", "sub"]);
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    fs::write(inside.join("inner/s.txt"), "my edit\n").unwrap();
+
+    let daemon = sandbox.start_with(&[("GIT_INDEX_FILE", saved.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    daemon.stop();
+
+    let daemon = sandbox.start();
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+    daemon.stop();
+}
+
+/// git does not follow includes for `core.worktree`, and gix does: this repository must not read
+/// as clean through the clean copy, and its update must not run.
+#[test]
+fn core_worktree_from_an_include_stops_the_update() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let clean = sandbox.dir.path().join("clean-copy");
+    fs::create_dir_all(&clean).unwrap();
+    fs::copy(repo.join("f.txt"), clean.join("f.txt")).unwrap();
+    fs::write(
+        repo.join(".git/included"),
+        format!("[core]\n\tworktree = {}\n", clean.display()),
+    )
+    .unwrap();
+    sandbox.git(&repo, &["config", "include.path", "included"]);
+    fs::write(repo.join("f.txt"), "my edit\n").unwrap();
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start();
+    let outcomes = wait_for_outcomes(&sandbox, "app");
+    assert!(
+        !outcomes.to_string().contains("fast_forwarded"),
+        "{outcomes}"
+    );
+    assert_eq!(sandbox.head(&repo), head);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    assert!(
+        body["state"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("core.worktree")),
+        "{body}"
+    );
+}
+
+/// A `git -c` that started loomd must not reach git, which gix would not follow.
+#[test]
+fn git_does_not_inherit_config_parameters() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    sandbox.dump_script(
+        &repo.join(".git/hooks/reference-transaction"),
+        "reference-transaction",
+        "exit 0",
+    );
+    sandbox.push(&seed, "two\n");
+    let _daemon =
+        sandbox.start_with(&[("GIT_CONFIG_PARAMETERS", Path::new("'core.filemode=true'"))]);
+
+    sandbox.assert_no_token("reference-transaction");
+    let dump = fs::read_to_string(sandbox.dumps().join("reference-transaction")).unwrap();
+    assert!(!dump.contains("core.filemode=true"), "{dump}");
+}
+
+/// An index with a null checksum (`index.skipHash`), read past `GIT_INDEX_FILE`.
+#[test]
+fn a_skip_hash_index_is_read_past_git_index_file() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    sandbox.git(&repo, &["config", "index.skipHash", "true"]);
+    fs::write(repo.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&repo, &["add", "g.txt"]);
+    sandbox.git(&repo, &["commit", "-q", "-m", "written with skipHash"]);
+    fs::write(repo.join("f.txt"), "my edit\n").unwrap();
+    let elsewhere = sandbox.dir.path().join("no-index");
+
+    let _daemon = sandbox.start_with(&[("GIT_INDEX_FILE", elsewhere.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+}

@@ -47,8 +47,9 @@ pub const STDERR_TAIL_BYTES: usize = 2_000;
 /// SSH command set when the user configured none: never ask for a password or a host key.
 pub const BATCH_SSH_COMMAND: &str = "ssh -o BatchMode=yes";
 
-/// Variables that would point git at another repository than the one updated.
-const REPOSITORY_VARIABLES: [&str; 8] = [
+/// Variables that would point git at another repository than the one updated, and
+/// `GIT_CONFIG_PARAMETERS`: a `git -c` that started loomd, which the state reads do not follow.
+const REPOSITORY_VARIABLES: [&str; 9] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -57,6 +58,7 @@ const REPOSITORY_VARIABLES: [&str; 8] = [
     "GIT_COMMON_DIR",
     "GIT_NAMESPACE",
     "GIT_PREFIX",
+    "GIT_CONFIG_PARAMETERS",
 ];
 
 /// How git commands are run.
