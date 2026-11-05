@@ -1129,6 +1129,31 @@ fn clone_of_the_scenario(sandbox: &Sandbox) -> (PathBuf, PathBuf, PathBuf) {
     (home, forge, clone)
 }
 
+/// Each git command of loomd that writes refs writes under `refs/loom/`: no merge, no fetch into
+/// another namespace.
+fn assert_only_loom_refs_written(sandbox: &Sandbox) {
+    let log = fs::read_to_string(sandbox.git_log()).unwrap();
+    for line in log.lines() {
+        // `<dir>|<arguments>`: the commit of a store is not of a clone.
+        let (_, command) = line.split_once('|').unwrap();
+        assert!(
+            !command.starts_with("merge ") && !command.starts_with("pull"),
+            "{line}"
+        );
+        if command.starts_with("update-ref ") {
+            assert!(command.contains(" refs/loom/"), "{line}");
+        }
+        if command.starts_with("fetch ") {
+            assert!(command.contains("--refmap="), "{line}");
+            let refspecs = command.rsplit("-- ").next().unwrap().split(' ').skip(1);
+            for refspec in refspecs {
+                let target = refspec.split(':').nth(1).unwrap_or("");
+                assert!(target.starts_with("refs/loom/"), "{line}");
+            }
+        }
+    }
+}
+
 /// The configuration of [`CONFIG`], with `work/` as a root of repositories.
 fn index_the_clones(sandbox: &Sandbox) {
     let roots = format!(
@@ -1217,6 +1242,15 @@ fn approve_v1(sandbox: &Sandbox) {
 fn a_review_task_gets_the_refs_and_a_diff_per_version_of_its_mr() {
     let sandbox = Sandbox::new();
     index_the_clones(&sandbox);
+    // No automatic update: with `ff`, its first update is due at once, and it fast-forwards `main`
+    // if it runs after the forge moved below. That is correct, and this test is of the MR refs.
+    let config = fs::read_to_string(sandbox.loom_home().join("config.toml"))
+        .unwrap()
+        .replace(
+            "[contexts.personal]\n",
+            "[contexts.personal]\nupdate = \"off\"\n",
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
     let (home, forge, clone) = clone_of_the_scenario(&sandbox);
     let daemon = sandbox.start();
     scan(&sandbox);
@@ -1326,6 +1360,8 @@ fn a_review_task_gets_the_refs_and_a_diff_per_version_of_its_mr() {
     // Nothing but `refs/loom/` moved in the clone.
     assert_eq!(git(&["rev-parse", "refs/heads/main"]), M1);
     assert_eq!(git(&["rev-parse", "refs/remotes/upstream/main"]), M1);
+    // And no command could have moved anything else.
+    assert_only_loom_refs_written(&sandbox);
     assert_eq!(
         git(&["rev-parse", "refs/loom/mr/upstream/412/reviewed"]),
         V1
