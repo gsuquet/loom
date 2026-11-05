@@ -72,7 +72,9 @@ jobs:
           npx vitest run --config vitest.contract.config.ts
       - name: Clean release build, timed
         run: |
-          /usr/bin/time -p npx tauri build --ci $([ "$RUNNER_OS" = macOS ] && echo "--bundles app" || echo "--no-bundle")
+          if [ "$RUNNER_OS" = macOS ]; then bundle="--bundles app"; else bundle="--no-bundle"; fi
+          # shellcheck disable=SC2086
+          /usr/bin/time -p npx tauri build --ci $bundle
           ls -la src-tauri/target/release/loom-desktop
           du -sh src-tauri/target/release/bundle/macos/*.app || true
       - name: Build the real-app binary and the unprotected control
