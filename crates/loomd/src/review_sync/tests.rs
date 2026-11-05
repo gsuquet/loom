@@ -5,9 +5,10 @@ use loom_api::{ContextAssignment, ForgeKind, Remote, RemoteUrl, RepoIdentity, Re
 use loom_core::{Kind, Link, StatusName};
 use loom_forge::github::{Review, ReviewState, parse_pull, parse_reviews};
 use loom_forge::gitlab::parse_versions;
-use loom_forge::model::{MrKey, MrState, Sha};
+use loom_forge::model::{MrKey, MrState, MrVersion, Sha};
 
 use super::*;
+use crate::mr_refs::DiffKind;
 
 const V1: &str = "7ebf283bfee25ab48f95c0c55181a4ca66b4c990";
 const V2: &str = "84280c47b6aa128c645b1fbea54aded8b32e8463";
@@ -406,7 +407,7 @@ fn a_new_github_review_is_new_even_while_the_last_one_is_shown() {
 fn versions_are_kept_oldest_first_and_completed() {
     let gitlab = parse_versions(&fixture("gitlab/merge-request-88-versions.json")).unwrap();
     assert_eq!(gitlab.len(), 2);
-    let versions = merge_versions(&[], &gitlab, at(100));
+    let versions = merge_versions(&[], &gitlab, MrState::Open, at(100));
     let heads: Vec<&str> = versions
         .iter()
         .map(|record| record.version.head_sha.as_str())
@@ -414,7 +415,10 @@ fn versions_are_kept_oldest_first_and_completed() {
     assert_eq!(heads, [V1, V2]);
     assert!(versions.iter().all(|record| record.first_seen == at(100)));
     // Seen again later: unchanged.
-    assert_eq!(merge_versions(&versions, &gitlab, at(200)), versions);
+    assert_eq!(
+        merge_versions(&versions, &gitlab, MrState::Open, at(200)),
+        versions
+    );
 
     // GitHub: one version per poll, without a merge base.
     let v1 = parse_pull(&fixture("github/pull-412.v1.json"))
@@ -423,8 +427,8 @@ fn versions_are_kept_oldest_first_and_completed() {
     let v2 = parse_pull(&fixture("github/pull-412.v2.json"))
         .unwrap()
         .version;
-    let first = merge_versions(&[], std::slice::from_ref(&v1), at(100));
-    let both = merge_versions(&first, std::slice::from_ref(&v2), at(200));
+    let first = merge_versions(&[], std::slice::from_ref(&v1), MrState::Open, at(100));
+    let both = merge_versions(&first, std::slice::from_ref(&v2), MrState::Open, at(200));
     assert_eq!(both.len(), 2);
     assert_eq!(both[0].first_seen, at(100));
     assert_eq!(both[1].version.head_sha, sha(V2));
@@ -434,8 +438,8 @@ fn versions_are_kept_oldest_first_and_completed() {
     let mut bare = gitlab[1].clone();
     bare.merge_base = None;
     bare.forge_version_id = None;
-    let known = merge_versions(&[], &[bare], at(100));
-    let completed = merge_versions(&known, &gitlab, at(200));
+    let known = merge_versions(&[], &[bare], MrState::Open, at(100));
+    let completed = merge_versions(&known, &gitlab, MrState::Open, at(200));
     assert_eq!(completed[0].version, gitlab[1]);
     assert_eq!(completed[0].first_seen, at(100));
 }
@@ -515,7 +519,12 @@ fn the_clone_of_a_project_is_the_most_recently_used_then_the_shortest_path() {
 #[test]
 fn the_mirror_round_trips_and_keeps_the_description_apart() {
     let mr = parse_pull(&fixture("github/pull-412.v2.json")).unwrap();
-    let versions = merge_versions(&[], std::slice::from_ref(&mr.version), at(100));
+    let versions = merge_versions(
+        &[],
+        std::slice::from_ref(&mr.version),
+        MrState::Open,
+        at(100),
+    );
     let state = SyncState {
         v: SyncState::VERSION,
         requested: true,
@@ -621,4 +630,173 @@ fn the_finder_tells_the_context_only_for_tokens_of_distinct_accounts() {
     assert!(!finder_tells(Some("me"), 1, &[None]));
     assert!(!finder_tells(Some("me"), 2, &[Some("me-at-client")]));
     assert!(!finder_tells(None, 1, &[Some("me-at-client")]));
+}
+
+fn base_version(head: &str, base: &str, merge_base: Option<&str>) -> MrVersion {
+    MrVersion {
+        head_sha: sha(head),
+        base_sha: sha(base),
+        merge_base: merge_base.map(sha),
+        forge_version_id: None,
+        created_at: None,
+    }
+}
+
+#[test]
+fn a_moved_base_tip_with_the_same_head_changes_nothing() {
+    let mut known = merge_versions(&[], &[base_version(V1, V2, Some(V2))], MrState::Open, at(1));
+    known[0].diff = Some(DiffKind::Local);
+    // The same base: nothing changes.
+    assert_eq!(
+        merge_versions(&known, &[base_version(V1, V2, None)], MrState::Open, at(2)),
+        known
+    );
+    // GitHub moves `base.sha` with the tip of the target branch: no push, no retarget.
+    assert_eq!(
+        merge_versions(&known, &[base_version(V1, V1, None)], MrState::Open, at(3)),
+        known
+    );
+}
+
+#[test]
+fn a_new_target_branch_asks_for_a_new_diff_of_the_current_head() {
+    let mut known = merge_versions(
+        &[],
+        &[
+            base_version(V2, V2, Some(V2)),
+            base_version(V1, V2, Some(V2)),
+        ],
+        MrState::Open,
+        at(1),
+    );
+    for record in &mut known {
+        record.diff = Some(DiffKind::Local);
+    }
+    let moved = apply_retarget(known.clone(), &base_version(V1, V1, None));
+    let current = moved
+        .iter()
+        .find(|record| record.version.head_sha == sha(V1))
+        .unwrap();
+    assert_eq!(current.version.base_sha, sha(V1));
+    assert_eq!(current.version.merge_base, None);
+    assert_eq!(current.diff, None);
+    assert_eq!(current.first_seen, at(1));
+    // Another version keeps its diff.
+    let other = moved
+        .iter()
+        .find(|record| record.version.head_sha == sha(V2))
+        .unwrap();
+    assert_eq!(other.diff, Some(DiffKind::Local));
+}
+
+#[test]
+fn a_retarget_is_a_new_base_ref_of_an_open_mr() {
+    let mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
+    assert!(!is_retarget(None, &mr));
+    assert!(!is_retarget(Some(&mr), &mr));
+    // The tip moved: the same branch.
+    let mut moved = mr.clone();
+    moved.version.base_sha = sha(V1);
+    assert!(!is_retarget(Some(&mr), &moved));
+    let mut other = mr.clone();
+    other.base_ref = "release".to_owned();
+    assert!(is_retarget(Some(&mr), &other));
+    other.state = MrState::Merged;
+    assert!(!is_retarget(Some(&mr), &other));
+    other.state = MrState::Closed;
+    assert!(!is_retarget(Some(&mr), &other));
+}
+
+#[test]
+fn a_new_gitlab_version_of_one_head_with_another_base_is_its_own_record() {
+    let version = |id: u64, base: &str| MrVersion {
+        forge_version_id: Some(id),
+        created_at: Some(at(id)),
+        ..base_version(V1, base, Some(base))
+    };
+    let mut known = merge_versions(&[], &[version(1, V2)], MrState::Open, at(1));
+    known[0].diff = Some(DiffKind::Local);
+    // The same version: nothing, whatever the rest says.
+    assert_eq!(
+        merge_versions(&known, &[version(1, V2)], MrState::Open, at(2)),
+        known
+    );
+    // GitLab made a new version: its base and merge base are the ones of that version.
+    let moved = merge_versions(
+        &known,
+        &[version(1, V2), version(2, V1)],
+        MrState::Open,
+        at(3),
+    );
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].version.base_sha, sha(V1));
+    assert_eq!(moved[0].version.merge_base, Some(sha(V1)));
+    assert_eq!(moved[0].version.forge_version_id, Some(2));
+    assert_eq!(moved[0].diff, None);
+    // A new version of one base keeps the diff.
+    let same_base = merge_versions(&known, &[version(2, V2)], MrState::Open, at(3));
+    assert_eq!(same_base[0].diff, Some(DiffKind::Local));
+    // A merged MR keeps the diff of its last base.
+    assert_eq!(
+        merge_versions(&known, &[version(2, V1)], MrState::Merged, at(3)),
+        known
+    );
+}
+
+#[test]
+fn two_forge_versions_of_one_head_count_as_the_newest_one() {
+    let older = MrVersion {
+        created_at: Some(at(10)),
+        ..base_version(V1, V2, Some(V2))
+    };
+    let newer = MrVersion {
+        created_at: Some(at(20)),
+        ..base_version(V1, V1, Some(V1))
+    };
+    let seen = [newer, older];
+    let first = merge_versions(&[], &seen, MrState::Open, at(1));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].version.base_sha, sha(V1));
+    let mut done = first;
+    done[0].diff = Some(DiffKind::Local);
+    // A poll that lists both again keeps the record of the diff.
+    assert_eq!(merge_versions(&done, &seen, MrState::Open, at(2)), done);
+}
+
+#[test]
+fn the_current_version_is_added_when_the_forge_list_lacks_it() {
+    let known = merge_versions(&[], &[base_version(V1, V2, None)], MrState::Open, at(1));
+    // GitLab lists the versions after a background job: the head comes first.
+    let added = merge_current(known.clone(), &base_version(V2, V1, Some(V1)), at(2));
+    assert_eq!(added.len(), 2);
+    assert_eq!(added[1].version.head_sha, sha(V2));
+    assert_eq!(added[1].first_seen, at(2));
+    // Known: the list decides, so the two sources do not undo each other.
+    assert_eq!(
+        merge_current(known.clone(), &base_version(V1, V1, Some(V1)), at(3)),
+        known
+    );
+}
+
+#[test]
+fn the_snapshot_of_an_mr_shows_the_base_that_its_head_has_in_the_versions() {
+    let mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
+    let versions = merge_versions(&[], std::slice::from_ref(&mr.version), MrState::Open, at(1));
+    // The tip moved: the same bytes as before.
+    let mut moved = mr.clone();
+    moved.version.base_sha = sha(V2);
+    assert_eq!(with_recorded_base(&moved, &versions), mr);
+    // A merge base of git is in the versions only: the snapshot does not get it.
+    let mut computed = versions;
+    computed[0].version.merge_base = Some(sha(V2));
+    assert_eq!(with_recorded_base(&mr, &computed).version.merge_base, None);
+    // The merge base of the forge follows its record.
+    let mut gitlab = mr.clone();
+    gitlab.version.merge_base = Some(sha(V1));
+    assert_eq!(
+        with_recorded_base(&gitlab, &computed).version.merge_base,
+        Some(sha(V2))
+    );
+    // An unknown head stays as it is.
+    assert_eq!(with_recorded_base(&mr, &[]), mr);
 }

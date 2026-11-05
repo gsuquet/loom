@@ -6,6 +6,7 @@
 
 pub mod client;
 mod context;
+pub mod diff;
 mod error;
 pub mod github;
 pub mod gitlab;

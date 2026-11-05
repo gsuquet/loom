@@ -21,6 +21,7 @@ use loom_store::port::TaskLocation;
 use loom_store::tasks::IndexedState;
 use serde::{Deserialize, Serialize};
 
+use crate::mr_refs::DiffKind;
 use crate::schedule::{backoff, jittered};
 
 /// The directory of the MR mirrors in a task directory.
@@ -327,27 +328,57 @@ pub struct VersionRecord {
     pub version: MrVersion,
     /// When a poll first saw this head.
     pub first_seen: Timestamp,
+    /// Where the patch of this version comes from; absent without a patch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffKind>,
 }
 
 /// `known` (oldest first) with each version of `seen` whose head is new, first seen at `now`.
 ///
 /// A known version gets the merge base and the forge version ID that it lacked (GitLab gives
-/// them); the rest of it is kept. Pure.
+/// them); the rest of it is kept, its base too: GitHub moves `base.sha` with the tip of the target
+/// branch, with no push and no retarget. A new GitLab version of the head with another base is
+/// the exception on an open MR: it loses the record of its diff. On a merged or closed MR, nothing
+/// makes a new diff, so nothing changes. Two versions of one head count as the newest. Pure.
 #[must_use]
 pub fn merge_versions(
     known: &[VersionRecord],
     seen: &[MrVersion],
+    state: MrState,
     now: Timestamp,
 ) -> Vec<VersionRecord> {
     let mut versions = known.to_vec();
     // The forges list the newest first.
     let mut seen: Vec<&MrVersion> = seen.iter().collect();
     seen.sort_by_key(|version| version.created_at);
-    for version in seen {
+    let newest: Vec<&MrVersion> = seen
+        .iter()
+        .enumerate()
+        .filter(|(index, version)| {
+            !seen[index + 1..]
+                .iter()
+                .any(|later| later.head_sha == version.head_sha)
+        })
+        .map(|(_, version)| *version)
+        .collect();
+    for version in newest {
         if let Some(record) = versions
             .iter_mut()
             .find(|record| record.version.head_sha == version.head_sha)
         {
+            // A merged or closed MR gets no new diff, so the record of the last one stays.
+            let open = match state {
+                MrState::Open => true,
+                MrState::Merged | MrState::Closed => false,
+            };
+            let new_version = matches!(
+                (record.version.forge_version_id, version.forge_version_id),
+                (Some(recorded), Some(listed)) if recorded != listed
+            );
+            if open && new_version && record.version.base_sha != version.base_sha {
+                record.version.forge_version_id = version.forge_version_id;
+                reset_base(record, version);
+            }
             if record.version.merge_base.is_none() {
                 record.version.merge_base.clone_from(&version.merge_base);
             }
@@ -361,8 +392,81 @@ pub fn merge_versions(
             versions.push(VersionRecord {
                 version: version.clone(),
                 first_seen: now,
+                diff: None,
             });
         }
+    }
+    versions
+}
+
+/// `mr` with the base that its head has in `versions`, for the snapshot in `mr.json`: a moved tip
+/// of the target branch gives no new bytes and no commit. Pure.
+#[must_use]
+pub fn with_recorded_base(mr: &Mr, versions: &[VersionRecord]) -> Mr {
+    let mut mr = mr.clone();
+    if let Some(record) = versions
+        .iter()
+        .find(|record| record.version.head_sha == mr.version.head_sha)
+    {
+        mr.version.base_sha.clone_from(&record.version.base_sha);
+        // A merge base that git computed is in `versions.json` alone.
+        if mr.version.merge_base.is_some() {
+            mr.version.merge_base.clone_from(&record.version.merge_base);
+        }
+    }
+    mr
+}
+
+/// Whether `mr` has a new target branch since the `previous` poll. A moved tip of the same branch
+/// is none, and a merged or closed MR gets no new diff. Pure.
+#[must_use]
+pub fn is_retarget(previous: Option<&Mr>, mr: &Mr) -> bool {
+    let open = match mr.state {
+        MrState::Open => true,
+        MrState::Merged | MrState::Closed => false,
+    };
+    open && previous.is_some_and(|previous| previous.base_ref != mr.base_ref)
+}
+
+/// `versions` after a new target branch: the head of `current` gets its base and merge base, and
+/// loses the record of its diff, which is of the old branch. Pure.
+#[must_use]
+pub fn apply_retarget(mut versions: Vec<VersionRecord>, current: &MrVersion) -> Vec<VersionRecord> {
+    if let Some(record) = versions
+        .iter_mut()
+        .find(|record| record.version.head_sha == current.head_sha)
+    {
+        reset_base(record, current);
+    }
+    versions
+}
+
+/// `record` with the base of `version`, and no diff.
+fn reset_base(record: &mut VersionRecord, version: &MrVersion) {
+    record.version.base_sha = version.base_sha.clone();
+    record.version.merge_base.clone_from(&version.merge_base);
+    record.diff = None;
+}
+
+/// `versions` with the `current` version of an MR when the forge list lacks its head. Pure.
+///
+/// GitLab fills `/versions` after a background job. A known head stays as the list says, so the
+/// two sources do not undo each other.
+#[must_use]
+pub fn merge_current(
+    mut versions: Vec<VersionRecord>,
+    current: &MrVersion,
+    now: Timestamp,
+) -> Vec<VersionRecord> {
+    if !versions
+        .iter()
+        .any(|record| record.version.head_sha == current.head_sha)
+    {
+        versions.push(VersionRecord {
+            version: current.clone(),
+            first_seen: now,
+            diff: None,
+        });
     }
     versions
 }

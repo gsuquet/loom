@@ -7,7 +7,7 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
 ```
 ~/.loom/
   config.toml
-  index.db                          # rebuildable, machine-local (repo paths live here)
+  index.db                          # rebuildable, machine-local (repo paths and the clone of each MR live here)
   knowledge/                        # shared pages, survive a context purge
   profiles/<name>.toml              # shared profiles, see agents.md
   skills/<name>/                    # shared skills

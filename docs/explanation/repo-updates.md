@@ -21,7 +21,7 @@ If nobody updates a repository for a week, it is a week behind. Then you must ru
 
 ## What an update does
 
-1. **Policy.** `update = "ff"` (the default), `"fetch"` or `"off"`, from `[repos."<path>"]`, otherwise from the context of the repository. `off`: nothing runs. A repository without a context (`unassigned`) gets `fetch` by default, because no rule says that it is yours to move. `[repos."<path>"] update` still sets its policy, `ff` included.
+1. **Policy.** `update = "ff"` (the default), `"fetch"` or `"off"`, from `[repos."<path>"]`, otherwise from the context of the repository. `off`: no update runs. The fetches of [MR refs](mr-refs.md) do not read this policy, because they move no branch. A repository without a context (`unassigned`) gets `fetch` by default, because no rule says that it is yours to move. `[repos."<path>"] update` still sets its policy, `ff` included.
 2. **Fetch.** `git fetch --no-prune --no-prune-tags --no-tags <primary remote>`. No ref is ever deleted, even when the git configuration of the user asks to prune. No tag is fetched: automatic updates move only branches, and tags are the business of the user.
 
    If the update fetched tags, one tag that moved upstream would make the whole fetch fail, each time. As soon as tags are fetched, git refuses to overwrite a local tag that exists (`! [rejected] 1.0.0 -> 1.0.0 (would clobber existing tag)`). Two settings make git fetch tags. `fetch.pruneTags` adds `refs/tags/*:refs/tags/*` even with `--no-prune`, and only `--no-prune-tags` removes it. `remote.<name>.tagOpt = --tags` also fetches tags, and `--no-tags` overrides it. `git fetch --tags` brings them when you want them.

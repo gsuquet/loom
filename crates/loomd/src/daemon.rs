@@ -188,7 +188,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         },
         config.tasks.sync_interval.get(),
         task_handle.clone(),
-        children,
+        Arc::clone(&children),
     )?;
     let (review_poller, review_handle) = reviews::start(
         &config,
@@ -199,6 +199,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
             user_home,
             resolver: Arc::clone(&forges.resolver),
             tasks: task_handle.clone(),
+            children,
         },
     )?;
 
