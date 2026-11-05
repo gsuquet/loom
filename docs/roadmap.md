@@ -8,22 +8,77 @@ Versions up to v0.3 are released. The backend of v0.4 goes on; the TUI is remove
 | --- | --- | --- |
 | 1. Desk | Desktop app, Today, Inbox, task page, palette, global hotkey, MR queue, connector status, GitLab | For one working week, I start the day in loom and do not open the forge to find MRs |
 | 2. References | Sources, Reading, phone capture, knowledge pages, glossary, out-of-scope records, pruning agent, the rule on text loaded into agents | Set when the step starts |
-| 3. Connectors | Datadog, Jira, Freshservice | Set when the step starts |
+| 3. Connectors | Datadog, Jira, Freshservice: read-only first, then writes behind the Outbox | Read-only: for one working week, with no app yet, `loom ls` and an OS notification bring me each urgent alert, and I do not open Datadog, Jira or Freshservice to find my alerts and tickets. Writes: set when they start |
 | 4. Review | Diff, reviewer agent, multi-repo worktrees, stage scope, profiles, language detection, run leases | Set when the step starts |
 | 5. Later | Other specialists, pipelines, opt-in rules, read-only Kubernetes, GitHub, Google Calendar | Set per item when it starts |
 
 Multi-repo tasks, the Source entity, the conception kind, links, pipelines and the adapter ports change the core model. They are designed in the docs before step 1. The toolkit of the app is chosen before step 1. Spikes: the toolkit, the Android share target and Worker authentication, and local transcription after step 2.
 
+**The next tasks, in this order:**
+
+1. [#212](https://github.com/gsuquet/loom/issues/212): the GitLab queue reasons.
+2. Connector status (C1 below).
+3. The design of the connector ports: [Connector ports](design/connector-ports.md).
+4. Datadog, Jira and Freshservice, read-only (C2 to F3 below).
+5. [#186](https://github.com/gsuquet/loom/issues/186) and [#187](https://github.com/gsuquet/loom/issues/187).
+
+So the read-only part of step 3 comes ahead of the Review work of step 4, for these tasks only. The rest of each step keeps its place: the connector writes stay behind the Outbox, and the app waits for its toolkit.
+
 The central instance and unattended delivery stay later options with no date. Unattended delivery needs my go-ahead, see [Autonomy policy](design/agents.md#autonomy-policy).
 
 ## Step 1 tasks
 
-Tasks so far, from the gaps found against [Waiting on me](design/reviews.md#waiting-on-me). The app itself is broken down once the toolkit is chosen. The v0.4 tasks below on diffs, drafts and publish (#185 to #189) belong to step 4.
+Tasks so far, from the gaps found against [Waiting on me](design/reviews.md#waiting-on-me). The app itself is broken down once the toolkit is chosen. The v0.4 tasks below on diffs, drafts and publish (#185 to #189) belong to step 4, and #186 and #187 follow the read-only connectors.
 
 | Issue | Task | Kind | Depends on |
 | --- | --- | --- | --- |
 | [#211](https://github.com/gsuquet/loom/issues/211) | Queue entries: an MR has no task until I start on it, `loom review queue`, `loom review start` | Story | This design |
 | [#212](https://github.com/gsuquet/loom/issues/212) | GitLab reasons: assigned, mentions, my own MRs with new comments, a failed pipeline or approval to merge | Story | #211 |
+
+## Connector tasks
+
+Design: [Connector ports](design/connector-ports.md), [Connectors](design/connectors.md), [Tracker sync](design/tracker-sync.md). Each task becomes a GitHub issue when it starts. Tasks with the owner "Me" need my token on a real tenant and are the [real checks](design/connector-ports.md#real-checks).
+
+### Read-only
+
+| # | Task | Kind | Depends on | Owner |
+| --- | --- | --- | --- | --- |
+| C1 | Connector status: `ConnectorStatus`, `Capabilities` and `ConnectorKind` in `loom-api`, `GET /v1/connectors`, `loom connector status`, `state/connectors.json`, change event, forges report into it | Story | #218 | Agent |
+| C2 | Config: `[contexts.<ctx>.connectors.<name>]` per kind, validation, API base rules, `token_env_names`, `store.backup.allows_client_data`, reference page | Story | This design, C1, #217 | Agent |
+| C3 | `loom-connector`: ports, types, `ConnectorError`, capabilities, stub modules for the three adapters; `Transport` out of `Http`; the key encoder out of `MrKey::dir_name`; fake server root; `fixtures/connectors/`; crate row | Story | This design, C1 | Agent |
+| C4 | Poll loop: `loomd::poll` out of `review_sync`, one thread per instance, `sync_connector` on the task thread, `POST /v1/connectors/sync`, `ConnectorBatch` and `TrackedItem` types, `loom connector doctor`, `LOOM_TEST_CONNECTOR_API`; tested with an in-memory `IngestPort` | Story | C1, C2, C3, #218 | Agent |
+| C5 | Items: `origin` keys `connector` and `remote_id`, lookup, applying a `ConnectorBatch` in `tasks/connectors.rs`, `loom connector rename`, the block per item and its doctor clause; no move of a connector task | Story | C4 | Agent |
+| C6 | Tickets: `decide_ticket`, mirror writer with `.base` and `sync.json`, `queue/pool/` entries, `loom connector pool` | Story | C5 | Agent |
+| C7 | `fixtures/connectors/check.sh`: the read-only shape checks | Chore | C3 | Agent |
+| D1 | Datadog client and parsing: group search, monitor read, `classify`, sites, `check`, fixtures | Story | C3 | Agent |
+| D0 | Datadog shape checks: run `check.sh`, adjust the design | Chore | C7 | Me |
+| D2 | Datadog sync: `decide_alert`, snapshots in `remote/`, `urgent` in `task.md`, priority mapping | Story | C5, D0, D1 | Agent |
+| D2b | Reaching me: urgent first in `loom ls`, `NotifyPort` and its OS adapter, expired token and 10-minute unread notifications | Story | D2 | Agent |
+| D3 | Datadog real check | Chore | D2b | Me + agent |
+| J1 | Jira client and parsing: `search/jql`, issue, comments, `classify`, `check`, fixtures | Story | C3 | Agent |
+| J2 | ADF to Markdown (pure): placeholders, unknown nodes, `converter` version | Story | C3 | Agent |
+| J0 | Jira shape checks: run `check.sh`, adjust the design | Chore | C7 | Me |
+| J3 | Jira sync: list, pool, mirror, moved keys | Story | C6, J0, J1, J2 | Agent |
+| J4 | Jira real check | Chore | J3 | Me + agent |
+| F1 | Freshservice client and parsing: filter, ticket, conversations, `classify`, `check`, fixtures | Story | C3 | Agent |
+| F0 | Freshservice shape checks: run `check.sh`, adjust the design | Chore | C7 | Me |
+| F1b | Freshservice HTML to Markdown (pure): scripts and remote loads stripped, `converter` version | Story | C3 | Agent |
+| F2 | Freshservice sync: list, pool, mirror | Story | C6, F0, F1, F1b | Agent |
+| F3 | Freshservice real check | Chore | F2 | Me + agent |
+
+Order: C1 to C5, with C2 and C3 side by side, and C7 once C3 is merged. Then three parallel tracks, each in its own module and fixture directory: {D0, D1 -> D2 -> D2b -> D3}, {C6; J0, J1, J2 -> J3 -> J4}, {C6; F0, F1, F1b -> F2 -> F3}. D1, J1, J2, F1 and F1b can start as soon as C3 is merged. Datadog does not wait for C6.
+
+### Writes (later)
+
+| # | Task | Kind | Depends on | Owner |
+| --- | --- | --- | --- | --- |
+| W1 | Outbox: Held, Sent, Not sent in loomd, machine-local, send time, wake rule, Sent record, `loom outbox`; nothing in the code holds a write today | Story | C4 | Agent |
+| W2 | Push pipeline (pure + API): merge `issue.md`, `.base` and the remote, changed fields only, diff preview, conflict to the Inbox, `loom push` | Story | W1, J3 or F2 | Agent |
+| W3 | Jira writes: `push` on `TrackerPort`, transitions, edit, comment, assign, Markdown to ADF | Story | W2 | Agent |
+| W4 | Freshservice writes: reply, status, assign | Story | W2 | Agent |
+| W5 | Datadog mute: confirmed, with an end time | Story | W1, D2 | Agent |
+| W6 | Link a Datadog alert and a Freshservice incident into one task | Story | D2, F2, F3 | Agent |
+| W7 | `loom pr` and the review upload behind the Outbox | Story | W1, #187 | Agent |
 
 ## v0.1 tasks
 
