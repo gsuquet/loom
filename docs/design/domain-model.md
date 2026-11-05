@@ -101,7 +101,7 @@ store.backup.remote = "git@…"               # encryption is not built, see sto
 [contexts.company-a.forges."gitlab.com"]     # see reviews.md
 token_cmd = "op read op://…"
 
-[contexts.company-a.connectors.datadog]      # see connector-ports.md
+[contexts.company-a.connectors.datadog]      # abridged, see connector-ports.md
 kind = "datadog"
 site = "datadoghq.eu"
 token_cmd = "op read op://…"
