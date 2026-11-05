@@ -30,9 +30,18 @@ const REPOS: usize = 1_000;
 const TASKS: usize = 5_000;
 /// Timed runs of `loom search` per scenario.
 const RUNS: usize = 60;
-/// Limit of the latency test on [`Timing::floor`]. The target is 100 ms; a shared CI runner
-/// running a debug build gets slack.
-const FLOOR_LIMIT: Duration = Duration::from_millis(250);
+/// Limit of the latency test on [`Timing::p50`] and [`Timing::floor`]. The target is 100 ms; a
+/// shared CI runner running a debug build gets slack. In the recorded runs, p50 stayed under
+/// 52 ms at a load average of 100 (p95 reached 295 ms, which is why it is only printed).
+const LATENCY_LIMIT: Duration = Duration::from_millis(250);
+/// Least limit on the time from the start of loomd to the tasks and repository states read.
+/// Recorded: 11 to 16 s idle, 22 to 30 s with 30 CPU hogs.
+const MIN_READY_LIMIT: Duration = Duration::from_mins(1);
+/// Limit on that time, in times the fixtures took on the same machine at the same moment, which
+/// tells a loaded disk from a slow index: with 16 `F_FULLFSYNC` writers as well, the fixtures took
+/// 168 to 307 s and the index 181 to 183 s. A stall of a first index fails on an idle machine (the
+/// fixtures take 1.5 s there); under such a load, only one longer than about 2.5 min does.
+const READY_LIMIT_TO_FIXTURES: u32 = 2;
 
 const CONFIG: &str = r#"
 [repos]
@@ -354,9 +363,10 @@ fn search_finds_tasks_by_key_ranked_around_the_repositories() {
 struct Timing {
     p50: Duration,
     p95: Duration,
-    /// The fastest run of the slowest command. A busy machine only adds to a run: unlike the
-    /// percentiles, printed for a reader, this barely moves with the load of a gate (44 ms idle,
-    /// 62 to 88 ms at a load average of 50), and tells when no run of a command meets a limit.
+    /// The fastest run of the slowest command. A busy machine only adds to a run: this barely
+    /// moves with the load of a gate (44 ms idle, 62 to 88 ms at a load average of 50), and tells
+    /// when no run of a command meets a limit. One fast run per command is enough to pass: the
+    /// median covers searches that are slow most of the time.
     floor: Duration,
 }
 
@@ -421,24 +431,11 @@ fn latency_fixtures(sandbox: &Sandbox, perso: &Path) {
     }
 }
 
-#[test]
-fn search_answers_within_budget_on_1000_repositories_and_5000_tasks() {
-    let sandbox = Sandbox::new();
-    let perso = sandbox.home().join("perso");
-    let started = Instant::now();
-    latency_fixtures(&sandbox, &perso);
-    eprintln!(
-        "fixtures: {REPOS} repositories, {TASKS} tasks in {:?}",
-        started.elapsed()
-    );
-
-    // Starts loomd, waits for its scan and the tasks indexed on start, then for the states of
-    // every repository, so that the timed runs do not compete with the state threads. A search
-    // made before `tasks reconciled` waits up to `tasks::READY_TIMEOUT` (10 s), then answers with
-    // the tasks indexed so far. On a busy machine indexing takes minutes: the deadline is only
-    // used up by a failing test.
-    let started = Instant::now();
-    let deadline = started + Duration::from_mins(10);
+/// Starts loomd, waits for its scan and the tasks indexed on start, then for the states of every
+/// repository, so that the timed runs do not compete with the state threads. A search of tasks
+/// made before the first archive pass, which follows `tasks reconciled`, waits up to
+/// `tasks::READY_TIMEOUT` (10 s), then answers with the tasks indexed so far.
+fn wait_for_the_index(sandbox: &Sandbox, deadline: Instant) {
     assert_eq!(sandbox.search(&["--type", "repo", "zzz"]).results.len(), 0);
     let log = sandbox.loom_home().join("log/loomd.log");
     let reconciled = format!("tasks reconciled tasks={TASKS} ");
@@ -476,6 +473,22 @@ fn search_answers_within_budget_on_1000_repositories_and_5000_tasks() {
         );
         thread::sleep(POLL);
     }
+}
+
+#[test]
+fn search_answers_within_budget_on_1000_repositories_and_5000_tasks() {
+    let sandbox = Sandbox::new();
+    let perso = sandbox.home().join("perso");
+    let started = Instant::now();
+    latency_fixtures(&sandbox, &perso);
+    let fixtures = started.elapsed();
+    eprintln!("fixtures: {REPOS} repositories, {TASKS} tasks in {fixtures:?}");
+
+    let started = Instant::now();
+    wait_for_the_index(
+        &sandbox,
+        started + MIN_READY_LIMIT.max(fixtures * READY_LIMIT_TO_FIXTURES),
+    );
     eprintln!("index ready in {:?}", started.elapsed());
 
     // `alpha` matches 125 repositories and 625 tasks, `service` every repository, `task` every
@@ -531,8 +544,13 @@ fn search_answers_within_budget_on_1000_repositories_and_5000_tasks() {
             ms(base.p95),
         );
         assert!(
-            search.floor < FLOOR_LIMIT,
-            "floor {:?} over {FLOOR_LIMIT:?} ({scenario})",
+            search.p50 < LATENCY_LIMIT,
+            "p50 {:?} over {LATENCY_LIMIT:?} ({scenario})",
+            search.p50
+        );
+        assert!(
+            search.floor < LATENCY_LIMIT,
+            "floor {:?} over {LATENCY_LIMIT:?} ({scenario})",
             search.floor
         );
     }

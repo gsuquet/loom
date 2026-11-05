@@ -41,9 +41,10 @@ use serde_json::json;
 use tempfile::TempDir;
 
 const NEW: &str = "99.0.0";
-/// Budget of each wait; only a failing test uses it up. A rollback alone takes the watchdog
-/// deadline (20 s here), after the download, the pre-flight (up to 15 s) and two copies of the
-/// binaries with `fsync`, which took 19 s for one of them on a busy CI runner.
+/// Budget of each wait. A rollback alone takes the watchdog deadline (20 s here), after the
+/// download, the pre-flight (up to 15 s) and two copies of the binaries with `fsync`, which took
+/// 19 s for one of them on a busy CI runner. It only tells that a step ended: a step that became
+/// slower passes as long as it fits, so [`Env::wait_for`] prints the time each one took.
 const WAIT: Duration = Duration::from_mins(3);
 const POLL: Duration = Duration::from_millis(100);
 /// Logged by the watchdog before it records the upgrade.
@@ -251,7 +252,8 @@ impl Env {
     }
 
     fn wait_for(&self, done: impl Fn(&Self) -> bool, what: &str) {
-        let deadline = Instant::now() + WAIT;
+        let started = Instant::now();
+        let deadline = started + WAIT;
         while !done(self) {
             assert!(
                 Instant::now() < deadline,
@@ -261,6 +263,14 @@ impl Env {
             );
             thread::sleep(POLL);
         }
+        eprintln!("waited {:?} for {what}", started.elapsed());
+    }
+
+    /// Makes the next loomd start with the policy `off`, so that no check overwrites what the
+    /// watchdog records. A loomd reads `config.toml` once, when it starts: the running one still
+    /// upgrades. Call it once loomd answers.
+    fn keep_the_watchdog_result(&self) {
+        fs::write(self.home.path().join("config.toml"), config("off")).unwrap();
     }
 
     fn logged(&self, line: &str) -> bool {
@@ -271,7 +281,8 @@ impl Env {
     ///
     /// Not on `last_result`, which only lasts until the next check of the new loomd overwrites
     /// it: a test polling late on a busy machine would never see it. `pending` stays set from
-    /// before the swap until the watchdog records the outcome.
+    /// before the swap until the watchdog records the outcome. What it records:
+    /// [`the_watchdog_records_the_upgrade`].
     fn wait_for_upgrade(&self, what: &str) {
         self.wait_for(
             |env| env.logged(UPGRADE_COMPLETE) && env.state().pending.is_none(),
@@ -395,7 +406,8 @@ fn a_release_failing_after_the_restart_is_rolled_back_by_the_watchdog() {
     env.start_loomd();
 
     // Not on `last_result = rolled_back`: it is recorded before the save is pruned, and the next
-    // check of the restored loomd overwrites it. `auto::tests` covers what it holds.
+    // check of the restored loomd overwrites it. What it holds:
+    // `the_watchdog_records_the_rollback`.
     env.wait_for(
         |env| env.logged(ROLLBACK_COMPLETE),
         "the watchdog to roll back",
@@ -427,6 +439,66 @@ fn a_release_failing_after_the_restart_is_rolled_back_by_the_watchdog() {
         "a check skipping the failed version",
     );
     assert_eq!(env.installed(), before);
+}
+
+#[test]
+fn the_watchdog_records_the_rollback() {
+    let mut env = Env::new(&config("auto"));
+    env.publish(wrappers(
+        "export LOOM_TEST_FAIL_UNLESS_HOME_PREFIX=/tmp/loom-preflight-\n",
+    ));
+    env.start_loomd();
+    env.keep_the_watchdog_result();
+
+    env.wait_for(
+        |env| env.logged(ROLLBACK_COMPLETE),
+        "the watchdog to roll back",
+    );
+    let result = env.state().last_result;
+    assert!(
+        matches!(
+            &result,
+            Some(UpdateResult::RolledBack { from, to, message, .. })
+                if *from == env.current && to == NEW && !message.is_empty()
+        ),
+        "{result:?}"
+    );
+    let human = env.loom(&["status", "--no-start"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains(&format!(
+            "\nlast_result: rolled back {NEW} -> {} at ",
+            env.current
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_watchdog_records_the_upgrade() {
+    let mut env = Env::new(&config("auto"));
+    env.publish(wrappers(""));
+    env.start_loomd();
+    env.keep_the_watchdog_result();
+
+    env.wait_for_upgrade("the upgrade to complete");
+    let result = env.state().last_result;
+    assert!(
+        matches!(
+            &result,
+            Some(UpdateResult::Upgraded { from, to, .. }) if *from == env.current && to == NEW
+        ),
+        "{result:?}"
+    );
+    let human = env.loom(&["status", "--no-start"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains(&format!(
+            "\nlast_result: upgraded {} -> {NEW} at ",
+            env.current
+        )),
+        "{text}"
+    );
 }
 
 #[test]

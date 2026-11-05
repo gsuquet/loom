@@ -145,15 +145,12 @@ impl Sandbox {
         );
     }
 
-    /// The requests of `loom pr`. Without the forge metadata poll of the `loomd` it starts (GitHub
-    /// GraphQL, GitLab projects), which runs 10 s after the start of a loomd and has no test hook:
-    /// a test on a busy machine outlasts that.
+    /// The requests of `loom pr`: all of them, without the forge metadata poll of the `loomd` it
+    /// starts. That poll runs 10 s after the start of a loomd and has no test hook, and a test on
+    /// a busy machine outlasts that.
     fn pr_requests(&self) -> Vec<fake_forge::Recorded> {
         let mut requests = self.forge.requests();
-        requests.retain(|request| {
-            let line = request.line();
-            line.contains("/pulls") || line.contains("/merge_requests")
-        });
+        requests.retain(|request| !from_the_metadata_poll(request));
         requests
     }
 
@@ -242,6 +239,21 @@ fn find_files(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
         } else if path.file_name().is_some_and(|file| file == name) {
             found.push(path);
         }
+    }
+}
+
+/// Whether `request` is the read of a project by the forge metadata poll: on GitHub the query
+/// `graphql::REPOSITORY` of `loom-forge` (private there), on GitLab `GET /projects/<path>`. The
+/// fake forge answers 404 to it, so the poll stops there.
+fn from_the_metadata_poll(request: &fake_forge::Recorded) -> bool {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/graphql") => request.json()["query"].as_str().is_some_and(|query| {
+            query.contains("repository(owner: $owner, name: $name) { databaseId url isArchived")
+        }),
+        ("GET", path) => path
+            .strip_prefix("/projects/")
+            .is_some_and(|project| !project.contains(['/', '?'])),
+        _ => false,
     }
 }
 
@@ -498,7 +510,8 @@ fn a_context_without_a_credential_for_the_host_opens_nothing() {
     }
     // Refused before the push.
     assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
-    assert_eq!(sandbox.pr_lines(), [] as [String; 0]);
+    // Strict: without a credential, no poll runs either.
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
 }
 
 #[test]
