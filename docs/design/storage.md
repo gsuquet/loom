@@ -13,11 +13,12 @@ Files are the source of truth, SQLite is a rebuildable index (`loom reindex`).
   skills/<name>/                    # shared skills
   contexts/<ctx>/
     queue/mrs/<provider>-<key>.json   # daemon-owned: MRs waiting on me, no task yet (see reviews.md)
+    queue/pool/<connector>-<key>.json # daemon-owned: unassigned team tickets to browse, no task (see connector-ports.md)
     tasks/<id>/
       task.md                       # mine: frontmatter + free notes
       events.jsonl                  # append-only
-      remote/<provider>-<key>.json  # daemon-owned snapshots (alerts, read-only sources)
-      issues/<provider>-<key>/      # editable mirror of a tracker issue (see tracker-sync.md)
+      remote/<connector>-<key>.json # daemon-owned snapshots (alerts, read-only sources)
+      issues/<connector>-<key>/     # editable mirror of a tracker issue (see tracker-sync.md)
       mrs/<provider>-<key>/         # MR mirror: mr.json, description.md, versions.json, threads.json, sync.json, diffs/<sha>.patch, review.json (see reviews.md)
       files/                        # transcripts, slides, other artifacts
       runs/<run-id>/                # context pack, frozen skills, events, stream, gate results, outputs
@@ -72,6 +73,7 @@ Free notes, kind template sections.
 
 - `task.md` has no `updated` key: the last change is the `at` of the last event in `events.jsonl`.
 - Frontmatter is TOML between `+++` lines, rewritten with `toml_edit`: comments, key order and unknown keys survive ([ADR-0013](../adr/0013-task-store.md)). A task of an unknown kind or status, written by a newer version, is shown read-only.
+- Connector status is machine-local, in `state/connectors.json`: each poll would otherwise commit to the store. See [Connector status](connector-ports.md#connector-status).
 - The Outbox is held by `loomd`: a held write has a send time, is machine-local, and never travels with a store sync. See [Write states](connectors.md#write-states).
 - `events.jsonl` lines carry a schema version `v`, the actor and the `machine_id`.
 
@@ -93,7 +95,7 @@ Free notes, kind template sections.
 Loom runs on two machines, and a context may be on both.
 
 - `StorePort`: local files + git sync now, HTTP adapter to a central instance (container / VM) later.
-- One poller machine per context (`poll_on = "<machine>"`) until the central instance.
+- One poller machine per context until the central instance: the first of its `machines`. With `machines` absent, every machine polls, and loomd warns.
 - Runs take a lease to avoid double execution (delivery step 4). A store divergence stops that context's sync and is reported, never merged automatically.
 - `merge=union` on `*.jsonl` in `.gitattributes`; `task.md` is the only real conflict point.
 - `machine_id` on every event.

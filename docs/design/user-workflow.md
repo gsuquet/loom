@@ -84,7 +84,7 @@ Sections, in this order: **Urgent, In progress, Due, Waiting on you, Follow-ups,
 
 ## Inbox
 
-Everything assigned arrives here, with multiple selection, except what [Ingestion](connectors.md#ingestion) sends to Urgent. Flapping alerts are grouped by monitor. Dismissing clears what is there; a monitor that fires again comes back as a new row. The team pool of unassigned tickets is browsed from here, and assigning one to myself is an Immediate write.
+Everything assigned arrives here, with multiple selection, except what [Ingestion](connectors.md#ingestion) sends to Urgent. Flapping alerts are grouped by monitor. Dismissing clears what is there; a monitor that fires again comes back as a new row. The team pool of unassigned tickets is browsed from here. Its [entries](connector-ports.md#team-pool-entries) are not tasks and are not in the count. Assigning one to myself is an Immediate write.
 
 **Dates** are typed in one field: `fri`, `+3d`, `15 dec` or an ISO date. The field shows the resolved date before I confirm.
 
@@ -124,7 +124,7 @@ See [Knowledge](knowledge.md). An RSS feed is one row on Reading, and `Enter` ex
 
 ## Notifications
 
-Approval needed, clarification needed, run failed, sync conflict, p0 ingested, expired token. They are configurable. New MRs and tickets only update a count.
+Approval needed, clarification needed, run failed, sync conflict, urgent alert ingested, expired token. They are configurable. New MRs and tickets only update a count.
 
 ## Memory of the day
 

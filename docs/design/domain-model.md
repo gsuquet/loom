@@ -50,7 +50,7 @@ Kind = nature of the work. It drives the body template, the done condition and t
 
 GitLab/GitHub MRs and issues, Jira, Freshservice, Datadog, calendar, cron, me.
 
-- **Dedup key**: `(provider, host, external_id)`. Ingestion is idempotent. A flapping Datadog monitor is grouped by monitor in the Inbox. If it fires again after a dismissal, it is a new row (key: monitor id + group).
+- **Dedup key**: `(connector, external_id)` in one store, for a connector instance ([Identity](connector-ports.md#identity)); a host does not name a Datadog organization. MRs keep `(provider, host, key)`. Ingestion is idempotent. A flapping Datadog monitor is grouped by monitor in the Inbox: one task per monitor, its groups in the snapshot. If any group fires again after a dismissal, it is a new row.
 - **Cron**: a schedule generates one task per occurrence. RRULE (RFC 5545) rather than cron syntax, to express e.g. "last working day of the month" (`FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1`). Dedup key `(schedule_id, occurrence_date)`. Missed occurrences: only the latest is created. Previous occurrence still open: per-schedule policy `skip | stack | replace`.
 - **No Slack connector**: `loom add --from <url>` stays the manual way in.
 - **Client trackers** (Jira, Freshservice): API token availability and write scope depend on client policy. Manual fallback.
@@ -97,6 +97,13 @@ match.paths = ["~/work/company-a"]
 store.path = "~/.loom/contexts/company-a"
 machines = ["laptop"]                       # absent: every machine
 store.backup = { remote = "git@…", encrypt = false }
-secrets.gitlab_token_cmd = "op read op://…"
-secrets.datadog_token_cmd = "op read op://…"
+
+[contexts.company-a.forges."gitlab.com"]     # see reviews.md
+token_cmd = "op read op://…"
+
+[contexts.company-a.connectors.datadog]      # see connector-ports.md
+kind = "datadog"
+site = "datadoghq.eu"
+token_cmd = "op read op://…"
+app_key_cmd = "op read op://…"
 ```

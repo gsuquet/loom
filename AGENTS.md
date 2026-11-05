@@ -21,6 +21,7 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 | Tasks, events, sources, kinds, status, order, contexts | [docs/design/domain-model.md](docs/design/domain-model.md) |
 | Sources, knowledge pages, meetings, conceptions, promotion | [docs/design/knowledge.md](docs/design/knowledge.md) |
 | Connector instances, write levels, write states, undo | [docs/design/connectors.md](docs/design/connectors.md) |
+| Connector ports, config, poll loop, item to task, status, vendor facts | [docs/design/connector-ports.md](docs/design/connector-ports.md) |
 | Store layout, ownership, IDs, multi-machine | [docs/design/storage.md](docs/design/storage.md) |
 | Repo index, contexts of repos, automatic updates | [docs/design/repos.md](docs/design/repos.md) |
 | Issue and MR sync | [docs/design/tracker-sync.md](docs/design/tracker-sync.md) |
