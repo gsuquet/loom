@@ -24,7 +24,7 @@ pub const FULL_LIST_PERIOD_ENV: &str = "LOOM_TEST_FULL_LIST_PERIOD";
 pub const APPROVAL_EXPIRY_ENV: &str = "LOOM_TEST_APPROVAL_EXPIRY";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
-/// A file that gets one line for each poll whose pass of MR refs ended.
+/// A file that gets one line for each poll or start whose pass of MR refs ended: `poll` or `start`.
 pub const MR_PASS_FILE_ENV: &str = "LOOM_TEST_MR_PASS_FILE";
 /// Replaces the API of forge hosts.
 ///
