@@ -38,7 +38,7 @@ pub struct ContextConfig {
     /// `[[contexts.<name>.schedules]]`: recurring tasks of the context.
     #[serde(default)]
     pub schedules: Vec<Schedule>,
-    /// `color`: ANSI color of the context in the TUI; `None` defaults to the palette.
+    /// `color`: ANSI color of the context. Validated; no command uses it.
     #[serde(default)]
     pub color: Option<ContextColor>,
     /// `[contexts.<name>.forges."<host>"]`: the context's own forge credentials.
@@ -92,31 +92,6 @@ pub enum ContextColor {
     BrightCyan,
     /// Standard ANSI color 15.
     BrightWhite,
-}
-
-impl ContextColor {
-    /// Canonical lowercase `snake_case` name of the ANSI color.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Black => "black",
-            Self::Red => "red",
-            Self::Green => "green",
-            Self::Yellow => "yellow",
-            Self::Blue => "blue",
-            Self::Magenta => "magenta",
-            Self::Cyan => "cyan",
-            Self::White => "white",
-            Self::BrightBlack => "bright_black",
-            Self::BrightRed => "bright_red",
-            Self::BrightGreen => "bright_green",
-            Self::BrightYellow => "bright_yellow",
-            Self::BrightBlue => "bright_blue",
-            Self::BrightMagenta => "bright_magenta",
-            Self::BrightCyan => "bright_cyan",
-            Self::BrightWhite => "bright_white",
-        }
-    }
 }
 
 fn machines<'de, D: Deserializer<'de>>(
@@ -841,7 +816,11 @@ mod tests {
     }
 
     #[test]
-    fn context_color_names_match_their_ansi_variants() {
+    fn context_color_reads_the_ansi_names() {
+        use serde::Deserialize as _;
+        use serde::de::IntoDeserializer as _;
+        use serde::de::value::{Error, StrDeserializer};
+
         let colors = [
             (ContextColor::Black, "black"),
             (ContextColor::Red, "red"),
@@ -861,7 +840,9 @@ mod tests {
             (ContextColor::BrightWhite, "bright_white"),
         ];
         for (color, name) in colors {
-            assert_eq!(color.as_str(), name);
+            let name: StrDeserializer<'_, Error> = name.into_deserializer();
+            let parsed = ContextColor::deserialize(name).unwrap();
+            assert_eq!(parsed, color);
         }
     }
 }

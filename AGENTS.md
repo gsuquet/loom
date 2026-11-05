@@ -4,11 +4,11 @@ Instructions for coding agents working on this repository.
 
 ## What loom is
 
-A personal task and knowledge management system, connected directly to the right sources, in which agents are first-class tools to refine, review, improve and implement, under typed contracts and gates. Rust core (`loom`, `loomd`), with a native macOS desktop app replacing the TUI.
+A personal task and knowledge management system, connected directly to the right sources, in which agents are first-class tools to refine, review, improve and implement, under typed contracts and gates. Rust core (`loom`, `loomd`). The CLI is the interface until the native macOS desktop app exists.
 
 ## Status
 
-v0.3.0 is released (tasks core and TUI); v0.4 (MR review) is in progress. The crates are listed in `docs/design/architecture.md`. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
+v0.3.0 is released (tasks core, with a TUI that was removed afterwards); v0.4 (MR review) is in progress. The crates are listed in `docs/design/architecture.md`. Anything describing a "multi-agent lifecycle engine" with 13 crates (old commits, old branches) is the **previous** loom and is superseded: do not use it as a reference.
 
 ## Read only what your task needs
 
@@ -28,7 +28,7 @@ Your task brief links the sections you need. Do not load the whole `docs/` tree.
 | Events | [docs/design/capture-and-learnings.md](docs/design/capture-and-learnings.md) |
 | Agents, gates, runtimes, factory | [docs/design/agents.md](docs/design/agents.md) |
 | Desktop app: pages, keys, flows | [docs/design/user-workflow.md](docs/design/user-workflow.md), [docs/prototypes/](docs/prototypes/README.md) |
-| Colors, spacing, badges, panes, modals, toasts (TUI and web) | [docs/design/ui-style.md](docs/design/ui-style.md) |
+| Colors, spacing, badges, panes, modals, toasts | [docs/design/ui-style.md](docs/design/ui-style.md) |
 | Past decisions, frozen | [docs/adr/](docs/adr/README.md) |
 | Versions and acceptance criteria | [docs/roadmap.md](docs/roadmap.md) |
 | Code, docs and git style | [docs/reference/style-guide.md](docs/reference/style-guide.md) |

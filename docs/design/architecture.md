@@ -7,7 +7,7 @@
 | Process | Role |
 | --- | --- |
 | `loomd` | Daemon, single writer of the store. Polls sources, syncs, schedules and supervises agent runs, applies upgrades. Runs as a launchd user agent (macOS) or systemd user unit (Linux) unless disabled. |
-| `loom` | CLI, for scripts and agents. A client of `loomd`; starts it if it is not running. With no arguments it opens the desktop app. |
+| `loom` | CLI, for me, scripts and agents. A client of `loomd`; starts it if it is not running. With no arguments it prints the help; once the desktop app exists, it opens the app. |
 | Desktop app | The one window I work in. A client of `loomd`. |
 | `loom mcp` | MCP server (stdio) for agents, a client of `loomd`. |
 
@@ -22,7 +22,7 @@
 
 ## Desktop app
 
-The TUI is removed entirely. Its removal follows the merge of the docs that describe the app. Business logic stays in `loomd` and `loom-core`, and never moves into the app.
+The TUI is removed, and the CLI is the interface until the app exists. Business logic stays in `loomd` and `loom-core`, and never moves into the app.
 
 - It reaches `loomd` over the unix socket, with no TCP port and no new authentication.
 - MR content, transcripts and articles are untrusted. Rendering them must not run their scripts or reach `loomd`.

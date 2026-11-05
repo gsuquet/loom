@@ -40,7 +40,7 @@ opened draft MR acme/shop#412 https://github.com/acme/shop/pull/412
 task k3q7zm2a: delivery link acme/shop#412
 ```
 
-The MR is a `delivery` link of the task (`loom show k3q --json`). The task log has an `mr` event (the Events tab of the TUI).
+The MR is a `delivery` link of the task (`loom show k3q --json`). The task log has an `mr` event.
 
 ## If the branch has an MR already
 
