@@ -10,9 +10,9 @@ use std::io;
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
-use loom_api::{ReviewSyncFailure, Status, StatusName, TaskId};
+use loom_api::{ForgeKind, ReviewSyncFailure, Status, StatusName, TaskId};
 use loom_core::{Actor, Origin};
-use loom_forge::model::{Mr, MrKey};
+use loom_forge::model::{Mr, MrKey, Sha};
 use loom_store::IndexedTask;
 use loom_store::atomic::write_file;
 use loom_store::files::{ARCHIVE_DIR, TASK_DIR_MODE, TASK_FILE_MODE, TASKS_DIR};
@@ -22,9 +22,9 @@ use loomd::backup::commit_message;
 use loomd::mr_refs::{DIFFS_DIR, DiffRecord, diffs_to_write, patch_name, record_diffs};
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
-    SyncState, VERSIONS_FILE, VersionRecord, apply_retarget, decide, find_review, is_retarget,
-    merge_current, merge_versions, mirror, mirror_dir, new_review_task, next_verdict, read_mr,
-    review_key, url_host, with_recorded_base,
+    SeenVerdict, SyncState, VERSIONS_FILE, VersionRecord, apply_retarget, decide, find_review,
+    is_retarget, merge_current, merge_versions, mirror, mirror_dir, new_review_task, next_verdict,
+    read_mr, review_key, url_host, with_recorded_base,
 };
 use tracing::{info, info_span, warn};
 
@@ -164,7 +164,8 @@ impl Worker {
                 None => Ok(None),
             };
         };
-        let (observation, state) = observe(&mr, &previous, update);
+        let dated = self.dated_start(batch, update);
+        let (observation, state) = observe(&mr, &previous, dated.as_ref().unwrap_or(update));
         let daemon = Origin {
             actor: Actor::Daemon,
             machine_id: self.user.machine_id.clone(),
@@ -286,6 +287,33 @@ impl Worker {
             self.changed(context, id);
         }
         Ok(())
+    }
+
+    /// A start on a GitLab MR that I approved: `update` with the head of the poll that first
+    /// showed my approval, from the index, which `sync.json` takes over. `None` otherwise. Without
+    /// it, the task would date my approval to a head that I did not review.
+    fn dated_start(&mut self, batch: &MrBatch, update: &MrUpdate) -> Option<MrUpdate> {
+        if !update.start || update.key.forge() != ForgeKind::Gitlab {
+            return None;
+        }
+        let verdict = update.verdict.as_ref()?.as_ref()?;
+        let head = self
+            .tasks
+            .index()
+            .mr_approval_head(
+                &batch.context,
+                &batch.host,
+                &loomd::review_queue::approval_key(&update.key),
+            )
+            .map_err(|error| warn!(%error, "cannot read the head of an approval"))
+            .ok()??;
+        let sha = Sha::try_from(head).ok()?;
+        let mut dated = update.clone();
+        dated.verdict = Some(Some(SeenVerdict {
+            sha,
+            ..verdict.clone()
+        }));
+        Some(dated)
     }
 
     /// Logs `note` on task `id`, then sets its status.

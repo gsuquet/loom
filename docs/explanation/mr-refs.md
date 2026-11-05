@@ -22,7 +22,7 @@ If several clones or worktrees have such a remote, `loomd` uses this order:
 
 ## When loomd fetches
 
-A separate thread does this work after each poll of a context and a forge host, and after each start on an MR. It reads the Review tasks of that context and host, and looks at the current head of each open MR. If that head has no recorded patch, the thread fetches the MR and writes the patch.
+A separate thread does this work after each poll of a context and a forge host, and after each start that creates a task. It reads the Review tasks of that context and host, and looks at the current head of each open MR. If that head has no recorded patch, the thread fetches the MR and writes the patch.
 
 An MR with only a [queue entry](review-sync.md#when-an-entry-comes-and-goes) has no Review task. Thus, it gets no fetch, no refs and no patch. `loom review start` creates the task and starts this work at once, without a poll. The start does not wait for the end of this work: the refs and the patch come a short time after its answer.
 
@@ -127,6 +127,7 @@ The refs stay when an active Review task of any context has the same MR, because
 - A task that you remove, and do not archive, leaves its row in `index.db` and its refs.
 - A task that you restore and archive again keeps its refs until the next start of `loomd`.
 - A lazy fetch that `loomd` stops can leave `tmp_pack_*` files in the clone.
+- A start that creates a task also counts as a poll for the wait of an MR that failed. Thus, many starts shorten that wait.
 - A task whose file is not valid does not protect the refs of its MR from a cleanup.
 - If two contexts have one MR with different verdicts, the `reviewed` ref follows the last poll.
 - If the target branch absorbs commits of the head, the local diff can show more hunks than a three-dot diff of the current tip, until the next push. A draft on such a hunk gets a flag from check 2 of the publish.

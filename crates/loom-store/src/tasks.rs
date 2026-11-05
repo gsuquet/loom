@@ -1489,7 +1489,6 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<Result<IndexedTask, StoreError>> 
     })())
 }
 
-/// The focus row of `context`, when one is recorded.
 /// The MRs whose approval is recorded for `context` and `host`, sorted by key.
 pub(crate) fn mr_approvals(
     conn: &Connection,
@@ -1516,6 +1515,7 @@ pub(crate) fn mr_approvals(
     .collect()
 }
 
+/// The focus row of `context`, when one is recorded.
 fn focus_row(conn: &Connection, context: &ContextName) -> Result<Option<FocusRow>, StoreError> {
     conn.query_row(
         "SELECT context, task_id, since FROM focus WHERE context = ?1",

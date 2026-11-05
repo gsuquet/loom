@@ -364,8 +364,8 @@ Every error response has an [`ApiError`](#apierror) body.
 | MR: the token cannot be resolved, the forge refuses a request or does not answer | `502` | `forge` |
 | Start: `{key}` not an MR key, body not a valid `ReviewStartRequest`, a key in several contexts and no `context`, or an entry of a context and host that this machine does not poll | `400` | `invalid_request` |
 | Start: the MR has no entry and no Review task. Or the forge answers `404` for the MR: no task, and the entry is deleted. | `404` | `not_found` |
-| Start: the token cannot be resolved, the forge refuses a request, does not answer or limits the rate. The entry stays, and no task is created. | `502` | `forge` |
-| Start: the MR is merged or closed, or I am its author. No task, and the entry is deleted. | `409` | `conflict`, no `details` |
+| Start: the token cannot be resolved, the forge refuses a request, does not answer or limits the rate, or answers `404` for another read than the MR. The entry stays, and no task is created. | `502` | `forge` |
+| Start: the MR is merged or closed, I am its author, or the read shows that my direct request is gone. No task, and the entry is deleted. | `409` | `conflict`, no `details` |
 | Task: a move failed and was rolled back, or failed halfway and left the task in two stores | `500` | `internal` |
 | Task: the task files cannot be read or written | `500` | `internal` |
 | The index cannot be read or written | `500` | `internal` |
@@ -1318,6 +1318,6 @@ Error returned instead of a response body.
 | `ambiguous_prefix` | A task ID prefix matches several tasks; `details` lists them. | With a longer prefix. |
 | `read_only` | The task cannot be changed: archived, unknown kind, format or status, or an invalid `task.md`. | No. An archived task stays read-only. For the other reasons, fix the file or upgrade loom. |
 | `illegal_transition` | The task cannot move from its status to the requested one. | No. |
-| `conflict` | An undo found a field changed since the change it reverts, or a start found the MR merged, closed or written by me. | Undo: after the hand edit is recorded, the undo reverts it instead. Start: no. |
+| `conflict` | An undo found a field changed since the change it reverts, or a start found the MR merged, closed, written by me, or no longer requesting me. | Undo: after the hand edit is recorded, the undo reverts it instead. Start: no. |
 | `nothing_to_undo` | The task has no change to undo. | No. |
 | `forge` | The forge refused a request, or did not answer. `message` gives the host, the forge and the reason. | After the cause is fixed (token, scopes, network). |

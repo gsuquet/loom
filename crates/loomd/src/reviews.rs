@@ -249,6 +249,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             last_login: None,
             last_success: None,
             updated_after: None,
+            list_in_full: false,
             mrs: HashMap::new(),
             target,
         });
@@ -339,6 +340,9 @@ struct Host {
     last_success: Option<Timestamp>,
     /// GitLab `updated_after` of the next poll.
     updated_after: Option<Timestamp>,
+    /// A 404 removed an entry: the next GitLab list is full, whatever `updated_after` is. A lost
+    /// access also answers 404, and an unchanged MR would not be listed again.
+    list_in_full: bool,
     /// What the last polls read of each MR, by mirror directory name.
     mrs: HashMap<String, MrCache>,
 }
@@ -372,6 +376,36 @@ struct Poller {
 enum Stopped {
     Forge(ForgeError),
     Other(String),
+}
+
+/// Why a read of one MR failed.
+enum ReadFailure {
+    /// A 404 on the MR itself: it is gone, or I lost the access.
+    MrGone(ForgeError),
+    /// Another failure, such as a 404 on its reviews.
+    Other(ForgeError),
+}
+
+impl ReadFailure {
+    /// A failure of the read of the MR itself.
+    const fn of_the_mr(error: ForgeError) -> Self {
+        match error {
+            ForgeError::NotFound { .. } => Self::MrGone(error),
+            other => Self::Other(other),
+        }
+    }
+
+    fn into_error(self) -> ForgeError {
+        match self {
+            Self::MrGone(error) | Self::Other(error) => error,
+        }
+    }
+}
+
+impl From<ForgeError> for ReadFailure {
+    fn from(error: ForgeError) -> Self {
+        Self::Other(error)
+    }
 }
 
 impl From<ForgeError> for Stopped {
@@ -573,6 +607,13 @@ impl Poller {
     /// Hands `updates` of host `index` to the task thread. What the task thread did not write
     /// is read in full next time, or its cached `ETag` would hide the change with a 304.
     fn hand_over(&mut self, index: usize, updates: Vec<MrUpdate>) -> Option<ReviewsApplied> {
+        let applied = self.write_updates(index, updates)?;
+        self.refs.pass(&self.hosts[index].target);
+        Some(applied)
+    }
+
+    /// [`Self::hand_over`], with no pass of MR refs after it: a start that creates no task.
+    fn write_updates(&mut self, index: usize, updates: Vec<MrUpdate>) -> Option<ReviewsApplied> {
         let keys: Vec<String> = updates.iter().map(|update| update.key.dir_name()).collect();
         let host = &mut self.hosts[index];
         let batch = MrBatch {
@@ -586,7 +627,6 @@ impl Poller {
             }
             return None;
         };
-        self.refs.pass(&host.target);
         for failure in &applied.failed {
             if let Ok(key) = MrKey::parse(&failure.key) {
                 host.mrs.remove(&key.dir_name());
@@ -949,16 +989,17 @@ impl Poller {
             let cache = self.hosts[index].mrs.entry(key.dir_name()).or_default();
             match github_update(client, &key, found, &login, cache, task.is_some()) {
                 Ok(update) => fetched.updates.push(update),
-                Err(error) if stops_the_host(&error) => {
-                    fetched.stopped = Some(error.into());
-                    break;
-                }
                 // Gone from a host that answers: as for a closed MR. A task keeps its rules.
-                Err(ForgeError::NotFound { .. }) if unlisted => {
+                Err(ReadFailure::MrGone(_)) if unlisted => {
                     self.hosts[index].mrs.remove(&key.dir_name());
                     fetched.updates.push(gone_update(key));
                 }
-                Err(error) => {
+                Err(read) => {
+                    let error = read.into_error();
+                    if stops_the_host(&error) {
+                        fetched.stopped = Some(error.into());
+                        break;
+                    }
                     self.hosts[index].mrs.remove(&key.dir_name());
                     fetched.failed.push(failure(&key, &error));
                 }
@@ -970,7 +1011,13 @@ impl Poller {
     fn poll_gitlab(&mut self, index: usize, client: &GitlabClient) -> Result<Fetched, Stopped> {
         self.go_on()?;
         let login = self.login(index, client)?;
-        let listed = client.review_requests(self.hosts[index].updated_after)?;
+        let since = if self.hosts[index].list_in_full {
+            None
+        } else {
+            self.hosts[index].updated_after
+        };
+        let listed = client.review_requests(since)?;
+        self.hosts[index].list_in_full = false;
         let ToRead {
             mrs: keys,
             other_context,
@@ -981,6 +1028,8 @@ impl Poller {
         } = self.keys(index, listed)?;
         let mut untracked = untracked(&keys);
         untracked.extend(unassigned.iter().map(|failure| failure.key.clone()));
+        // A held entry fails at each poll, and is read one by one: it holds back no list.
+        untracked.retain(|key| !held.iter().any(|failure| failure.key == *key));
         let mut fetched = Fetched {
             updates: settled,
             other_context,
@@ -1030,16 +1079,19 @@ impl Poller {
                 mirrored,
             ) {
                 Ok(update) => fetched.updates.push(update),
-                Err(error) if stops_the_host(&error) => {
-                    fetched.stopped = Some(error.into());
-                    break;
-                }
                 // Gone from a host that answers: as for a closed MR. A task keeps its rules.
-                Err(ForgeError::NotFound { .. }) if unlisted => {
-                    self.hosts[index].mrs.remove(&key.dir_name());
+                Err(ReadFailure::MrGone(_)) if unlisted => {
+                    let host = &mut self.hosts[index];
+                    host.mrs.remove(&key.dir_name());
+                    host.list_in_full = true;
                     fetched.updates.push(gone_update(key));
                 }
-                Err(error) => {
+                Err(read) => {
+                    let error = read.into_error();
+                    if stops_the_host(&error) {
+                        fetched.stopped = Some(error.into());
+                        break;
+                    }
                     self.hosts[index].mrs.remove(&key.dir_name());
                     fetched.failed.push(failure(&key, &error));
                 }
@@ -1150,7 +1202,7 @@ fn github_update(
     login: &str,
     cache: &mut MrCache,
     mirrored: bool,
-) -> Result<MrUpdate, ForgeError> {
+) -> Result<MrUpdate, ReadFailure> {
     let threads = |client: &GithubClient| -> Result<Option<Vec<Thread>>, ForgeError> {
         if !mirrored {
             return Ok(None);
@@ -1159,7 +1211,10 @@ fn github_update(
         threads.extend(client.issue_comments(key)?);
         Ok(Some(threads))
     };
-    match client.pull(key, conditional(cache, mirrored))? {
+    let read = client
+        .pull(key, conditional(cache, mirrored))
+        .map_err(ReadFailure::of_the_mr)?;
+    match read {
         Conditional::Modified { value: mr, etag } => {
             let verdict = github_verdict(&client.reviews(key)?, login);
             let threads = threads(client)?;
@@ -1238,8 +1293,11 @@ fn gitlab_update(
     login: &str,
     cache: &mut MrCache,
     mirrored: bool,
-) -> Result<MrUpdate, ForgeError> {
-    match client.merge_request(reference, conditional(cache, mirrored))? {
+) -> Result<MrUpdate, ReadFailure> {
+    let read = client
+        .merge_request(reference, conditional(cache, mirrored))
+        .map_err(ReadFailure::of_the_mr)?;
+    match read {
         Conditional::Modified { value: mr, etag } => {
             let head = mr.version.head_sha.clone();
             let versions = if mirrored {

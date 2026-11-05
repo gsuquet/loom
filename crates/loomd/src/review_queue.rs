@@ -271,17 +271,21 @@ pub enum StartRefusal {
     NotOpen(MrState),
     /// I am the author: my own MRs never get a Review task.
     Own,
+    /// The read shows that my direct request is gone.
+    RequestGone,
 }
 
-/// Whether the MR that a start read can get a Review task. Pure.
+/// Whether the MR that a start read can get a Review task. `request_gone`: the read shows that a
+/// direct request is gone; a read does not show a request through a team. Pure.
 ///
 /// # Errors
 ///
 /// The reason of the refusal.
-pub const fn can_start(state: MrState, own: bool) -> Result<(), StartRefusal> {
+pub const fn can_start(state: MrState, own: bool, request_gone: bool) -> Result<(), StartRefusal> {
     match state {
         MrState::Merged | MrState::Closed => Err(StartRefusal::NotOpen(state)),
         MrState::Open if own => Err(StartRefusal::Own),
+        MrState::Open if request_gone => Err(StartRefusal::RequestGone),
         MrState::Open => Ok(()),
     }
 }

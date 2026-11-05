@@ -372,17 +372,25 @@ fn start_target_table() {
 }
 
 #[test]
-fn start_refuses_a_closed_mr_and_my_own() {
-    assert_eq!(can_start(MrState::Open, false), Ok(()));
-    assert_eq!(
-        can_start(MrState::Merged, false),
-        Err(StartRefusal::NotOpen(MrState::Merged))
-    );
-    assert_eq!(
-        can_start(MrState::Closed, false),
-        Err(StartRefusal::NotOpen(MrState::Closed))
-    );
-    assert_eq!(can_start(MrState::Open, true), Err(StartRefusal::Own));
+fn start_refuses_a_closed_mr_my_own_and_a_request_that_is_gone() {
+    use MrState::{Closed, Merged, Open};
+    let table = [
+        (Open, false, false, Ok(())),
+        (Merged, false, false, Err(StartRefusal::NotOpen(Merged))),
+        (Closed, false, false, Err(StartRefusal::NotOpen(Closed))),
+        (Open, true, false, Err(StartRefusal::Own)),
+        (Open, false, true, Err(StartRefusal::RequestGone)),
+        // What leaves first names the refusal.
+        (Merged, true, true, Err(StartRefusal::NotOpen(Merged))),
+        (Open, true, true, Err(StartRefusal::Own)),
+    ];
+    for (state, own, gone, expected) in table {
+        assert_eq!(
+            can_start(state, own, gone),
+            expected,
+            "{state:?} {own} {gone}"
+        );
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use axum::http::StatusCode;
 use loom_api::{ApiError, ContextName, ErrorCode, ForgeKind, ReviewSyncOutcome, TaskId};
-use loom_forge::client::{ForgeError, GithubClient, GitlabClient, GitlabMr};
+use loom_forge::client::{GithubClient, GitlabClient, GitlabMr, Token};
 use loom_forge::model::{MrKey, MrState};
 use loom_store::Reader;
 use loomd::api::{internal, invalid_request, unavailable};
@@ -17,10 +17,33 @@ use tokio::sync::oneshot;
 use tracing::Span;
 
 use super::{
-    Poller, Request, ReviewHandle, Stopped, github_update, gitlab_update, gone_update, project_id,
+    Poller, ReadFailure, Request, ReviewHandle, Stopped, github_update, gitlab_update, gone_update,
+    project_id,
 };
 use crate::repos::Failure;
 use crate::tasks::read_entry;
+
+/// Why the read of a start stopped: only a 404 on the MR itself removes its entry, not a 404 on
+/// the login of the token or on another read.
+enum StartRead {
+    MrGone,
+    Stopped(Stopped),
+}
+
+impl From<Stopped> for StartRead {
+    fn from(stopped: Stopped) -> Self {
+        Self::Stopped(stopped)
+    }
+}
+
+impl From<ReadFailure> for StartRead {
+    fn from(failure: ReadFailure) -> Self {
+        match failure {
+            ReadFailure::MrGone(_) => Self::MrGone,
+            ReadFailure::Other(error) => Self::Stopped(error.into()),
+        }
+    }
+}
 
 impl ReviewHandle {
     /// Starts on the MR `key`, after a poll that runs: its Review task, and whether this request
@@ -153,6 +176,12 @@ impl Poller {
             .resolver
             .resolve(&target.source)
             .map_err(|error| forge_failure(error.to_string()))?;
+        // A read does not show a request through a team: what the last poll saw tells.
+        let was_direct = self.hosts[index]
+            .mrs
+            .get(&key.dir_name())
+            .is_some_and(|cache| cache.direct)
+            || target.kind == ForgeKind::Gitlab;
         // In full: the mirror needs the MR, and a 304 would not give it.
         self.hosts[index].mrs.remove(&key.dir_name());
         let read = match target.kind {
@@ -169,24 +198,8 @@ impl Poller {
         };
         let mut update = match read {
             Ok(update) => update,
-            // Gone: as for a closed MR, the entry goes.
-            Err(Stopped::Forge(ForgeError::NotFound { .. })) => {
-                self.hosts[index].mrs.remove(&key.dir_name());
-                if self
-                    .hand_over(index, vec![gone_update(key.clone())])
-                    .is_none()
-                {
-                    return Err(stopping());
-                }
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    ApiError::new(
-                        ErrorCode::NotFound,
-                        format!("the forge no longer shows MR `{key}`: its entry is removed"),
-                    ),
-                ));
-            }
-            Err(stopped) => {
+            Err(StartRead::MrGone) => return Err(self.entry_is_gone(index, key)),
+            Err(StartRead::Stopped(stopped)) => {
                 self.hosts[index].mrs.remove(&key.dir_name());
                 return Err(match self.stopped(index, stopped, &token) {
                     ReviewSyncOutcome::RateLimited { until } => forge_failure(format!(
@@ -201,11 +214,19 @@ impl Poller {
                 });
             }
         };
+        let reviewer = self.hosts[index]
+            .mrs
+            .get(&key.dir_name())
+            .is_some_and(|cache| cache.direct);
+        let request_gone = was_direct && !reviewer;
         let refusal = update
             .mr
             .as_ref()
-            .and_then(|mr| can_start(mr.state, update.own).err());
-        update.start = refusal.is_none();
+            .and_then(|mr| can_start(mr.state, update.own, request_gone).err());
+        if let Some(refusal) = refusal {
+            return Err(self.refuse_start(index, key, update, refusal, &token));
+        }
+        update.start = true;
         let Some(applied) = self.hand_over(index, vec![update]) else {
             return Err(stopping());
         };
@@ -214,10 +235,6 @@ impl Poller {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 internal(token.redact(&failure.error)),
             ));
-        }
-        // The poll rules removed the entry of an MR that cannot start.
-        if let Some(refusal) = refusal {
-            return Err(refused(key, refusal));
         }
         applied.created.first().map_or_else(
             || {
@@ -230,15 +247,61 @@ impl Poller {
         )
     }
 
+    /// The forge answers 404 for the MR of a start: as for a closed MR, the entry goes. No task
+    /// means no pass of MR refs. The next GitLab list is full: a lost access also answers 404.
+    fn entry_is_gone(&mut self, index: usize, key: &MrKey) -> Failure {
+        let host = &mut self.hosts[index];
+        host.mrs.remove(&key.dir_name());
+        host.list_in_full = true;
+        if self
+            .write_updates(index, vec![gone_update(key.clone())])
+            .is_none()
+        {
+            return stopping();
+        }
+        (
+            StatusCode::NOT_FOUND,
+            ApiError::new(
+                ErrorCode::NotFound,
+                format!("the forge no longer shows MR `{key}`: its entry is removed"),
+            ),
+        )
+    }
+
+    /// The MR that a start read cannot start: the poll rules remove its entry. No task means no
+    /// pass of MR refs.
+    fn refuse_start(
+        &mut self,
+        index: usize,
+        key: &MrKey,
+        mut update: MrUpdate,
+        refusal: StartRefusal,
+        token: &Token,
+    ) -> Failure {
+        if refusal == StartRefusal::RequestGone {
+            update.requested = Some(false);
+        }
+        let Some(applied) = self.write_updates(index, vec![update]) else {
+            return stopping();
+        };
+        if let Some(failure) = applied.failed.first() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                internal(token.redact(&failure.error)),
+            );
+        }
+        refused(key, refusal)
+    }
+
     fn read_github_start(
         &mut self,
         index: usize,
         client: &GithubClient,
         key: &MrKey,
-    ) -> Result<MrUpdate, Stopped> {
+    ) -> Result<MrUpdate, StartRead> {
         let login = self.login(index, client)?;
         let cache = self.hosts[index].mrs.entry(key.dir_name()).or_default();
-        Ok(github_update(client, key, Some(true), &login, cache, true)?)
+        github_update(client, key, Some(true), &login, cache, true).map_err(StartRead::from)
     }
 
     fn read_gitlab_start(
@@ -247,9 +310,12 @@ impl Poller {
         client: &GitlabClient,
         key: &MrKey,
         project: Option<u64>,
-    ) -> Result<MrUpdate, Stopped> {
-        let project_id = project
-            .ok_or_else(|| Stopped::Other("the ID of the GitLab project is unknown".to_owned()))?;
+    ) -> Result<MrUpdate, StartRead> {
+        let project_id = project.ok_or_else(|| {
+            StartRead::Stopped(Stopped::Other(
+                "the ID of the GitLab project is unknown".to_owned(),
+            ))
+        })?;
         let login = self.login(index, client)?;
         let cache = self.hosts[index].mrs.entry(key.dir_name()).or_default();
         cache.project_id = Some(project_id);
@@ -257,15 +323,7 @@ impl Poller {
             project_id,
             iid: key.number(),
         };
-        Ok(gitlab_update(
-            client,
-            key,
-            mr,
-            Some(true),
-            &login,
-            cache,
-            true,
-        )?)
+        gitlab_update(client, key, mr, Some(true), &login, cache, true).map_err(StartRead::from)
     }
 }
 
@@ -288,6 +346,7 @@ fn refused(key: &MrKey, refusal: StartRefusal) -> Failure {
         StartRefusal::NotOpen(MrState::Merged) => "is merged",
         StartRefusal::NotOpen(MrState::Closed | MrState::Open) => "is closed",
         StartRefusal::Own => "is my own MR",
+        StartRefusal::RequestGone => "no longer requests my review",
     };
     (
         StatusCode::CONFLICT,
