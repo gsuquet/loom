@@ -221,7 +221,7 @@ A line reported as `newer_version` stops the recording of hand edits of the task
 
 ## `queue/mrs/`: queue entry
 
-An MR that waits on me and has no Review task has one file: `<store>/queue/mrs/<provider>-<key>.json`. `loomd` writes these files: do not change them. `<provider>-<key>` is the name of the [MR mirror](#mrs-mr-mirror) directory. `loomd` deletes the file when the MR leaves the queue.
+An MR that waits on me and has no Review task has one file: `<store>/queue/mrs/<provider>-<key>.json`. `loomd` writes these files: do not change them. `<provider>-<key>` is the name of the [MR mirror](#mrs-mr-mirror) directory. `loomd` deletes the file when the MR leaves the queue. The exception is an open MR of mine with a `seen_at` and no reason left: its file stays with `reasons: []`, so that a note that I saw does not count as new again. Such a file is not in the queue. It goes when the MR is merged or closed, or when the forge answers `404`.
 
 | Key | Content |
 | --- | --- |
@@ -233,10 +233,10 @@ An MR that waits on me and has no Review task has one file: `<store>/queue/mrs/<
 | `web_url` | The page of the MR. Its host is the forge host of the entry. |
 | `head_sha` | The head SHA at the last read of the MR. |
 | `updated_at` | The time of the last change of the MR on the forge. |
-| `reasons` | Why the MR waits on me. A list with at least one value. Values: `review_requested`. |
-| `seen_at` | Optional. The time when I last opened the entry. No command sets it now. |
+| `reasons` | Why the MR waits on me. Values: `review_requested`, `assigned`, `mentioned`, `own_new_comments`, `own_pipeline_failed`, `own_ready_to_merge`, in this order. |
+| `seen_at` | Optional. The time when I last opened the entry (`POST /v1/reviews/queue/{key}/seen`). |
 
-The file is JSON with two-space indentation and a final newline. `loomd` writes it only when its content changes, with an atomic rename. The entries that a poll changes give one commit of the store: `queue: <n> added, <n> updated, <n> removed`. When an entry comes and goes: [review sync](../explanation/review-sync.md#when-an-entry-comes-and-goes).
+The file is JSON with two-space indentation and a final newline. `loomd` writes it only when its content changes, with an atomic rename. The entries that a poll or a `seen` request changes give one commit of the store: `queue: <n> added, <n> updated, <n> removed`. When an entry comes and goes: [review sync](../explanation/review-sync.md#when-an-entry-comes-and-goes).
 
 ## `mrs/`: MR mirror
 
