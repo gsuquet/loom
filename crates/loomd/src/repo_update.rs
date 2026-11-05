@@ -657,9 +657,7 @@ pub(crate) fn wait(
         if reached.load(Ordering::Relaxed) {
             // The rest would be dropped: a slow diff must not hold its caller until the timeout.
             stop_group(&mut child, grace);
-            return Ok(stdout
-                .and_then(|received| received.recv_timeout(grace).ok())
-                .unwrap_or_default());
+            return capped_output(stdout, grace);
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -688,7 +686,12 @@ pub(crate) fn wait(
             .and_then(|received| received.recv_timeout(grace).ok())
             .unwrap_or_default()
     };
-    let out = collect(stdout);
+    // A caller that keeps the output as data gets no empty output in place of it: an empty patch
+    // would read as a diff with no change.
+    let out = match limit {
+        Some(_) if status.success() => capped_output(stdout, grace)?,
+        Some(_) | None => collect(stdout),
+    };
     let err = collect(stderr);
     if status.success() {
         Ok(out)
@@ -698,6 +701,21 @@ pub(crate) fn wait(
             stderr_tail: tail(&err),
         })
     }
+}
+
+/// The standard output that a reader with a limit kept, or a failure when a process outside of
+/// the process group still holds the pipe.
+fn capped_output(
+    stdout: Option<mpsc::Receiver<Vec<u8>>>,
+    grace: Duration,
+) -> Result<Vec<u8>, Failure> {
+    stdout
+        .and_then(|received| received.recv_timeout(grace).ok())
+        .ok_or_else(|| {
+            Failure::Run(io::Error::other(
+                "the standard output of git was not read to its end: a process still holds it",
+            ))
+        })
 }
 
 /// Reads `pipe` to its end on a thread; the bytes arrive on the channel. With a limit, at most

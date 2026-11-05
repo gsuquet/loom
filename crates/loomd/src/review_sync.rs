@@ -336,10 +336,10 @@ pub struct VersionRecord {
 /// `known` (oldest first) with each version of `seen` whose head is new, first seen at `now`.
 ///
 /// A known version gets the merge base and the forge version ID that it lacked (GitLab gives
-/// them); the rest of it is kept. A known head with a new base (the MR is retargeted) gets that
-/// base, and loses its merge base and the record of its diff: they are of the old base, except
-/// on a merged or closed MR, whose base moves without a new diff. Two
-/// versions of one head count as the newest. Pure.
+/// them); the rest of it is kept, its base too: GitHub moves `base.sha` with the tip of the target
+/// branch, with no push and no retarget. A new GitLab version of the head with another base is
+/// the exception on an open MR: it loses the record of its diff. On a merged or closed MR, nothing
+/// makes a new diff, so nothing changes. Two versions of one head count as the newest. Pure.
 #[must_use]
 pub fn merge_versions(
     known: &[VersionRecord],
@@ -371,10 +371,13 @@ pub fn merge_versions(
                 MrState::Open => true,
                 MrState::Merged | MrState::Closed => false,
             };
-            if open && record.version.base_sha != version.base_sha {
-                record.version.base_sha = version.base_sha.clone();
-                record.version.merge_base.clone_from(&version.merge_base);
-                record.diff = None;
+            let new_version = matches!(
+                (record.version.forge_version_id, version.forge_version_id),
+                (Some(recorded), Some(listed)) if recorded != listed
+            );
+            if open && new_version && record.version.base_sha != version.base_sha {
+                record.version.forge_version_id = version.forge_version_id;
+                reset_base(record, version);
             }
             if record.version.merge_base.is_none() {
                 record.version.merge_base.clone_from(&version.merge_base);
@@ -394,6 +397,55 @@ pub fn merge_versions(
         }
     }
     versions
+}
+
+/// `mr` with the base that its head has in `versions`, for the snapshot in `mr.json`: a moved tip
+/// of the target branch gives no new bytes and no commit. Pure.
+#[must_use]
+pub fn with_recorded_base(mr: &Mr, versions: &[VersionRecord]) -> Mr {
+    let mut mr = mr.clone();
+    if let Some(record) = versions
+        .iter()
+        .find(|record| record.version.head_sha == mr.version.head_sha)
+    {
+        mr.version.base_sha.clone_from(&record.version.base_sha);
+        // A merge base that git computed is in `versions.json` alone.
+        if mr.version.merge_base.is_some() {
+            mr.version.merge_base.clone_from(&record.version.merge_base);
+        }
+    }
+    mr
+}
+
+/// Whether `mr` has a new target branch since the `previous` poll. A moved tip of the same branch
+/// is none, and a merged or closed MR gets no new diff. Pure.
+#[must_use]
+pub fn is_retarget(previous: Option<&Mr>, mr: &Mr) -> bool {
+    let open = match mr.state {
+        MrState::Open => true,
+        MrState::Merged | MrState::Closed => false,
+    };
+    open && previous.is_some_and(|previous| previous.base_ref != mr.base_ref)
+}
+
+/// `versions` after a new target branch: the head of `current` gets its base and merge base, and
+/// loses the record of its diff, which is of the old branch. Pure.
+#[must_use]
+pub fn apply_retarget(mut versions: Vec<VersionRecord>, current: &MrVersion) -> Vec<VersionRecord> {
+    if let Some(record) = versions
+        .iter_mut()
+        .find(|record| record.version.head_sha == current.head_sha)
+    {
+        reset_base(record, current);
+    }
+    versions
+}
+
+/// `record` with the base of `version`, and no diff.
+fn reset_base(record: &mut VersionRecord, version: &MrVersion) {
+    record.version.base_sha = version.base_sha.clone();
+    record.version.merge_base.clone_from(&version.merge_base);
+    record.diff = None;
 }
 
 /// `versions` with the `current` version of an MR when the forge list lacks its head. Pure.

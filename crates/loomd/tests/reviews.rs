@@ -1363,9 +1363,9 @@ fn a_review_task_gets_the_refs_and_a_diff_per_version_of_its_mr() {
         !sandbox.store("personal").join("tasks").join(&id).exists()
     });
     sandbox.sync_and_settle();
-    wait_for("the cleanup of the refs", || {
-        git(&["for-each-ref", "refs/loom/"]).is_empty()
-    });
+    assert_eq!(git(&["for-each-ref", "refs/loom/"]), "");
+    // Nothing of the task is left on this machine.
+    assert_eq!(clones_of(&sandbox, &id), MrClones::default());
     daemon.stop();
 }
 
@@ -1774,8 +1774,9 @@ fn a_retargeted_mr_gets_a_new_diff_with_the_same_head() {
     );
     assert_eq!(sandbox.git_commands(" diff -M "), 1);
 
-    // The same head on another base.
+    // The same head on another target branch.
     let mut moved = fixture_json("github/pull-412.v1.json");
+    moved["base"]["ref"] = json!("release");
     moved["base"]["sha"] = json!(V1);
     moved["updated_at"] = json!("2026-10-22T09:00:00Z");
     sandbox.github.set(
@@ -1789,6 +1790,121 @@ fn a_retargeted_mr_gets_a_new_diff_with_the_same_head() {
     assert_eq!(versions[0]["merge_base"], V1);
     assert_eq!(versions[0]["diff"], "local");
     assert_eq!(sandbox.git_commands(" diff -M "), 2);
+    daemon.stop();
+}
+
+#[test]
+fn a_moved_tip_of_the_github_target_branch_does_nothing() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (_home, _forge, _clone) = clone_of_the_scenario(&sandbox);
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    sandbox.sync_and_settle();
+    let mirror = sandbox
+        .store("personal")
+        .join("tasks")
+        .join(the_review_id(&sandbox))
+        .join(MIRROR);
+    let versions = fs::read(mirror.join("versions.json")).unwrap();
+    let commits_before = commits(&sandbox.store("personal"));
+    let fetches = sandbox.git_commands("fetch --no-tags --no-write-fetch-head");
+
+    // No push and no retarget: GitHub shows the new tip of `main`.
+    let mut moved = fixture_json("github/pull-412.v1.json");
+    moved["base"]["sha"] = json!(M2);
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412",
+        with_etag(moved.to_string(), "\"v1-tip\""),
+    );
+    sandbox.sync_and_settle();
+    assert_eq!(fs::read(mirror.join("versions.json")).unwrap(), versions);
+    assert_eq!(commits(&sandbox.store("personal")), commits_before);
+    assert_eq!(
+        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
+        fetches
+    );
+    assert_eq!(sandbox.git_commands(" diff -M "), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_moved_tip_of_the_gitlab_target_branch_does_nothing() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    fs::create_dir_all(sandbox.dir.path().join("work")).unwrap();
+    sandbox.gitlab.set(
+        "GET /projects/77/merge_requests/88/diffs",
+        route(fixture("gitlab/merge-request-88-diffs.json")),
+    );
+    let daemon = sandbox.start();
+    sandbox.sync_and_settle();
+    let list: TaskList = ok(&request(
+        &sandbox.socket(),
+        "GET",
+        "/v1/tasks?context=company-a",
+        None,
+    ));
+    let mirror = sandbox
+        .store("company-a")
+        .join("tasks")
+        .join(list.tasks[0].id.to_string())
+        .join("mrs/gitlab-company-a%2Fcheckout%2188");
+    let versions = fs::read(mirror.join("versions.json")).unwrap();
+    assert!(String::from_utf8_lossy(&versions).contains("\"diff\": \"reduced\""));
+    let reads = || {
+        sandbox
+            .gitlab
+            .requests()
+            .iter()
+            .filter(|request| request.ends_with("/diffs"))
+            .count()
+    };
+    let read = reads();
+
+    // The MR changed, on the same branch and with the same versions: its `diff_refs` moved.
+    let mut moved = fixture_json("gitlab/merge-request-88.v2.json");
+    moved["diff_refs"]["start_sha"] = json!(V1);
+    moved["updated_at"] = json!("2026-10-24T09:00:00Z");
+    sandbox.gitlab.set(
+        "GET /projects/77/merge_requests/88",
+        with_etag(moved.to_string(), "W/\"88tip\""),
+    );
+    sandbox.sync_and_settle();
+    assert_eq!(fs::read(mirror.join("versions.json")).unwrap(), versions);
+    assert_eq!(reads(), read);
+    daemon.stop();
+}
+
+#[test]
+fn a_patch_of_the_forge_is_recorded_on_the_base_of_versions_json_after_a_moved_tip() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    fs::create_dir_all(sandbox.dir.path().join("work")).unwrap();
+    // No patch at the first poll.
+    let daemon = sandbox.start();
+    sandbox.sync_and_settle();
+    let mirror = sandbox
+        .store("personal")
+        .join("tasks")
+        .join(the_review_id(&sandbox))
+        .join(MIRROR);
+    assert!(!mirror.join("diffs").exists());
+    // Then the tip moves, and the forge answers: the record keeps its first base.
+    let mut moved = fixture_json("github/pull-412.v1.json");
+    moved["base"]["sha"] = json!(M2);
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412",
+        with_etag(moved.to_string(), "\"v1-tip\""),
+    );
+    sandbox.github.set(
+        "GET /repos/acme/shop/pulls/412/files",
+        route(fixture("github/pull-412-files.v2.json")),
+    );
+    sandbox.sync_and_settle();
+    let versions = json_file(&mirror.join("versions.json"));
+    assert_eq!(versions[0]["base_sha"], M1);
+    assert_eq!(versions[0]["diff"], "reduced");
     daemon.stop();
 }
 
@@ -2301,6 +2417,9 @@ fn a_merged_mr_keeps_its_local_diff_when_its_base_moves() {
         .join(the_review_id(&sandbox))
         .join(MIRROR);
     let before = fs::read(mirror.join("diffs").join(format!("{V1}.patch"))).unwrap();
+    // Refs that go after the merge do not come back: no fetch for a merged MR.
+    let (home, clone) = (sandbox.user_home(), sandbox.dir.path().join("work/shop"));
+    let head = "refs/loom/mr/upstream/412/head";
     let mut merged = fixture_json("github/pull-412.v1.json");
     merged["state"] = json!("closed");
     merged["merged"] = json!(true);
@@ -2318,6 +2437,13 @@ fn a_merged_mr_keeps_its_local_diff_when_its_base_moves() {
     assert_eq!(
         fs::read(mirror.join("diffs").join(format!("{V1}.patch"))).unwrap(),
         before
+    );
+    common::git(&home, &clone, &["update-ref", "-d", head]);
+    let fetches = sandbox.git_commands("fetch --no-tags --no-write-fetch-head");
+    sandbox.sync_and_settle();
+    assert_eq!(
+        sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
+        fetches
     );
     daemon.stop();
 }
@@ -2341,5 +2467,44 @@ fn a_host_that_cannot_be_reached_is_tried_once_for_all_its_clones() {
         sandbox.git_commands("fetch --no-tags --no-write-fetch-head"),
         1
     );
+    daemon.stop();
+}
+
+#[test]
+fn a_success_ends_the_backoff_of_an_mr() {
+    let sandbox = Sandbox::new();
+    index_the_clones(&sandbox);
+    let (home, forge, _clone) = clone_of_the_scenario(&sandbox);
+    let private = clone_of_the_private_project(&sandbox, &home, &forge);
+    common::git(&home, &forge, &["update-ref", "refs/pull/500/head", V1]);
+    private_mr(&sandbox, &[]);
+    let refused = "fatal: The requested URL returned error: 403\n";
+    fs::write(sandbox.git_fail(), refused).unwrap();
+    let daemon = sandbox.start();
+    scan(&sandbox);
+    // Tries at polls 1 and 2; poll 3 waits; a success at poll 4.
+    for _ in 0..3 {
+        sandbox.sync_and_settle();
+    }
+    assert_eq!(fetches_of_500(&sandbox), 2);
+    fs::remove_file(sandbox.git_fail()).unwrap();
+    sandbox.sync_and_settle();
+    let head = "refs/loom/mr/upstream/500/head";
+    assert_eq!(
+        common::git(&home, &private, &["rev-parse", head]).trim(),
+        V1
+    );
+    let mirror = &mirrors(&sandbox)[&500];
+    let versions = json_file(&mirror.join("versions.json"));
+    assert_eq!(versions[0]["diff"], "local");
+
+    // A new failure starts from the first step: a try at each of the next two polls.
+    let before = fetches_of_500(&sandbox);
+    common::git(&home, &private, &["update-ref", "-d", head]);
+    fs::write(sandbox.git_fail(), refused).unwrap();
+    for _ in 0..2 {
+        sandbox.sync_and_settle();
+    }
+    assert_eq!(fetches_of_500(&sandbox), before + 2);
     daemon.stop();
 }

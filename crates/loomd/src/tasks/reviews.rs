@@ -21,8 +21,9 @@ use loomd::backup::commit_message;
 use loomd::mr_refs::{DIFFS_DIR, DiffRecord, diffs_to_write, patch_name, record_diffs};
 use loomd::review_sync::{
     DESCRIPTION_FILE, Decision, MR_FILE, MRS_DIR, MrBatch, MrUpdate, Observation, SYNC_FILE,
-    SyncState, VERSIONS_FILE, VersionRecord, decide, find_review, merge_current, merge_versions,
-    mirror, mirror_dir, new_review_task, next_verdict, read_mr, review_key, url_host,
+    SyncState, VERSIONS_FILE, VersionRecord, apply_retarget, decide, find_review, is_retarget,
+    merge_current, merge_versions, mirror, mirror_dir, new_review_task, next_verdict, read_mr,
+    review_key, url_host, with_recorded_base,
 };
 use tracing::{info, info_span, warn};
 
@@ -166,7 +167,8 @@ impl Worker {
                 info!(%context, key = %update.key, %id, %status, ?reason, "Review task status changed");
             }
             let versions = merged_versions(&previous, update, &mr);
-            let files = mirror(&mr, &versions, update.threads.as_deref(), &state)
+            let snapshot = with_recorded_base(&mr, &versions);
+            let files = mirror(&snapshot, &versions, update.threads.as_deref(), &state)
                 .map_err(|error| error.to_string())?;
             write_mirror(&dir, &files.files())
                 .map_err(|error| format!("cannot write the mirror {}: {error}", dir.display()))
@@ -288,11 +290,11 @@ impl Worker {
 /// The versions after a poll: those of the mirror, those of the forge, and the current one.
 fn merged_versions(previous: &Previous, update: &MrUpdate, mr: &Mr) -> Vec<VersionRecord> {
     let seen = now();
-    merge_current(
-        merge_versions(&previous.versions, &update.versions, mr.state, seen),
-        &mr.version,
-        seen,
-    )
+    let mut versions = merge_versions(&previous.versions, &update.versions, mr.state, seen);
+    if is_retarget(previous.mr.as_ref(), mr) {
+        versions = apply_retarget(versions, &mr.version);
+    }
+    merge_current(versions, &mr.version, seen)
 }
 
 /// What the poll saw of `mr` against the `previous` mirror, and the sync state to record.

@@ -399,9 +399,6 @@ impl Worker {
             }
             needs_refs(plan, same_clone, present)
         });
-        if let Some(clone) = &clones.clone {
-            self.keep_reviewed(clone, key, mirror.state.as_ref());
-        }
         let work = Work {
             target,
             repos,
@@ -420,7 +417,8 @@ impl Worker {
             (DiffPlan::FromForge, _) => self.reduced_diff(&work, down),
             (DiffPlan::Keep | DiffPlan::FromClone, _) => Vec::new(),
         };
-        // The fetch may have brought the commit that the last verdict is on.
+        // After the work: the fetch may have brought the commit of the last verdict. An old head
+        // has no ref any more at that point, and git keeps its objects until a `gc`.
         if let Some(clone) = &clones.clone {
             self.keep_reviewed(clone, key, mirror.state.as_ref());
         }
@@ -442,7 +440,7 @@ impl Worker {
         }
     }
 
-    /// Points the `reviewed` ref of the MR at my last verdict, before a fetch moves its head.
+    /// Points the `reviewed` ref of the MR at my last verdict.
     fn keep_reviewed(&mut self, clone: &MrClone, key: &MrKey, state: Option<&SyncState>) {
         let Some(verdict) = state.and_then(|state| state.verdict.as_ref()) else {
             return;
@@ -597,7 +595,8 @@ impl Worker {
                     noted.extend(patch);
                     diffs.push(VersionDiff {
                         head: head.clone(),
-                        base: work.head_base().clone(),
+                        // `mr.json` shows the base that the head has in `versions.json`.
+                        base: mr.version.base_sha.clone(),
                         merge_base: Some(merge_base),
                         kind: DiffKind::TooLarge,
                         patch: noted,
@@ -643,7 +642,7 @@ impl Worker {
         let limit = patch_budget(patches_size(dir, head));
         Some(VersionDiff {
             head: head.clone(),
-            base: work.head_base().clone(),
+            base: mr.version.base_sha.clone(),
             merge_base: None,
             kind: DiffKind::Reduced,
             patch: self.forge_patch(work, limit, down)?,
@@ -712,18 +711,6 @@ struct Work<'a> {
     mirror: &'a MirrorRead,
     recorded: Option<DiffKind>,
     patch_exists: bool,
-}
-
-impl Work<'_> {
-    /// The base of the current head, as `versions.json` has it: a list of the forge decides.
-    fn head_base(&self) -> &Sha {
-        let current = &self.mirror.mr.version;
-        self.mirror
-            .versions
-            .iter()
-            .find(|record| record.version.head_sha == current.head_sha)
-            .map_or(&current.base_sha, |record| &record.version.base_sha)
-    }
 }
 
 /// The backoff of the head and the base of one MR.

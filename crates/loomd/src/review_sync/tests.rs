@@ -643,7 +643,7 @@ fn base_version(head: &str, base: &str, merge_base: Option<&str>) -> MrVersion {
 }
 
 #[test]
-fn a_new_base_with_the_same_head_asks_for_a_new_diff() {
+fn a_moved_base_tip_with_the_same_head_changes_nothing() {
     let mut known = merge_versions(&[], &[base_version(V1, V2, Some(V2))], MrState::Open, at(1));
     known[0].diff = Some(DiffKind::Local);
     // The same base: nothing changes.
@@ -651,13 +651,96 @@ fn a_new_base_with_the_same_head_asks_for_a_new_diff() {
         merge_versions(&known, &[base_version(V1, V2, None)], MrState::Open, at(2)),
         known
     );
-    // Retargeted: the record of the diff and its merge base are of the old base.
-    let moved = merge_versions(&known, &[base_version(V1, V1, None)], MrState::Open, at(3));
+    // GitHub moves `base.sha` with the tip of the target branch: no push, no retarget.
+    assert_eq!(
+        merge_versions(&known, &[base_version(V1, V1, None)], MrState::Open, at(3)),
+        known
+    );
+}
+
+#[test]
+fn a_new_target_branch_asks_for_a_new_diff_of_the_current_head() {
+    let mut known = merge_versions(
+        &[],
+        &[
+            base_version(V2, V2, Some(V2)),
+            base_version(V1, V2, Some(V2)),
+        ],
+        MrState::Open,
+        at(1),
+    );
+    for record in &mut known {
+        record.diff = Some(DiffKind::Local);
+    }
+    let moved = apply_retarget(known.clone(), &base_version(V1, V1, None));
+    let current = moved
+        .iter()
+        .find(|record| record.version.head_sha == sha(V1))
+        .unwrap();
+    assert_eq!(current.version.base_sha, sha(V1));
+    assert_eq!(current.version.merge_base, None);
+    assert_eq!(current.diff, None);
+    assert_eq!(current.first_seen, at(1));
+    // Another version keeps its diff.
+    let other = moved
+        .iter()
+        .find(|record| record.version.head_sha == sha(V2))
+        .unwrap();
+    assert_eq!(other.diff, Some(DiffKind::Local));
+}
+
+#[test]
+fn a_retarget_is_a_new_base_ref_of_an_open_mr() {
+    let mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
+    assert!(!is_retarget(None, &mr));
+    assert!(!is_retarget(Some(&mr), &mr));
+    // The tip moved: the same branch.
+    let mut moved = mr.clone();
+    moved.version.base_sha = sha(V1);
+    assert!(!is_retarget(Some(&mr), &moved));
+    let mut other = mr.clone();
+    other.base_ref = "release".to_owned();
+    assert!(is_retarget(Some(&mr), &other));
+    other.state = MrState::Merged;
+    assert!(!is_retarget(Some(&mr), &other));
+    other.state = MrState::Closed;
+    assert!(!is_retarget(Some(&mr), &other));
+}
+
+#[test]
+fn a_new_gitlab_version_of_one_head_with_another_base_is_its_own_record() {
+    let version = |id: u64, base: &str| MrVersion {
+        forge_version_id: Some(id),
+        created_at: Some(at(id)),
+        ..base_version(V1, base, Some(base))
+    };
+    let mut known = merge_versions(&[], &[version(1, V2)], MrState::Open, at(1));
+    known[0].diff = Some(DiffKind::Local);
+    // The same version: nothing, whatever the rest says.
+    assert_eq!(
+        merge_versions(&known, &[version(1, V2)], MrState::Open, at(2)),
+        known
+    );
+    // GitLab made a new version: its base and merge base are the ones of that version.
+    let moved = merge_versions(
+        &known,
+        &[version(1, V2), version(2, V1)],
+        MrState::Open,
+        at(3),
+    );
     assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].version.base_sha, sha(V1));
-    assert_eq!(moved[0].version.merge_base, None);
+    assert_eq!(moved[0].version.merge_base, Some(sha(V1)));
+    assert_eq!(moved[0].version.forge_version_id, Some(2));
     assert_eq!(moved[0].diff, None);
-    assert_eq!(moved[0].first_seen, at(1));
+    // A new version of one base keeps the diff.
+    let same_base = merge_versions(&known, &[version(2, V2)], MrState::Open, at(3));
+    assert_eq!(same_base[0].diff, Some(DiffKind::Local));
+    // A merged MR keeps the diff of its last base.
+    assert_eq!(
+        merge_versions(&known, &[version(2, V1)], MrState::Merged, at(3)),
+        known
+    );
 }
 
 #[test]
@@ -696,22 +779,24 @@ fn the_current_version_is_added_when_the_forge_list_lacks_it() {
 }
 
 #[test]
-fn a_merged_or_closed_mr_keeps_the_diff_of_its_last_base() {
-    let mut known = merge_versions(&[], &[base_version(V1, V2, Some(V2))], MrState::Open, at(1));
-    known[0].diff = Some(DiffKind::Local);
-    // A merge moves the base that the forge shows, and nothing diffs a merged MR again.
-    let moved = [base_version(V1, V1, Some(V1))];
+fn the_snapshot_of_an_mr_shows_the_base_that_its_head_has_in_the_versions() {
+    let mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
+    let versions = merge_versions(&[], std::slice::from_ref(&mr.version), MrState::Open, at(1));
+    // The tip moved: the same bytes as before.
+    let mut moved = mr.clone();
+    moved.version.base_sha = sha(V2);
+    assert_eq!(with_recorded_base(&moved, &versions), mr);
+    // A merge base of git is in the versions only: the snapshot does not get it.
+    let mut computed = versions;
+    computed[0].version.merge_base = Some(sha(V2));
+    assert_eq!(with_recorded_base(&mr, &computed).version.merge_base, None);
+    // The merge base of the forge follows its record.
+    let mut gitlab = mr.clone();
+    gitlab.version.merge_base = Some(sha(V1));
     assert_eq!(
-        merge_versions(&known, &moved, MrState::Merged, at(2)),
-        known
+        with_recorded_base(&gitlab, &computed).version.merge_base,
+        Some(sha(V2))
     );
-    assert_eq!(
-        merge_versions(&known, &moved, MrState::Closed, at(2)),
-        known
-    );
-    // Open again: the new base counts.
-    assert_eq!(
-        merge_versions(&known, &moved, MrState::Open, at(3))[0].diff,
-        None
-    );
+    // An unknown head stays as it is.
+    assert_eq!(with_recorded_base(&mr, &[]), mr);
 }

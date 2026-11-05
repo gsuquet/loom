@@ -70,7 +70,7 @@ The diff of a version is `git diff -M <merge base> <head>`. GitLab gives the mer
 
 `loomd` sets the options of `git diff` itself, for example the prefixes, the number of context lines and the format of submodules. Thus, your diff configuration does not change the patch. The attributes come from the head commit, not from your working tree or from `core.attributesFile`. This needs git 2.41: an older git reads the `.gitattributes` of the working tree. It writes the patch to `diffs/<sha>.patch` in the task directory, and sets `diff` to `local` in `versions.json`. The patch stays after the clone is gone. The store backup holds the patches, as it holds the other files of the task.
 
-A new base with the same head (the MR has a new target branch) gives a new diff.
+A new target branch of an open MR gives a new diff of its head. A new tip of the same target branch does not: GitHub shows that tip in `base.sha` with no push and no retarget, and the merge base of the head does not change. A new GitLab version of the same head with another base also gives a new diff.
 
 ## Limits of a patch
 
@@ -121,4 +121,10 @@ The refs stay when an active Review task of any context has the same MR, because
 - `.git/info/attributes` still changes a patch: git has no option to ignore it.
 - The mode of a new or deleted file with hunks does not count in the hash, because the forges do not give it. For the same reason, a mode change next to hunks counts as a change between a local and a reduced patch.
 - A global `core.excludesFile` that ignores `*.patch` keeps the patches out of the commits of the store.
+- On a network that does not answer, each MR waits for its own timeout: `N` MRs cost `N` times 120 seconds, at polls 1, 2, 4 and 8, then every 8 polls.
+- A task that you remove, and do not archive, leaves its row in `index.db` and its refs.
+- A task that you restore and archive again keeps its refs until the next start of `loomd`.
+- A lazy fetch that `loomd` stops can leave `tmp_pack_*` files in the clone.
+- A task whose file is not valid does not protect the refs of its MR from a cleanup.
+- If two contexts have one MR with different verdicts, the `reviewed` ref follows the last poll.
 - A version whose head is not in the clone gets no patch. This occurs for an old GitLab version: a later force push replaced its head before the first fetch.

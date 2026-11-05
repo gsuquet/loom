@@ -1113,3 +1113,30 @@ fn a_diff_over_its_limit_stops_git_at_once() {
         started.elapsed()
     );
 }
+
+#[test]
+fn a_process_that_holds_the_output_of_a_diff_is_a_failure_not_an_empty_patch() {
+    let scenario = Scenario::new();
+    assert_eq!(scenario.fetch(), Step::Done);
+    // git ends, and a child that it leaves behind keeps the pipe open.
+    let program = scenario.dir.path().join("holding-git");
+    fs::write(
+        &program,
+        "#!/bin/sh\ncase \"$*\" in\n*\" diff \"*) sleep 30 & exit 0;;\n*) exec git \"$@\";;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let holding = GitRunner {
+        program,
+        kill_grace: std::time::Duration::from_millis(300),
+        ..runner(&scenario.home())
+    };
+    let diff = version_diff(
+        &holding,
+        &scenario.clone,
+        &github_version("github/pull-412.v1.json"),
+        PATCH_CAP,
+    );
+    let error = diff.unwrap_err();
+    assert!(error.contains("still holds"), "{error}");
+}
