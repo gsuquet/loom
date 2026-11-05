@@ -23,7 +23,7 @@
 Loom keeps all the work that I have to do in one prioritized list, for all my contexts (personal, company, clients). It records all the work that I or agents do.
 
 * With _Loom_ you can _triage_ all your items in a single list, in the order of priority. The items are merge requests to review, tickets, incidents, alerts, support requests and your own ideas. The list shows one context or all of them.
-* With _Loom_ you can _edit and create_ Jira, GitLab and GitHub issues locally and sync them upstream. You can also _review_ merge requests from the terminal.
+* With _Loom_ you can _edit and create_ Jira, GitLab and GitHub issues locally and sync them upstream. You can also _review_ merge requests.
 * With _Loom_ you can _delegate_ a task, or a part of it, to specialist agents. Typed contracts, quality gates and approval rules control the agents, and you can watch the agents work live.
 * Unlike _a tracker or an agent wrapper_, _Loom_ keeps an auditable ledger of all work on disk, with one ledger for each context. Learnings go from one context to the next, but client data stays in its context.
 
@@ -34,7 +34,7 @@ Loom keeps all the work that I have to do in one prioritized list, for all my co
 * It installs, runs `loomd` as a user service and keeps itself up to date.
 * It indexes the git repositories of the machine: contexts, repo cards, `loom search`, automatic fetch and fast-forward.
 * It keeps the tasks of each context in a git repository: capture, triage, priority list, focus, recurring tasks, archive, backup to a remote.
-* It shows the tasks in a terminal user interface: `Today`, `Inbox` and `Waiting` queues, triage keys, a task page with its events and relations.
+* It lists and changes the tasks with CLI commands: the priority list (`loom ls`), the triage of the inbox (`loom accept`, `loom snooze`, `loom done`, `loom cancel`), and the fields and notes of a task (`loom show`, `loom set`, `loom edit`).
 
 v0.4 (merge request review) is in progress on the `dev` channel. The [changelog](CHANGELOG.md) gives the shipped changes. The design is in [docs/design/](docs/design/), and the plan is in the [roadmap](docs/roadmap.md).
 
@@ -65,7 +65,7 @@ loom status
 1. Define your contexts in `~/.loom/config.toml` ([configure contexts](docs/how-to-guides/configure-contexts.md)).
 2. Check them with `loom repo doctor`.
 3. To register the repositories that the shell enters, and to let `loom go` change the directory, use `eval "$(loom shell-init zsh)"` ([shell integration](docs/how-to-guides/shell-integration.md)).
-4. Run `loom` to open the terminal user interface ([start your day](docs/tutorials/start-your-day.md)).
+4. Run `loom ls` to see the priority list ([start your day](docs/tutorials/start-your-day.md)).
 
 To work on Loom, run these commands:
 
@@ -84,7 +84,7 @@ Read the [Contributing Guide](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF
 
 The documentation uses the [Diátaxis](https://diataxis.fr/) framework:
 
-* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [task files](docs/reference/task-file.md) (`task.md`, `events.jsonl`), [TUI](docs/reference/tui.md), [style guide](docs/reference/style-guide.md). The reference gets new file formats when their features ship.
+* **Reference:** [CLI conventions](docs/reference/cli/conventions.md), [`loom`](docs/reference/cli/loom.md) and [`loomd`](docs/reference/cli/loomd.md) commands (generated), [install script](docs/reference/install-script.md), [releases](docs/reference/releases.md) (channels, assets, signature), [configuration](docs/reference/configuration.md), [loomd API](docs/reference/api.md), [task files](docs/reference/task-file.md) (`task.md`, `events.jsonl`), [style guide](docs/reference/style-guide.md). The reference gets new file formats when their features ship.
 * **How-to guides:** [install loom](docs/how-to-guides/install.md), [run loomd as a service](docs/how-to-guides/run-loomd-as-a-service.md), [upgrade and roll back](docs/how-to-guides/upgrade-and-roll-back.md), [configure contexts](docs/how-to-guides/configure-contexts.md), [connect a forge](docs/how-to-guides/connect-a-forge.md), [open a merge request](docs/how-to-guides/open-a-merge-request.md), [manage tasks](docs/how-to-guides/manage-tasks.md), [recurring tasks](docs/how-to-guides/recurring-tasks.md), [back up context stores](docs/how-to-guides/back-up-context-stores.md), [shell integration](docs/how-to-guides/shell-integration.md), [local traces](docs/how-to-guides/local-traces.md).
 * **Explanation:** [auto-upgrade](docs/explanation/auto-upgrade.md), [repository updates](docs/explanation/repo-updates.md), [task store](docs/explanation/task-store.md), [search](docs/explanation/search.md), [review sync](docs/explanation/review-sync.md), [MR refs and diffs](docs/explanation/mr-refs.md).
 * **Tutorials:** [start your day](docs/tutorials/start-your-day.md).

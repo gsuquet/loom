@@ -2,7 +2,7 @@
 
 > Merge requests to review (v0.4): discovery, the MR mirror, fetched refs and diffs, drafts, publish through the forge APIs, credentials. Decisions in [ADR-0016](../adr/0016-mr-review-mirror.md). The page is in [User workflow](user-workflow.md#review).
 
-> The data, git and forge sides below stand, except that a Review task now starts when I start on the MR, not at discovery: see [Waiting on me](#waiting-on-me), which replaces that part of ADR-0016 decision 1. The flow and keys of the page are in [User workflow](user-workflow.md#review), which overrides any TUI gesture named here. Multi-repo MRs show as a group, and a task can hold one worktree per repo.
+> The data, git and forge sides below stand, except that a Review task now starts when I start on the MR, not at discovery: see [Waiting on me](#waiting-on-me), which replaces that part of ADR-0016 decision 1. The flow and keys of the page are in [User workflow](user-workflow.md#review), which overrides any key or gesture named here. Multi-repo MRs show as a group, and a task can hold one worktree per repo.
 
 "MR" means a GitLab merge request or a GitHub pull request. The forge facts below come from the v0.4 spike (2026-10-27); the requests and responses are recorded in [`fixtures/forge/`](../../fixtures/forge/README.md).
 
