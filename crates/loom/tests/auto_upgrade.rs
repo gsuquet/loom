@@ -21,6 +21,8 @@ mod common;
 mod isolation;
 
 use std::fs::{self, File};
+use std::io::{Read as _, Write as _};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -39,8 +41,18 @@ use serde_json::json;
 use tempfile::TempDir;
 
 const NEW: &str = "99.0.0";
-const WAIT: Duration = Duration::from_secs(45);
+/// Budget of each wait. A rollback alone takes the download, the pre-flight (up to 15 s), the swap,
+/// the watchdog deadline (20 s here), then the watchdog's restore of the binaries: the copy that
+/// used up the former 45 s budget under an fsync load. On a busy CI runner, 19 s passed between the
+/// pre-flight and the end of the swap, inferred to be the save and replace of that swap. It only
+/// tells that a step ended: a step that became slower passes as long as it fits. The time each one
+/// took is printed by [`Env::wait_for`], seen on a failure or with `--nocapture` only.
+const WAIT: Duration = Duration::from_mins(3);
 const POLL: Duration = Duration::from_millis(100);
+/// Logged by the watchdog before it records the upgrade.
+const UPGRADE_COMPLETE: &str = "the upgraded loomd answers: upgrade complete";
+/// Logged by the watchdog last: binaries restored, state recorded, save pruned, loomd answering.
+const ROLLBACK_COMPLETE: &str = "rolled back: the previous loomd answers";
 
 fn built(name: &str) -> PathBuf {
     let loom = PathBuf::from(assert_cmd::cargo::cargo_bin!("loom"));
@@ -242,7 +254,8 @@ impl Env {
     }
 
     fn wait_for(&self, done: impl Fn(&Self) -> bool, what: &str) {
-        let deadline = Instant::now() + WAIT;
+        let started = Instant::now();
+        let deadline = started + WAIT;
         while !done(self) {
             assert!(
                 Instant::now() < deadline,
@@ -252,6 +265,32 @@ impl Env {
             );
             thread::sleep(POLL);
         }
+        // Captured on a green run: for a look with `--nocapture`, no signal in the gate.
+        eprintln!("waited {:?} for {what}", started.elapsed());
+    }
+
+    /// Makes the next loomd start with the policy `off`, so that no check overwrites what the
+    /// watchdog records. A loomd reads `config.toml` once, when it starts: the running one still
+    /// upgrades. Call it once loomd answers.
+    fn keep_the_watchdog_result(&self) {
+        fs::write(self.home.path().join("config.toml"), config("off")).unwrap();
+    }
+
+    fn logged(&self, line: &str) -> bool {
+        self.logs().contains(line)
+    }
+
+    /// Waits for the watchdog to have recorded a completed upgrade.
+    ///
+    /// Not on `last_result`, which only lasts until the next check of the new loomd overwrites
+    /// it: a test polling late on a busy machine would never see it. `pending` stays set from
+    /// before the swap until the watchdog records the outcome. What it records:
+    /// [`the_watchdog_records_the_upgrade`].
+    fn wait_for_upgrade(&self, what: &str) {
+        self.wait_for(
+            |env| env.logged(UPGRADE_COMPLETE) && env.state().pending.is_none(),
+            what,
+        );
     }
 
     fn logs(&self) -> String {
@@ -299,10 +338,7 @@ fn auto_installs_a_new_release_and_the_watchdog_confirms_it() {
     env.publish(wrappers(""));
     env.start_loomd();
 
-    env.wait_for(
-        |env| matches!(env.state().last_result, Some(UpdateResult::Upgraded { .. })),
-        "the upgrade to complete",
-    );
+    env.wait_for_upgrade("the upgrade to complete");
     let [loom, loomd] = wrappers("").map(|(_, data)| data);
     assert_eq!(env.installed(), [loom, loomd]);
     let saved = env.home.path().join("versions").join(&env.current);
@@ -372,13 +408,11 @@ fn a_release_failing_after_the_restart_is_rolled_back_by_the_watchdog() {
     ));
     env.start_loomd();
 
+    // Not on `last_result = rolled_back`: it is recorded before the save is pruned, and the next
+    // check of the restored loomd overwrites it. What it holds:
+    // `the_watchdog_records_the_rollback`.
     env.wait_for(
-        |env| {
-            matches!(
-                env.state().last_result,
-                Some(UpdateResult::RolledBack { .. })
-            )
-        },
+        |env| env.logged(ROLLBACK_COMPLETE),
         "the watchdog to roll back",
     );
     assert_eq!(env.installed(), before, "previous binaries restored");
@@ -408,6 +442,66 @@ fn a_release_failing_after_the_restart_is_rolled_back_by_the_watchdog() {
         "a check skipping the failed version",
     );
     assert_eq!(env.installed(), before);
+}
+
+#[test]
+fn the_watchdog_records_the_rollback() {
+    let mut env = Env::new(&config("auto"));
+    env.publish(wrappers(
+        "export LOOM_TEST_FAIL_UNLESS_HOME_PREFIX=/tmp/loom-preflight-\n",
+    ));
+    env.start_loomd();
+    env.keep_the_watchdog_result();
+
+    env.wait_for(
+        |env| env.logged(ROLLBACK_COMPLETE),
+        "the watchdog to roll back",
+    );
+    let result = env.state().last_result;
+    assert!(
+        matches!(
+            &result,
+            Some(UpdateResult::RolledBack { from, to, message, .. })
+                if *from == env.current && to == NEW && !message.is_empty()
+        ),
+        "{result:?}"
+    );
+    let human = env.loom(&["status", "--no-start"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains(&format!(
+            "\nlast_result: rolled back {NEW} -> {} at ",
+            env.current
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_watchdog_records_the_upgrade() {
+    let mut env = Env::new(&config("auto"));
+    env.publish(wrappers(""));
+    env.start_loomd();
+    env.keep_the_watchdog_result();
+
+    env.wait_for_upgrade("the upgrade to complete");
+    let result = env.state().last_result;
+    assert!(
+        matches!(
+            &result,
+            Some(UpdateResult::Upgraded { from, to, .. }) if *from == env.current && to == NEW
+        ),
+        "{result:?}"
+    );
+    let human = env.loom(&["status", "--no-start"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains(&format!(
+            "\nlast_result: upgraded {} -> {NEW} at ",
+            env.current
+        )),
+        "{text}"
+    );
 }
 
 #[test]
@@ -468,15 +562,7 @@ fn a_chosen_dev_channel_survives_an_upgrade_to_a_stable_release() {
     );
 
     env.start_loomd();
-    env.wait_for(
-        |env| {
-            matches!(
-                env.state().last_result,
-                Some(UpdateResult::Upgraded { ref to, .. }) if to == STABLE
-            )
-        },
-        "the upgrade to the stable release",
-    );
+    env.wait_for_upgrade("the upgrade to the stable release");
     env.wait_for(
         |env| {
             env.status()
@@ -511,12 +597,44 @@ fn off_never_touches_the_network() {
     let mut env = Env::new(&config("off"));
     env.publish(stub_binaries(NEW));
     env.start_loomd();
-    // More than two check intervals.
+    // The proof: the updater thread ends right after this line, without a check.
+    env.wait_for(
+        |env| env.logged("update checks are off"),
+        "the updater to stop",
+    );
+    // A backstop for a check made elsewhere: more than two check intervals.
     thread::sleep(Duration::from_secs(3));
     assert_eq!(env.api.requests(), Vec::<String>::new());
     assert_eq!(env.state(), UpdateState::default());
     let update = env.status().unwrap().update.unwrap();
     assert_eq!(update.policy, UpdatePolicyMode::Off);
+}
+
+/// What keeps `off_never_touches_the_network` true with a stray `loomd` of a killed test run
+/// polling a port the system gave to this server again.
+#[test]
+fn the_fake_api_keeps_a_request_for_a_previous_server_on_its_port_apart() {
+    let api = FakeApi::start();
+    let (origin, prefix) = api.url.rsplit_once('/').unwrap();
+    let get = |target: &str| {
+        let mut stream = TcpStream::connect(origin.trim_start_matches("http://")).unwrap();
+        write!(stream, "GET {target} HTTP/1.1\r\nUser-Agent: loomd\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    };
+    api.route(&format!("{RELEASES}/latest"), 200, "{}");
+
+    let stray = get(&format!("{RELEASES}/latest"));
+    assert!(stray.starts_with("HTTP/1.1 404"), "{stray}");
+    assert_eq!(api.requests(), Vec::<String>::new());
+    assert_eq!(api.foreign_requests().len(), 1);
+
+    let own = get(&format!("/{prefix}{RELEASES}/latest"));
+    assert!(own.starts_with("HTTP/1.1 200"), "{own}");
+    assert_eq!(api.requests().len(), 1);
+    assert!(api.requests()[0].starts_with(&format!("GET {RELEASES}/latest ")));
+    assert_eq!(api.foreign_requests().len(), 1);
 }
 
 fn span_named<'a>(spans: &'a [(String, Span)], service: &str, name: &str) -> Vec<&'a Span> {
@@ -549,10 +667,7 @@ fn an_auto_upgrade_is_traced_in_loomd_and_in_the_watchdog() {
     ));
     env.publish(wrappers(""));
     env.start_loomd();
-    env.wait_for(
-        |env| matches!(env.state().last_result, Some(UpdateResult::Upgraded { .. })),
-        "the upgrade to complete",
-    );
+    env.wait_for_upgrade("the upgrade to complete");
     let deadline = Instant::now() + WAIT;
     let spans = loop {
         let spans = collector.spans();

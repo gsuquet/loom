@@ -152,6 +152,10 @@ impl Sandbox {
             .envs(isolation::isolated_env(&self.home()))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("LOOM_TEST_FORGE_API", self.forge.base())
+            // The polls of the loomd started here: the requests checked are those of `loom pr`,
+            // in a test on a busy machine outlasting their usual delays (10 s and 30 s).
+            .env("LOOM_TEST_FORGE_METADATA_START_DELAY", "1h")
+            .env("LOOM_TEST_REVIEW_START_DELAY", "1h")
             .env(TOKEN_ENV, TOKEN)
             .env("PWD", self.repo())
             .current_dir(self.repo())
