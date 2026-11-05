@@ -293,7 +293,7 @@ Schedule:
 - Each next check runs `check_interval` ± 10 % after the last check (`last_check` of `state/update.json`), but never before that first delay.
 - After a failed check, `loomd` tries again at the next interval.
 
-When its environment sets `LOOM_GITHUB_TOKEN` or `GITHUB_TOKEN`, `loomd` authenticates with it. `loomd` never runs `gh`.
+When its environment sets `LOOM_GITHUB_TOKEN` or `GITHUB_TOKEN`, `loomd` authenticates with it. `loomd` never runs `gh`. git, its hooks and helpers do not get these variables: a credential helper that reads one of them has no credential under `loomd`.
 
 ## User service
 

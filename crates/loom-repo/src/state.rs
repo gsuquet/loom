@@ -93,7 +93,7 @@ pub fn state(
     let mut errors = Errors::default();
     let watchdog = Watchdog::start(options.budget);
     let last_fetch = errors.field("last_fetch", last_fetch(git_dir, common_dir));
-    let mut repo = match open_repository(workdir, &open_options(options.config)) {
+    let mut repo = match open_repository(workdir, options.config) {
         Ok(repo) => repo,
         Err(error) => {
             errors.push(format!("cannot open the repository: {error}"));
@@ -112,8 +112,7 @@ pub fn state(
         errors.field("last_commit", last_commit(&repo, head))
     });
     let default_branch = errors.field("default_branch", default_branch(&repo, common_dir));
-    let open = open_options(options.config);
-    let dirty = errors.field("dirty", dirty(&repo, &drivers, &open, &watchdog));
+    let dirty = errors.field("dirty", dirty(&repo, &drivers, options.config, &watchdog));
     let untracked = errors.field(
         "untracked",
         untracked(&repo, &watchdog, options.untracked_cap),
@@ -217,7 +216,7 @@ pub fn update_refs(
 ) -> UpdateRefs {
     let mut errors = Errors::default();
     let watchdog = Watchdog::start(options.budget);
-    let repo = match open_repository(workdir, &open_options(options.config)) {
+    let repo = match open_repository(workdir, options.config) {
         Ok(repo) => repo,
         Err(error) => {
             errors.push(format!("cannot open the repository: {error}"));
@@ -404,8 +403,8 @@ fn names_branch(file: &str, text: &str, branch: &str) -> bool {
     }
 }
 
-/// Open options: read only what `config` allows, never start git.
-fn open_options(config: GitConfig) -> gix::open::Options {
+/// What a read may use: only what `config` allows, and never start git.
+fn open_permissions(config: GitConfig) -> gix::open::Permissions {
     let mut permissions = match config {
         GitConfig::User => gix::open::Permissions::all(),
         GitConfig::RepositoryOnly => gix::open::Permissions::isolated(),
@@ -414,26 +413,29 @@ fn open_options(config: GitConfig) -> gix::open::Options {
     // start git to locate its installation files.
     permissions.config.git_binary = false;
     permissions.attributes.git_binary = false;
-    // The object directories, see [`open_repository`]. `git_prefix`, which would cover more, is
-    // not denied: it would also drop `GIT_CONFIG_GLOBAL`.
-    permissions.env.objects = gix::sec::Permission::Deny;
-    gix::open::Options::default().permissions(permissions)
+    permissions
 }
 
-/// The repository with its working tree at `workdir`.
+/// The repository at `path`, with the working tree that its own configuration gives.
 ///
 /// git never gets the variables that point at another repository (`loomd` removes them), and a
 /// read must not use them either. `gix` follows some of them from the environment of this
-/// process, without a public switch for all of them: [`open_options`] covers the object
-/// directories, [`own_index`] covers `GIT_INDEX_FILE`, and this function covers `GIT_WORK_TREE`
-/// and `GIT_NAMESPACE`. It also replaces `core.worktree`: the directory to read is `workdir`.
-fn open_repository(
-    workdir: &Path,
-    options: &gix::open::Options,
-) -> Result<gix::Repository, String> {
-    let mut repo = gix::open_opts(workdir, options.clone()).map_err(|error| error.to_string())?;
-    repo.set_workdir(Some(workdir.to_owned()))
-        .map_err(|error| error.to_string())?;
+/// process, without a public switch for all of them: [`own_index`] covers `GIT_INDEX_FILE`, and
+/// this function covers `GIT_NAMESPACE` and `GIT_WORK_TREE`.
+fn open_repository(path: &Path, config: GitConfig) -> Result<gix::Repository, String> {
+    let permissions = open_permissions(config);
+    let options = gix::open::Options::default().permissions(permissions);
+    let mut repo = gix::open_opts(path, options).map_err(|error| error.to_string())?;
+    if std::env::var_os("GIT_WORK_TREE").is_some() {
+        // A second open without that variable: as without it, `core.bare` gives no working tree
+        // and `core.worktree` gives its path. git merges there, so a read must look there.
+        let mut own = permissions;
+        own.env.git_prefix = gix::sec::Permission::Deny;
+        let options = gix::open::Options::default().permissions(own);
+        let own = gix::open_opts(path, options).map_err(|error| error.to_string())?;
+        repo.set_workdir(own.workdir().map(Path::to_owned))
+            .map_err(|error| error.to_string())?;
+    }
     repo.clear_namespace();
     Ok(repo)
 }
@@ -445,18 +447,9 @@ fn own_index(repo: &gix::Repository) -> Result<gix::worktree::Index, String> {
     if repo.index_path() == path {
         return repo.index_or_empty().map_err(|error| error.to_string());
     }
-    let skip_hash = repo
-        .config_snapshot()
-        .boolean("index.skipHash")
-        .unwrap_or_default();
     let options = gix::index::decode::Options::default();
-    let file = match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            gix::index::File::from_state(gix::index::State::new(repo.object_hash()), path)
-        }
-        _ => gix::index::File::at(&path, repo.object_hash(), skip_hash, options)
-            .map_err(|error| error.to_string())?,
-    };
+    let file = gix::index::File::at_or_default(path, repo.object_hash(), false, options)
+        .map_err(|error| error.to_string())?;
     Ok(gix::worktree::Index::new(gix::fs::FileSnapshot::new(file)))
 }
 
@@ -735,7 +728,7 @@ fn disable_filter_drivers(repo: &mut gix::Repository) -> Result<BTreeSet<String>
 fn dirty(
     repo: &gix::Repository,
     drivers: &Result<BTreeSet<String>, String>,
-    open: &gix::open::Options,
+    config: GitConfig,
     watchdog: &Watchdog,
 ) -> Result<u64, String> {
     let drivers = drivers.as_ref().map_err(Clone::clone)?;
@@ -750,7 +743,7 @@ fn dirty(
     if let Some(reason) = driver_needed(repo, drivers, &compared)? {
         return Err(reason);
     }
-    paths.extend(dirty_submodules(repo, open, watchdog)?);
+    paths.extend(dirty_submodules(repo, config, false, watchdog)?);
     Ok(count(paths.len()))
 }
 
@@ -857,9 +850,14 @@ fn driver_needed(
 /// submodule that cannot be read makes the whole count unknown, as a dirty working tree must
 /// never read as clean. A gitlink whose directory has no `.git` is not checked out and has no
 /// change, as for `git status`.
+///
+/// `ignore_untracked`: the caller does not count untracked files. As for `git status`, this
+/// carries down, `status.showUntrackedFiles=no` of `repo` also starts it, and the `ignore` value
+/// of an entry replaces it for that gitlink.
 fn dirty_submodules(
     repo: &gix::Repository,
-    open: &gix::open::Options,
+    config: GitConfig,
+    ignore_untracked: bool,
     watchdog: &Watchdog,
 ) -> Result<Vec<BString>, String> {
     let index = own_index(repo)?;
@@ -868,6 +866,11 @@ fn dirty_submodules(
         .entries()
         .iter()
         .filter(|entry| entry.mode == gix::index::entry::Mode::COMMIT)
+        .filter(|entry| {
+            !entry
+                .flags
+                .contains(gix::index::entry::Flags::SKIP_WORKTREE)
+        })
         .map(|entry| (entry.path(&index).to_owned(), entry.id))
         .collect();
     if gitlinks.is_empty() {
@@ -878,16 +881,28 @@ fn dirty_submodules(
         .workdir()
         .ok_or_else(|| "the repository has no working tree".to_owned())?;
     let default = default_ignore(repo)?;
+    let ignore_untracked = ignore_untracked
+        || default == Some(Ignore::Untracked)
+        || repo
+            .config_snapshot()
+            .string("status.showUntrackedFiles")
+            .is_some_and(|value| value.as_slice() == b"no");
     let mut dirty = Vec::new();
     for (path, id) in gitlinks {
         if watchdog.expired() {
             return Err(watchdog.exceeded());
         }
-        let ignore = ignores.get(&path).copied().or(default).unwrap_or_default();
+        let entry = ignores.get(&path).copied();
+        let ignore = entry.or(default).unwrap_or_default();
+        let untracked = match entry {
+            Some(Ignore::None) => false,
+            Some(Ignore::Untracked) => true,
+            Some(Ignore::All | Ignore::Dirty) | None => ignore_untracked,
+        };
         let relative = gix::path::from_bstr(BStr::new(&path))
             .map_err(|error| format!("submodule {path}: {error}"))?;
         let worktree = workdir.join(relative);
-        if gitlink_is_dirty(&worktree, id, ignore, open, watchdog)
+        if gitlink_is_dirty(&worktree, id, ignore, untracked, config, watchdog)
             .map_err(|error| format!("submodule {path}: {error}"))?
         {
             dirty.push(path);
@@ -937,14 +952,13 @@ fn gitlink_is_dirty(
     worktree: &Path,
     id: gix::ObjectId,
     ignore: Ignore,
-    open: &gix::open::Options,
+    ignore_untracked: bool,
+    config: GitConfig,
     watchdog: &Watchdog,
 ) -> Result<bool, String> {
-    let untracked = match ignore {
-        Ignore::All => return Ok(false),
-        Ignore::Dirty | Ignore::None => None,
-        Ignore::Untracked => Some(UntrackedFiles::None),
-    };
+    if ignore == Ignore::All {
+        return Ok(false);
+    }
     // Gone or replaced by a file: the status walk already counted its path.
     match fs::symlink_metadata(worktree) {
         Ok(metadata) if metadata.is_dir() => {}
@@ -962,7 +976,7 @@ fn gitlink_is_dirty(
         }
         Err(error) => return Err(error.to_string()),
     }
-    let mut opened = open_repository(worktree, open)?;
+    let mut opened = open_repository(worktree, config)?;
     let head = opened.head_id().map_err(|error| error.to_string())?;
     if head.detach() != id {
         return Ok(true);
@@ -972,7 +986,8 @@ fn gitlink_is_dirty(
     }
     let drivers = disable_filter_drivers(&mut opened)?;
     let walk = Walk {
-        untracked,
+        // `None`: the `status.showUntrackedFiles` configuration of the submodule.
+        untracked: ignore_untracked.then_some(UntrackedFiles::None),
         stop_when_decided: true,
     };
     let Changes { paths, compared } = changes(&opened, &drivers, watchdog, walk)?;
@@ -985,7 +1000,7 @@ fn gitlink_is_dirty(
     if !paths.is_empty() {
         return Ok(true);
     }
-    Ok(!dirty_submodules(&opened, open, watchdog)?.is_empty())
+    Ok(!dirty_submodules(&opened, config, ignore_untracked, watchdog)?.is_empty())
 }
 
 /// The first of `compared` whose `filter` attribute names one of `drivers`, with the driver.

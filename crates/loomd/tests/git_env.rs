@@ -27,6 +27,8 @@ mod common;
 
 const GLOBAL_TOKEN: &str = "LOOM_TEST_GLOBAL_TOKEN";
 const CONTEXT_TOKEN: &str = "LOOM_TEST_CONTEXT_TOKEN";
+/// `loomd` reads these for its release checks, whatever the configuration says.
+const UPDATER_TOKENS: [&str; 2] = ["LOOM_GITHUB_TOKEN", "GITHUB_TOKEN"];
 const TOKEN_VALUE: &str = "not-a-real-token";
 /// Stays in the environment: proves that a dump comes from the environment of `loomd`.
 const OTHER_VARIABLE: &str = "LOOM_TEST_OTHER_VARIABLE";
@@ -62,7 +64,7 @@ impl Sandbox {
         fs::write(
             sandbox.loom_home().join("config.toml"),
             format!(
-                "[repos]\nroots = [\"~/perso\"]\n\n[contexts.personal]\nmatch.paths = [\"~/perso\"]\n{context}\n{FORGES}"
+                "[update]\npolicy = \"off\"\n\n[repos]\nroots = [\"~/perso\"]\n\n[contexts.personal]\nmatch.paths = [\"~/perso\"]\n{context}\n{FORGES}"
             ),
         )
         .unwrap();
@@ -154,6 +156,10 @@ impl Sandbox {
         (repo, seed)
     }
 
+    fn head(&self, repo: &Path) -> String {
+        common::git(&self.user_home(), repo, &["rev-parse", "HEAD"])
+    }
+
     fn push(&self, seed: &Path, content: &str) {
         fs::write(seed.join("f.txt"), content).unwrap();
         self.git(seed, &["add", "-A"]);
@@ -181,6 +187,7 @@ impl Sandbox {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env(GLOBAL_TOKEN, TOKEN_VALUE)
             .env(CONTEXT_TOKEN, TOKEN_VALUE)
+            .envs(UPDATER_TOKENS.map(|name| (name, TOKEN_VALUE)))
             .env(OTHER_VARIABLE, "kept")
             // No network: the forge is a closed local port, and no poll starts in a test.
             .env("LOOM_TEST_FORGE_API", "http://127.0.0.1:1")
@@ -214,7 +221,10 @@ impl Sandbox {
             dump.contains(&format!("{OTHER_VARIABLE}=kept")),
             "{name}: not the environment of loomd"
         );
-        for token in [GLOBAL_TOKEN, CONTEXT_TOKEN] {
+        for token in [GLOBAL_TOKEN, CONTEXT_TOKEN]
+            .into_iter()
+            .chain(UPDATER_TOKENS)
+        {
             assert!(!dump.contains(token), "{name} sees {token}");
         }
         assert!(!dump.contains(TOKEN_VALUE), "{name} sees a token");
@@ -349,6 +359,8 @@ fn a_runner_removes_the_tokens_over_its_env() {
             set("GIT_CONFIG_NOSYSTEM", "1"),
             set(GLOBAL_TOKEN, TOKEN_VALUE),
             set(CONTEXT_TOKEN, TOKEN_VALUE),
+            set(UPDATER_TOKENS[0], TOKEN_VALUE),
+            set(UPDATER_TOKENS[1], TOKEN_VALUE),
             set(OTHER_VARIABLE, "kept"),
         ],
         ..GitRunner::from_config(&config)
@@ -421,4 +433,151 @@ fn the_repository_variables_of_loomd_do_not_change_a_state_read() {
         assert_eq!(state["head"]["known"]["name"], "main", "{name}: {state}");
         daemon.stop();
     }
+}
+
+/// The state of `~/perso/<name>` as `loomd` reads it now.
+fn read_state(sandbox: &Sandbox, name: &str) -> serde_json::Value {
+    let path = format!("/v1/repos/personal/{name}?refresh=true");
+    let deadline = Instant::now() + common::TIMEOUT;
+    loop {
+        let response = request(&sandbox.socket(), "GET", &path, None);
+        if response.status == 200 {
+            let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+            return body;
+        }
+        assert!(Instant::now() < deadline, "{name}: {}", response.body);
+        thread::sleep(POLL);
+    }
+}
+
+/// Waits until `~/perso/<name>` has a last update; its outcomes.
+fn wait_for_outcomes(sandbox: &Sandbox, name: &str) -> serde_json::Value {
+    let deadline = Instant::now() + common::TIMEOUT;
+    loop {
+        let body = read_state(sandbox, name);
+        if !body["last_update"].is_null() {
+            return body["last_update"]["outcomes"].clone();
+        }
+        assert!(Instant::now() < deadline, "{name}: no update: {body}");
+        thread::sleep(POLL);
+    }
+}
+
+/// What the environment of `loomd` must not change: nothing set, then `GIT_WORK_TREE`.
+fn with_and_without_git_work_tree(sandbox: &Sandbox, check: impl Fn(&Sandbox)) {
+    let elsewhere = sandbox.dir.path().join("work-tree-of-the-environment");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let missing = elsewhere.join("missing");
+    for variables in [
+        &[][..],
+        &[("GIT_WORK_TREE", elsewhere.as_path())][..],
+        &[("GIT_WORK_TREE", missing.as_path())][..],
+    ] {
+        let daemon = sandbox.start_with(variables);
+        check(sandbox);
+        daemon.stop();
+    }
+}
+
+/// git merges in the directory of `core.worktree`: an edit there must stop the update, also when
+/// a copy of the files at the clone looks clean.
+#[test]
+fn a_dirty_core_worktree_is_not_fast_forwarded() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let worktree = sandbox.dir.path().join("elsewhere");
+    fs::create_dir_all(&worktree).unwrap();
+    fs::copy(repo.join("f.txt"), worktree.join("f.txt")).unwrap();
+    fs::write(worktree.join("f.txt"), "my edit\n").unwrap();
+    sandbox.git(
+        &repo,
+        &["config", "core.worktree", worktree.to_str().unwrap()],
+    );
+    // A file that the edit does not touch: git itself would not refuse this fast-forward.
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let head = sandbox.head(&repo);
+    // If `GIT_WORK_TREE` were followed, this clean copy would read as clean.
+    let clean = sandbox.dir.path().join("work-tree-of-the-environment");
+    fs::create_dir_all(&clean).unwrap();
+    fs::copy(repo.join("f.txt"), clean.join("f.txt")).unwrap();
+
+    with_and_without_git_work_tree(&sandbox, |sandbox| {
+        let outcomes = wait_for_outcomes(sandbox, "app");
+        assert!(
+            !outcomes.to_string().contains("fast_forwarded"),
+            "{outcomes}"
+        );
+        // The schedule runs once: an update on request, under this environment.
+        let synced = request(
+            &sandbox.socket(),
+            "POST",
+            "/v1/repos/sync",
+            Some(&serde_json::json!({})),
+        );
+        assert_eq!(synced.status, 200, "{}", synced.body);
+        assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+        let body = read_state(sandbox, "app");
+        assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+        assert_eq!(sandbox.head(&repo), head);
+        assert_eq!(
+            fs::read_to_string(worktree.join("f.txt")).unwrap(),
+            "my edit\n"
+        );
+    });
+}
+
+/// Each bare layout: no working tree, so nothing to count, with a reason.
+#[test]
+fn a_bare_repository_reads_unknown_with_a_reason() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("clone");
+    let perso = sandbox.user_home().join("perso");
+
+    // `.git` is the bare repository.
+    let plain = perso.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    sandbox.git(
+        &perso,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            repo.to_str().unwrap(),
+            "plain/.git",
+        ],
+    );
+    // `.git` names a bare repository beside it.
+    let layout = perso.join("layout");
+    fs::create_dir_all(&layout).unwrap();
+    sandbox.git(
+        &perso,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            repo.to_str().unwrap(),
+            "layout/.bare",
+        ],
+    );
+    fs::write(layout.join(".git"), "gitdir: ./.bare\n").unwrap();
+    // A clone turned bare, with an index that would read as clean.
+    let turned = perso.join("turned");
+    sandbox.git(&perso, &["clone", "-q", repo.to_str().unwrap(), "turned"]);
+    sandbox.git(&turned, &["config", "core.bare", "true"]);
+
+    with_and_without_git_work_tree(&sandbox, |sandbox| {
+        for name in ["plain", "layout", "turned"] {
+            let body = read_state(sandbox, name);
+            assert_eq!(body["state"]["dirty"], "unknown", "{name}: {body}");
+            assert!(
+                body["state"]["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("dirty")),
+                "{name}: {body}"
+            );
+        }
+    });
 }

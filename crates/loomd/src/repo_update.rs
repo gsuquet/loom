@@ -28,6 +28,7 @@ use loom_repo::{
     Action, FetchDecision, StateOptions, classify_remote_failure, decide_fetch, decide_update,
     git_dirs, is_busy, state, update_refs,
 };
+use loom_update::github::TOKEN_ENVS;
 use tracing::field::Empty;
 use tracing::{Span, debug, info, info_span, warn};
 
@@ -66,7 +67,8 @@ pub struct GitRunner {
     /// Variables set (`Some`) or removed (`None`) for every command, over the inherited
     /// environment.
     pub env: Vec<(OsString, Option<OsString>)>,
-    /// Variables that hold a forge token (`token_env`), removed last, over `env`: git uses the
+    /// Variables that loomd reads as a token (`token_env`, and those of the release checks),
+    /// removed last, over `env`: git uses the
     /// credentials of the user, and its hooks and helpers run with its environment (ADR-0016,
     /// decision 6). [`Self::from_config`] sets them.
     pub withheld_env: Vec<OsString>,
@@ -87,7 +89,7 @@ pub struct GitRunner {
 
 impl GitRunner {
     /// `git` from `PATH`, the environment of this process without the `token_env` variables of
-    /// `config`, the default timeouts. The only constructor, so that a git command cannot miss
+    /// `config` and the token variables of the release checks, the default timeouts. The only constructor, so that a git command cannot miss
     /// these variables. The names are read now: loomd reads its configuration once, at start.
     /// A reload of the configuration must build the runner again.
     #[must_use]
@@ -101,6 +103,7 @@ impl GitRunner {
             withheld_env: config
                 .token_env_names()
                 .into_iter()
+                .chain(TOKEN_ENVS)
                 .map(OsString::from)
                 .collect(),
             ssh_in_env,

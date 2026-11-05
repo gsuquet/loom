@@ -45,6 +45,8 @@ If GitHub returns HTTP 403 or 429 (API rate limit), set a token:
 export LOOM_GITHUB_TOKEN="$(gh auth token)"
 ```
 
+`loomd` does not give this variable to git, its hooks or its helpers.
+
 Then run the install command again.
 
 ## Verify a release by hand

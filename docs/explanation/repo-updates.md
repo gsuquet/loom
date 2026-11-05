@@ -87,13 +87,25 @@ The commands run through the `git` CLI, in the working tree of the repository. T
 
 git never asks anything. `GIT_TERMINAL_PROMPT=0` disables password prompts. SSH runs with `BatchMode=yes` (no passphrase or host key question), unless the user configured an SSH command (`core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`). git is pinned to the repository: `loomd` removes the variables that it inherits, such as `GIT_DIR`. git never looks above the working tree for another repository.
 
-git gets no forge token. git uses the credentials of the user, and hooks and credential helpers run with the environment of git. Thus, `loomd` removes each `token_env` variable of its configuration from the environment of git.
+git gets no forge token. git uses the credentials of the user, and hooks and credential helpers run with the environment of git. Thus, `loomd` removes from the environment of git each variable that it reads as a token: each `token_env` of its configuration, `LOOM_GITHUB_TOKEN` and `GITHUB_TOKEN`. A token in another variable stays visible to git, because `loomd` cannot know it.
 
 Each command has a timeout: 120 s for a fetch, 10 min for a fast-forward. On timeout, the whole process group of the command (git, ssh, hooks, credential helpers) receives `SIGTERM`, so that git can remove its lock files. 5 s later, the process group receives `SIGKILL`.
 
 A fast-forward is local work of limited size. If its checkout stops before the end, the working tree is only half updated. Thus, its long timeout never interrupts it before its checkout completes, unless the whole command takes more than 10 min. In practice, only a `post-merge` hook that hangs takes this long. If this occurs, `git status` shows the state, and `git merge --ff-only @{upstream}` completes the job.
 
 When `loomd` stops, it does not interrupt an update that runs. The git command of the update finishes on its own, and `loomd` does not record its result. The sync of the context stores is not an update: `loomd` stops its git commands at shutdown (see [store backup](../reference/configuration.md#store-backup)).
+
+## Differences from `git status`
+
+`dirty` of a repository state follows `git status` for changes of tracked files and of submodules, at each depth. It reads the working tree of `core.worktree`, as git does. It differs in these cases. In each case, the state says dirty or unknown where git says clean or gives a count, so the update stops. Thus, the difference cannot move a branch over local work.
+
+- A submodule with `ignore = all` whose directory was removed or replaced by a file counts as one path. git reads no change.
+- A gitlink with `assume-unchanged` is read. git reads no change.
+- `status.showUntrackedFiles = false` (the boolean form) in a submodule does not hide its untracked files. `no` hides them.
+- A submodule with an unborn `HEAD`, or with `core.bare = true`, leaves `dirty` unknown. git counts a change or reads the files.
+- A submodule that cannot be read leaves `dirty` unknown. git can read it as clean.
+- A `.gitmodules` entry of a gitlink with an invalid `ignore` value, or a `.gitmodules` file that cannot be parsed, leaves `dirty` unknown.
+- A changed file that needs a filter driver leaves `dirty` unknown, because `loomd` never runs the driver.
 
 ## SSH from a service
 

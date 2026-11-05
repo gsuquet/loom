@@ -573,8 +573,8 @@ fn remote_check(remote: &RemoteCheck, token_env: &BTreeSet<&str>) -> DoctorCheck
     }
 }
 
-/// What an HTTPS failure adds when the configuration has `token_env` names: loomd's git does
-/// not get these variables, so a helper that reads one of them has no credential.
+/// What an HTTPS failure adds for the variables that loomd reads as a token: its git does not
+/// get them, so a helper that reads one of them has no credential.
 fn token_env_note(token_env: &BTreeSet<&str>) -> String {
     if token_env.is_empty() {
         return String::new();
@@ -585,7 +585,7 @@ fn token_env_note(token_env: &BTreeSet<&str>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        ". loomd's git does not get the token_env variables ({names}): a credential helper that reads one of them finds nothing. Give the token another variable name, or use token_cmd, or store a login for the helper"
+        ". loomd's git does not get the token variables ({names}): a credential helper that reads one of them finds nothing. Give the token another variable name, or use token_cmd, or store a login for the helper"
     )
 }
 
@@ -1750,7 +1750,7 @@ mod tests {
             remote_checks(&result, &names)[0].fix.clone().unwrap()
         };
 
-        assert!(!fix(&[]).contains("token_env"));
+        assert!(!fix(&[]).contains("token variables"));
         let with_names = fix(&["GITLAB_TOKEN", "GH_TOKEN"]);
         assert!(
             with_names.contains("(`GH_TOKEN`, `GITLAB_TOKEN`)"),
@@ -1778,7 +1778,7 @@ mod tests {
         };
         let names = BTreeSet::from(["GITLAB_TOKEN"]);
         let fix = remote_checks(&result, &names)[0].fix.clone().unwrap();
-        assert!(!fix.contains("token_env"), "{fix}");
+        assert!(!fix.contains("token variables"), "{fix}");
     }
 
     #[test]

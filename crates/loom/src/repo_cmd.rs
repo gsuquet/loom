@@ -776,7 +776,11 @@ async fn remote_checks(client: &Client, version: &str, config_path: &Path) -> Ve
         .post::<RemoteCheckResult>(REMOTE_CHECK_PATH, None::<&()>)
         .await
     {
-        Ok(result) => doctor::remote_checks(&result, &config.token_env_names()),
+        Ok(result) => {
+            let mut withheld = config.token_env_names();
+            withheld.extend(loom_update::github::TOKEN_ENVS);
+            doctor::remote_checks(&result, &withheld)
+        }
         Err(ClientError::Api { status: 404, .. }) => vec![check(
             "remote",
             CheckStatus::Warn,

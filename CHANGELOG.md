@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `loomd` no longer gives forge tokens to git, its hooks or its helpers. It removes each `token_env` variable of the configuration, `LOOM_GITHUB_TOKEN` and `GITHUB_TOKEN` from the environment of every git process, and of `ssh -G`.
+
+### Changed
+
+- A credential helper that reads one of these variables now has no credential under `loomd`, so its fetches, remote checks and store syncs fail. For example, `gh auth git-credential` reads `GH_TOKEN` and `GITHUB_TOKEN`, and `glab` reads `GITLAB_TOKEN`. Use a dedicated name such as `LOOM_GITLAB_TOKEN`, `token_cmd`, or a stored helper login.
+- `dirty` of a repository state reads every gitlink of the index, also without a `.gitmodules` entry, and at each depth. `.gitmodules` `ignore` now comes before `diff.ignoreSubmodules`.
+
+### Fixed
+
+- A state read no longer runs the filter drivers of a submodule.
+- A state read no longer follows `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_NAMESPACE` of the environment of `loomd`.
+
 ### Removed
 
 - The TUI. `loom` with no command now prints the help and exits 0 on a terminal too. The CLI commands are the interface. `[contexts.<name>] color` stays valid in `config.toml`, and no command uses it.
