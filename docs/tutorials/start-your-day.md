@@ -9,7 +9,17 @@ This tutorial guides you through your daily workflow in the shell. You review yo
 Before you start this tutorial:
 
 1. Install `loom` and make sure that `loomd` runs.
-2. Add the shell integration to your shell configuration:
+2. Define a context and set `default_context` in `~/.loom/config.toml` ([configure contexts](../how-to-guides/configure-contexts.md)):
+   ```toml
+   default_context = "personal"
+
+   [contexts.personal]
+   ```
+3. Restart `loomd`, because it reads the configuration only when it starts:
+   ```bash
+   loom service restart
+   ```
+4. Add the shell integration to your shell configuration:
    ```bash
    eval "$(loom shell-init zsh)" # or bash
    ```

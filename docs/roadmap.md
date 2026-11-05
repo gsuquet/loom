@@ -134,7 +134,7 @@ Each task is a GitHub issue in the `v0.4` milestone, written with the [agent tas
 | 19 | [#195](https://github.com/gsuquet/loom/issues/195) | Repo forge metadata on the repo card: project ID, forge default branch, visibility, archived, web URL, open MRs | Story | 4, 6 | Agent |
 | 20 | [#196](https://github.com/gsuquet/loom/issues/196) | `loom pr`: push the branch, draft MR linked to the task (`delivery` link, `mr` event), existing MR linked | Story | 4, 6 | Agent |
 | 21 | [#155](https://github.com/gsuquet/loom/issues/155) | **Dropped by [#215](https://github.com/gsuquet/loom/issues/215).** TUI task detail: Files tab (moved from v0.3) | Story | v0.3 task 15 (done) | Agent |
-| 22 | [#197](https://github.com/gsuquet/loom/issues/197) | Review safety suite: force push, rebase, removed and renamed files, line gone, 409 and 422 from the forge, loomd stopped after each forge write before its record, revoked token | Chore | 12, 13, 18 | Agent |
-| 23 | – | A week of reviews from loom, without the forge inbox | Chore | 18, 20 | Me |
+| 22 | [#197](https://github.com/gsuquet/loom/issues/197) | Review safety suite: force push, rebase, removed and renamed files, line gone, 409 and 422 from the forge, loomd stopped after each forge write before its record, revoked token | Chore | 12, 13 (18 dropped) | Agent |
+| 23 | – | A week of reviews from loom, without the forge inbox | Chore | app Review, step 4; 20 | Me |
 
 Parallel tracks once 1 is merged: {2 -> 4 -> {5 -> 7}, {6}}, {3}, {14}. Once 5 and 6 are merged: {19, 20} and 8 -> 9 -> 10 -> 11 -> {12, 13}; after 8 and 14, {15 -> 16 -> 17}; 18 joins them. 21 at any time. Tasks 15 to 18 and 21 are dropped: the TUI is removed ([#215](https://github.com/gsuquet/loom/issues/215)).

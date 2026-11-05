@@ -38,7 +38,7 @@ Commands that change state accept `-n`/`--dry-run`: they print on stdout what th
 
 ## `loom` with no command
 
-`loom` with no command prints the help on stdout and exits with `0`. It does not start `loomd`, sends no request to `loomd`, and sends no [registration on use](#registration-on-use). `-c` and the other global options do not change this.
+`loom` with no command prints the help on stdout and exits with `0`. It does not start `loomd`, sends no request to `loomd`, and sends no [registration on use](#registration-on-use). A valid `-c`, `-q`, `-v` or `--color` does not change this. `-h`, `--help`, `-V` and `--version` print their own text. An invalid value is a usage error (exit `2`).
 
 ## Streams
 
