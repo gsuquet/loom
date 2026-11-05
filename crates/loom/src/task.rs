@@ -450,7 +450,7 @@ pub fn focus_api_path(context: Option<&ContextName>) -> String {
 
 /// `--why` text of a rank reason.
 #[must_use]
-pub const fn reason_text(reason: RankReason) -> &'static str {
+const fn reason_text(reason: RankReason) -> &'static str {
     match reason {
         RankReason::First => "first",
         RankReason::Pinned => "pinned",
@@ -493,7 +493,7 @@ const fn importance_text(importance: Importance) -> &'static str {
 }
 
 #[must_use]
-pub fn read_only_text(read_only: &TaskReadOnly) -> String {
+fn read_only_text(read_only: &TaskReadOnly) -> String {
     match read_only {
         TaskReadOnly::UnknownKind(value) => format!("unknown kind {value}"),
         TaskReadOnly::UnknownContentFormat(value) => format!("unknown content format {value}"),

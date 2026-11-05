@@ -9,8 +9,6 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
-crossterm.workspace = true
-futures-util.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -25,7 +23,6 @@ loom-repo.workspace = true
 loom-telemetry.workspace = true
 loom-update.workspace = true
 miette.workspace = true
-ratatui.workspace = true
 # `loom upgrade --version` and the running version.
 semver.workspace = true
 serde.workspace = true
@@ -48,7 +45,7 @@ opentelemetry.workspace = true
 opentelemetry-proto.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 prost.workspace = true
-# Pseudoterminal creation to test TUI signal handling under a real terminal.
+# Pseudoterminal creation to test `loom` with no command on a real terminal.
 rustix = { workspace = true, features = ["pty"] }
 schemars.workspace = true
 serde_json.workspace = true

@@ -37,7 +37,7 @@
   ],
   "$defs": {
     "Action": {
-      "description": "A gesture available on a task, as offered by the CLI and the TUI.",
+      "description": "A gesture available on a task, as offered by the CLI.",
       "oneOf": [
         {
           "description": "Move to this status.",

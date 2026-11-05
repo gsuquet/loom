@@ -33,7 +33,7 @@
       "description": "Who caused an event.",
       "oneOf": [
         {
-          "description": "Me, through the CLI or the TUI.",
+          "description": "Me, through the CLI.",
           "type": "object",
           "properties": {
             "type": {

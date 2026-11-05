@@ -36,6 +36,10 @@ Shipped on `loom repo scan --rebuild`.
 
 Commands that change state accept `-n`/`--dry-run`: they print on stdout what they would change and change nothing. Read-only queries still run. Shipped on `loom service install`, `loom service uninstall`, `loom upgrade`, `loom rollback`, `loom repo scan`, `loom repo register`, `loom repo forget` and `loom repo sync`.
 
+## `loom` with no command
+
+`loom` with no command prints the help on stdout and exits with `0`. It does not start `loomd`, sends no request to `loomd`, and sends no [registration on use](#registration-on-use). A valid `-c`, `-q`, `-v` or `--color` does not change this. `-h`, `--help`, `-V` and `--version` print their own text. An invalid value is a usage error (exit `2`).
+
 ## Streams
 
 - stdout: the command's data only (human output, or JSON with `--json`).
@@ -556,7 +560,7 @@ Error: `loom` names several repositories; give one of:
 
 ### Registration on use
 
-A `loom` command that runs inside a git repository sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory. The exceptions are `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync`, `shell-init`, `prompt` and the internal watchdog. The request goes on a separate thread. loomd registers the repository if the index does not have it, and sets its `last_used`.
+A `loom` command that runs inside a git repository sends one `POST /v1/repos/register` with `on_use: true` for the repository of the current directory. The exceptions are `repo show`, `repo register`, `repo forget`, `repo scan --rebuild`, `repo sync`, `shell-init`, `prompt`, `loom` with no command and the internal watchdog. The request goes on a separate thread. loomd registers the repository if the index does not have it, and sets its `last_used`.
 
 The command waits for the request at most 50 ms after the command started, and never fails because of it. If the socket file does not exist, nothing is sent. The registration on use never starts loomd. `loom repo show` sets `last_used` the same way. `loom repo register --on-use --background`, run by the [shell integration](#loom-shell-init), sends the same request for its `<PATH>` (default: the current directory).
 
