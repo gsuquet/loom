@@ -8,7 +8,7 @@ Versions up to v0.3 are released. The backend of v0.4 goes on; the TUI is remove
 | --- | --- | --- |
 | 1. Desk | Desktop app, Today, Inbox, task page, palette, global hotkey, MR queue, connector status, GitLab | For one working week, I start the day in loom and do not open the forge to find MRs |
 | 2. References | Sources, Reading, phone capture, knowledge pages, glossary, out-of-scope records, pruning agent, the rule on text loaded into agents | Set when the step starts |
-| 3. Connectors | Datadog, Jira, Freshservice: read-only first, then writes behind the Outbox | Read-only: for one working week, I do not open Datadog, Jira or Freshservice to find my alerts and tickets. Writes: set when they start |
+| 3. Connectors | Datadog, Jira, Freshservice: read-only first, then writes behind the Outbox | Read-only: for one working week, with no app yet, `loom ls` and an OS notification bring me each urgent alert, and I do not open Datadog, Jira or Freshservice to find my alerts and tickets. Writes: set when they start |
 | 4. Review | Diff, reviewer agent, multi-repo worktrees, stage scope, profiles, language detection, run leases | Set when the step starts |
 | 5. Later | Other specialists, pipelines, opt-in rules, read-only Kubernetes, GitHub, Google Calendar | Set per item when it starts |
 
@@ -43,23 +43,29 @@ Design: [Connector ports](design/connector-ports.md), [Connectors](design/connec
 
 | # | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- |
-| C1 | Connector status: `ConnectorStatus` in `loom-api`, `GET /v1/connectors`, `loom connector status`, `state/connectors.json`, change event, forges report into it | Story | #212, #218 | Agent |
+| C1 | Connector status: `ConnectorStatus` in `loom-api`, `GET /v1/connectors`, `loom connector status`, `state/connectors.json`, change event, forges report into it | Story | #218 | Agent |
 | C2 | Config: `[contexts.<ctx>.connectors.<name>]` per kind, validation, API base rules, `token_env_names`, reference page | Story | This design, #217 | Agent |
 | C3 | `loom-connector`: ports, types, `ConnectorError`, capabilities, stub modules for the three adapters; `Transport` out of `Http`; fake server root; `fixtures/connectors/`; crate row | Story | This design | Agent |
 | C4 | Poll loop: `loomd::poll` out of `review_sync`, one thread per instance, `sync_connector` on the task thread, `POST /v1/connectors/sync`, `LOOM_TEST_CONNECTOR_API`; tested with an in-memory `IngestPort` | Story | C1, C2, C3, #218 | Agent |
-| C5 | Sync core: `origin` keys `connector` and `remote_id`, lookup, `decide_ticket`, mirror writer with `.base` and `sync.json`, `queue/pool/` entries, `loom connector pool`; no move of a connector task | Story | C4 | Agent |
+| C5 | Items: `origin` keys `connector` and `remote_id`, lookup, `ConnectorBatch` and `tasks/connectors.rs`, `loom connector rename`, `UnconfiguredOrigin`; no move of a connector task | Story | C4 | Agent |
+| C6 | Tickets: `decide_ticket`, mirror writer with `.base` and `sync.json`, `queue/pool/` entries, `loom connector pool` | Story | C5 | Agent |
+| C7 | `fixtures/connectors/check.sh`: the read-only shape checks | Chore | C3 | Agent |
 | D1 | Datadog client and parsing: group search, monitor read, `classify`, sites, `check`, fixtures | Story | C3 | Agent |
-| D2 | Datadog sync: `decide_alert`, snapshots in `remote/`, `urgent` in `task.md`, priority mapping, urgent notification event | Story | C5, D1 | Agent |
-| D3 | Datadog real check | Chore | D2 | Me + agent |
+| D0 | Datadog shape checks: run `check.sh`, adjust the design | Chore | C7 | Me |
+| D2 | Datadog sync: `decide_alert`, snapshots in `remote/`, `urgent` in `task.md`, priority mapping | Story | C5, D0, D1 | Agent |
+| D2b | Reaching me: urgent first in `loom ls`, `NotifyPort` and its OS adapter | Story | D2 | Agent |
+| D3 | Datadog real check | Chore | D2b | Me + agent |
 | J1 | Jira client and parsing: `search/jql`, issue, comments, `classify`, `check`, fixtures | Story | C3 | Agent |
 | J2 | ADF to Markdown (pure): placeholders, unknown nodes, `converter` version | Story | C3 | Agent |
-| J3 | Jira sync: list, pool, mirror, moved keys | Story | C5, J1, J2 | Agent |
+| J0 | Jira shape checks: run `check.sh`, adjust the design | Chore | C7 | Me |
+| J3 | Jira sync: list, pool, mirror, moved keys | Story | C6, J0, J1, J2 | Agent |
 | J4 | Jira real check | Chore | J3 | Me + agent |
 | F1 | Freshservice client and parsing: filter, ticket, conversations, `classify`, `check`, fixtures | Story | C3 | Agent |
-| F2 | Freshservice HTML to Markdown (pure), and the sync: list, pool, mirror | Story | C5, F1 | Agent |
+| F0 | Freshservice shape checks: run `check.sh`, adjust the design | Chore | C7 | Me |
+| F2 | Freshservice HTML to Markdown (pure), and the sync: list, pool, mirror | Story | C6, F0, F1 | Agent |
 | F3 | Freshservice real check | Chore | F2 | Me + agent |
 
-Order: C1 to C5, with C2 and C3 side by side. Then three parallel tracks, each in its own module and fixture directory: {D1 -> D2 -> D3}, {J1, J2 -> J3 -> J4}, {F1 -> F2 -> F3}. D1, J1, J2 and F1 can start as soon as C3 is merged.
+Order: C1 to C5, with C2 and C3 side by side. Then three parallel tracks, each in its own module and fixture directory: {D0, D1 -> D2 -> D2b -> D3}, {C6; J0, J1, J2 -> J3 -> J4}, {C6; F0, F1 -> F2 -> F3}. D1, J1, J2 and F1 can start as soon as C3 is merged. Datadog does not wait for C6.
 
 ### Writes (later)
 

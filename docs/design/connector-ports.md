@@ -7,9 +7,11 @@ Vendor facts below were read on 2026-11-05 from the pages listed under [Sources]
 ## What exists today
 
 - **Forges**: `loom_forge::client` has `Forge`, `OpenForge`, `GithubForge`, `GitlabForge`. They are blocking, and `ForgeError` and `http::classify` are specific to GitHub and GitLab.
-- **Poll**: `crates/loomd/src/reviews.rs` is one thread that polls every context and host in turn. `mr_worker` (#213) runs after each poll on its own thread, and #218 adds queue starts on the poll thread.
+- **Poll**: `crates/loomd/src/reviews.rs` is one thread that polls every context and host in turn. `mr_worker` (#213) runs after each poll on its own thread. #218, still open, would add queue starts on the poll thread.
 - **Writes**: nothing in the code holds a write. There is no Outbox, and no Held, Sent or Not sent state in `crates/`, after #213 or in #218. `held` in the code means a context store on this machine, a lock, or, in #218, an entry that cannot move. `loom pr` writes straight to the forge. So [Write states](connectors.md#write-states) is still target behaviour for every write, and the Outbox is a task of its own.
 - **Connectors**: no code has a connector type, `remote/` directory, connector status or `issues/` mirror.
+- **Reaching me**: no notification is delivered today, `loom ls` hides `inbox` tasks (`is_listed`), and the app comes later. See [Urgent](#urgent).
+- **Doctor**: the only one is `loom repo doctor`. There is no `loom doctor` command, whatever other pages say.
 
 ## Ports
 
@@ -19,6 +21,7 @@ Small traits in a new crate, `loom-connector`. Calls block, as the forge clients
 pub trait Connector {
     fn capabilities(&self) -> Capabilities;                    // pure, constant per kind
     fn check(&self) -> Result<Identity, ConnectorError>;       // I/O: doctor and first poll
+    fn tracker(&self) -> Option<&dyn TrackerPort> { None }     // pure: Jira and Freshservice give themselves
 }
 
 pub trait IngestPort: Connector {
@@ -29,7 +32,7 @@ pub trait IngestPort: Connector {
     fn read(&self, item: &ItemRef) -> Result<ItemRead, ConnectorError>;    // one item that left a list
 }
 
-pub trait TrackerPort: IngestPort {
+pub trait TrackerPort: Connector {
     fn pull(&self, item: &ItemRef) -> Result<MirrorRead, ConnectorError>;  // full remote state of one issue
     // `push` comes with the writes, see Delivery. It is not stubbed before.
 }
@@ -48,11 +51,12 @@ pub trait TrackerPort: IngestPort {
 
 | Type | Holds |
 | --- | --- |
-| `Listing` | `items`, and `complete`: false when a page cap or an incomplete read stopped it. An incomplete list never means an item left |
+| `Listing` | `items`, `complete`, `truncated`. `complete` is false when a page cap or an incomplete read stopped it, and an incomplete list never means an item left. `truncated` is `pool_limit` only |
 | `Item` | `ItemRef` (key, `remote_id`), title, web URL, proposed `Kind`, proposed importance, due, `RemoteState`, remote `updated`, and the normalized snapshot |
 | `RemoteState` | `Open`, `Terminal`, `Firing { groups }`, `NotMine { assignee }` |
 | `ItemRead` | `Found(Item)` or `Gone` (404) |
-| `Known` | What the loop already holds, by key: remote `updated`, and how old the detail read is. It lives in memory, so a restart reads each item in full once, as ETags do today |
+| `Known` | By key, what the loop kept from the last polls: remote `updated`, the last `Item` (its snapshot holds Datadog's priority, tags and groups), and how old the last detail read is. It lives in memory, so a restart reads each item in full once, as ETags do today |
+| `Identity` | The account: Jira `accountId`, Freshservice `agent_id` from the config, none on Datadog. `check` gives it once and again after a refusal. The loop passes it when it builds the adapter, and an adapter compares it to the assignee to answer `NotMine` |
 | `MirrorRead` | `raw.json` bytes, issue fields, description as Markdown and as its source, comments, remote `updated` |
 | `ConnectorError` | Closed: `Credential`, `Forbidden`, `RateLimited { wait }`, `InvalidFilter`, `NotFound`, `Status`, `Transport`, `Parse` |
 
@@ -62,24 +66,35 @@ Each adapter has its own pure `classify(status, headers, body)`. They cannot sha
 
 | | Datadog | Jira | Freshservice |
 | --- | --- | --- | --- |
-| `ingest` | yes | yes | yes |
 | `pool` | no | yes | yes |
 | `mirror` | no | yes | yes |
-| `conditional_reads` | no | no | no |
-| `writes`, read-only tasks | none | none | none |
-| `writes`, later | `mute` | `create`, `edit`, `change_status`, `assign`, `comment` | `reply`, `change_status`, `assign` |
+
+`writes` joins them with the Outbox (W1), as the [table of Connectors](connectors.md) lists.
 
 ### What is extracted
 
 | From | To | Change |
 | --- | --- | --- |
-| `loom_forge::client::http::Http` | A `Transport` below it: HTTPS only, base URL guard, same-host redirect auth, timeout, body cap, redaction, all secrets of the instance | `Http` wraps it with Bearer auth and `classify`. No change of behaviour |
+| `loom_forge::client::http::Http` | A `Transport` below it: HTTPS only, base URL guard, timeout, body cap, redaction | `Http` wraps it with Bearer auth, same-host redirects and `classify`. No change of behaviour |
 | `loom_forge::client::{Token, RateLimitWait}` | Used as they are | `loom-connector` depends on `loom-forge` |
 | `loomd::forge::token::TokenResolver` | Used as it is | It keys on `TokenSource`, so two secrets of an instance work, and a stuck command holds only its own source |
 | `next_poll` and `PollOutcome` in `review_sync`, with `schedule::{backoff, jittered}` | `loomd::poll`, with a small `PollState` (interval, next, failures, rate limit, last success) | `reviews.rs` imports them. Its thread stays, and changes only after #218 merges |
 | `MrKey::dir_name` encoding | A shared function | Same bytes |
 
 Not extracted: `Conditional<T>`, since no vendor here documents a conditional read, and the review poller itself.
+
+**Connector transports follow no redirect** (`max_redirects(0)`), and a 3xx is a `Status` error. `RedirectAuthHeaders::SameHost` only protects `Authorization`: ureq strips that and `Cookie` on a cross-host redirect, so `DD-API-KEY` and `DD-APPLICATION-KEY` would follow it. Redaction covers each secret and the Base64 of `email:token` and `api_key:X`.
+
+### Who owns what
+
+| Piece | Shape | Task |
+| --- | --- | --- |
+| `Known`, `Identity`, `tracker()` | Above | C3 |
+| Poll thread | Reads what it needs through `Reader` and files, as `Poller::keys` does: each tracked item's key, task status and `listed`. Calls `check` when it has no `Identity`, fills `Known`, decides what left a list | C4 |
+| `ConnectorBatch` | `context`, `connector`, `kind`, `started`, `identity`, `list: Option<Listing>`, `pool: Option<Listing>`, `reads: Vec<(ItemRef, ItemRead)>`, `mirrors: Vec<(ItemRef, MirrorRead)>`. `None`: not asked or failed, which changes nothing | C4 |
+| `decide_ticket`, `decide_alert` | Pure, in `loomd::connector_sync`. They run on the task thread, in `tasks/connectors.rs`, as `tasks/reviews.rs` does, since only it may read a task and write in one step. It answers `ConnectorApplied`: `created`, `changed`, `failed`, `notify` | C5, C6, D2 |
+| `state/connectors.json` | Written by one `ConnectorStatuses` in loomd, behind a mutex, by atomic rename, when an instance reports. Holds `last_attempt` and `last_success` per instance | C1 |
+| Doctor | `loom connector doctor`: for each instance, secrets resolved and `check`; names tasks of an unconfigured connector. `loom repo doctor` stays for forges | C4 |
 
 ## Connector instances
 
@@ -91,7 +106,7 @@ kind = "datadog"
 site = "datadoghq.eu"
 token_cmd = "op read op://company-a/datadog/api-key"
 app_key_cmd = "op read op://company-a/datadog/app-key"
-query = 'tag:"team:payments" env:prod'    # Datadog monitor search syntax, passed as written
+query = 'tag:"team:payments" env:prod'    # required; Datadog monitor search syntax, passed as written
 states = ["alert", "warn"]                # default; "no data" can be added
 priorities = [1, 2, 3]                    # default: all, including none
 urgent_priorities = [1, 2]                # default
@@ -103,8 +118,8 @@ kind = "jira"                             # Jira Cloud only, see Jira facts
 site = "company-a.atlassian.net"
 email = "me@company-a.example"
 token_cmd = "op read op://company-a/jira/token"
-list_jql = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"    # default
-pool_jql = "project = OPS AND assignee is EMPTY AND statusCategory != Done ORDER BY created DESC"
+list_jql = "assignee = currentUser() AND statusCategory != Done ORDER BY key"    # default
+pool_jql = "project = OPS AND assignee is EMPTY AND statusCategory != Done ORDER BY created DESC, key"
 poll_interval = "5m"                      # default for this kind
 pool_interval = "15m"                     # default
 pool_limit = 200                          # default
@@ -120,8 +135,10 @@ open_statuses = [2, 3]                    # default
 extra_query = "tag:'payments'"            # added to the built query with AND
 ```
 
-- **Name**: the table key, `[a-z0-9-]+`, unique in its context. I name it after the tool unless a context has two. It is part of the identity of every item, so renaming makes a new instance: its items are found again as new, and `loom doctor` names the tasks whose `connector` is not configured.
+- **Name**: the table key, `[a-z0-9_]+`, unique in its context. No `-`: in `<connector>-<key>`, the first `-` ends the name, and Jira keys hold one. I name it after the tool unless a context has two.
+- **Rename**: the name is part of the identity of every item. `loom connector rename <old> <new>` runs on the task thread: it rewrites `origin.connector` and renames the mirror, snapshot and pool files, with one store commit. Until then, a configured instance with an open task of an unconfigured connector of the same kind and host creates nothing and reports `UnconfiguredOrigin`, so a rename in the file alone never duplicates my tasks.
 - **Keys** are parsed per `kind`, and an unknown key is refused with its line, as for `[forges]`.
+- **Two contexts on one site**: a token sees the same items in both, so an item would land in both stores. Each must then say what is its own: `list_jql` written out on Jira, `workspace_id` or `extra_query` on Freshservice. The default is refused at load. Datadog's `query` is always required.
 - **Credentials**: `token_cmd` or `token_env`, with exactly the rules of [Credentials](reviews.md#credentials): `TokenSource`, `sh -c`, 10 s, trimmed, kept in memory, resolved again after a refusal. Datadog also needs `app_key_cmd` or `app_key_env`. Jira's `email` is no secret and stays in the file. `Config::token_env_names()` of #217 lists the connector names too, so git never inherits them.
 - **`machines`**: the context's key, with no override per instance. The first machine polls, as `runner()` decides for reviews and schedules. With `machines` absent, every machine polls and loomd warns, since two machines would both create each task with its own random ID.
 - **Overlap with `[forges]`**: none. `[forges]` and `[contexts.<ctx>.forges]` keep working unchanged, and a forge credential shows in status as an instance named after its host. A new config key does make an older `loomd` refuse the file (`deny_unknown_fields`), so all machines must be upgraded before a connector is added.
@@ -140,6 +157,9 @@ extra_query = "tag:'payments'"            # added to the built query with AND
 - **Rate limits**: 429 stops this instance only. Datadog: `X-RateLimit-Reset`, seconds. Jira: `Retry-After`. Freshservice: `Retry-After`. No wait given: 60 s. Before that, an adapter stops its optional reads (`read`, `pull`, monitor details) when Datadog or Freshservice `X-RateLimit-Remaining` is under 20 % of the limit, or Jira sends `X-RateLimit-NearLimit`. The Freshservice limit is shared by the whole account, including colleagues, so loom must not use it up. What was not read waits for the next poll. At most 50 optional reads per poll.
 - **Conditional reads**: none. No vendor page here documents one. The full filtered list on each poll is what shows an item leaving, so there is no cursor to keep, and comparing the remote `updated` decides what to read in full. Datadog's list has no `updated`; its groups are compared instead.
 - **Failure**: one instance's failure touches only that instance. A failed or incomplete list changes no task and no entry. A failed `pool` leaves `list` applied, and the status says partial. A token refused: `invalidate`, and the next poll resolves it again.
+- **Datadog 403**: it can be either key, or a permission. One `GET /api/v1/validate` tells: a 403 invalidates the API key only, otherwise the application key only. Two `op` commands per poll would ask me to unlock each time.
+- **Jira anonymous access**: the search and issue reads "can be accessed anonymously", so a dead token might give an empty success. A Jira poll starts with `GET /myself`, which answers 401, and stops there on a failure. An empty list then means an empty list.
+- **Shutdown**: one shared stop flag, checked before each vendor call, and one shared `JOIN_DEADLINE` for all threads together. They stop with the review poller, before `task_store`, since they wait on it. A call still running is left behind: its batch has no task thread to go to.
 - **Last successful sync**: the start time of the last poll whose `list` was complete. It is kept in `state/connectors.json`, machine-local, so it survives a restart and makes no store commit.
 
 ## From item to task
@@ -162,7 +182,7 @@ remote_id = "10042"            # Jira only: a moved issue changes its key, not i
 url = "https://company-a.atlassian.net/browse/CORE-1042"
 ```
 
-- Lookup covers `origin` and `related` links, the active task first, else the last archived one, as `find_review` does. Several tasks of one monitor over time are normal: an alias then picks the open one, and asks for an ID when none or several are open.
+- Lookup covers `origin` and `related` links: an open task first, then the last closed active one, then the last archived one. Several tasks of one monitor over time are normal: an alias then picks the open one, and asks for an ID when none or several are open.
 - A task with a connector `origin` cannot move to another context, as for Review tasks.
 
 ### Where it goes
@@ -176,10 +196,18 @@ url = "https://company-a.atlassian.net/browse/CORE-1042"
 | Alert at an urgent priority | Task in `inbox` with `urgent = true` | Urgent, the strip, and a notification |
 
 - **Why assigned tickets are tasks and pool tickets are not**: an assigned ticket is mine to do, which is what a task is. A pool ticket is not mine until I take it. It is the same reasoning as an MR waiting on me: browsing must not fill the Inbox or the ledger.
-- **`urgent`**: a new `task.md` key. Today's Urgent section is the open tasks with it that I have not started. It stays visible in the Inbox, as [Today](user-workflow.md#today) asks.
-- **Kind**: Datadog `investigation`. Freshservice `Incident` is `investigation` and `Service Request` is `support`. Jira `Bug` is `bug`, any other type is `story`, and a `[...connectors.jira.kinds]` table can map other names.
-- **Importance**: the kind's default, except Datadog priority 1 is p0, 2 is p1, 3 is p2, 4 and 5 are p3, and Freshservice priority 4 is p0, 3 is p1, 2 is p2, 1 is p3. Only Datadog's `urgent_priorities` routes to Urgent.
+- **`urgent`**: a new `task.md` key. Today's Urgent section holds the tasks with it in `inbox` or `ready`. `active` moves one to In progress, `waiting` keeps it on the strip only, and closing ends it. It stays visible in the Inbox, as [Today](user-workflow.md#today) asks.
+- **Kind**: Datadog `investigation`. Freshservice `Incident` is `investigation` and `Service Request` is `support`. Jira `Bug` is `bug`, and any other type is `story`.
+- **Importance**: the kind's default, except Datadog priority 1 is p0, 2 is p1, 3 is p2, 4 and 5 are p3, and Freshservice priority 4 is p0, 3 is p1, 2 is p2, 1 is p3. Only Datadog's `urgent_priorities` routes to Urgent, and a monitor with no priority is not urgent.
 - **Due**: Jira `duedate`, Freshservice `due_by`, at creation.
+
+### Urgent
+
+The app comes later, so the read-only phase has to reach me without it. This is provisional, and I may overrule it.
+
+- **`loom ls`** lists an urgent task in `inbox` or `ready`, ahead of every other rule (`is_listed` and `compare` in `loom-core`).
+- **`NotifyPort`** in loomd: `fn notify(&self, notification: &Notification) -> Result<(), NotifyError>`, with context and title. The first adapter uses the OS: `osascript` on macOS, `notify-send` on Linux, the text as an argument and never inside the script. The app takes over later behind the same port. A failure is logged and never stops a sync.
+- **It fires on**: a new urgent task, `urgent` being raised, and an open urgent task that fires again after `flap_window` of quiet. Once each. A flap inside the window does not notify.
 
 ### What the sync may change
 
@@ -190,19 +218,26 @@ url = "https://company-a.atlassian.net/browse/CORE-1042"
 
 ### Tickets: closing and reopening
 
-`list` selects what I own and that is open. An item that leaves a complete list is read once by key, and only that read decides, because a Jira search can lag behind a change. `listed` (it was in the list and not terminal) is kept in the mirror's `sync.json`, and the rules are edges, as for reviews, in a pure `decide_ticket`.
+`list` selects what I own and that is open. An item that leaves a complete list is read by key, and only that read decides, because a Jira search can lag behind a change. It is read at once, then at most hourly while the answer is "open and mine", within the 50 reads.
+
+`listed` is kept in the mirror's `sync.json`. It becomes true when the item is in the list and open. It becomes false only on a read that says terminal or not mine, so a lagging search changes nothing. The rules are edges, as for reviews, in a pure `decide_ticket`.
 
 | Task | Seen | Action |
 | --- | --- | --- |
-| None, or the last one archived | In the list | New task in `inbox`, with its mirror |
+| None | In the list | New task in `inbox`, with its mirror |
+| Last one archived, its frozen `listed` false, or the remote `updated` newer than its `sync.json` | In the list | New task in `inbox`, with its mirror |
+| Last one archived, its frozen `listed` true, no newer remote `updated` | In the list | Nothing: a ticket I closed by hand does not come back when its task is archived |
 | Open | In the list | Mirror follows when remote `updated` moved |
 | Open | In the list or read: terminal | `done`, with a note |
-| Open | Read: still open and mine | Nothing. A search lag clears by itself; a filter that no longer selects it is read again, within the 50 reads |
+| Open or closed | Read: still open and mine | Nothing. `listed` stays true |
 | In `inbox` | Read: not mine | `cancelled`, with a note naming the new assignee |
 | `ready`, `active` or `waiting` | Read: not mine | A note, once. The task stays |
-| Open | Read: 404 | A note, once. The task stays, and the item counts as failed in status: a 404 can be a lost access |
+| Open | Read: 404 | A note, once, and no more reads until it is in a list again. The task stays. It counts as failed in status until the note is written: a 404 can be a lost access |
+| `done` or `cancelled` | Read: terminal, not mine or 404 | `listed` false. Nothing else, and no more reads |
 | `done` or `cancelled` | In the list and open, `listed` false at the last poll | Back to `inbox`, with a note |
 | `done` or `cancelled` | In the list and open, `listed` true at the last poll | Nothing: closing or dismissing sticks |
+
+`sync.json` and the snapshot hold `noted`, a closed set (`not_mine`, `gone`, `recovered`), so "a note, once" holds across restarts. It clears when the item is in a list again, or fires again.
 
 Terminal: Jira `status.statusCategory.key` is `done`. Freshservice `status` is 4 (Resolved) or 5 (Closed), or the ticket is `deleted` or `spam`.
 
@@ -211,7 +246,8 @@ Terminal: Jira `status.statusCategory.key` is `done`. Freshservice `status` is 4
 One task per monitor episode, not per group. The snapshot is `tasks/<id>/remote/<connector>-<monitor id>.json`, daemon-owned: monitor ID, name, priority, tags, web URL, and per group its status and `last_triggered_ts`.
 
 - **List**: `GET /api/v1/monitor/groups/search` with `query` and `group_status`, every page, grouped by `monitor_id`. It returns no priority, so `GET /api/v1/monitor/{id}` gives it once per new monitor, and again each hour. `priorities` is applied locally.
-- **A firing** is a group whose `last_triggered_ts` is newer than the snapshot's, or a group the snapshot does not hold. This works from a timestamp rather than from what two polls saw, so it holds across a restart and catches a flap between polls.
+- **Quiet**: a monitor with no group in the list is read with `group_states=all`. `flap_window` counts from the newest `state.groups[].last_resolved_ts`, and it is read again when that window ends. With no such time, it counts from the poll that first saw it quiet, kept in the snapshot.
+- **A firing** is a group whose `last_triggered_ts` is newer than the snapshot's, a group the snapshot does not hold, or a group that was `warn` in the snapshot and is `alert` now, so a dismissed warning cannot swallow an escalation. `last_triggered_ts` is an `Option<i64>`: without one, only the other two count. This works from a timestamp rather than from what two polls saw, so it holds across a restart and catches a flap between polls.
 
 Pure `decide_alert`:
 
@@ -219,7 +255,9 @@ Pure `decide_alert`:
 | --- | --- | --- |
 | None, or the last one archived and the firing is newer than its snapshot | A firing | New task. `urgent` when the state is alert and the priority is in `urgent_priorities` |
 | Open | A firing | Same task, one row: the snapshot follows, and the row counts firings and groups. No event per flap |
-| `inbox`, not urgent | Nothing firing for `flap_window`, confirmed by one read | `done`, with a note: it cleared itself |
+| Open, not urgent | A group `warn` in the snapshot is `alert` now, at an urgent priority | `urgent` raised, and it [notifies](#urgent) |
+| Open, urgent | A firing after `flap_window` of quiet | Same task, and it notifies once |
+| `inbox`, not urgent | Nothing firing for `flap_window`, confirmed by one read | `cancelled`, with a note: it cleared itself. Not `done`, since an Investigation is done when its cause is identified |
 | `inbox`, urgent | Same | Stays, and the row says it recovered: I should see that a p0 happened. A note, once |
 | `ready`, `active` or `waiting` | Same | A note, once: the cause is still mine to find |
 | Open | Monitor read: 404 | A note, once. `inbox`: `cancelled` |
@@ -231,8 +269,9 @@ Dismissing is `d` on the row, which cancels the task and clears every group on i
 ### Team pool entries
 
 - **Files**: `contexts/<ctx>/queue/pool/<connector>-<key>.json`, daemon-owned, deleted when the entry leaves, written only when bytes change, as for MR entries. It holds `v`, connector, key, `remote_id`, title, web URL, priority, group, remote `updated`. It holds no countdown or other field that moves by itself.
-- **Failures**: a failed or incomplete list changes no entry. `pool_limit` caps the entries, and status says `truncated`.
-- **No double row**: an item with a task in any status that is not archived has no entry, as in #218.
+- **Failures**: a failed or incomplete list changes no entry.
+- **`pool_limit`**: the read stops at the limit and stays complete for the pool: entries become those first N in the order of the query, others are removed, and status says `truncated`.
+- **No double row**: an item with a task in any status that is not archived has no entry, the rule #218 proposes for MR entries.
 - **Taking one**: in the read-only tasks, `o` opens it at the source. Once assigned there, the next poll moves it to a task and removes the entry in the same batch. With writes, `y` assigns it with the hold, as [Keys](user-workflow.md#keys) says.
 
 ## Mirrors
@@ -287,11 +326,12 @@ pub enum ConnectorHealth {
     RateLimited { until: Timestamp },
     Credential { error: String },                 // never the token
     InvalidFilter { error: String },              // bad JQL or query: fix the config, retry won't help
+    UnconfiguredOrigin { connector: String },     // a rename in the file: run `loom connector rename`
     Unreachable { error: String, failures: u32 },
 }
 ```
 
-- **Read**: `GET /v1/connectors`, `loom connector status [--json]`. A change sends a change event, for the app. #218 left an empty `loom review queue` unable to tell a failed poll from nothing to do: it reads this now.
+- **Read**: `GET /v1/connectors`, `loom connector status [--json]`. A change sends a change event, for the app. With #218, an empty `loom review queue` cannot tell a failed poll from nothing to do: it will read this.
 - **Another machine**: `polled_by: other` makes no claim on health. This machine does not know.
 - **Forges**: `ReviewSync` maps onto it. `Synced` with failures is `Partial`, `RateLimited` as it is, and a `Failed` from a 401 is `Credential`.
 - **Notifications**: `Credential` twice in a row raises "expired token". The second try is there because a refusal first resolves the token again.
@@ -304,15 +344,25 @@ pub enum ConnectorHealth {
 - **Every adapter passes**: nominal list and pages; a poll with no change writes and commits nothing; a failed list and an incomplete list change nothing; 429 with that vendor's headers; a refused token resolved again; an item leaving is read once; a restart reads in full and writes nothing; no secret in any log, error or fixture; another instance keeps polling while this one fails.
 - **Loop**: tested with an in-memory `IngestPort`, so the adapters run in parallel without waiting on each other.
 
+## Security
+
+- **What leaves my machine**: the whole store goes to `store.backup.remote` in plaintext, so with connectors that means alert names, tickets with requesters' words, comments, `raw.json` and pool entries. Loom has no encryption of its own.
+- **Backup rule** (provisional): a connector is refused at load on a context with a backup remote until `store.backup.allows_client_data = true` says I checked that the client allows this remote. No remote: no question.
+- **Connector text is untrusted**: tickets and comments are written by anyone. Scripts and remote loads are stripped when HTML becomes Markdown, as the [app](architecture.md#desktop-app) requires of all such content. Control characters are stripped from CLI output and notifications. Text loaded into an agent follows the same rule as any source.
+- **URLs and paths**: a web URL is built from `site` and the key, never taken from a payload. A key from a payload is encoded before it names a file, so it cannot leave its directory.
+- **Secrets**: as in [Credentials](reviews.md#credentials), never logged, never given to git or to an agent. Their names join `token_env_names`.
+
 ## Real checks
 
 I run these once per adapter, with my token, and record the result in its PR. They are what the docs leave open. Each is written so that the adapter has a safe behaviour until then.
 
+**Shape checks come first.** Those that can change the code (**bold** below) are in `fixtures/connectors/check.sh`, which I run before D2, J3 and F2 (tasks D0, J0, F0). It only sends GET requests, plus the Jira search `POST`, which reads. It takes tokens from the environment and passes them to `curl` on standard input, never as an argument. It prints statuses, rate limit headers, JSON key names, counts and timestamps, with no names, titles, tags or text, so that I can share its output. The rest are checked at the end of each adapter.
+
 ### Datadog
 
-1. Does `groups/search` accept `tag:"team:x"`, `team:x`, `env:` and `muted:false`? The [search page](https://docs.datadoghq.com/monitors/manage/search/) lists no `team` or `priority` attribute, and [Teams](https://docs.datadoghq.com/account_management/teams/) says to read the search bar for the terms it adds.
-2. `group_status:(alert OR warn)`: is the form right, and is `priority:` usable to save the detail reads?
-3. Does `last_triggered_ts` move on each re-trigger, in which unit, and does it hold on a monitor with no groups? The whole firing rule depends on it. If it does not move, the fallback is a group seen absent, then present, across polls.
+1. **Does `groups/search` accept** `tag:"team:x"`, `team:x`, `env:` and `muted:false`? The [search page](https://docs.datadoghq.com/monitors/manage/search/) lists no `team` or `priority` attribute, and [Teams](https://docs.datadoghq.com/account_management/teams/) says to read the search bar for the terms it adds.
+2. **`group_status:(alert OR warn)`**: is the form right, and is `priority:` usable to save the detail reads?
+3. **Does `last_triggered_ts` move** on each re-trigger and on a warn that becomes an alert, in which unit, and does it hold on a monitor with no groups? Run twice, around a re-trigger. The whole firing rule depends on it. If it does not move, the fallback is a group seen absent, then present, across polls.
 4. The largest `per_page`, and the rate limit bucket of `groups/search` and `monitor/{id}`: the docs give neither.
 5. The web URL of a monitor on each site, and whether a custom subdomain needs a `web_url` key.
 6. An application key limited to `monitors_read`: is it enough for both reads?
@@ -320,19 +370,20 @@ I run these once per adapter, with my token, and record the result in its PR. Th
 
 ### Jira
 
-1. `assignee is EMPTY` and `statusCategory != Done`: the JQL reference is not on `developer.atlassian.com`, the REST spec only shows an `empty` operand, and only that domain was read. Team fields (`"Team[Team]"`) are unverified too, so `pool_jql` is mine to write.
+1. **`assignee is EMPTY` and `statusCategory != Done`**: the JQL reference is not on `developer.atlassian.com`, the REST spec only shows an `empty` operand, and only that domain was read. Team fields (`"Team[Team]"`) are unverified too, so `pool_jql` is mine to write.
 2. Does a classic API token keep working against `https://<site>`? The page does not cover scoped tokens or the `api.atlassian.com` gateway.
 3. Which limits an API token really meets. The page says token traffic stays on burst limits (100 GET per second) and does not say the hourly points quota never applies to it.
 4. The largest useful `maxResults` for the chosen `fields`, and whether `warnings` on a truncated search needs `complete = false` (the field is marked experimental).
 5. Is `lastViewed` in `*all` the only field that moves without `updated`? Does a new comment move `updated`?
-6. Whether `description` in a v3 response is always ADF: the structure page names comments and textarea custom fields, and the v3 spec has `fields` as an open map.
+6. **Whether `description` in a v3 response is always ADF**: the structure page names comments and textarea custom fields, and the v3 spec has `fields` as an open map.
 7. Do `read` on a moved key and the search return the new key with the same `id`, as the issue page says?
+8. **What an expired or wrong token returns** on `/myself` and on the search: the auth page does not say, and the search can be read anonymously.
 
 ### Freshservice
 
-1. `type`: the attribute table says it supports only `incident`, while the list filter shows `type=Service+Request`. Are requests returned, with which value?
-2. Custom statuses: the docs list 2 to 5 only. If the tenant has more, `open_statuses` must hold them.
-3. Does `agent_id:null AND group_id:<id>` work as the pool? Does the list cap pages? The page gives 30 per page and warns against pages over 500, and no cap.
+1. **`type`**: the attribute table says it supports only `incident`, while the list filter shows `type=Service+Request`. Are requests returned, with which value?
+2. **Custom statuses**: the docs list 2 to 5 only. If the tenant has more, `open_statuses` must hold them.
+3. **Does `agent_id:null AND group_id:<id>` work** as the pool? Does the list cap pages? The page gives 30 per page and warns against pages over 500, and no cap.
 4. There is no documented "me" endpoint, so `agent_id` is configured: can my role read `/agents` to help me find it, or must I read it from the UI?
 5. Does a new conversation move `updated_at`?
 6. Does the filter accept a full time on `updated_at`? The notes say `yyyy-mm-dd` and the table says a time. The design does not rely on it.
@@ -359,7 +410,7 @@ Only what an adapter needs, each from the pages under [Sources](#sources).
 **Target: Jira Cloud, REST v3.** Data Center is out: it has wiki markup rather than ADF ([Tracker sync](tracker-sync.md#provider-specifics)) and its own API reference. Its reference pages gave nothing readable when this was written, so nothing else about it is stated here. This is an assumption I have to confirm for each client. A Data Center tenant would be its own `kind`, reusing `decide_ticket` and the mirror.
 
 - **Auth**: `Authorization: Basic` with `email:token` in Base64, on `https://<site>.atlassian.net`. A triggered CAPTCHA shows as `X-Seraph-LoginReason: AUTHENTICATION_DENIED`, and is reported as `Credential`.
-- **Search**: `POST /rest/api/3/search/jql`. `/rest/api/3/search` is being removed. `fields` defaults to `id`, so I always send the list. Pages use `nextPageToken`, which is absent on the last page. There is no total. `jql` must be bounded. `orderBy` takes at most 7 fields, and a search returns at most 5,000 issues.
+- **Search**: `POST /rest/api/3/search/jql`. `/rest/api/3/search` is being removed. `fields` defaults to `id`, so I always send the list. Pages use `nextPageToken`, which is absent on the last page. There is no total. `jql` must be bounded. `orderBy` takes at most 7 fields. `maxResults` says "It returns max 5000 issues", and fewer per page as more fields are asked.
 - **Consistency**: "Recent updates might not be immediately visible" in search, hence the read by key. `reconcileIssues` takes at most 50 IDs and is not used.
 - **Issue**: `GET /rest/api/3/issue/{key}` finds moved issues and returns the key it found. `id` and `key` are both returned. Comments: `GET .../comment`, with `startAt`. Later: `POST .../transitions`, `PUT .../assignee`, `PUT .../{key}` with `notifyUsers`.
 - **Changelog**: `GET .../changelog` with `startAt`, and `POST /changelog/bulkfetch` for up to 1,000 issues. Not read now.

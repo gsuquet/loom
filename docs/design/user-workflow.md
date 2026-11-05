@@ -124,7 +124,7 @@ See [Knowledge](knowledge.md). An RSS feed is one row on Reading, and `Enter` ex
 
 ## Notifications
 
-Approval needed, clarification needed, run failed, sync conflict, urgent alert ingested, expired token. They are configurable. New MRs and tickets only update a count.
+Approval needed, clarification needed, run failed, sync conflict, urgent alert ingested or firing again, expired token. They are configurable. New MRs and tickets only update a count.
 
 ## Memory of the day
 
