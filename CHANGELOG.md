@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A state read no longer runs the filter drivers of a submodule.
 - A state read no longer follows `GIT_WORK_TREE`, `GIT_INDEX_FILE` or `GIT_NAMESPACE` of the environment of `loomd`. With `GIT_INDEX_FILE` set, `dirty` of a repository with a gitlink and no `.gitmodules` file in its working tree is unknown.
-- `core.worktree` that is not the directory a state read would use, or that comes from an included file, now leaves every field of the state unknown, so the update stops. Before, `loomd` could fast-forward with a change in the directory where git merges.
+- An update no longer moves a branch when git would act on another working tree than the one that `loomd` read. Right before it moves a branch, `loomd` asks git which working tree it would act on. On a hand-built configuration, a state read can still disagree with git, and the update stops (`other_work_tree`). `core.worktree` that a state read cannot follow also leaves every field of the state unknown.
 - git no longer inherits `GIT_CONFIG_PARAMETERS` from the environment of `loomd`.
 
 ### Removed

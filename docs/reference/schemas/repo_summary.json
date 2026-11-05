@@ -1021,6 +1021,24 @@
           ]
         },
         {
+          "description": "Right before a branch moves, git names another working tree than the one that the state\nread used, or no working tree. No branch moves.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "other_work_tree"
+            },
+            "detail": {
+              "description": "What git reported, in English.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "detail"
+          ]
+        },
+        {
           "description": "Another git process (an editor's automatic fetch, a command of the user) held a lock of\nthe repository (`index.lock`, a ref lock) during this step. Retried at the next\ninterval, without backoff. The lock is never removed.",
           "type": "object",
           "properties": {

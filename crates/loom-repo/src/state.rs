@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -441,6 +441,17 @@ fn open_repository(path: &Path, config: GitConfig) -> Result<gix::Repository, St
     Ok(repo)
 }
 
+/// The directory that a state read of `path` uses, `None` for a bare repository: what git must
+/// name before a branch moves.
+///
+/// # Errors
+///
+/// The reason when the repository cannot be opened.
+pub fn read_workdir(path: &Path, options: &StateOptions) -> Result<Option<PathBuf>, String> {
+    let repo = open_repository(path, options.config)?;
+    Ok(repo.workdir().map(Path::to_owned))
+}
+
 /// An error when the last `core.worktree` of the repository configuration is not the working
 /// tree of `repo`, or comes from an included file. git merges in the directory it reads from
 /// that value, and `gix` can read another one (without `core.bare`, in a linked worktree, through
@@ -450,16 +461,25 @@ fn check_configured_worktree(repo: &gix::Repository) -> Result<(), String> {
     let sections = snapshot.plumbing().sections_by_name("core");
     let configured = sections.into_iter().flatten().filter_map(|section| {
         let meta = section.meta();
-        matches!(
+        (matches!(
             meta.source,
             gix::config::Source::Local | gix::config::Source::Worktree
-        )
+        ) && section.header().subsection_name().is_none())
         .then(|| section.value("worktree").map(|value| (value, meta.level)))
         .flatten()
     });
     let Some((value, level)) = configured.last() else {
         return Ok(());
     };
+    // A linked worktree ignores the common value without this extension, as for git.
+    let extension = snapshot
+        .plumbing()
+        .boolean_filter("extensions.worktreeConfig", |meta| {
+            meta.source == gix::config::Source::Local && meta.level == 0
+        });
+    if repo.git_dir() != repo.common_dir() && matches!(extension, Ok(None | Some(false))) {
+        return Ok(());
+    }
     if level > 0 {
         return Err("core.worktree comes from an included file".to_owned());
     }

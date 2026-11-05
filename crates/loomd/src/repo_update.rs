@@ -23,7 +23,7 @@ use loom_api::{
     Timestamp, UpdateOutcome, UpdateStep,
 };
 use loom_config::config::Config;
-use loom_repo::state::UpdateRefs;
+use loom_repo::state::{UpdateRefs, read_workdir};
 use loom_repo::{
     Action, FetchDecision, StateOptions, classify_remote_failure, decide_fetch, decide_update,
     git_dirs, is_busy, state, update_refs,
@@ -259,11 +259,30 @@ fn run(
         debug!(path = %target.path.display(), error, "update refs partly unknown");
     }
     let actions = decide_update(target.policy, &after, &refs);
+    // Only when a branch would move: one more git command, and no hook or filter runs for it.
+    let moves = actions.iter().any(|action| {
+        matches!(
+            action,
+            Action::FastForward { .. } | Action::MoveDefaultBranch { .. }
+        )
+    });
+    let other_tree = moves
+        .then(|| git.same_work_tree(target.path, options).err())
+        .flatten();
     let mut outcomes = Vec::with_capacity(actions.len());
     for action in actions {
         outcomes.push(match action {
             Action::FetchOnly => UpdateOutcome::Fetched,
             Action::Skip(reason) => UpdateOutcome::Skipped { reason },
+            Action::FastForward { .. } | Action::MoveDefaultBranch { .. }
+                if other_tree.is_some() =>
+            {
+                UpdateOutcome::Skipped {
+                    reason: SkipReason::OtherWorkTree {
+                        detail: other_tree.clone().unwrap_or_default(),
+                    },
+                }
+            }
             Action::FastForward { branch, from, to } => git.fast_forward(branch, from, &to.id),
             Action::MoveDefaultBranch {
                 branch,
@@ -428,6 +447,37 @@ impl<'a> Git<'a> {
         git.ssh_command =
             batch_ssh_command(configured.ok().flatten().as_deref(), runner.ssh_in_env);
         git
+    }
+
+    /// Whether git would act on the working tree that a state read of `path` uses. Its decision
+    /// holds only for that directory, and `gix` and git can read a hand-built configuration
+    /// differently. `Err`: what git reported.
+    fn same_work_tree(&self, path: &Path, options: &StateOptions) -> Result<(), String> {
+        let read = read_workdir(path, options)?
+            .ok_or_else(|| "the read found no working tree".to_owned())?;
+        let args = [
+            OsStr::new("rev-parse"),
+            OsStr::new("--is-inside-work-tree"),
+            OsStr::new("--show-toplevel"),
+        ];
+        let output = self
+            .output(&args, CONFIG_TIMEOUT)
+            .map_err(|failure| match failure {
+                Failure::Exit { stderr_tail, .. } => stderr_tail.trim().to_owned(),
+                failure @ (Failure::Run(_) | Failure::Timeout { .. }) => format!("{failure:?}"),
+            })?;
+        let Some(top) = output.lines().nth(1).filter(|line| !line.is_empty()) else {
+            return Err("git reports no working tree".to_owned());
+        };
+        let canonical = |path: &Path| {
+            path.canonicalize()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        };
+        if canonical(Path::new(top))? == canonical(&read)? {
+            Ok(())
+        } else {
+            Err(format!("git names {top}, the read used {}", read.display()))
+        }
     }
 
     /// `git config --get <key>`; `None` when unset.

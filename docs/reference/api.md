@@ -708,6 +708,7 @@ The result of the last update of a repository, scheduled or requested.
 | `unborn` | `branch` | The branch has no commit. |
 | `no_upstream` | `branch` | The branch has no upstream, or its ref does not exist. |
 | `diverged` | `branch`, `ahead`, `behind` | The branch and its upstream both have commits the other lacks. |
+| `other_work_tree` | `detail` | Right before a branch moves, git names another working tree than the one that `loomd` read, or no working tree. `detail` tells what git reported. No branch moves. |
 | `merge_refused` | `stderr_tail` | `git merge --ff-only` refused (an untracked file in the way, a change made since the decision). Not retried before the next update. |
 | `default_branch_diverged` | `branch`, `ahead`, `behind` | The local default branch and its upstream both have commits the other lacks. |
 | `busy` | `step` (`fetch`, `fast_forward`, `move_default_branch`), `stderr_tail` | Another git process (an editor's automatic fetch, a command of the user) held a lock of the repository during this step. Either `index.lock` or another `*.lock` file existed, or a ref moved under the fetch. Retried at the next interval, without [backoff](#updates). The lock is never removed. Any other failure, or a lock along with another error, stays `failed`. |

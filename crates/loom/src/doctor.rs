@@ -828,6 +828,7 @@ enum UpdateIssue {
     Unborn,
     NoUpstream,
     Diverged,
+    OtherWorkTree,
     MergeRefused,
     DefaultBranchDiverged,
 }
@@ -858,6 +859,7 @@ impl UpdateIssue {
                 SkipReason::Unborn { .. } => Some(Self::Unborn),
                 SkipReason::NoUpstream { .. } => Some(Self::NoUpstream),
                 SkipReason::Diverged { .. } => Some(Self::Diverged),
+                SkipReason::OtherWorkTree { .. } => Some(Self::OtherWorkTree),
                 SkipReason::MergeRefused { .. } => Some(Self::MergeRefused),
                 SkipReason::DefaultBranchDiverged { .. } => Some(Self::DefaultBranchDiverged),
             },
@@ -922,6 +924,10 @@ impl UpdateIssue {
                 "`git branch --set-upstream-to <remote>/<branch>`, or leave it: a local branch is never moved",
             ),
             Self::Diverged => ("diverged from upstream", "rebase or merge by hand"),
+            Self::OtherWorkTree => (
+                "git would act on another working tree",
+                "check `core.worktree` and `core.bare` in the configuration of the repository",
+            ),
             Self::MergeRefused => (
                 "fast-forward refused by git",
                 "usually an untracked file the remote now tracks: move it aside",

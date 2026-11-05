@@ -54,6 +54,8 @@ Nothing else ever occurs: no rebase, reset, stash, checkout, branch deletion or 
 
 The decision of loom is the first guard: it reads the state with `gix` and refuses when anything is doubtful. git is the second guard. `git merge --ff-only` refuses anything but a fast-forward, and refuses to overwrite an untracked file that the new commits would create. `git fetch <remote> <a>:<b>` refuses to move a branch other than forward, and refuses a branch checked out in any working tree. A branch moves only when the two guards agree. git refuses only what would overwrite a file: a local change to a file that the new commits do not touch does not stop `git merge --ff-only`. For such a change, the decision of loom is the only guard.
 
+That decision is valid only for the directory that it read. Right before a branch moves, `loomd` asks git which working tree it would act on (`git rev-parse --is-inside-work-tree --show-toplevel`, which runs no hook and no filter). If git names another directory, or no working tree, the update stops (`git would act on another working tree`). Thus, a hand-built configuration that `gix` and git read differently cannot move a branch over local work.
+
 When git refuses, the update reports it as skipped (`git refused the fast-forward: …`), and does not retry before the next interval. The typical case is an untracked file with the same name as a file that the remote added.
 
 ## When another git process holds a lock
@@ -99,7 +101,7 @@ When `loomd` stops, it does not interrupt an update that runs. The git command o
 
 ## Differences from `git status`
 
-`dirty` of a repository state follows `git status` for changes of tracked files and of submodules, at each depth. It reads the working tree of `core.worktree`, as git does, or leaves every field unknown when it cannot read that directory. It differs in these cases. In each case, the state says dirty or unknown where git says clean or gives a count, so the update stops. Thus, the difference cannot move a branch over local work.
+`dirty` of a repository state follows `git status` for changes of tracked files and of submodules, at each depth. It reads the working tree of `core.worktree`, or leaves every field unknown when it finds that value in a form that it cannot follow. On a hand-built configuration, the read can still disagree with git, as the last item of this list says. The update stops anyway, because `loomd` asks git itself which working tree it would act on. In the other cases, the state says dirty or unknown where git says clean or gives a count, so the update stops.
 
 - A submodule with `ignore = all` whose directory was removed or replaced by a file counts as one path. git reads no change.
 - A gitlink with `assume-unchanged` is read. git reads no change.
@@ -110,11 +112,12 @@ When `loomd` stops, it does not interrupt an update that runs. The git command o
 - A changed file that needs a filter driver leaves `dirty` unknown, because `loomd` never runs the driver.
 - `status.showUntrackedFiles = false` (the boolean form) in the repository does not hide the untracked files of its submodules. `no` hides them.
 - `core.worktree` from an included file leaves every field unknown.
-- `core.worktree` that is not the directory that the read would use leaves every field unknown, for example without `core.bare` in the same configuration. A linked worktree with `core.worktree` in the common configuration also leaves every field unknown, with or without `extensions.worktreeConfig`. git ignores the value without that extension.
+- `core.worktree` that is not the directory that the read would use leaves every field unknown, for example without `core.bare` in the same configuration. A linked worktree with `extensions.worktreeConfig` and `core.worktree` in the common configuration also leaves every field unknown. Without that extension, a linked worktree ignores that value, as git does, for example a linked worktree of a submodule.
 - A directory named `.gitmodules` leaves `dirty` unknown.
-- With `GIT_INDEX_FILE` set in the environment of `loomd`, a repository or submodule with a gitlink and no regular `.gitmodules` file in its working tree leaves `dirty` unknown, because `loomd` cannot find an `ignore` value without that index. A repository without a gitlink can also read unknown when that index holds a `.gitmodules` file.
+- With `GIT_INDEX_FILE` set in the environment of `loomd`, a repository or submodule with a gitlink and no regular `.gitmodules` file in its working tree leaves `dirty` unknown, because `loomd` cannot find an `ignore` value without that index. A repository without a gitlink can also read unknown when that index holds a `.gitmodules` file. A repository with a checked-out submodule can also read unknown, because that index applies to the submodule too.
 - An empty `GIT_WORK_TREE` or `GIT_INDEX_FILE` in the environment of `loomd` leaves every field unknown.
 - A sparse index leaves `dirty` unknown. A SHA-256 repository leaves every field unknown.
+- Known limit of the read: without `core.repositoryformatversion`, git ignores `core.worktree`, and `gix` follows it. The read can then say 0 for a directory that git does not use. The update stops, because git names another working tree.
 
 ## SSH from a service
 
@@ -133,6 +136,7 @@ Under `loom service`, `loomd` does not start from a terminal. Thus, its fetches 
 | `HEAD detached` | Check out a branch. |
 | `branch <b> has no upstream` | `git branch --set-upstream-to <remote>/<b>`, or leave it: a local branch is never moved. |
 | `<b> diverged from its upstream` | Rebase or merge by hand. |
+| `git would act on another working tree: …` | The configuration gives git another working tree than the one that `loomd` read, such as a hand-built `core.worktree`. Check `core.worktree` and `core.bare` in the configuration of the repository. |
 | `git refused the fast-forward: …` | Usually an untracked file that the remote now tracks. Move it to a different location. |
 | `repository busy: another git process holds a lock (<step>)` | Nothing: the next update tries again. If it continues, make sure that no git process runs in the repository. A process that crashed leaves its lock file. |
 | `<field> unknown` | The state could not be read in time, a file needs a filter driver for the comparison, or a submodule cannot be read. Check `error` in the state, and run `git status`. |

@@ -1532,8 +1532,8 @@ fn core_worktree_of_the_common_configuration_stops_a_linked_worktree() {
     fs::write(other.join("f.txt"), "my edit\n").unwrap();
     fixture.git(&repo, &["config", "core.worktree", other.to_str().unwrap()]);
 
-    // Without the extension, git ignores the value: unknown is the listed difference.
-    assert_eq!(Fixture::state(&linked).dirty, MaybeKnown::Unknown);
+    // Without the extension, git ignores the value, and so does the read.
+    fixture.assert_same_as_git(&linked, 0);
 
     fixture.git(&repo, &["config", "extensions.worktreeConfig", "true"]);
     assert_eq!(fixture.git_status_changes(&linked), 1);
@@ -1547,4 +1547,15 @@ fn a_directory_named_gitmodules_leaves_the_count_unknown() {
     fixture.commit_gitmodules(&repo, None);
     fs::create_dir(repo.join(".gitmodules")).unwrap();
     assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+}
+
+/// `git worktree add` in a submodule shares its relative `core.worktree`, which git ignores there.
+#[test]
+fn a_linked_worktree_of_a_submodule_is_read() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    let linked = linked_worktree(&fixture, &repo.join("sub"), "linked");
+    fixture.assert_same_as_git(&linked, 0);
+    fs::write(linked.join("f.txt"), "two\n").unwrap();
+    fixture.assert_same_as_git(&linked, 1);
 }

@@ -827,3 +827,75 @@ fn a_symlink_gitmodules_does_not_stop_the_index_check() {
     assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
     assert_eq!(sandbox.head(&repo), head);
 }
+
+/// A repository behind its remote, and a clean copy of its files elsewhere.
+fn behind_with_a_decoy(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let decoy = sandbox.dir.path().join("decoy");
+    fs::create_dir_all(&decoy).unwrap();
+    fs::copy(repo.join("f.txt"), decoy.join("f.txt")).unwrap();
+    (repo, decoy)
+}
+
+/// The read may say 0 here: without a format version, git ignores `core.worktree`, and gix follows
+/// it. git itself names the other tree, so the update stops.
+#[test]
+fn an_update_stops_without_a_format_version() {
+    let sandbox = Sandbox::new("");
+    let (repo, decoy) = behind_with_a_decoy(&sandbox);
+    sandbox.git(
+        &repo,
+        &["config", "--unset", "core.repositoryformatversion"],
+    );
+    sandbox.git(&repo, &["config", "core.worktree", decoy.to_str().unwrap()]);
+    fs::write(repo.join("f.txt"), "my edit\n").unwrap();
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start();
+    let outcomes = wait_for_outcomes(&sandbox, "app");
+    assert!(
+        outcomes.to_string().contains("other_work_tree"),
+        "{outcomes}"
+    );
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+    assert!(!decoy.join("g.txt").exists());
+}
+
+/// `[core "x"] worktree` is not `core.worktree`.
+#[test]
+fn a_subsection_of_core_is_not_core_worktree() {
+    let sandbox = Sandbox::new("");
+    let (repo, decoy) = behind_with_a_decoy(&sandbox);
+    fs::write(decoy.join("f.txt"), "my edit\n").unwrap();
+    sandbox.git(&repo, &["config", "--unset", "core.bare"]);
+    sandbox.git(&repo, &["config", "core.worktree", decoy.to_str().unwrap()]);
+    sandbox.git(
+        &repo,
+        &["config", "core.x.worktree", repo.to_str().unwrap()],
+    );
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start();
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+    assert!(!decoy.join("g.txt").exists());
+}
