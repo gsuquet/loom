@@ -41,11 +41,12 @@ use serde_json::json;
 use tempfile::TempDir;
 
 const NEW: &str = "99.0.0";
-/// Budget of each wait. A rollback alone takes the watchdog deadline (20 s here), after the
-/// download, the pre-flight (up to 15 s) and two copies of the binaries with `fsync`. On a busy CI
-/// runner, 19 s passed between the pre-flight and the swap's end, inferred to be one such copy. It
-/// only tells that a step ended: a step that became slower passes as long as it fits. The time
-/// each one took is printed by [`Env::wait_for`], seen on a failure or with `--nocapture` only.
+/// Budget of each wait. A rollback alone takes the download, the pre-flight (up to 15 s), the swap,
+/// the watchdog deadline (20 s here), then the watchdog's restore of the binaries: the copy that
+/// used up the former 45 s budget under an fsync load. On a busy CI runner, 19 s passed between the
+/// pre-flight and the end of the swap, inferred to be the save and replace of that swap. It only
+/// tells that a step ended: a step that became slower passes as long as it fits. The time each one
+/// took is printed by [`Env::wait_for`], seen on a failure or with `--nocapture` only.
 const WAIT: Duration = Duration::from_mins(3);
 const POLL: Duration = Duration::from_millis(100);
 /// Logged by the watchdog before it records the upgrade.

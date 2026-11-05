@@ -32,20 +32,21 @@ const TASKS: usize = 5_000;
 const RUNS: usize = 60;
 /// Limit of the latency test on [`Timing::p50`] and [`Timing::floor`]. The target is 100 ms; a
 /// shared CI runner running a debug build gets slack. In the recorded runs, p50 stayed under
-/// 52 ms at a load average of 100.
+/// 52 ms, with 30 CPU hogs as well.
 const LATENCY_LIMIT: Duration = Duration::from_millis(250);
-/// Ceiling on [`Timing::p95`]. It catches stalls (a held lock, repeated waits of
-/// `tasks::READY_TIMEOUT`), not a tail of some hundreds of ms: the highest recorded p95 is 295 ms
-/// at a load average of about 110, about 7 times less.
+/// Ceiling on [`Timing::p95`]. It takes 4 slow runs of 60 to reach it, so it catches repeated
+/// stalls (a held lock, four or more waits of `tasks::READY_TIMEOUT`), not a tail of some hundreds
+/// of ms: the highest recorded p95 is 295 ms, with 30 CPU hogs, about 7 times less.
 const P95_CEILING: Duration = Duration::from_secs(2);
 /// Least limit on the time from the start of loomd to the tasks and repository states read.
-/// Recorded: 11 to 25 s without synthetic load, 22 to 30 s with 30 CPU hogs. A stall of 30 s still
-/// passes on an idle machine (ready in 39 to 46 s); one of 120 s fails.
-const MIN_READY_LIMIT: Duration = Duration::from_mins(1);
+/// Recorded: 11 to 33 s without synthetic load, 55.6 s with a `cargo build --release -j 4`
+/// overlapping, 22 to 30 s with 30 CPU hogs. A stall of 90 s still passes on an idle machine (ready
+/// in 109 s); one of 120 s fails.
+const MIN_READY_LIMIT: Duration = Duration::from_mins(2);
 /// Limit on that time, in times the fixtures took on the same machine just before, as a measure
 /// of its load. With 16 `F_FULLFSYNC` writers as well, the fixtures took 116 to 307 s and the index
 /// 181 to 183 s, so that a stall of about 7 min passes after fixtures of 307 s. This limit has not
-/// run under that load, and could trip on an fsync load starting after the fixtures.
+/// run under that load, and could trip on an fsync load or a compile starting after the fixtures.
 const READY_LIMIT_TO_FIXTURES: u32 = 2;
 
 const CONFIG: &str = r#"
