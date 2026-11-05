@@ -59,7 +59,7 @@ use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::{Span, debug, info, info_span, warn};
 
-use crate::mr_worker::{self, MrWorker, MrWorkerHandle};
+use crate::mr_worker::{self, MrWorker, MrWorkerHandle, PassTrigger};
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
 
@@ -194,7 +194,7 @@ fn polled_here(
 }
 
 /// The duration of the test hook `name`, otherwise `default`.
-fn hooked_duration(name: &str, default: Duration) -> Duration {
+pub fn hooked_duration(name: &str, default: Duration) -> Duration {
     hooks::duration_hook(name, env::var(name).ok().as_deref())
         .unwrap_or_else(|message| {
             warn!("{message}");
@@ -455,10 +455,8 @@ struct Fetched {
     untracked: Vec<String>,
     /// Why the poll stopped before its last MR: the MRs read before are applied all the same.
     stopped: Option<Stopped>,
-    /// The GitLab list of this poll was full.
-    full_list: bool,
-    /// A 404 removed an entry of this poll: the next list is full, whatever this one was.
-    gone: bool,
+    /// The time of the GitLab list of this poll, when it was full.
+    full_list: Option<Instant>,
 }
 
 impl Poller {
@@ -608,7 +606,7 @@ impl Poller {
                 match fetched.stopped.take() {
                     // One MR that stops the host does not hold back the MRs read before it.
                     Some(stopped) => {
-                        let _ = self.hand_over(index, fetched.updates);
+                        let _ = self.hand_over(index, fetched.updates, PassTrigger::Poll);
                         self.stopped(index, stopped, &token)
                     }
                     None => self.apply(index, fetched, started),
@@ -620,9 +618,14 @@ impl Poller {
 
     /// Hands `updates` of host `index` to the task thread. What the task thread did not write
     /// is read in full next time, or its cached `ETag` would hide the change with a 304.
-    fn hand_over(&mut self, index: usize, updates: Vec<MrUpdate>) -> Option<ReviewsApplied> {
+    fn hand_over(
+        &mut self,
+        index: usize,
+        updates: Vec<MrUpdate>,
+        trigger: PassTrigger,
+    ) -> Option<ReviewsApplied> {
         let applied = self.write_updates(index, updates)?;
-        self.refs.pass(&self.hosts[index].target);
+        self.refs.pass(&self.hosts[index].target, trigger);
         Some(applied)
     }
 
@@ -641,6 +644,9 @@ impl Poller {
             }
             return None;
         };
+        if applied.entry_gone {
+            host.last_full_list = None;
+        }
         for failure in &applied.failed {
             if let Ok(key) = MrKey::parse(&failure.key) {
                 host.mrs.remove(&key.dir_name());
@@ -658,13 +664,14 @@ impl Poller {
     /// Hands the MRs fetched from host `index` to the task thread.
     fn apply(&mut self, index: usize, fetched: Fetched, started: Timestamp) -> ReviewSyncOutcome {
         let mrs = fetched.updates.len() + fetched.failed.len();
-        let Some(applied) = self.hand_over(index, fetched.updates) else {
+        let Some(applied) = self.hand_over(index, fetched.updates, PassTrigger::Poll) else {
             return ReviewSyncOutcome::Failed {
                 error: "loomd is stopping".to_owned(),
             };
         };
         let host = &mut self.hosts[index];
         let mut failed = fetched.failed;
+        let entry_gone = applied.entry_gone;
         failed.extend(applied.failed);
         host.last_success = Some(started);
         // An MR that failed before its task exists is listed again only from the same time; an
@@ -678,8 +685,8 @@ impl Poller {
                     .unix_secs()
                     .saturating_sub(UPDATED_AFTER_MARGIN.as_secs()),
             );
-            if fetched.full_list && !fetched.gone {
-                host.last_full_list = Some(Instant::now());
+            if !entry_gone {
+                host.last_full_list = fetched.full_list.or(host.last_full_list);
             }
         }
         host.rate_limited = None;
@@ -959,7 +966,7 @@ impl Poller {
             }
             match self.ours(index, &key, repos).0 {
                 Belongs::Here => keys.push((key, None, None)),
-                Belongs::Elsewhere => settled.push(gone_update(key)),
+                Belongs::Elsewhere => settled.push(unread_update(key, None, false)),
                 Belongs::Unassigned => {}
             }
         }
@@ -990,8 +997,7 @@ impl Poller {
             failed: unassigned.into_iter().chain(held).collect(),
             untracked,
             stopped: None,
-            full_list: false,
-            gone: false,
+            full_list: None,
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
@@ -1035,6 +1041,7 @@ impl Poller {
             .last_full_list
             .is_none_or(|at| at.elapsed() >= self.full_list_period);
         let since = if full_list { None } else { host.updated_after };
+        let listed_at = full_list.then(Instant::now);
         let listed = client.review_requests(since)?;
         let ToRead {
             mrs: keys,
@@ -1054,8 +1061,7 @@ impl Poller {
             failed: unassigned.into_iter().chain(held).collect(),
             untracked,
             stopped: None,
-            full_list,
-            gone: false,
+            full_list: listed_at,
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
@@ -1101,10 +1107,7 @@ impl Poller {
                 Ok(update) => fetched.updates.push(update),
                 // Gone from a host that answers: as for a closed MR. A task keeps its rules.
                 Err(ReadFailure::MrGone(_)) if unlisted => {
-                    let host = &mut self.hosts[index];
-                    host.mrs.remove(&key.dir_name());
-                    host.last_full_list = None;
-                    fetched.gone = true;
+                    self.hosts[index].mrs.remove(&key.dir_name());
                     fetched.updates.push(gone_update(key));
                 }
                 Err(read) => {
@@ -1123,7 +1126,7 @@ impl Poller {
 }
 
 /// An update with no read of the forge.
-const fn unread_update(key: MrKey, moved_to: Option<ContextName>) -> MrUpdate {
+const fn unread_update(key: MrKey, moved_to: Option<ContextName>, gone: bool) -> MrUpdate {
     MrUpdate {
         key,
         requested: Some(false),
@@ -1134,18 +1137,19 @@ const fn unread_update(key: MrKey, moved_to: Option<ContextName>) -> MrUpdate {
         own: false,
         start: false,
         requested_after_verdict: false,
+        gone,
         moved_to,
     }
 }
 
 /// What removes the entry of an MR that the forge no longer shows.
 const fn gone_update(key: MrKey) -> MrUpdate {
-    unread_update(key, None)
+    unread_update(key, None, true)
 }
 
 /// What moves the entry of an MR to the store of its context.
 const fn moved_update(key: MrKey, context: ContextName) -> MrUpdate {
-    unread_update(key, Some(context))
+    unread_update(key, Some(context), false)
 }
 
 /// A read of this MR is to be in full next time, or its cached `ETag` would hide a change with a
@@ -1262,6 +1266,7 @@ fn github_update(
                 start: false,
                 // GitHub removes me from the reviewers when I submit: listed is newer.
                 requested_after_verdict: cache.direct,
+                gone: false,
                 moved_to: None,
             })
         }
@@ -1285,6 +1290,7 @@ fn github_update(
                 own: false,
                 start: false,
                 requested_after_verdict: cache.direct,
+                gone: false,
                 moved_to: None,
             })
         }
@@ -1357,6 +1363,7 @@ fn gitlab_update(
                 verdict: Some(gitlab_verdict(approvals.user_has_approved, &head)),
                 start: false,
                 requested_after_verdict,
+                gone: false,
                 moved_to: None,
             })
         }
@@ -1388,6 +1395,7 @@ fn gitlab_update(
                 own: false,
                 start: false,
                 requested_after_verdict: false,
+                gone: false,
                 moved_to: None,
             })
         }

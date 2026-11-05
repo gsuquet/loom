@@ -663,6 +663,10 @@ pub fn mirror_dir(task_dir: &Path, key: &MrKey) -> std::path::PathBuf {
 
 /// What a poll fetched of one MR, for the task thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts of one read"
+)]
 pub struct MrUpdate {
     /// The key of the MR.
     pub key: MrKey,
@@ -684,6 +688,8 @@ pub struct MrUpdate {
     pub start: bool,
     /// A request is known to be newer than my verdict: see `review_queue::EntrySeen`.
     pub requested_after_verdict: bool,
+    /// The forge answered 404 for the MR: its entry goes, and its approval row stays.
+    pub gone: bool,
     /// The MR is of this context now: the entry goes to its store. Its other fields are not used.
     pub moved_to: Option<ContextName>,
 }

@@ -139,7 +139,10 @@ fn the_head_of_an_approval_is_kept_per_context_host_and_mr() {
         index.mr_approval_head(&work, "h", "acme/shop!1").unwrap(),
         None
     );
-    index.set_mr_approval(&work, "h", &approval).unwrap();
+    let at = |secs| Timestamp::from_unix_secs(secs).unwrap();
+    index
+        .set_mr_approval(&work, "h", &approval, at(100))
+        .unwrap();
     assert_eq!(
         index
             .mr_approval_head(&work, "h", "acme/shop!1")
@@ -172,7 +175,17 @@ fn the_head_of_an_approval_is_kept_per_context_host_and_mr() {
         head_sha: "bbb".to_owned(),
         ..approval
     };
-    index.set_mr_approval(&work, "h", &newer).unwrap();
+    index.set_mr_approval(&work, "h", &newer, at(100)).unwrap();
+    // A row goes by its age only when the time is reached.
+    index
+        .drop_mr_approval_before(&work, "h", "acme/shop!1", at(99))
+        .unwrap();
+    assert_eq!(reader.mr_approvals(&work, "h").unwrap().len(), 1);
+    index
+        .drop_mr_approval_before(&work, "h", "acme/shop!1", at(100))
+        .unwrap();
+    assert_eq!(reader.mr_approvals(&work, "h").unwrap(), Vec::new());
+    index.set_mr_approval(&work, "h", &newer, at(100)).unwrap();
     assert_eq!(reader.mr_approvals(&work, "h").unwrap(), vec![newer]);
     index
         .drop_mr_approval(&work, "other", "acme/shop!1")

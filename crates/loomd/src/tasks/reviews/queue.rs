@@ -5,21 +5,23 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use loom_api::{ContextName, ForgeKind, ReviewQueue};
+use loom_api::{ContextName, ForgeKind, ReviewQueue, Timestamp};
 use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, Sha};
 use loom_store::files::ARCHIVE_DIR;
 use loom_store::port::TaskLocation;
 use loom_store::{IndexedTask, MrApproval};
+use loomd::hooks;
 use loomd::review_queue::{
-    ApprovalStep, EntryDecision, EntryInput, QueueEntry, active_reviews_of, approval_key,
-    approval_step, decide_entry, entry_bytes, entry_name, entry_of, entry_seen, queue_dir,
-    queue_message, read_entry_bytes,
+    APPROVAL_EXPIRY, ApprovalStep, EntryDecision, EntryInput, QueueEntry, active_reviews_of,
+    approval_key, approval_step, decide_entry, entry_bytes, entry_name, entry_of, entry_seen,
+    queue_dir, queue_message, read_entry_bytes,
 };
 use loomd::review_sync::{MrBatch, MrUpdate, SeenVerdict, find_review, mirror_dir, url_host};
 use tracing::{info, warn};
 
 use super::{Previous, ReviewsApplied, Worker, can_create, read_previous, write_mirror};
-use crate::tasks::log_commit;
+use crate::reviews::hooked_duration;
+use crate::tasks::{log_commit, now};
 
 impl Worker {
     /// The queue entry of one MR, after its Review task: adds, keeps or removes it. A failed
@@ -119,6 +121,7 @@ impl Worker {
                 remove_entry(&root, &update.key)?;
                 info!(%context, key = %update.key, "MR removed from the queue");
                 applied.removed.push(update.key.to_string());
+                applied.entry_gone |= update.gone;
             }
         }
         Ok(())
@@ -146,7 +149,18 @@ impl Worker {
             .mr_approval_head(&batch.context, &batch.host, &key)
             .map_err(|error| cannot(&error))?
             .and_then(|head| Sha::try_from(head).ok());
-        let left = update.requested == Some(false)
+        if update.gone {
+            let expiry = hooked_duration(hooks::APPROVAL_EXPIRY_ENV, APPROVAL_EXPIRY);
+            let cutoff = now().unix_secs().saturating_sub(expiry.as_secs());
+            Timestamp::from_unix_secs(cutoff)
+                .map(|cutoff| {
+                    index.drop_mr_approval_before(&batch.context, &batch.host, &key, cutoff)
+                })
+                .transpose()
+                .map_err(|error| cannot(&error))?;
+        }
+        // A 404 is not leaving: a lost access answers it too, and the head of my approval stays.
+        let left = (update.requested == Some(false) && !update.gone)
             || update.moved_to.is_some()
             || update
                 .mr
@@ -170,7 +184,7 @@ impl Worker {
                         project_id: *project_id,
                     };
                     index
-                        .set_mr_approval(&batch.context, &batch.host, &approval)
+                        .set_mr_approval(&batch.context, &batch.host, &approval, now())
                         .map_err(|error| cannot(&error))?;
                 }
             }

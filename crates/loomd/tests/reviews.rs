@@ -349,17 +349,22 @@ impl Sandbox {
 
     /// Starts loomd, archiving as on `today` (`LOOM_TEST_TODAY`) when given.
     fn start_on(&self, today: Option<&str>) -> Daemon {
-        self.start_with(today, "1h")
+        self.start_with(today, "LOOM_TEST_FULL_LIST_PERIOD", "1h")
     }
 
     /// Starts loomd, with this time between two full GitLab lists.
     fn start_with_full_list_period(&self, period: &str) -> Daemon {
-        self.start_with(None, period)
+        self.start_with(None, "LOOM_TEST_FULL_LIST_PERIOD", period)
     }
 
-    fn start_with(&self, today: Option<&str>, full_list_period: &str) -> Daemon {
+    /// Starts loomd, with this test hook.
+    fn start_with_env(&self, name: &str, value: &str) -> Daemon {
+        self.start_with(None, name, value)
+    }
+
+    fn start_with(&self, today: Option<&str>, name: &str, value: &str) -> Daemon {
         let mut command = Command::new(env!("CARGO_BIN_EXE_loomd"));
-        command.env("LOOM_TEST_FULL_LIST_PERIOD", full_list_period);
+        command.env(name, value);
         if let Some(today) = today {
             command.env("LOOM_TEST_TODAY", today);
         }
@@ -460,30 +465,35 @@ impl Sandbox {
             .count()
     }
 
+    /// The passes of MR refs asked for by this trigger: `poll` or `start`.
+    fn passes_of(&self, trigger: &str) -> usize {
+        fs::read_to_string(self.pass_file())
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == trigger)
+            .count()
+    }
+
     /// A sync, then the end of the pass of MR refs of each poll that it ran.
     fn sync_and_settle(&self) -> ReviewSyncResult {
-        let before = self.passes();
+        let before = self.passes_of("poll");
         let result = self.sync();
         let polls = result
             .forges
             .iter()
             .filter(|forge| matches!(forge.outcome, ReviewSyncOutcome::Synced { .. }))
             .count();
-        wait_for("the pass of each poll", || self.passes() >= before + polls);
+        wait_for("the pass of each poll", || {
+            self.passes_of("poll") >= before + polls
+        });
         result
     }
 
-    /// No pass of MR refs ran since `before`: a poll queues its pass behind one that a start would
-    /// have queued, so the count after that pass is exact, with no wait for something not to come.
-    fn assert_no_pass_since(&self, before: usize) {
-        let polls = self
-            .sync()
-            .forges
-            .iter()
-            .filter(|forge| matches!(forge.outcome, ReviewSyncOutcome::Synced { .. }))
-            .count();
-        wait_for("the pass of each poll", || self.passes() >= before + polls);
-        assert_eq!(self.passes(), before + polls);
+    /// No start asked for a pass of MR refs since `before` starts: a poll queues its pass behind
+    /// the pass of a start of the same context and host, so it is written by then.
+    fn assert_no_start_pass_since(&self, before: usize) {
+        self.sync_and_settle();
+        assert_eq!(self.passes_of("start"), before);
     }
 
     /// A sync, then a start on each entry, each with the end of its pass of MR refs.
@@ -495,9 +505,9 @@ impl Sandbox {
                 .replace('/', "%2F")
                 .replace('#', "%23")
                 .replace('!', "%21");
-            let before = self.passes();
+            let before = self.passes_of("start");
             start(&self.socket(), &encoded);
-            wait_for("the pass of the start", || self.passes() > before);
+            wait_for("the pass of the start", || self.passes_of("start") > before);
         }
         result
     }
@@ -2477,7 +2487,7 @@ fn a_404_at_a_start_removes_the_entry_and_answers_not_found() {
     sandbox.sync_and_settle();
     sandbox.github.routes.lock().unwrap().remove(PULL);
     sandbox.gitlab.routes.lock().unwrap().remove(MR_88);
-    let passes = sandbox.passes();
+    let passes = sandbox.passes_of("start");
     for (context, encoded, key, _, _) in FORGES {
         let refused = start_response(&socket, encoded);
         assert_eq!(refused.status, 404, "{key}: {}", refused.body);
@@ -2487,7 +2497,7 @@ fn a_404_at_a_start_removes_the_entry_and_answers_not_found() {
         assert_eq!(task_dirs(&store), Vec::<PathBuf>::new(), "{key}");
     }
     // A start that creates nothing runs no pass of MR refs.
-    sandbox.assert_no_pass_since(passes);
+    sandbox.assert_no_start_pass_since(passes);
     daemon.stop();
 }
 
@@ -4724,7 +4734,7 @@ fn a_start_after_my_direct_request_is_gone_is_refused_and_removes_the_entry() {
     sandbox
         .gitlab
         .set(MR_88, with_etag(mr.to_string(), "W/\"no-request\""));
-    let passes = sandbox.passes();
+    let passes = sandbox.passes_of("start");
     for (context, encoded, key, _, _) in FORGES {
         let refused = start_response(&socket, encoded);
         assert_eq!(refused.status, 409, "{key}: {}", refused.body);
@@ -4734,7 +4744,7 @@ fn a_start_after_my_direct_request_is_gone_is_refused_and_removes_the_entry() {
         assert_eq!(entry_files(&store), Vec::<(String, String)>::new(), "{key}");
     }
     // A start that creates nothing runs no pass of MR refs.
-    sandbox.assert_no_pass_since(passes);
+    sandbox.assert_no_start_pass_since(passes);
     daemon.stop();
 }
 
@@ -5268,5 +5278,179 @@ fn a_limited_list_does_not_put_off_the_next_full_list() {
         sandbox.sync();
         sandbox.gitlab.requests()[seen..].contains(&"GET /merge_requests".to_owned())
     });
+    daemon.stop();
+}
+
+/// Approve V2, and a push to V3 on a project that keeps approvals: an entry on V3.
+fn kept_approval_with_an_entry(sandbox: &Sandbox) {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    sandbox.sync();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-23T09:00:00.000Z", "opened", "W/\"approved\""),
+    );
+    sandbox.sync();
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it(sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&sandbox.socket(), Some("company-a")).entries.len(), 1);
+}
+
+fn approval_heads(sandbox: &Sandbox) -> Vec<String> {
+    loom_store::Reader::open(&sandbox.loom_home().join("index.db"))
+        .unwrap()
+        .mr_approvals(&"company-a".parse().unwrap(), "gitlab.example.com")
+        .unwrap()
+        .into_iter()
+        .map(|approval| approval.head_sha)
+        .collect()
+}
+
+#[test]
+fn a_kept_approval_entry_returns_after_a_404_and_the_row_survives() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    kept_approval_with_an_entry(&sandbox);
+    gitlab_access_lost(&sandbox);
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 0);
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    // The access is back, on the same head, with the same approval: still to review.
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    gitlab_lists_it_in_full_only(&sandbox);
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    // A start dates my approval to the head that I reviewed.
+    let id = start(&socket, GITLAB_KEY).task.summary.id.to_string();
+    let state = json_file(
+        &sandbox
+            .store("company-a")
+            .join("tasks")
+            .join(&id)
+            .join(FORGES[1].4)
+            .join("sync.json"),
+    );
+    assert_eq!(state["verdict"]["sha"], V2, "{state}");
+    daemon.stop();
+}
+
+#[test]
+fn an_approval_row_stays_through_several_404_and_the_entry_comes_back_without_a_list() {
+    const V3: &str = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e";
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    kept_approval_with_an_entry(&sandbox);
+    gitlab_access_lost(&sandbox);
+    sandbox.gitlab.set(
+        "GET /merge_requests+after",
+        route(fixture("gitlab/merge-requests-reviews-for-me.empty.json")),
+    );
+    for _ in 0..3 {
+        sandbox.sync();
+    }
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    // No list shows the MR: its row keeps it read, so the entry returns with the access.
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V3, "2026-10-24T09:00:00.000Z", "opened", "W/\"pushed\""),
+    );
+    sandbox.sync();
+    assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_on_an_mr_with_only_a_row_does_not_ask_for_a_full_list() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    assert_eq!(queue(&sandbox.socket(), Some("company-a")).entries.len(), 0);
+    gitlab_access_lost(&sandbox);
+    sandbox.sync();
+    // Polls with nothing to remove: each list stays limited, and the row stays.
+    let seen = sandbox.gitlab.requests().len();
+    sandbox.sync();
+    sandbox.sync();
+    let requests = sandbox.gitlab.requests();
+    assert!(
+        !requests[seen..].contains(&"GET /merge_requests".to_owned()),
+        "{:?}",
+        &requests[seen..]
+    );
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    daemon.stop();
+}
+
+#[test]
+fn a_404_drops_an_approval_row_past_its_age() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start_with_env("LOOM_TEST_APPROVAL_EXPIRY", "0s");
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    gitlab_access_lost(&sandbox);
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), Vec::<String>::new());
+    daemon.stop();
+}
+
+#[test]
+fn only_a_404_drops_an_old_approval_row() {
+    let sandbox = Sandbox::new();
+    // Each row is past its age, and the MR keeps answering.
+    let daemon = sandbox.start_with_env("LOOM_TEST_APPROVAL_EXPIRY", "0s");
+    kept_approval_with_an_entry(&sandbox);
+    sandbox.sync();
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    daemon.stop();
+}
+
+#[test]
+fn the_approval_row_of_an_mr_of_another_context_goes() {
+    let sandbox = sandbox_for_a_move("");
+    let home = sandbox.user_home();
+    let config = fs::read_to_string(sandbox.loom_home().join("config.toml"))
+        .unwrap()
+        .replace(
+            "[contexts.company-a]\n",
+            &format!(
+                "[contexts.company-a]\nmatch.hosts = [\"gitlab.example.com/company-a\"]\n\n[repos.\"{}\"]\ncontext = \"personal\"\n",
+                home.join("work/checkout").display()
+            ),
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    sandbox
+        .gitlab
+        .set(&format!("{MR_88}/approvals"), approvals(true));
+    let daemon = sandbox.start();
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), [V2]);
+    register_the_clone(&sandbox);
+    sandbox.sync();
+    assert_eq!(approval_heads(&sandbox), Vec::<String>::new());
     daemon.stop();
 }

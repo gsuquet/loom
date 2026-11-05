@@ -20,6 +20,7 @@ use super::{
     Poller, ReadFailure, Request, ReviewHandle, Stopped, forget_etag, github_update, gitlab_update,
     gone_update, project_id,
 };
+use crate::mr_worker::PassTrigger;
 use crate::repos::Failure;
 use crate::tasks::read_entry;
 
@@ -227,7 +228,7 @@ impl Poller {
             return Err(self.refuse_start(index, key, update, refusal, &token));
         }
         update.start = true;
-        let Some(applied) = self.hand_over(index, vec![update]) else {
+        let Some(applied) = self.hand_over(index, vec![update], PassTrigger::Start) else {
             return Err(stopping());
         };
         if let Some(failure) = applied.failed.first() {
@@ -252,7 +253,6 @@ impl Poller {
     fn entry_is_gone(&mut self, index: usize, key: &MrKey) -> Failure {
         let host = &mut self.hosts[index];
         host.mrs.remove(&key.dir_name());
-        host.last_full_list = None;
         let Some(applied) = self.write_updates(index, vec![gone_update(key.clone())]) else {
             return stopping();
         };

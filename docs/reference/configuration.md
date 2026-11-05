@@ -415,7 +415,7 @@ Error: cannot start the repository index
 - The states are read again.
 - The results of the last updates are lost: every repository is then updated at once.
 
-The index also holds, for each GitLab MR without a Review task that I approved, the head of the poll that first showed my approval ([review sync](../explanation/review-sync.md#when-an-entry-comes-and-goes)). If it is rebuilt, my approval counts for the head of the next poll. `loomd` deletes such a row when the MR leaves, or after 30 days of `404` answers.
+The index also holds, for each GitLab MR without a Review task that I approved, the head of the poll that first showed my approval ([review sync](../explanation/review-sync.md#when-an-entry-comes-and-goes)). If it is rebuilt, my approval counts for the head of the next poll. `loomd` deletes such a row when the MR leaves, or at a `404` when the row is older than 30 days.
 
 The index also holds the tasks of the [context stores](#context-stores), read from their files. `loomd` reconciles them when it starts and when their files change. While `loomd` runs, `loom reindex` ([`POST /v1/tasks/reindex`](api.md#tasks)) rebuilds them from the files and does not change the repositories. If `index.db` is deleted, the next start gives back the same task rows.
 

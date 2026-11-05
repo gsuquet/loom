@@ -53,7 +53,7 @@ use crate::tasks::TaskHandle;
 /// A request to the worker.
 enum Request {
     /// A poll of this context and host ended.
-    Pass(Box<ForgeTarget>),
+    Pass(Box<ForgeTarget>, PassTrigger),
     Stop,
 }
 
@@ -64,6 +64,15 @@ pub struct MrWorker {
     thread: JoinHandle<()>,
 }
 
+/// What a pass is for, for the test hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassTrigger {
+    /// The end of a poll.
+    Poll,
+    /// A start that created a task.
+    Start,
+}
+
 /// What asks the worker for a pass. Never blocks the poller.
 #[derive(Clone)]
 pub struct MrWorkerHandle {
@@ -72,8 +81,10 @@ pub struct MrWorkerHandle {
 
 impl MrWorkerHandle {
     /// Asks for a pass over the Review tasks of `target`.
-    pub fn pass(&self, target: &ForgeTarget) {
-        let _ = self.requests.send(Request::Pass(Box::new(target.clone())));
+    pub fn pass(&self, target: &ForgeTarget, trigger: PassTrigger) {
+        let _ = self
+            .requests
+            .send(Request::Pass(Box::new(target.clone()), trigger));
     }
 }
 
@@ -177,59 +188,66 @@ impl Worker {
 
     fn run(mut self, received: &mpsc::Receiver<Request>) {
         while let Ok(request) = received.recv() {
-            let Request::Pass(first) = request else {
+            let Request::Pass(first, trigger) = request else {
                 return;
             };
             // Polls that ended during the last pass ask for one pass each, at most.
-            let mut targets = vec![(first, 1)];
+            let mut targets = vec![(first, vec![trigger])];
             for request in received.try_iter() {
                 match request {
-                    Request::Pass(target) => {
+                    Request::Pass(target, trigger) => {
                         let known = targets.iter_mut().find(|(known, _)| {
                             known.context == target.context && known.host == target.host
                         });
                         match known {
-                            Some((_, polls)) => *polls += 1,
-                            None => targets.push((target, 1)),
+                            Some((_, triggers)) => triggers.push(trigger),
+                            None => targets.push((target, vec![trigger])),
                         }
                     }
                     Request::Stop => return,
                 }
             }
-            for (target, polls) in targets {
+            for (target, triggers) in targets {
                 if self.stopping() {
                     return;
                 }
                 self.pass(&target);
-                self.signal_pass(polls);
+                self.signal_pass(&triggers);
             }
         }
     }
 
-    /// The test hook: one line for each poll that the pass served. Not in a release build.
+    /// The test hook: one line for each trigger that the pass served. Not in a release build.
     #[cfg(debug_assertions)]
     #[expect(
         clippy::unused_self,
         reason = "the release build has it as a method too"
     )]
-    fn signal_pass(&self, polls: usize) {
+    fn signal_pass(&self, triggers: &[PassTrigger]) {
         use std::io::Write as _;
 
         let Some(path) = std::env::var_os(hooks::MR_PASS_FILE_ENV) else {
             return;
         };
+        let lines: String = triggers
+            .iter()
+            .map(|trigger| match trigger {
+                PassTrigger::Poll => "poll\n",
+                PassTrigger::Start => "start\n",
+            })
+            .collect();
         let written = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-            .and_then(|mut file| file.write_all("pass\n".repeat(polls).as_bytes()));
+            .and_then(|mut file| file.write_all(lines.as_bytes()));
         if let Err(error) = written {
             warn!(%error, "cannot write the file of the test hook");
         }
     }
 
     #[cfg(not(debug_assertions))]
-    const fn signal_pass(&self, _polls: usize) {}
+    const fn signal_pass(&self, _triggers: &[PassTrigger]) {}
 
     /// One pass over the Review tasks of `target`.
     fn pass(&mut self, target: &ForgeTarget) {

@@ -10,6 +10,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use loom_api::{ContextName, QueueReason, ReviewQueueEntry, TaskId, Timestamp};
 use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, Sha};
@@ -433,6 +434,9 @@ pub fn active_reviews_of(
         })
         .collect()
 }
+
+/// A 404 drops an approval row older than this: the MR may be deleted for good.
+pub const APPROVAL_EXPIRY: Duration = Duration::from_hours(30 * 24);
 
 /// The message of the commit of the queue after one poll. Pure.
 #[must_use]

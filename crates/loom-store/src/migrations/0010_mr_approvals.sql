@@ -8,5 +8,6 @@ CREATE TABLE mr_approvals (
     mr_key     TEXT NOT NULL,
     head_sha   TEXT NOT NULL,
     project_id INTEGER NOT NULL,
+    recorded_at INTEGER NOT NULL,
     PRIMARY KEY (context, host, mr_key)
 ) STRICT;

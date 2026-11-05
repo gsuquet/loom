@@ -43,6 +43,8 @@ pub struct ReviewsApplied {
     pub added: Vec<String>,
     /// The keys of the MRs removed from the queue.
     pub removed: Vec<String>,
+    /// A 404 removed an entry: the next GitLab list is full.
+    pub entry_gone: bool,
     /// The Review tasks whose status or mirror changed.
     pub changed: Vec<TaskId>,
     /// The MRs whose task or mirror could not be written.

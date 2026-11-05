@@ -348,21 +348,43 @@ impl TaskIndex {
         context: &ContextName,
         host: &str,
         approval: &MrApproval,
+        now: Timestamp,
     ) -> Result<(), StoreError> {
         let project_id = i64::try_from(approval.project_id)
             .map_err(|_| StoreError::Corrupt(format!("project ID {}", approval.project_id)))?;
         self.conn.execute(
-            "INSERT INTO mr_approvals (context, host, mr_key, head_sha, project_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5) \
-             ON CONFLICT (context, host, mr_key) DO UPDATE SET \
-                 head_sha = excluded.head_sha, project_id = excluded.project_id",
+            "INSERT INTO mr_approvals (context, host, mr_key, head_sha, project_id, recorded_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT (context, host, mr_key) DO UPDATE SET head_sha = excluded.head_sha, \
+                 project_id = excluded.project_id, recorded_at = excluded.recorded_at",
             params![
                 context.as_str(),
                 host,
                 approval.key,
                 approval.head_sha,
-                project_id
+                project_id,
+                unix(now)?
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the approval of the MR `key` when it was recorded at or before `cutoff`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`] when the write fails or the time is invalid.
+    pub fn drop_mr_approval_before(
+        &self,
+        context: &ContextName,
+        host: &str,
+        key: &str,
+        cutoff: Timestamp,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM mr_approvals WHERE context = ?1 AND host = ?2 AND mr_key = ?3 \
+             AND recorded_at <= ?4",
+            params![context.as_str(), host, key, unix(cutoff)?],
         )?;
         Ok(())
     }
