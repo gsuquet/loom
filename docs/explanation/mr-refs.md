@@ -119,6 +119,7 @@ The refs stay when an active Review task of any context has the same MR, because
 ## Limits
 
 - If you delete `index.db`, or a clone leaves the index, refs in a clone that is not in the index stay. Delete them with `git update-ref -d`.
+- The `reviewed` ref needs the commit of your last verdict in the clone. After a rebase with no earlier fetch, for example when you approved at the forge and started after the push, the clone does not have that commit: the ref is absent. `sync.json` still has the verdict.
 - Your last verdict gives the `reviewed` ref. If you never gave a verdict on a version, `git gc` can remove its commit after a force push. Its patch stays.
 - `.git/info/attributes` still changes a patch: git has no option to ignore it.
 - The mode of a new or deleted file with hunks does not count in the hash, because the forges do not give it. For the same reason, a mode change next to hunks counts as a change between a local and a reduced patch.

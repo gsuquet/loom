@@ -18,7 +18,7 @@ WARN MRs are polled on every machine holding the context: set `machines` so that
 
 Each poll reads three sets of MRs:
 
-- **The MRs to review.** GitHub: the search `is:pr is:open archived:false review-requested:@me` (requests to you and to your teams), or `user-review-requested:@me` when `review_requests = "direct"`. GitLab: the open MRs with `scope=reviews_for_me`. From the second poll on, GitLab lists only the MRs updated since the start of the last poll that succeeded, minus one minute.
+- **The MRs to review.** GitHub: the search `is:pr is:open archived:false review-requested:@me` (requests to you and to your teams), or `user-review-requested:@me` when `review_requests = "direct"`. GitLab: the open MRs with `scope=reviews_for_me`. From the second poll on, GitLab lists only the MRs updated since the start of the last poll that succeeded, minus one minute. At least once per hour, the list is full. A list counts as full only when its poll succeeded.
 - **The MRs of the queue**, one by one. This set is necessary: the search and the list do not show an MR whose request was removed, or that is merged or closed. Without this read, its entry would stay.
 - **The MRs of the Review tasks**, one by one, except a `done` or `cancelled` task of a merged or closed MR. This set is necessary: GitHub removes you from the requested reviewers when you submit a review, and the GitLab list does not show a request that was removed. If `loomd` read only the search, a new head after your review would never open the task again.
 
@@ -84,7 +84,7 @@ The poller thread does the start. A start waits for a poll that runs, and a poll
 | Two contexts have this key | `400 invalid_request`. Name the context with `-c`. |
 | This machine does not poll the context and host of the entry (another machine polls it, or the credential was removed) | `400 invalid_request`. Start on the first machine of the context, or add the credential. A task created on another machine is not known to the poll until a store sync, and a second task could come from it. |
 
-If you approved the MR before the start (GitLab), the task keeps the head of the poll that first showed your approval, not the current head. Thus, the `reviewed` ref stays on that head, and a request removed later leaves the task open: the current head is still to review.
+If you approved the MR before the start (GitLab), the task keeps the head of the poll that first showed your approval, not the current head. Thus, the `reviewed` ref points at that head, and a request removed later leaves the task open: the current head is still to review. If the clone does not have the commit of that head, for example after a rebase with no earlier fetch, the `reviewed` ref is absent. See [MR refs and diffs](mr-refs.md).
 
 If `loomd` stops between the creation of the task and the removal of the entry, the next start answers with the task, and the next poll deletes the entry.
 
@@ -153,7 +153,7 @@ A poll writes nothing when nothing changed:
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.
-- A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` on the MR itself, for an MR with only an entry and not in the list, is not a failure: the entry is deleted, and the next GitLab list is full, without `updated_after`. A lost access looks the same: the entry comes back at the first list that shows the MR again, also when the MR did not change. A `404` on another read of the MR, such as its reviews or approvals, is a failure, and the entry stays.
+- A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` on the MR itself, for an MR with only an entry and not in the list, is not a failure: the entry is deleted, and the next GitLab list is full, without `updated_after`. A lost access looks the same. If the access comes back before that next poll, the entry comes back at that poll. If not, it comes back at the next full list, also when the MR did not change: `loomd` lists in full at least once per hour, so at most about one hour after the access comes back, or at the first poll after that hour when the polls are less frequent. A `404` on another read of the MR, such as its reviews or approvals, is a failure, and the entry stays.
 - When `loomd` stops, a poll that runs stops before its next forge call.
 
 ## Limits
@@ -165,6 +165,7 @@ A poll writes nothing when nothing changed:
 - GitHub: a request again through a team, on a head that has your verdict, gives no entry when the MR has no Review task. A team request does not put you in the requested reviewers, so `loomd` cannot see that it is after your verdict. A Review task that exists opens again in this case: it compares two polls.
 - GitLab, without a task: an approval that stays after a push is not a verdict on the new head, and the entry stays even when you read the push. Approve again after a reset, or start on the MR.
 - GitHub: a start after a request through a team is removed creates the task, because a read does not show team requests. The next poll cancels the task. The same occurs for a direct request when `loomd` restarted after the last poll, because it keeps that state in memory.
+- GitHub: a start after a direct request is replaced by a request through a team answers `409 conflict` and deletes the entry, because a read shows only that the direct request is gone. The next poll adds the entry again.
 - If you remove the credential of a context, its entries stay in the list and are not polled. A start answers `400 invalid_request`.
 - An MR whose web URL is on another host than the forge host of `[forges]` gets no entry: the poll reports it as failed.
 - Two forge hosts of one kind, in one context, with the same key: the first MR has the entry, and the poll reports the second as failed until the first entry goes.
