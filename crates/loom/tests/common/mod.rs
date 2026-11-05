@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{BuildHasher as _, Hasher as _, RandomState};
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt as _;
@@ -35,19 +36,32 @@ use tempfile::TempDir;
 pub type Routes = Arc<Mutex<HashMap<String, (u16, Vec<u8>)>>>;
 
 /// HTTP/1.1 server answering `GET <path>` from a route table, one connection at a time.
+///
+/// `url` ends with a path prefix unique to this server, because a port does not identify it. A
+/// `loomd` that outlived its test (the test process was killed before its `Drop`) keeps polling
+/// the port of its dead server, and the system can give that port to a new one. Such a request
+/// has the prefix of the dead server or none: it is answered 404 and kept apart, so that
+/// [`Self::requests`] only holds what the processes given this `url` asked.
 pub struct FakeApi {
     pub url: String,
     routes: Routes,
     requests: Arc<Mutex<Vec<String>>>,
+    foreign: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeApi {
     pub fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
+        let prefix = format!("/run-{:016x}", RandomState::new().build_hasher().finish());
+        let url = format!("http://{}{prefix}", listener.local_addr().unwrap());
         let routes: Routes = Arc::default();
         let requests: Arc<Mutex<Vec<String>>> = Arc::default();
-        let (table, log) = (Arc::clone(&routes), Arc::clone(&requests));
+        let foreign: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (table, log, strays) = (
+            Arc::clone(&routes),
+            Arc::clone(&requests),
+            Arc::clone(&foreign),
+        );
         // Detached: lives until the test process exits.
         thread::spawn(move || {
             for stream in listener.incoming() {
@@ -61,14 +75,17 @@ impl FakeApi {
                     }
                     head.push_str(&line);
                 }
-                let path = head.split_whitespace().nth(1).unwrap_or("").to_owned();
-                log.lock().unwrap().push(head);
-                let (status, body) = table
-                    .lock()
-                    .unwrap()
-                    .get(&path)
-                    .cloned()
-                    .unwrap_or_else(|| (404, br#"{"message":"Not Found"}"#.to_vec()));
+                let target = head.split_whitespace().nth(1).unwrap_or("");
+                let route = target.strip_prefix(&prefix).map(str::to_owned);
+                let found = route.as_ref().and_then(|path| {
+                    log.lock().unwrap().push(head.replacen(&prefix, "", 1));
+                    table.lock().unwrap().get(path).cloned()
+                });
+                if route.is_none() {
+                    strays.lock().unwrap().push(head);
+                }
+                let (status, body) =
+                    found.unwrap_or_else(|| (404, br#"{"message":"Not Found"}"#.to_vec()));
                 let _ = write!(
                     stream,
                     "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -81,6 +98,7 @@ impl FakeApi {
             url,
             routes,
             requests,
+            foreign,
         }
     }
 
@@ -93,6 +111,11 @@ impl FakeApi {
 
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Requests that did not use [`Self::url`]: from a process of another test or test run.
+    pub fn foreign_requests(&self) -> Vec<String> {
+        self.foreign.lock().unwrap().clone()
     }
 
     pub fn asset_requests(&self) -> usize {
