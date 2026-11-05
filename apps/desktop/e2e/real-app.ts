@@ -16,6 +16,8 @@ const appBin = args[0];
 if (!appBin) throw new Error("usage: real-app <app binary>");
 const expectAttack = args.includes("--expect-attack");
 const notify = args.includes("--notify");
+// A CI runner is a shared VM: the time budgets there are figures, not pass or fail.
+const budget = !args.includes("--no-budget");
 const label = args.includes("--label") ? (args[args.indexOf("--label") + 1] as string) : "run";
 const port = Number(process.env.TAURI_WEBDRIVER_PORT ?? 4445);
 const base = `http://127.0.0.1:${port}`;
@@ -180,18 +182,18 @@ try {
   );
   check(
     "rows in the DOM within 1 s of navigation",
-    (open.committedMs as number) < 1000,
+    !budget || (open.committedMs as number) < 1000,
     `${open.committedMs} ms`,
   );
   if (rendering) {
     await until("first paint", "return window.__spike.visibleMs !== null");
     const painted = await js<number>("return window.__spike.visibleMs");
-    check("painted within 1 s of navigation", painted < 1000, `${painted} ms`);
+    check("painted within 1 s of navigation", !budget || painted < 1000, `${painted} ms`);
     const reopen = await jsAsync<number>(
       "const done = arguments[arguments.length - 1]; window.__spike.reopen().then(done);",
     );
     numbers.reopenMs = reopen;
-    check("reopening the review within 1 s", reopen < 1000, `${reopen} ms`);
+    check("reopening the review within 1 s", !budget || reopen < 1000, `${reopen} ms`);
   } else {
     console.log(`SKIP paint and frame figures: page is ${open.visibility}`);
   }

@@ -2,7 +2,7 @@
 # Proves that a release build holds no WebDriver server. It inspects the graph, the binary, then
 # runs the binary with the variable that would start the server and looks at the port.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 bin="src-tauri/target/release/loom-desktop"
 status=0
 [ -x "$bin" ] || { echo "no release binary at $bin"; exit 1; }
@@ -20,8 +20,9 @@ echo "== strings of the release binary"
 count="$(strings -a "$bin" | grep -ciE 'wdio|webdriver|TAURI_WEBDRIVER_PORT|/session/\{|execute/sync')"
 echo "matches: $count (binary: $(wc -c <"$bin") bytes)"
 [ "$count" = 0 ] || { strings -a "$bin" | grep -iE 'wdio|webdriver|TAURI_WEBDRIVER_PORT' | head; status=1; }
-if [ -x src-tauri/target/debug/loom-desktop ]; then
-  echo "control, e2e binary: $(strings -a src-tauri/target/debug/loom-desktop | grep -ciE 'wdio|webdriver|TAURI_WEBDRIVER_PORT|/session/\{') matches"
+# The control: the same scan must find the server in the e2e binary, or it proves nothing.
+if [ -x .e2e/app-protected ]; then
+  echo "control, e2e binary: $(strings -a .e2e/app-protected | grep -ciE 'wdio|webdriver|TAURI_WEBDRIVER_PORT|/session/\{') matches"
 fi
 
 echo "== run it with TAURI_WEBDRIVER_PORT set: nothing may listen"

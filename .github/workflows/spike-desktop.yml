@@ -25,7 +25,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: apps/desktop
@@ -39,8 +39,10 @@ jobs:
       - name: Linux system libraries
         if: runner.os == 'Linux'
         run: |
+          # The first run lost 34 min to the amd64v3 package variant on the mirror: timeouts per package.
+          echo 'APT::Architecture-Variants "amd64";' | sudo tee /etc/apt/apt.conf.d/99-no-variants
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev xvfb
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev xvfb
       - name: Versions and machine
         run: |
           node --version; npm --version; cargo --version; uname -a
@@ -57,10 +59,6 @@ jobs:
         run: |
           npx vite build
           VITE_SPIKE_UNSAFE=1 npx vite build
-      - name: Playwright on WebKit against the fake API (layer 2)
-        run: |
-          npx playwright install --with-deps webkit
-          npx playwright test
       - name: Build loomd
         working-directory: .
         run: cargo build --locked -p loomd
@@ -92,7 +90,7 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
           for n in 1 2 3; do
             echo "::group::run $n"
-            $prefix node e2e/real-app.ts .e2e/app-protected --notify --label "run-$n"
+            $prefix node e2e/real-app.ts .e2e/app-protected --notify --no-budget --label "run-$n"
             echo "::endgroup::"
           done
       - name: Real app, protections removed, the attack must run
@@ -101,7 +99,18 @@ jobs:
         run: |
           prefix=""
           if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
-          $prefix node e2e/real-app.ts .e2e/app-both-off --expect-attack --label attack
+          $prefix node e2e/real-app.ts .e2e/app-both-off --expect-attack --no-budget --label attack
+      - name: The documented route, @wdio/tauri-service, one smoke run
+        continue-on-error: true
+        working-directory: apps/desktop/e2e-wdio
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+          APP_BIN: ${{ github.workspace }}/apps/desktop/.e2e/app-protected
+        run: |
+          npm ci
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          $prefix node run.mjs
       - name: Release build holds no WebDriver server
         run: |
           prefix=""
@@ -116,6 +125,16 @@ jobs:
         run: |
           cargo deny --manifest-path src-tauri/Cargo.toml --locked check licenses 2>&1 | tail -30 || true
           npx license-checker-rseidelsohn --production --summary || true
+      - name: Playwright on WebKit against the fake API (layer 2)
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            npx playwright install webkit
+            sudo env "PATH=$PATH" npx playwright install-deps --dry-run webkit | tail -3 || true
+            timeout 900 sudo env "PATH=$PATH" npx playwright install-deps webkit
+          else
+            npx playwright install --with-deps webkit
+          fi
+          npx playwright test
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

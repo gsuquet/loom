@@ -86,3 +86,7 @@ run = "bash apps/desktop/scripts/install-app.sh"
 [tasks.spike-sandbox]
 description = "Spike: start a sandbox loomd with fake data in ~/.cache/loom-spike, in the foreground"
 run = "bash apps/desktop/scripts/sandbox.sh"
+
+[tasks.spike-bench]
+description = "Spike: build the e2e app and run the real-app test here, with the frame figures. Screen unlocked; it needs no permission. The window stays on top for about a minute."
+run = "bash apps/desktop/scripts/bench.sh"
