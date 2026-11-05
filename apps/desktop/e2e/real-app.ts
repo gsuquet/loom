@@ -3,11 +3,13 @@
 //
 //   node e2e/real-app.ts <app binary> [--expect-attack] [--notify] [--label name]
 //
-// Exit code 0 when every check holds; with --expect-attack, when the attack did run.
+// Exit code 0 when every check holds; with --expect-attack, when the attack did run. 3: a hang
+// before the first page check answered. 4: a hang after it. 1: any other failure.
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, openSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+import { captureHang, watchedProcesses } from "./hang-capture.ts";
 import { startSandbox } from "./sandbox.ts";
 import { socketCall } from "./socket-api.ts";
 
@@ -30,6 +32,14 @@ interface Check {
 }
 const checks: Check[] = [];
 const numbers: Record<string, unknown> = {};
+// Which part of the test is running, for the record of a hang.
+let phase = "sandbox";
+// Short on the first poll, so that a startup hang does not eat the job. Longer after it: benches.
+const FIRST_POLL_SCRIPT_MS = 10_000;
+const LATER_SCRIPT_MS = 45_000;
+let scriptMs = FIRST_POLL_SCRIPT_MS;
+let firstPollAnswered = false;
+let sessionId: string | null = null;
 function check(name: string, ok: boolean, detail: unknown = "", security = false) {
   checks.push({
     name,
@@ -45,6 +55,7 @@ function check(name: string, ok: boolean, detail: unknown = "", security = false
 async function wd<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${base}${path}`, {
     method,
+    signal: AbortSignal.timeout(scriptMs + 15_000),
     ...(body === undefined
       ? {}
       : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
@@ -79,10 +90,14 @@ const newTask = (title: string) => ({ title, kind: "chore", context: "demo", sta
 for (const n of [1, 2, 3])
   await socketCall(sandbox.socket, "POST", "/v1/tasks", newTask(`Fake task ${n}`));
 
+mkdirSync(".e2e", { recursive: true });
+const leftovers = watchedProcesses();
+const appLog = openSync(`.e2e/${label}.app.log`, "w");
+phase = "launch";
 const t0 = Date.now();
 const app: ChildProcess = spawn(resolve(appBin), [], {
   env: { ...process.env, LOOM_SPIKE_HOME: sandbox.home, TAURI_WEBDRIVER_PORT: String(port) },
-  stdio: ["ignore", "ignore", process.env.E2E_VERBOSE ? "inherit" : "ignore"],
+  stdio: ["ignore", appLog, appLog],
 });
 let appExited: number | null = null;
 app.once("exit", (c) => {
@@ -91,9 +106,10 @@ app.once("exit", (c) => {
 
 let failure: unknown = null;
 try {
+  phase = "driver-wait";
   for (let i = 0; ; i += 1) {
     if (appExited !== null) throw new Error(`the app exited with ${appExited}`);
-    if (i > 240) throw new Error("the WebDriver server did not start in 120 s");
+    if (i > 120) throw new Error("hang: the WebDriver server did not start in 60 s");
     try {
       await wd("GET", "/status");
       break;
@@ -102,15 +118,28 @@ try {
     }
   }
   numbers.driverReadyMs = Date.now() - t0;
+  phase = "session";
   const session = await wd<{ sessionId: string }>("POST", "/session", {
     capabilities: { alwaysMatch: {} },
   });
+  sessionId = session.sessionId;
+  numbers.sessionMs = Date.now() - t0;
   const s = `/session/${session.sessionId}`;
-  const js = <T>(script: string, ...a: unknown[]) =>
-    wd<T>("POST", `${s}/execute/sync`, { script, args: a });
+  const js = async <T>(script: string, ...a: unknown[]) => {
+    const value = await wd<T>("POST", `${s}/execute/sync`, { script, args: a });
+    if (!firstPollAnswered) {
+      firstPollAnswered = true;
+      numbers.firstPollMs = Date.now() - t0;
+      scriptMs = LATER_SCRIPT_MS;
+      await wd("POST", `${s}/timeouts`, { script: LATER_SCRIPT_MS });
+      numbers.healthyProcesses = watchedProcesses();
+    }
+    return value;
+  };
   const jsAsync = <T>(script: string, ...a: unknown[]) =>
     wd<T>("POST", `${s}/execute/async`, { script, args: a });
-  await wd("POST", `${s}/timeouts`, { script: 120000 });
+  await wd("POST", `${s}/timeouts`, { script: FIRST_POLL_SCRIPT_MS });
+  phase = "first-poll";
   const until = async (what: string, script: string, ms = 20000) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -161,6 +190,7 @@ try {
   // WebKit fires no requestAnimationFrame in a hidden page (locked screen, occluded window): those
   // figures are then "could not measure", and the rest of the test still runs.
   await until("diff committed", "return window.__spike && window.__spike.committedMs !== null");
+  phase = "open-checks";
   await sleep(300);
   const open = await js<Record<string, number | string | null>>(
     "const h = window.__spike; return { api: h.api, visibleMs: h.visibleMs, committedMs: h.committedMs, visibility: document.visibilityState, fetchMs: h.fetchMs, parseMs: h.parseMs, bytes: h.patchBytes, origin: performance.timeOrigin, rows: document.querySelectorAll('.row').length, text: document.querySelector('.row')?.textContent }",
@@ -199,6 +229,7 @@ try {
   }
   await until("diff back", "return document.querySelectorAll('.row').length > 0");
 
+  phase = "list";
   // Criterion 5, first half: the socket and the event stream.
   await until(
     "live link",
@@ -217,6 +248,7 @@ try {
     firstTitles,
   );
 
+  phase = "keys";
   // Criterion 3 and 4, through WebDriver key actions.
   await key("j");
   await key("j");
@@ -283,6 +315,7 @@ try {
   await key(""); // Esc
   await js("window.__testBefore = null; return 0;");
 
+  phase = "live";
   // Criterion 5: a real event, created elsewhere, moves nothing.
   await key("h");
   await key("j");
@@ -319,6 +352,7 @@ try {
   );
   await key("");
 
+  phase = "hostile";
   // Criterion 6.
   await sleep(500);
   const hostile = await js<Record<string, unknown>>(
@@ -421,6 +455,7 @@ try {
     true,
   );
 
+  phase = "bench";
   // Criterion 2: rAF inside the page. Numbers only: a shared machine or a CI runner cannot pass or fail it.
   numbers.workBench = await jsAsync(
     "const done = arguments[arguments.length - 1]; window.__spike.workBench(600, 90).then(done);",
@@ -441,6 +476,7 @@ try {
   );
   numbers.domRows = await js("return document.querySelectorAll('.row').length");
 
+  phase = "notify";
   // Criterion 8: only on a CI runner, or when asked. It does not run on the owner's Mac by default.
   if (notify) {
     await key("t");
@@ -450,15 +486,27 @@ try {
     );
   }
 
+  phase = "end";
   numbers.appRssMb = appRssMb(app.pid);
   mkdirSync(".e2e", { recursive: true });
   const png = await wd<string>("GET", `${s}/screenshot`);
   writeFileSync(`.e2e/${label}.png`, Buffer.from(png, "base64"));
   await wd("DELETE", s).catch(() => {});
+  phase = "done";
 } catch (e) {
   failure = e;
-  console.error("ABORTED:", e);
+  console.error(`ABORTED in phase ${phase}:`, e);
 }
+
+// Any timeout, ours or the server's, is a hang. Other errors, such as the app exiting, are not.
+const isHang = /script timeout|TimeoutError|aborted due to timeout|hang:/i.test(String(failure));
+const startupHang = failure !== null && isHang && !firstPollAnswered;
+const lateHang = failure !== null && isHang && firstPollAnswered;
+// Before the kill: this is the only moment when the state of the hang can be read.
+const hang =
+  isHang && failure
+    ? await captureHang(label, base, sessionId, app.pid).catch((e) => ({ captureError: String(e) }))
+    : null;
 
 app.kill("SIGTERM");
 await sleep(300);
@@ -466,8 +514,24 @@ sentinel.close();
 await sandbox.stop();
 const failed = checks.filter((c) => !c.ok);
 const securityFailed = failed.filter((c) => c.security);
+const outcome = startupHang
+  ? "startup-hang"
+  : lateHang
+    ? "late-hang"
+    : failure
+      ? "error"
+      : failed.length > 0
+        ? "fail"
+        : "pass";
 const report = {
   label,
+  outcome,
+  phase,
+  firstPollAnswered,
+  durationMs: Date.now() - t0,
+  leftoversAtStart: leftovers.length,
+  leftovers,
+  hang,
   expectAttack,
   failure: failure ? String(failure) : null,
   checks: checks.length,
@@ -478,7 +542,11 @@ const report = {
 mkdirSync(".e2e", { recursive: true });
 writeFileSync(`.e2e/${label}.json`, JSON.stringify(report, null, 1));
 console.log(JSON.stringify(report.numbers, null, 1));
-console.log(`${label}: ${checks.length - failed.length}/${checks.length} checks passed`);
+console.log(
+  `${label}: ${outcome} in ${phase}, ${checks.length - failed.length}/${checks.length} checks passed`,
+);
+if (startupHang) process.exit(3);
+if (lateHang) process.exit(4);
 if (expectAttack) {
   console.log(
     `attack observed: ${securityFailed.length > 0} (${securityFailed.map((c) => c.name).join("; ")})`,

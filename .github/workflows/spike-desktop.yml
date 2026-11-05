@@ -23,9 +23,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # This pass measures the macOS hang of run 42093119649. Ubuntu passed everything there.
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 150
     defaults:
       run:
         working-directory: apps/desktop
@@ -82,18 +83,26 @@ jobs:
           cp src-tauri/target/debug/loom-desktop .e2e/app-both-off
           npx tauri build --debug --no-bundle --features e2e --ci
           cp src-tauri/target/debug/loom-desktop .e2e/app-protected
-      - name: Real app, three runs in a row (layer 4)
+      - name: Window state tool for the hang captures
+        if: runner.os == 'macOS'
+        run: swiftc -O e2e/windows.swift -o .e2e/windows-tool
+      - name: Real app, 20 separate launches, no retry (layer 4)
+        continue-on-error: true
+        timeout-minutes: 35
         env:
           LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
-        run: |
-          prefix=""
-          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
-          for n in 1 2 3; do
-            echo "::group::run $n"
-            $prefix node e2e/real-app.ts .e2e/app-protected --notify --no-budget --label "run-$n"
-            echo "::endgroup::"
-          done
+        run: node e2e/loop.ts .e2e/app-protected --runs 20 --prefix raw
+      - name: Candidate policy, one restart on a startup-only hang, 20 runs
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 40
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+        run: node e2e/loop.ts .e2e/app-protected --runs 20 --prefix policy --restart-once
       - name: Real app, protections removed, the attack must run
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 6
         env:
           LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
         run: |
@@ -101,6 +110,8 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
           $prefix node e2e/real-app.ts .e2e/app-both-off --expect-attack --no-budget --label attack
       - name: The documented route, @wdio/tauri-service, one smoke run
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
         continue-on-error: true
         working-directory: apps/desktop/e2e-wdio
         env:
@@ -112,20 +123,32 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
           $prefix node run.mjs
       - name: Release build holds no WebDriver server
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
         run: |
           prefix=""
           if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
           RUN_PREFIX="$prefix" bash scripts/prove-release.sh
       - name: Permissions on the runner (macOS)
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        continue-on-error: true
+        timeout-minutes: 2
         run: |
           # TCC database of the runner, read only: what the run was granted, if readable.
-          sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "select service, client, auth_value from access" 2>&1 | head -20 || true
+          sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "select service, client, auth_value from access" 2>&1 | head -40 || true
+          sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "select service, client, auth_value from access" 2>&1 | head -40 || true
       - name: Licences
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
         run: |
           cargo deny --manifest-path src-tauri/Cargo.toml --locked check licenses 2>&1 | tail -30 || true
           npx license-checker-rseidelsohn --production --summary || true
       - name: Playwright on WebKit against the fake API (layer 2)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 20
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
             npx playwright install webkit
@@ -139,7 +162,13 @@ jobs:
         if: always()
         with:
           name: e2e-${{ matrix.os }}
+          # Without this, upload-artifact leaves out the hidden .e2e directory: the two runs before
+          # this one uploaded nothing.
+          include-hidden-files: true
           path: |
             apps/desktop/.e2e/*.json
+            apps/desktop/.e2e/*.jsonl
+            apps/desktop/.e2e/*.log
             apps/desktop/.e2e/*.png
+            apps/desktop/.e2e/diag/**
           retention-days: 7
