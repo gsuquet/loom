@@ -18,6 +18,8 @@ pub const SCHEDULE_INTERVAL_ENV: &str = "LOOM_TEST_SCHEDULE_INTERVAL";
 pub const SHUTDOWN_GRACE_ENV: &str = "LOOM_TEST_SHUTDOWN_GRACE";
 /// Replaces the 30 s between the start of loomd and the first poll of each forge host.
 pub const REVIEW_START_DELAY_ENV: &str = "LOOM_TEST_REVIEW_START_DELAY";
+/// Replaces the hour between two full GitLab lists of a forge host.
+pub const FULL_LIST_PERIOD_ENV: &str = "LOOM_TEST_FULL_LIST_PERIOD";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
 /// A file that gets one line for each poll whose pass of MR refs ended.

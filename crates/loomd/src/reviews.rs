@@ -115,6 +115,9 @@ const START_DELAY: Duration = Duration::from_secs(30);
 /// GitLab `updated_after` is the start of the last poll that succeeded, minus this margin: a
 /// change made while that poll ran is listed again.
 const UPDATED_AFTER_MARGIN: Duration = Duration::from_mins(1);
+/// A GitLab list is full at least this often: `updated_after` does not show an unchanged MR, so
+/// this bounds the time for which a lost entry stays lost when the access comes back.
+const FULL_LIST_PERIOD: Duration = THREADS_REFRESH;
 
 /// A request to the poller.
 enum Request {
@@ -190,20 +193,23 @@ fn polled_here(
     }
 }
 
+/// The duration of the test hook `name`, otherwise `default`.
+fn hooked_duration(name: &str, default: Duration) -> Duration {
+    hooks::duration_hook(name, env::var(name).ok().as_deref())
+        .unwrap_or_else(|message| {
+            warn!("{message}");
+            None
+        })
+        .unwrap_or(default)
+}
+
 /// Starts the poller thread.
 pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandle)> {
     let rules = ContextRules::new(config, &setup.user_home)
         .into_diagnostic()
         .wrap_err("cannot read the context rules for the MR polls")?;
-    let start_delay = hooks::duration_hook(
-        hooks::REVIEW_START_DELAY_ENV,
-        env::var(hooks::REVIEW_START_DELAY_ENV).ok().as_deref(),
-    )
-    .unwrap_or_else(|message| {
-        warn!("{message}");
-        None
-    })
-    .unwrap_or(START_DELAY);
+    let start_delay = hooked_duration(hooks::REVIEW_START_DELAY_ENV, START_DELAY);
+    let full_list_period = hooked_duration(hooks::FULL_LIST_PERIOD_ENV, FULL_LIST_PERIOD);
     let now = Instant::now();
     let mut hosts = Vec::new();
     let credentials = config.forge_credentials();
@@ -249,7 +255,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             last_login: None,
             last_success: None,
             updated_after: None,
-            list_in_full: false,
+            last_full_list: None,
             mrs: HashMap::new(),
             target,
         });
@@ -275,6 +281,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
         resolver: setup.resolver,
         tasks: setup.tasks,
         user_agent,
+        full_list_period,
         refs: refs_handle,
     };
     let thread = thread::Builder::new()
@@ -340,9 +347,10 @@ struct Host {
     last_success: Option<Timestamp>,
     /// GitLab `updated_after` of the next poll.
     updated_after: Option<Timestamp>,
-    /// A 404 removed an entry: the next GitLab list is full, whatever `updated_after` is. A lost
-    /// access also answers 404, and an unchanged MR would not be listed again.
-    list_in_full: bool,
+    /// When the last poll with a full GitLab list succeeded. `None`: the next list is full. A 404
+    /// that removes an entry sets it: a lost access also answers 404, and `updated_after` would
+    /// not list an unchanged MR again.
+    last_full_list: Option<Instant>,
     /// What the last polls read of each MR, by mirror directory name.
     mrs: HashMap<String, MrCache>,
 }
@@ -368,6 +376,8 @@ struct Poller {
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
     user_agent: String,
+    /// The time between two full GitLab lists.
+    full_list_period: Duration,
     /// The thread of the MR refs and diffs: a pass after each poll, outside of its outcome.
     refs: MrWorkerHandle,
 }
@@ -445,6 +455,10 @@ struct Fetched {
     untracked: Vec<String>,
     /// Why the poll stopped before its last MR: the MRs read before are applied all the same.
     stopped: Option<Stopped>,
+    /// The GitLab list of this poll was full.
+    full_list: bool,
+    /// A 404 removed an entry of this poll: the next list is full, whatever this one was.
+    gone: bool,
 }
 
 impl Poller {
@@ -664,6 +678,9 @@ impl Poller {
                     .unix_secs()
                     .saturating_sub(UPDATED_AFTER_MARGIN.as_secs()),
             );
+            if fetched.full_list && !fetched.gone {
+                host.last_full_list = Some(Instant::now());
+            }
         }
         host.rate_limited = None;
         info!(
@@ -973,6 +990,8 @@ impl Poller {
             failed: unassigned.into_iter().chain(held).collect(),
             untracked,
             stopped: None,
+            full_list: false,
+            gone: false,
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
@@ -1000,7 +1019,7 @@ impl Poller {
                         fetched.stopped = Some(error.into());
                         break;
                     }
-                    self.hosts[index].mrs.remove(&key.dir_name());
+                    forget_etag(self.hosts[index].mrs.get_mut(&key.dir_name()));
                     fetched.failed.push(failure(&key, &error));
                 }
             }
@@ -1011,13 +1030,12 @@ impl Poller {
     fn poll_gitlab(&mut self, index: usize, client: &GitlabClient) -> Result<Fetched, Stopped> {
         self.go_on()?;
         let login = self.login(index, client)?;
-        let since = if self.hosts[index].list_in_full {
-            None
-        } else {
-            self.hosts[index].updated_after
-        };
+        let host = &self.hosts[index];
+        let full_list = host
+            .last_full_list
+            .is_none_or(|at| at.elapsed() >= self.full_list_period);
+        let since = if full_list { None } else { host.updated_after };
         let listed = client.review_requests(since)?;
-        self.hosts[index].list_in_full = false;
         let ToRead {
             mrs: keys,
             other_context,
@@ -1036,6 +1054,8 @@ impl Poller {
             failed: unassigned.into_iter().chain(held).collect(),
             untracked,
             stopped: None,
+            full_list,
+            gone: false,
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
@@ -1083,7 +1103,8 @@ impl Poller {
                 Err(ReadFailure::MrGone(_)) if unlisted => {
                     let host = &mut self.hosts[index];
                     host.mrs.remove(&key.dir_name());
-                    host.list_in_full = true;
+                    host.last_full_list = None;
+                    fetched.gone = true;
                     fetched.updates.push(gone_update(key));
                 }
                 Err(read) => {
@@ -1092,7 +1113,7 @@ impl Poller {
                         fetched.stopped = Some(error.into());
                         break;
                     }
-                    self.hosts[index].mrs.remove(&key.dir_name());
+                    forget_etag(self.hosts[index].mrs.get_mut(&key.dir_name()));
                     fetched.failed.push(failure(&key, &error));
                 }
             }
@@ -1125,6 +1146,14 @@ const fn gone_update(key: MrKey) -> MrUpdate {
 /// What moves the entry of an MR to the store of its context.
 const fn moved_update(key: MrKey, context: ContextName) -> MrUpdate {
     unread_update(key, Some(context))
+}
+
+/// A read of this MR is to be in full next time, or its cached `ETag` would hide a change with a
+/// 304. The rest stays: `direct` tells a start that a request was direct.
+fn forget_etag(cache: Option<&mut MrCache>) {
+    if let Some(cache) = cache {
+        cache.etag = None;
+    }
 }
 
 /// The keys of the MRs of `keys` that a list found, without a Review task: only a later list

@@ -17,8 +17,8 @@ use tokio::sync::oneshot;
 use tracing::Span;
 
 use super::{
-    Poller, ReadFailure, Request, ReviewHandle, Stopped, github_update, gitlab_update, gone_update,
-    project_id,
+    Poller, ReadFailure, Request, ReviewHandle, Stopped, forget_etag, github_update, gitlab_update,
+    gone_update, project_id,
 };
 use crate::repos::Failure;
 use crate::tasks::read_entry;
@@ -183,7 +183,7 @@ impl Poller {
             .is_some_and(|cache| cache.direct)
             || target.kind == ForgeKind::Gitlab;
         // In full: the mirror needs the MR, and a 304 would not give it.
-        self.hosts[index].mrs.remove(&key.dir_name());
+        forget_etag(self.hosts[index].mrs.get_mut(&key.dir_name()));
         let read = match target.kind {
             ForgeKind::Github => {
                 let client =
@@ -200,7 +200,7 @@ impl Poller {
             Ok(update) => update,
             Err(StartRead::MrGone) => return Err(self.entry_is_gone(index, key)),
             Err(StartRead::Stopped(stopped)) => {
-                self.hosts[index].mrs.remove(&key.dir_name());
+                forget_etag(self.hosts[index].mrs.get_mut(&key.dir_name()));
                 return Err(match self.stopped(index, stopped, &token) {
                     ReviewSyncOutcome::RateLimited { until } => forge_failure(format!(
                         "{host} limits the rate until {until}: MR `{key}` is not started"
@@ -252,12 +252,15 @@ impl Poller {
     fn entry_is_gone(&mut self, index: usize, key: &MrKey) -> Failure {
         let host = &mut self.hosts[index];
         host.mrs.remove(&key.dir_name());
-        host.list_in_full = true;
-        if self
-            .write_updates(index, vec![gone_update(key.clone())])
-            .is_none()
-        {
+        host.last_full_list = None;
+        let Some(applied) = self.write_updates(index, vec![gone_update(key.clone())]) else {
             return stopping();
+        };
+        if let Some(failure) = applied.failed.first() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                internal(failure.error.clone()),
+            );
         }
         (
             StatusCode::NOT_FOUND,

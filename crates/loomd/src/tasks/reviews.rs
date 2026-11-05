@@ -164,7 +164,11 @@ impl Worker {
                 None => Ok(None),
             };
         };
-        let dated = self.dated_start(batch, update);
+        // A task with no sync state: a start, or a start that a crash or a failed write stopped.
+        let first_state = update.start || previous.state.is_none();
+        let dated = first_state
+            .then(|| self.dated_approval(batch, update))
+            .flatten();
         let (observation, state) = observe(&mr, &previous, dated.as_ref().unwrap_or(update));
         let daemon = Origin {
             actor: Actor::Daemon,
@@ -289,11 +293,11 @@ impl Worker {
         Ok(())
     }
 
-    /// A start on a GitLab MR that I approved: `update` with the head of the poll that first
-    /// showed my approval, from the index, which `sync.json` takes over. `None` otherwise. Without
-    /// it, the task would date my approval to a head that I did not review.
-    fn dated_start(&mut self, batch: &MrBatch, update: &MrUpdate) -> Option<MrUpdate> {
-        if !update.start || update.key.forge() != ForgeKind::Gitlab {
+    /// A GitLab MR that I approved, whose task has no sync state yet: `update` with the head of the
+    /// poll that first showed my approval, from the index, which `sync.json` takes over. `None`
+    /// otherwise. Without it, the task would date my approval to a head that I did not review.
+    fn dated_approval(&mut self, batch: &MrBatch, update: &MrUpdate) -> Option<MrUpdate> {
+        if update.key.forge() != ForgeKind::Gitlab {
             return None;
         }
         let verdict = update.verdict.as_ref()?.as_ref()?;
