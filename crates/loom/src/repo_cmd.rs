@@ -759,7 +759,7 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
             None,
         )),
     }
-    checks.extend(remote_checks(&client, &status.daemon.version).await);
+    checks.extend(remote_checks(&client, &status.daemon.version, &env.layout.config).await);
     checks.extend(forge_checks(&client, &status.daemon.version).await);
     checks.extend(doctor::updates_checks(&repos));
     checks.extend(backup_checks(env, &client, &status.daemon.version).await);
@@ -768,13 +768,15 @@ async fn daemon_checks(env: &Env<'_>) -> Vec<DoctorCheck> {
 }
 
 /// One check per remote endpoint, reached by loomd's own git.
-async fn remote_checks(client: &Client, version: &str) -> Vec<DoctorCheck> {
+async fn remote_checks(client: &Client, version: &str, config_path: &Path) -> Vec<DoctorCheck> {
+    // Only for the text of a fix: `contexts` reports a configuration that cannot be read.
+    let config = load_config(config_path).unwrap_or_default();
     match client
         .with_timeout(REMOTE_CHECK_TIMEOUT)
         .post::<RemoteCheckResult>(REMOTE_CHECK_PATH, None::<&()>)
         .await
     {
-        Ok(result) => doctor::remote_checks(&result),
+        Ok(result) => doctor::remote_checks(&result, &config),
         Err(ClientError::Api { status: 404, .. }) => vec![check(
             "remote",
             CheckStatus::Warn,

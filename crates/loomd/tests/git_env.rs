@@ -1,0 +1,901 @@
+//! The forge tokens of `token_env` stay out of the processes that `loomd` starts for git
+//! (ADR-0016, decision 6), against a real daemon, without network, in temporary directories.
+//!
+//! Each test gives `loomd` two token variables and one other variable. A process that git
+//! starts writes its environment to a file: a hook in a repository, and a filter or an SSH
+//! command in a store, whose git commands disable hooks.
+
+#![allow(
+    clippy::unwrap_used,
+    reason = "`allow-unwrap-in-tests` covers `#[test]` functions only; a failing helper must fail the test"
+)]
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use common::{Daemon, POLL, request};
+use loom_api::RemoteCheckOutcome;
+use loom_config::config::parse_config;
+use loomd::repo_update::{GitRunner, check_remote};
+use tempfile::TempDir;
+
+mod common;
+
+const GLOBAL_TOKEN: &str = "LOOM_TEST_GLOBAL_TOKEN";
+const CONTEXT_TOKEN: &str = "LOOM_TEST_CONTEXT_TOKEN";
+/// `loomd` reads these for its release checks, whatever the configuration says.
+const UPDATER_TOKENS: [&str; 2] = ["LOOM_GITHUB_TOKEN", "GITHUB_TOKEN"];
+const TOKEN_VALUE: &str = "not-a-real-token";
+/// Stays in the environment: proves that a dump comes from the environment of `loomd`.
+const OTHER_VARIABLE: &str = "LOOM_TEST_OTHER_VARIABLE";
+
+/// `[contexts.personal]` overrides the host table, so that no credential of a context names the
+/// variable of the host table: it must go as well.
+const FORGES: &str = r#"
+[contexts.personal.forges."forge.example.invalid"]
+token_env = "LOOM_TEST_CONTEXT_TOKEN"
+
+[forges."forge.example.invalid"]
+kind = "gitlab"
+token_env = "LOOM_TEST_GLOBAL_TOKEN"
+"#;
+
+/// A loom home and a user home under `/tmp` (the macOS `$TMPDIR` is too long for a socket path).
+struct Sandbox {
+    dir: TempDir,
+}
+
+impl Sandbox {
+    /// `context` is the body of `[contexts.personal]`.
+    fn new(context: &str) -> Self {
+        let dir = tempfile::Builder::new()
+            .prefix("loomd-git-env-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let sandbox = Self { dir };
+        fs::create_dir_all(sandbox.loom_home()).unwrap();
+        fs::create_dir_all(sandbox.user_home().join("perso")).unwrap();
+        fs::create_dir_all(sandbox.bin()).unwrap();
+        fs::create_dir_all(sandbox.dumps()).unwrap();
+        fs::write(
+            sandbox.loom_home().join("config.toml"),
+            format!(
+                "[update]\npolicy = \"off\"\n\n[repos]\nroots = [\"~/perso\"]\n\n[contexts.personal]\nmatch.paths = [\"~/perso\"]\n{context}\n{FORGES}"
+            ),
+        )
+        .unwrap();
+        sandbox.write_gitconfig("");
+        sandbox
+    }
+
+    fn loom_home(&self) -> PathBuf {
+        self.dir.path().join("l")
+    }
+
+    fn user_home(&self) -> PathBuf {
+        self.dir.path().join("u")
+    }
+
+    fn bin(&self) -> PathBuf {
+        self.dir.path().join("bin")
+    }
+
+    fn dumps(&self) -> PathBuf {
+        self.dir.path().join("dumps")
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.loom_home().join("run/loomd.sock")
+    }
+
+    fn write_gitconfig(&self, extra: &str) {
+        fs::write(
+            self.user_home().join(".gitconfig"),
+            format!("[user]\n\tname = Store Owner\n\temail = owner@example.invalid\n{extra}"),
+        )
+        .unwrap();
+    }
+
+    /// An executable at `path` that writes its environment to the dump `dump`, then runs `then`.
+    fn dump_script(&self, path: &Path, dump: &str, then: &str) {
+        let file = self.dumps().join(dump);
+        let file = file.display();
+        fs::write(
+            path,
+            format!("#!/bin/sh\nenv > '{file}.tmp.'$$\nmv '{file}.tmp.'$$ '{file}'\n{then}\n"),
+        )
+        .unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// `ssh` first in the `PATH` of `loomd`: writes the dump `ssh-g` for `ssh -G` and answers
+    /// with a host name, and writes the dump `ssh` for a connection, which it refuses.
+    fn fake_ssh(&self) {
+        let path = self.bin().join("ssh");
+        let dumps = self.dumps();
+        let dumps = dumps.display();
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n\
+                 case \"$1\" in\n\
+                 -G) name=ssh-g ;;\n\
+                 *) name=ssh ;;\n\
+                 esac\n\
+                 env > '{dumps}/'$name.tmp.$$\n\
+                 mv '{dumps}/'$name.tmp.$$ '{dumps}/'$name\n\
+                 if [ \"$name\" = ssh-g ]; then echo 'hostname forge.example.invalid'; exit 0; fi\n\
+                 echo 'Permission denied (publickey).' >&2\n\
+                 exit 255\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn git(&self, dir: &Path, args: &[&str]) {
+        common::git(&self.user_home(), dir, args);
+    }
+
+    /// A clone `~/perso/<name>` of a new bare repository with one commit, returned with the
+    /// clone that seeded it.
+    fn clone_with_remote(&self, name: &str) -> (PathBuf, PathBuf) {
+        let top = self.dir.path();
+        let origin = top.join("origin.git");
+        self.git(top, &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        let url = format!("file://{}", origin.display());
+        let seed = top.join("seed");
+        self.git(top, &["clone", "-q", &url, seed.to_str().unwrap()]);
+        self.push(&seed, "one\n");
+        let repo = self.user_home().join("perso").join(name);
+        self.git(top, &["clone", "-q", &url, repo.to_str().unwrap()]);
+        (repo, seed)
+    }
+
+    fn head(&self, repo: &Path) -> String {
+        common::git(&self.user_home(), repo, &["rev-parse", "HEAD"])
+    }
+
+    fn push(&self, seed: &Path, content: &str) {
+        fs::write(seed.join("f.txt"), content).unwrap();
+        self.git(seed, &["add", "-A"]);
+        self.git(seed, &["commit", "-q", "-m", "change"]);
+        self.git(seed, &["push", "-q", "origin", "HEAD:main"]);
+    }
+
+    fn start(&self) -> Daemon {
+        self.start_with(&[])
+    }
+
+    /// With these variables set in the environment of `loomd`.
+    fn start_with(&self, variables: &[(&str, &Path)]) -> Daemon {
+        let mut path = vec![self.bin()];
+        path.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_loomd"));
+        command
+            .env("LOOM_HOME", self.loom_home())
+            .env("HOME", self.user_home())
+            .env("XDG_CONFIG_HOME", self.user_home().join(".config"))
+            .env("PATH", std::env::join_paths(path).unwrap())
+            .env("GIT_CONFIG_GLOBAL", self.user_home().join(".gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(GLOBAL_TOKEN, TOKEN_VALUE)
+            .env(CONTEXT_TOKEN, TOKEN_VALUE)
+            .envs(UPDATER_TOKENS.map(|name| (name, TOKEN_VALUE)))
+            .env(OTHER_VARIABLE, "kept")
+            // No network: the forge is a closed local port, and no poll starts in a test.
+            .env("LOOM_TEST_FORGE_API", "http://127.0.0.1:1")
+            .env("LOOM_TEST_REVIEW_START_DELAY", "1h")
+            .env_remove("GIT_SSH_COMMAND")
+            .env_remove("GIT_SSH")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .envs(variables.iter().copied())
+            .arg("--color=never")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        Daemon::start(&mut command, &self.socket())
+    }
+
+    /// Waits for the dump `name`, then checks it: the other variable is there, the tokens are
+    /// not.
+    fn assert_no_token(&self, name: &str) {
+        let path = self.dumps().join(name);
+        let deadline = Instant::now() + common::TIMEOUT;
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "no process wrote the dump {name}"
+            );
+            thread::sleep(POLL);
+        }
+        let dump = fs::read_to_string(&path).unwrap();
+        assert!(
+            dump.contains(&format!("{OTHER_VARIABLE}=kept")),
+            "{name}: not the environment of loomd"
+        );
+        for token in [GLOBAL_TOKEN, CONTEXT_TOKEN]
+            .into_iter()
+            .chain(UPDATER_TOKENS)
+        {
+            assert!(!dump.contains(token), "{name} sees {token}");
+        }
+        assert!(!dump.contains(TOKEN_VALUE), "{name} sees a token");
+    }
+}
+
+/// The hooks of an automatic update: the fetch moves a ref, the fast-forward runs `post-merge`.
+#[test]
+fn hooks_of_an_automatic_update_do_not_see_the_tokens() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let hooks = repo.join(".git/hooks");
+    sandbox.dump_script(
+        &hooks.join("reference-transaction"),
+        "reference-transaction",
+        "exit 0",
+    );
+    sandbox.dump_script(&hooks.join("post-merge"), "post-merge", "exit 0");
+    sandbox.push(&seed, "two\n");
+    let _daemon = sandbox.start();
+
+    sandbox.assert_no_token("reference-transaction");
+    sandbox.assert_no_token("post-merge");
+}
+
+/// `git ls-remote` runs no hook: its child is the SSH command. No update runs here.
+#[test]
+fn the_ssh_command_of_a_remote_check_does_not_see_the_tokens() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    sandbox.fake_ssh();
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    sandbox.git(
+        &repo,
+        &["remote", "set-url", "origin", "git@auth.invalid:x/y.git"],
+    );
+    let _daemon = sandbox.start();
+    let deadline = Instant::now() + common::TIMEOUT;
+    while !sandbox.dumps().join("ssh").exists() {
+        assert!(Instant::now() < deadline, "the remote check ran no ssh");
+        let response = request(
+            &sandbox.socket(),
+            "POST",
+            "/v1/diagnostics/remote-check",
+            None,
+        );
+        assert_eq!(response.status, 200, "{}", response.body);
+        thread::sleep(POLL);
+    }
+
+    sandbox.assert_no_token("ssh");
+}
+
+/// A store sync runs no hook (`core.hooksPath=/dev/null`): the child of its fetch is the SSH
+/// command.
+#[test]
+fn the_ssh_command_of_a_store_sync_does_not_see_the_tokens() {
+    let sandbox = Sandbox::new("store.backup.remote = \"git@auth.invalid:x/y.git\"");
+    sandbox.fake_ssh();
+    let _daemon = sandbox.start();
+
+    sandbox.assert_no_token("ssh");
+}
+
+/// A store commit runs no hook (`core.hooksPath=/dev/null`): the child of its `git add` is a
+/// clean filter of the user's git configuration.
+#[test]
+fn a_filter_of_a_store_commit_does_not_see_the_tokens() {
+    let sandbox = Sandbox::new("");
+    let filter = sandbox.bin().join("clean-filter");
+    sandbox.dump_script(&filter, "clean-filter", "exec cat");
+    let attributes = sandbox.user_home().join(".gitattributes");
+    fs::write(&attributes, "* filter=dump\n").unwrap();
+    sandbox.write_gitconfig(&format!(
+        "[core]\n\tattributesFile = {}\n[filter \"dump\"]\n\tclean = {}\n",
+        attributes.display(),
+        filter.display()
+    ));
+    let _daemon = sandbox.start();
+
+    let created = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/tasks",
+        Some(&serde_json::json!({
+            "title": "Ship it",
+            "kind": "chore",
+            "context": "personal",
+            "status": "ready",
+        })),
+    );
+    assert_eq!(created.status, 200, "{}", created.body);
+
+    sandbox.assert_no_token("clean-filter");
+}
+
+/// `ssh -G` runs the `Match exec` commands of the SSH configuration.
+#[test]
+fn the_ssh_alias_lookup_does_not_see_the_tokens() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    sandbox.fake_ssh();
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    sandbox.git(
+        &repo,
+        &["remote", "set-url", "origin", "git@myalias:x/y.git"],
+    );
+    let _daemon = sandbox.start();
+
+    sandbox.assert_no_token("ssh-g");
+}
+
+/// A runner keeps the removal when a caller gives `env` over it, also for a variable set there.
+#[test]
+fn a_runner_removes_the_tokens_over_its_env() {
+    let sandbox = Sandbox::new("");
+    let config = parse_config(
+        &format!("[contexts.personal]\n{FORGES}"),
+        Path::new("config.toml"),
+    )
+    .unwrap();
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    sandbox.git(
+        &repo,
+        &["remote", "set-url", "origin", "git@auth.invalid:x/y.git"],
+    );
+    let ssh = sandbox.bin().join("repo-ssh");
+    sandbox.dump_script(&ssh, "repo-ssh", "exit 255");
+    sandbox.git(&repo, &["config", "core.sshCommand", ssh.to_str().unwrap()]);
+    let set = |name: &str, value: &str| (name.into(), Some(value.into()));
+    let runner = GitRunner {
+        env: vec![
+            set("GIT_CONFIG_GLOBAL", "/dev/null"),
+            set("GIT_CONFIG_NOSYSTEM", "1"),
+            set(GLOBAL_TOKEN, TOKEN_VALUE),
+            set(CONTEXT_TOKEN, TOKEN_VALUE),
+            set(UPDATER_TOKENS[0], TOKEN_VALUE),
+            set(UPDATER_TOKENS[1], TOKEN_VALUE),
+            set(OTHER_VARIABLE, "kept"),
+        ],
+        ..GitRunner::from_config(&config)
+    };
+
+    let outcome = check_remote(&repo, "origin", &runner, Duration::from_secs(20));
+
+    assert!(
+        matches!(outcome, RemoteCheckOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    sandbox.assert_no_token("repo-ssh");
+}
+
+/// git never gets these variables (`REPOSITORY_VARIABLES`): a state read must not use them
+/// either. `gix` reads some of them from the environment of the process.
+#[test]
+fn the_repository_variables_of_loomd_do_not_change_a_state_read() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    // A submodule with an edit: `Known(1)` needs the index, the objects and the working tree.
+    let top = sandbox.dir.path();
+    let sub = top.join("sub-origin");
+    sandbox.git(top, &["init", "-q", sub.to_str().unwrap()]);
+    fs::write(sub.join("s.txt"), "one\n").unwrap();
+    sandbox.git(&sub, &["add", "-A"]);
+    sandbox.git(&sub, &["commit", "-q", "-m", "first"]);
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    fs::write(repo.join("sub/s.txt"), "two\n").unwrap();
+    let elsewhere = top.join("elsewhere");
+    sandbox.git(top, &["init", "-q", elsewhere.to_str().unwrap()]);
+    let dot_git = elsewhere.join(".git");
+    let objects = dot_git.join("objects");
+    let index = dot_git.join("no-index");
+    let namespace = PathBuf::from("other");
+
+    for (name, value) in [
+        ("GIT_DIR", &dot_git),
+        ("GIT_WORK_TREE", &elsewhere),
+        ("GIT_INDEX_FILE", &index),
+        ("GIT_OBJECT_DIRECTORY", &objects),
+        ("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects),
+        ("GIT_COMMON_DIR", &dot_git),
+        ("GIT_NAMESPACE", &namespace),
+        ("GIT_PREFIX", &elsewhere),
+    ] {
+        let daemon = sandbox.start_with(&[(name, value.as_path())]);
+        let deadline = Instant::now() + common::TIMEOUT;
+        let body = loop {
+            let response = request(
+                &sandbox.socket(),
+                "GET",
+                "/v1/repos/personal/app?refresh=true",
+                None,
+            );
+            if response.status == 200 {
+                break response.body;
+            }
+            assert!(Instant::now() < deadline, "{name}: {}", response.body);
+            thread::sleep(POLL);
+        };
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let state = &body["state"];
+        assert_eq!(state["dirty"]["known"], 1, "{name}: {state}");
+        assert_eq!(state["untracked"]["known"]["count"], 0, "{name}: {state}");
+        assert_eq!(state["head"]["known"]["name"], "main", "{name}: {state}");
+        daemon.stop();
+    }
+}
+
+/// The state of `~/perso/<name>` as `loomd` reads it now.
+fn read_state(sandbox: &Sandbox, name: &str) -> serde_json::Value {
+    let path = format!("/v1/repos/personal/{name}?refresh=true");
+    let deadline = Instant::now() + common::TIMEOUT;
+    loop {
+        let response = request(&sandbox.socket(), "GET", &path, None);
+        if response.status == 200 {
+            let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+            return body;
+        }
+        assert!(Instant::now() < deadline, "{name}: {}", response.body);
+        thread::sleep(POLL);
+    }
+}
+
+/// Waits until `~/perso/<name>` has a last update; its outcomes.
+fn wait_for_outcomes(sandbox: &Sandbox, name: &str) -> serde_json::Value {
+    let deadline = Instant::now() + common::TIMEOUT;
+    loop {
+        let body = read_state(sandbox, name);
+        if !body["last_update"].is_null() {
+            return body["last_update"]["outcomes"].clone();
+        }
+        assert!(Instant::now() < deadline, "{name}: no update: {body}");
+        thread::sleep(POLL);
+    }
+}
+
+/// What the environment of `loomd` must not change: nothing set, then `GIT_WORK_TREE`.
+fn with_and_without_git_work_tree(sandbox: &Sandbox, check: impl Fn(&Sandbox)) {
+    let elsewhere = sandbox.dir.path().join("work-tree-of-the-environment");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let missing = elsewhere.join("missing");
+    for variables in [
+        &[][..],
+        &[("GIT_WORK_TREE", elsewhere.as_path())][..],
+        &[("GIT_WORK_TREE", missing.as_path())][..],
+    ] {
+        let daemon = sandbox.start_with(variables);
+        check(sandbox);
+        daemon.stop();
+    }
+}
+
+/// git merges in the directory of `core.worktree`: an edit there must stop the update, also when
+/// a copy of the files at the clone looks clean.
+#[test]
+fn a_dirty_core_worktree_is_not_fast_forwarded() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let worktree = sandbox.dir.path().join("elsewhere");
+    fs::create_dir_all(&worktree).unwrap();
+    fs::copy(repo.join("f.txt"), worktree.join("f.txt")).unwrap();
+    fs::write(worktree.join("f.txt"), "my edit\n").unwrap();
+    sandbox.git(
+        &repo,
+        &["config", "core.worktree", worktree.to_str().unwrap()],
+    );
+    // A file that the edit does not touch: git itself would not refuse this fast-forward.
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let head = sandbox.head(&repo);
+    // If `GIT_WORK_TREE` were followed, this clean copy would read as clean.
+    let clean = sandbox.dir.path().join("work-tree-of-the-environment");
+    fs::create_dir_all(&clean).unwrap();
+    fs::copy(repo.join("f.txt"), clean.join("f.txt")).unwrap();
+
+    with_and_without_git_work_tree(&sandbox, |sandbox| {
+        let outcomes = wait_for_outcomes(sandbox, "app");
+        assert!(
+            !outcomes.to_string().contains("fast_forwarded"),
+            "{outcomes}"
+        );
+        // The schedule runs once: an update on request, under this environment.
+        let synced = request(
+            &sandbox.socket(),
+            "POST",
+            "/v1/repos/sync",
+            Some(&serde_json::json!({})),
+        );
+        assert_eq!(synced.status, 200, "{}", synced.body);
+        assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+        let body = read_state(sandbox, "app");
+        assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+        assert_eq!(sandbox.head(&repo), head);
+        assert_eq!(
+            fs::read_to_string(worktree.join("f.txt")).unwrap(),
+            "my edit\n"
+        );
+    });
+}
+
+/// Each bare layout: no working tree, so nothing to count, with a reason.
+#[test]
+fn a_bare_repository_reads_unknown_with_a_reason() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("clone");
+    let perso = sandbox.user_home().join("perso");
+
+    // `.git` is the bare repository.
+    let plain = perso.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    sandbox.git(
+        &perso,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            repo.to_str().unwrap(),
+            "plain/.git",
+        ],
+    );
+    // `.git` names a bare repository beside it.
+    let layout = perso.join("layout");
+    fs::create_dir_all(&layout).unwrap();
+    sandbox.git(
+        &perso,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            repo.to_str().unwrap(),
+            "layout/.bare",
+        ],
+    );
+    fs::write(layout.join(".git"), "gitdir: ./.bare\n").unwrap();
+    // A clone turned bare, with an index that would read as clean.
+    let turned = perso.join("turned");
+    sandbox.git(&perso, &["clone", "-q", repo.to_str().unwrap(), "turned"]);
+    sandbox.git(&turned, &["config", "core.bare", "true"]);
+
+    with_and_without_git_work_tree(&sandbox, |sandbox| {
+        for name in ["plain", "layout", "turned"] {
+            let body = read_state(sandbox, name);
+            assert_eq!(body["state"]["dirty"], "unknown", "{name}: {body}");
+            assert!(
+                body["state"]["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("dirty")),
+                "{name}: {body}"
+            );
+        }
+    });
+}
+
+/// A commit that removes `.gitmodules` of `dir`, and an index saved before it, whose `.gitmodules`
+/// says `ignore = all` for `name` with its blob in the object store of `dir`.
+fn saved_index_that_ignores(sandbox: &Sandbox, dir: &Path, name: &str, saved: &Path) {
+    let key = format!("submodule.{name}.ignore");
+    sandbox.git(dir, &["config", "-f", ".gitmodules", &key, "all"]);
+    sandbox.git(dir, &["add", ".gitmodules"]);
+    sandbox.git(dir, &["commit", "-q", "-m", "ignore"]);
+    let git_dir = common::git(&sandbox.user_home(), dir, &["rev-parse", "--git-dir"]);
+    fs::copy(dir.join(git_dir.trim()).join("index"), saved).unwrap();
+    sandbox.git(dir, &["rm", "-q", ".gitmodules"]);
+    sandbox.git(dir, &["commit", "-q", "-m", "no gitmodules"]);
+}
+
+/// A new repository `name` beside the others, with one commit.
+fn new_origin(sandbox: &Sandbox, name: &str) -> PathBuf {
+    let top = sandbox.dir.path();
+    let path = top.join(name);
+    sandbox.git(top, &["init", "-q", path.to_str().unwrap()]);
+    fs::write(path.join("s.txt"), "one\n").unwrap();
+    sandbox.git(&path, &["add", "-A"]);
+    sandbox.git(&path, &["commit", "-q", "-m", "first"]);
+    path
+}
+
+/// Without `.gitmodules` in the working tree, gix reads it from the index of `GIT_INDEX_FILE`: an
+/// `ignore = all` there must not hide a change that git sees, so the update must not run.
+#[test]
+fn gitmodules_of_another_index_do_not_hide_a_change() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let sub = new_origin(&sandbox, "sub-origin");
+    let saved = sandbox.dir.path().join("saved-index");
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    saved_index_that_ignores(&sandbox, &repo, "sub", &saved);
+    sandbox.git(&repo, &["push", "-q", "origin", "HEAD:main"]);
+    sandbox.git(&seed, &["pull", "-q", "origin", "main"]);
+    sandbox.push(&seed, "two\n");
+    fs::write(repo.join("sub/s.txt"), "my edit\n").unwrap();
+    let head = sandbox.head(&repo);
+
+    let daemon = sandbox.start_with(&[("GIT_INDEX_FILE", saved.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+    daemon.stop();
+
+    // Without the variable, the change counts.
+    let daemon = sandbox.start();
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+    daemon.stop();
+}
+
+/// The same, one level down: the parent has its `.gitmodules`, the submodule has none.
+#[test]
+fn gitmodules_of_another_index_do_not_hide_a_nested_change() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    let sub = new_origin(&sandbox, "sub-origin");
+    let inner = new_origin(&sandbox, "inner-origin");
+    let saved = sandbox.dir.path().join("saved-index");
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    let inside = repo.join("sub");
+    sandbox.git(
+        &inside,
+        &["submodule", "add", "-q", inner.to_str().unwrap(), "inner"],
+    );
+    sandbox.git(&inside, &["commit", "-q", "-m", "nested"]);
+    saved_index_that_ignores(&sandbox, &inside, "inner", &saved);
+    sandbox.git(&repo, &["add", "sub"]);
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    fs::write(inside.join("inner/s.txt"), "my edit\n").unwrap();
+
+    let daemon = sandbox.start_with(&[("GIT_INDEX_FILE", saved.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    daemon.stop();
+
+    let daemon = sandbox.start();
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+    daemon.stop();
+}
+
+/// git does not follow includes for `core.worktree`, and gix does: this repository must not read
+/// as clean through the clean copy, and its update must not run.
+#[test]
+fn core_worktree_from_an_include_stops_the_update() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let clean = sandbox.dir.path().join("clean-copy");
+    fs::create_dir_all(&clean).unwrap();
+    fs::copy(repo.join("f.txt"), clean.join("f.txt")).unwrap();
+    fs::write(
+        repo.join(".git/included"),
+        format!("[core]\n\tworktree = {}\n", clean.display()),
+    )
+    .unwrap();
+    sandbox.git(&repo, &["config", "include.path", "included"]);
+    fs::write(repo.join("f.txt"), "my edit\n").unwrap();
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start();
+    let outcomes = wait_for_outcomes(&sandbox, "app");
+    assert!(
+        !outcomes.to_string().contains("fast_forwarded"),
+        "{outcomes}"
+    );
+    assert_eq!(sandbox.head(&repo), head);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    assert!(
+        body["state"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("core.worktree")),
+        "{body}"
+    );
+}
+
+/// A `git -c` that started loomd must not reach git, which gix would not follow.
+#[test]
+fn git_does_not_inherit_config_parameters() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    sandbox.dump_script(
+        &repo.join(".git/hooks/reference-transaction"),
+        "reference-transaction",
+        "exit 0",
+    );
+    sandbox.push(&seed, "two\n");
+    let _daemon =
+        sandbox.start_with(&[("GIT_CONFIG_PARAMETERS", Path::new("'core.filemode=true'"))]);
+
+    sandbox.assert_no_token("reference-transaction");
+    let dump = fs::read_to_string(sandbox.dumps().join("reference-transaction")).unwrap();
+    assert!(!dump.contains("core.filemode=true"), "{dump}");
+}
+
+/// An index with a null checksum (`index.skipHash`), read past `GIT_INDEX_FILE`.
+#[test]
+fn a_skip_hash_index_is_read_past_git_index_file() {
+    let sandbox = Sandbox::new("update = \"off\"");
+    let (repo, _seed) = sandbox.clone_with_remote("app");
+    sandbox.git(&repo, &["config", "index.skipHash", "true"]);
+    fs::write(repo.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&repo, &["add", "g.txt"]);
+    sandbox.git(&repo, &["commit", "-q", "-m", "written with skipHash"]);
+    fs::write(repo.join("f.txt"), "my edit\n").unwrap();
+    let elsewhere = sandbox.dir.path().join("no-index");
+
+    let _daemon = sandbox.start_with(&[("GIT_INDEX_FILE", elsewhere.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
+}
+
+/// gix follows `core.worktree` only with `core.bare` set, and git merges there without it: the
+/// edit there must stop the update.
+#[test]
+fn core_worktree_without_core_bare_stops_the_update() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let other = sandbox.dir.path().join("real-tree");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("f.txt"), "my edit\n").unwrap();
+    sandbox.git(&repo, &["config", "--unset", "core.bare"]);
+    sandbox.git(&repo, &["config", "core.worktree", other.to_str().unwrap()]);
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let head = sandbox.head(&repo);
+
+    with_and_without_git_work_tree(&sandbox, |sandbox| {
+        let body = read_state(sandbox, "app");
+        assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+        let synced = request(
+            &sandbox.socket(),
+            "POST",
+            "/v1/repos/sync",
+            Some(&serde_json::json!({})),
+        );
+        assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+        assert_eq!(sandbox.head(&repo), head);
+        assert!(!other.join("g.txt").exists());
+    });
+}
+
+/// gix does not read a symlink `.gitmodules`, and goes to the index of `GIT_INDEX_FILE`.
+#[test]
+fn a_symlink_gitmodules_does_not_stop_the_index_check() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let sub = new_origin(&sandbox, "sub-origin");
+    let saved = sandbox.dir.path().join("saved-index");
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    saved_index_that_ignores(&sandbox, &repo, "sub", &saved);
+    sandbox.git(&repo, &["push", "-q", "origin", "HEAD:main"]);
+    sandbox.git(&seed, &["pull", "-q", "origin", "main"]);
+    sandbox.push(&seed, "two\n");
+    let target = sandbox.dir.path().join("gitmodules-target");
+    fs::write(&target, "[submodule \"sub\"]\n\tpath = sub\n\turl = x\n").unwrap();
+    std::os::unix::fs::symlink(&target, repo.join(".gitmodules")).unwrap();
+    fs::write(repo.join("sub/s.txt"), "my edit\n").unwrap();
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start_with(&[("GIT_INDEX_FILE", saved.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    assert!(
+        body["state"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("is not <git_dir>/index")),
+        "{body}"
+    );
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+}
+
+/// A repository behind its remote, and a clean copy of its files elsewhere.
+fn behind_with_a_decoy(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let decoy = sandbox.dir.path().join("decoy");
+    fs::create_dir_all(&decoy).unwrap();
+    fs::copy(repo.join("f.txt"), decoy.join("f.txt")).unwrap();
+    (repo, decoy)
+}
+
+/// The read may say 0 here: without a format version, git ignores `core.worktree`, and gix follows
+/// it. git itself names the other tree, so the update stops.
+#[test]
+fn an_update_stops_without_a_format_version() {
+    let sandbox = Sandbox::new("");
+    let (repo, decoy) = behind_with_a_decoy(&sandbox);
+    sandbox.git(
+        &repo,
+        &["config", "--unset", "core.repositoryformatversion"],
+    );
+    sandbox.git(&repo, &["config", "core.worktree", decoy.to_str().unwrap()]);
+    fs::write(repo.join("f.txt"), "my edit\n").unwrap();
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start();
+    let outcomes = wait_for_outcomes(&sandbox, "app");
+    assert!(
+        outcomes.to_string().contains("other_work_tree"),
+        "{outcomes}"
+    );
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+    assert!(!decoy.join("g.txt").exists());
+}
+
+/// `[core "x"] worktree` is not `core.worktree`.
+#[test]
+fn a_subsection_of_core_is_not_core_worktree() {
+    let sandbox = Sandbox::new("");
+    let (repo, decoy) = behind_with_a_decoy(&sandbox);
+    fs::write(decoy.join("f.txt"), "my edit\n").unwrap();
+    sandbox.git(&repo, &["config", "--unset", "core.bare"]);
+    sandbox.git(&repo, &["config", "core.worktree", decoy.to_str().unwrap()]);
+    sandbox.git(
+        &repo,
+        &["config", "core.x.worktree", repo.to_str().unwrap()],
+    );
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start();
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+    assert!(!decoy.join("g.txt").exists());
+}

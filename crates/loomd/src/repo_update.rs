@@ -22,11 +22,13 @@ use loom_api::{
     LastUpdate, RemoteCheckOutcome, RemoteProblem, RepoState, RepoUpdatePolicy, SkipReason,
     Timestamp, UpdateOutcome, UpdateStep,
 };
-use loom_repo::state::UpdateRefs;
+use loom_config::config::Config;
+use loom_repo::state::{UpdateRefs, read_workdir};
 use loom_repo::{
     Action, FetchDecision, StateOptions, classify_remote_failure, decide_fetch, decide_update,
     git_dirs, is_busy, state, update_refs,
 };
+use loom_update::github::TOKEN_ENVS;
 use tracing::field::Empty;
 use tracing::{Span, debug, info, info_span, warn};
 
@@ -45,8 +47,9 @@ pub const STDERR_TAIL_BYTES: usize = 2_000;
 /// SSH command set when the user configured none: never ask for a password or a host key.
 pub const BATCH_SSH_COMMAND: &str = "ssh -o BatchMode=yes";
 
-/// Variables that would point git at another repository than the one updated.
-const REPOSITORY_VARIABLES: [&str; 8] = [
+/// Variables that would point git at another repository than the one updated, and
+/// `GIT_CONFIG_PARAMETERS`: a `git -c` that started loomd, which the state reads do not follow.
+const REPOSITORY_VARIABLES: [&str; 9] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -55,6 +58,7 @@ const REPOSITORY_VARIABLES: [&str; 8] = [
     "GIT_COMMON_DIR",
     "GIT_NAMESPACE",
     "GIT_PREFIX",
+    "GIT_CONFIG_PARAMETERS",
 ];
 
 /// How git commands are run.
@@ -65,6 +69,11 @@ pub struct GitRunner {
     /// Variables set (`Some`) or removed (`None`) for every command, over the inherited
     /// environment.
     pub env: Vec<(OsString, Option<OsString>)>,
+    /// Variables that loomd reads as a token (`token_env`, and those of the release checks),
+    /// removed last, over `env`: git uses the
+    /// credentials of the user, and its hooks and helpers run with its environment (ADR-0016,
+    /// decision 6). [`Self::from_config`] sets them.
+    pub withheld_env: Vec<OsString>,
     /// `GIT_SSH_COMMAND` or `GIT_SSH` is in the environment git inherits: the user chose an SSH
     /// command, `BatchMode` is not forced.
     pub ssh_in_env: bool,
@@ -81,15 +90,24 @@ pub struct GitRunner {
 }
 
 impl GitRunner {
-    /// `git` from `PATH`, the environment of this process, the default timeouts.
+    /// `git` from `PATH`, the environment of this process without the `token_env` variables of
+    /// `config` and the token variables of the release checks, the default timeouts. The only constructor, so that a git command cannot miss
+    /// these variables. The names are read now: loomd reads its configuration once, at start.
+    /// A reload of the configuration must build the runner again.
     #[must_use]
-    pub fn from_env() -> Self {
+    pub fn from_config(config: &Config) -> Self {
         let ssh_in_env = ["GIT_SSH_COMMAND", "GIT_SSH"]
             .iter()
             .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
         Self {
             program: PathBuf::from("git"),
             env: Vec::new(),
+            withheld_env: config
+                .token_env_names()
+                .into_iter()
+                .chain(TOKEN_ENVS)
+                .map(OsString::from)
+                .collect(),
             ssh_in_env,
             fetch_timeout: FETCH_TIMEOUT,
             merge_timeout: MERGE_TIMEOUT,
@@ -241,11 +259,30 @@ fn run(
         debug!(path = %target.path.display(), error, "update refs partly unknown");
     }
     let actions = decide_update(target.policy, &after, &refs);
+    // Only when a branch would move: one more git command, and no hook or filter runs for it.
+    let moves = actions.iter().any(|action| {
+        matches!(
+            action,
+            Action::FastForward { .. } | Action::MoveDefaultBranch { .. }
+        )
+    });
+    let other_tree = moves
+        .then(|| git.same_work_tree(target.path, options).err())
+        .flatten();
     let mut outcomes = Vec::with_capacity(actions.len());
     for action in actions {
         outcomes.push(match action {
             Action::FetchOnly => UpdateOutcome::Fetched,
             Action::Skip(reason) => UpdateOutcome::Skipped { reason },
+            Action::FastForward { .. } | Action::MoveDefaultBranch { .. }
+                if other_tree.is_some() =>
+            {
+                UpdateOutcome::Skipped {
+                    reason: SkipReason::OtherWorkTree {
+                        detail: other_tree.clone().unwrap_or_default(),
+                    },
+                }
+            }
             Action::FastForward { branch, from, to } => git.fast_forward(branch, from, &to.id),
             Action::MoveDefaultBranch {
                 branch,
@@ -410,6 +447,37 @@ impl<'a> Git<'a> {
         git.ssh_command =
             batch_ssh_command(configured.ok().flatten().as_deref(), runner.ssh_in_env);
         git
+    }
+
+    /// Whether git would act on the working tree that a state read of `path` uses. Its decision
+    /// holds only for that directory, and `gix` and git can read a hand-built configuration
+    /// differently. `Err`: what git reported.
+    fn same_work_tree(&self, path: &Path, options: &StateOptions) -> Result<(), String> {
+        let read = read_workdir(path, options)?
+            .ok_or_else(|| "the read found no working tree".to_owned())?;
+        let args = [
+            OsStr::new("rev-parse"),
+            OsStr::new("--is-inside-work-tree"),
+            OsStr::new("--show-toplevel"),
+        ];
+        let output = self
+            .output(&args, CONFIG_TIMEOUT)
+            .map_err(|failure| match failure {
+                Failure::Exit { stderr_tail, .. } => stderr_tail.trim().to_owned(),
+                failure @ (Failure::Run(_) | Failure::Timeout { .. }) => format!("{failure:?}"),
+            })?;
+        let Some(top) = output.lines().nth(1).filter(|line| !line.is_empty()) else {
+            return Err("git reports no working tree".to_owned());
+        };
+        let canonical = |path: &Path| {
+            path.canonicalize()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        };
+        if canonical(Path::new(top))? == canonical(&read)? {
+            Ok(())
+        } else {
+            Err(format!("git names {top}, the read used {}", read.display()))
+        }
     }
 
     /// `git config --get <key>`; `None` when unset.
@@ -585,6 +653,9 @@ impl<'a> Git<'a> {
                 Some(value) => command.env(name, value),
                 None => command.env_remove(name),
             };
+        }
+        for name in &self.runner.withheld_env {
+            command.env_remove(name);
         }
         for name in REPOSITORY_VARIABLES {
             command.env_remove(name);

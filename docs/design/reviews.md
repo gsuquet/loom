@@ -152,14 +152,14 @@ token_cmd = "gh auth token --hostname github.com"
 
 [forges."gitlab.company-a.example"]
 kind = "gitlab"
-token_env = "GITLAB_TOKEN"                     # or token_cmd
+token_env = "LOOM_GITLAB_TOKEN"                # or token_cmd
 
 [contexts.company-a.forges."github.com"]
 token_cmd = "op read op://company-a/github/token"   # another account on the same host
 ```
 
 - Lookup for a context and a host: `[contexts.<ctx>.forges."<host>"]`, then `[forges."<host>"]`. No credential: the context does not poll that host.
-- `token_cmd` runs through `sh -c` with a 10 s timeout; stdout, trimmed, is the token. `token_env` reads loomd's environment (a launchd agent does not see shell variables: `token_cmd` is the usual choice). The token is kept in memory and resolved again after a 401.
+- `token_cmd` runs through `sh -c` with a 10 s timeout; stdout, trimmed, is the token. `token_env` reads loomd's environment (a launchd agent does not see shell variables: `token_cmd` is the usual choice). The token is kept in memory and resolved again after a 401. Every git command of loomd runs without the `token_env` variables of the configuration (each host table and each context table), so that hooks and credential helpers cannot read them. A credential helper that needs such a variable (`gh auth git-credential` with `GH_TOKEN`, `glab` with `GITLAB_TOKEN`) then fails: use another name, `token_cmd`, or a stored helper login.
 - loomd as a service has a minimal `PATH`: `gh` or `op` from Homebrew are not found by name. The doctor reports "command not found" with the absolute path to use. A `token_cmd` that waits for an interactive unlock (1Password) times out; the doctor says so.
 - The token is sent only to the API host of its table: redirects to another host are not followed with it.
 - API base: `https://api.github.com` (GraphQL `https://api.github.com/graphql`); GitHub Enterprise Server `https://<host>/api/v3` and `https://<host>/api/graphql`; GitLab `https://<host>/api/v4`.

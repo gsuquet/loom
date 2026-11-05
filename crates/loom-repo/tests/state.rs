@@ -768,3 +768,794 @@ fn filter_drivers_are_never_run() {
         command
     );
 }
+
+impl Fixture {
+    /// `git -c protocol.file.allow=always submodule <args>` in `dir`.
+    fn submodule(&self, dir: &Path, args: &[&str]) {
+        let mut all = vec!["-c", "protocol.file.allow=always", "submodule", "--quiet"];
+        all.extend_from_slice(args);
+        self.git(dir, &all);
+    }
+
+    /// A repository `name` with `sub` committed as its submodule, checked out at `sub/`.
+    fn with_submodule(&self, name: &str, sub: &Path) -> PathBuf {
+        let repo = self.repo(name);
+        self.submodule(&repo, &["add", sub.to_str().unwrap(), "sub"]);
+        self.git(&repo, &["commit", "-q", "-m", "submodule"]);
+        repo
+    }
+
+    /// `name`, with `name/sub` a submodule.
+    fn parent_of_clean_submodule(&self, name: &str) -> PathBuf {
+        let sub = self.repo(&format!("{name}-sub"));
+        self.with_submodule(name, &sub)
+    }
+
+    /// A driver that records its runs in `marker`, configured for the filter `fake` of `repo`.
+    fn install_driver(&self, repo: &Path, marker: &Path) {
+        let driver = self.path("fake-driver.sh");
+        fs::write(
+            &driver,
+            format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).unwrap();
+        for key in [
+            "filter.fake.clean",
+            "filter.fake.smudge",
+            "filter.fake.process",
+        ] {
+            self.git(repo, &["config", key, driver.to_str().unwrap()]);
+        }
+    }
+
+    /// A repository `name` whose files `*.bin` go through the filter `fake`.
+    fn repo_with_filtered_file(&self, name: &str) -> PathBuf {
+        let repo = self.repo(name);
+        self.commit(&repo, ".gitattributes", "*.bin filter=fake\n", "attributes");
+        self.commit(&repo, "data.bin", "payload\n", "data");
+        repo
+    }
+}
+
+fn dirty_of(repo: &Path) -> MaybeKnown<u64> {
+    let state = Fixture::state(repo);
+    assert_eq!(
+        state.dirty.as_known().is_some(),
+        !state
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("dirty:"),
+        "{state:?}"
+    );
+    state.dirty
+}
+
+#[test]
+fn filter_drivers_of_a_submodule_are_never_run() {
+    let fixture = Fixture::new();
+    let sub = fixture.repo_with_filtered_file("filtered");
+    let repo = fixture.with_submodule("parent", &sub);
+    let inside = repo.join("sub");
+    let marker = fixture.path("driver-ran");
+    fixture.install_driver(&inside, &marker);
+
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    fs::write(inside.join("data.bin"), "PAYLOAD\n").unwrap();
+    let state = Fixture::state(&repo);
+    assert_eq!(state.dirty, MaybeKnown::Unknown, "{state:?}");
+    let error = state.error.unwrap();
+    assert!(
+        error.contains("dirty: submodule sub: filter driver `fake` not run: data.bin"),
+        "{error}"
+    );
+    // A change that needs no driver is counted.
+    fs::write(inside.join("data.bin"), "payload\n").unwrap();
+    fs::write(inside.join("f.txt"), "two\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+
+    assert!(!marker.exists(), "the filter driver ran");
+    assert_eq!(
+        fixture
+            .git(&inside, &["config", "filter.fake.clean"])
+            .trim(),
+        fixture.path("fake-driver.sh").to_str().unwrap()
+    );
+}
+
+#[test]
+fn filter_drivers_of_a_nested_submodule_are_never_run() {
+    let fixture = Fixture::new();
+    let inner = fixture.repo_with_filtered_file("inner");
+    let middle = fixture.repo("middle");
+    fixture.submodule(&middle, &["add", inner.to_str().unwrap(), "nested"]);
+    fixture.git(&middle, &["commit", "-q", "-m", "nested"]);
+    let repo = fixture.with_submodule("parent", &middle);
+    fixture.submodule(&repo, &["update", "--init", "--recursive"]);
+    let nested = repo.join("sub/nested");
+    let marker = fixture.path("driver-ran");
+    fixture.install_driver(&nested, &marker);
+
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    fs::write(nested.join("data.bin"), "PAYLOAD\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+    assert!(!marker.exists(), "the filter driver ran");
+}
+
+/// What the update gate reads for a submodule, which skips on anything but `Known(0)`.
+#[test]
+fn a_changed_submodule_counts_as_one_path() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    let inside = repo.join("sub");
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    // Untracked files only.
+    fs::write(inside.join("new.txt"), "new\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+    fs::remove_file(inside.join("new.txt")).unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    // Staged only.
+    fs::write(inside.join("staged.txt"), "staged\n").unwrap();
+    fixture.git(&inside, &["add", "staged.txt"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+    fixture.git(&inside, &["rm", "-q", "--cached", "staged.txt"]);
+    fs::remove_file(inside.join("staged.txt")).unwrap();
+
+    // Two changes in the submodule, one in the parent.
+    fs::write(inside.join("f.txt"), "two\n").unwrap();
+    fs::write(inside.join("new.txt"), "new\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+    fs::write(repo.join("f.txt"), "two\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(2));
+}
+
+#[test]
+fn a_moved_submodule_head_is_counted() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    fixture.commit(&repo.join("sub"), "g.txt", "g\n", "local commit");
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+    // Also staged in the parent: still one path.
+    fixture.git(&repo, &["add", "sub"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+}
+
+#[test]
+fn a_change_in_a_nested_submodule_is_counted() {
+    let fixture = Fixture::new();
+    let inner = fixture.repo("inner");
+    let middle = fixture.repo("middle");
+    fixture.submodule(&middle, &["add", inner.to_str().unwrap(), "nested"]);
+    fixture.git(&middle, &["commit", "-q", "-m", "nested"]);
+    let repo = fixture.with_submodule("parent", &middle);
+    fixture.submodule(&repo, &["update", "--init", "--recursive"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    fs::write(repo.join("sub/nested/new.txt"), "new\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+    fs::remove_file(repo.join("sub/nested/new.txt")).unwrap();
+    fs::write(repo.join("sub/nested/f.txt"), "two\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+}
+
+#[test]
+fn the_ignore_value_of_a_submodule_applies() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    let inside = repo.join("sub");
+    let ignore = |value: &str| {
+        fixture.git(&repo, &["config", "submodule.sub.ignore", value]);
+    };
+
+    ignore("untracked");
+    fs::write(inside.join("new.txt"), "new\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+    fs::write(inside.join("f.txt"), "two\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+
+    ignore("dirty");
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+    ignore("all");
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    fixture.commit(&inside, "g.txt", "g\n", "local commit");
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+    ignore("dirty");
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+    ignore("none");
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+}
+
+#[test]
+fn the_ignore_value_overrides_diff_ignore_submodules() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    fixture.git(&repo, &["config", "submodule.sub.ignore", "all"]);
+    fs::write(repo.join("sub/f.txt"), "two\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    fixture.git(&repo, &["config", "diff.ignoreSubmodules", "none"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    fixture.git(&repo, &["config", "submodule.sub.ignore", "none"]);
+    fixture.git(&repo, &["config", "diff.ignoreSubmodules", "all"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+
+    // Without an `ignore` value, `diff.ignoreSubmodules` applies.
+    fixture.git(&repo, &["config", "--unset", "submodule.sub.ignore"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+}
+
+/// Each `diff.ignoreSubmodules` with each `ignore` value of `.gitmodules`, for each kind of
+/// change, against `git status` with no option.
+#[test]
+fn the_ignore_precedence_is_the_one_of_git() {
+    type Change = fn(&Fixture, &Path);
+    let changes: [(&str, Change); 3] = [
+        ("untracked", |_, inside| {
+            fs::write(inside.join("new.txt"), "new\n").unwrap();
+        }),
+        ("edit", |_, inside| {
+            fs::write(inside.join("f.txt"), "two\n").unwrap();
+        }),
+        ("moved head", |fixture, inside| {
+            fixture.commit(inside, "g.txt", "g\n", "local commit");
+        }),
+    ];
+    let mut read = Vec::new();
+    for (change, apply) in changes {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        apply(&fixture, &repo.join("sub"));
+        for diff in ["all", "dirty", "untracked"] {
+            fixture.git(&repo, &["config", "diff.ignoreSubmodules", diff]);
+            for ignore in ["none", "dirty", "all"] {
+                fixture.git(
+                    &repo,
+                    &[
+                        "config",
+                        "-f",
+                        ".gitmodules",
+                        "submodule.sub.ignore",
+                        ignore,
+                    ],
+                );
+                fixture.git(&repo, &["add", ".gitmodules"]);
+                // The index of `.gitmodules` may have no change for `git commit` to record.
+                fixture.git(&repo, &["commit", "-q", "--allow-empty", "-m", "ignore"]);
+                let git = fixture.git_status_changes(&repo);
+                assert_eq!(
+                    dirty_of(&repo),
+                    MaybeKnown::Known(git),
+                    "{change}, diff.ignoreSubmodules={diff}, ignore={ignore}"
+                );
+                read.push(((change, diff, ignore), git));
+            }
+        }
+    }
+    // The cases of the table that the wrong order reads as clean.
+    for case in [
+        ("edit", "dirty", "none"),
+        ("edit", "all", "none"),
+        ("untracked", "untracked", "none"),
+        ("moved head", "all", "dirty"),
+    ] {
+        assert!(read.contains(&(case, 1)), "{case:?}: {read:?}");
+    }
+}
+
+/// `.gitmodules` entries that name no gitlink protect nothing, and git calls the repository clean.
+#[test]
+fn a_malformed_gitmodules_entry_that_names_no_gitlink_is_left_out() {
+    let good = "[submodule \"sub\"]\n\tpath = sub\n\turl = ../elsewhere\n";
+    for bad in [
+        "[submodule \"bad\"]\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath =\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath = ../x\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath = /absolute/x\n\turl = ../x\n",
+        "[submodule \"bad\"]\n\tpath = other\n\tignore = bogus\n",
+    ] {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        fixture.commit_gitmodules(&repo, Some(&format!("{good}{bad}")));
+        assert_eq!(fixture.git_status_changes(&repo), 0, "{bad}");
+        assert_eq!(dirty_of(&repo), MaybeKnown::Known(0), "{bad}");
+        fs::write(repo.join("sub/f.txt"), "two\n").unwrap();
+        assert_eq!(fixture.git_status_changes(&repo), 1, "{bad}");
+        assert_eq!(dirty_of(&repo), MaybeKnown::Known(1), "{bad}");
+    }
+}
+
+#[test]
+fn a_gitmodules_that_can_affect_a_gitlink_and_cannot_be_read_leaves_the_count_unknown() {
+    for gitmodules in [
+        "[not a section\n",
+        "[submodule \"sub\"]\n\tpath = sub\n\tignore = bogus\n",
+    ] {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        fixture.commit_gitmodules(&repo, Some(gitmodules));
+        assert_eq!(dirty_of(&repo), MaybeKnown::Unknown, "{gitmodules}");
+    }
+}
+
+/// Two entries with one path: the last one decides, also when it has no `ignore` value.
+#[test]
+fn the_last_gitmodules_entry_of_a_path_decides() {
+    for (gitmodules, expected) in [
+        (
+            "[submodule \"a\"]\n\tpath = sub\n\tignore = all\n[submodule \"b\"]\n\tpath = sub\n",
+            1,
+        ),
+        (
+            "[submodule \"a\"]\n\tpath = sub\n[submodule \"b\"]\n\tpath = sub\n\tignore = all\n",
+            0,
+        ),
+        (
+            "[submodule \"a\"]\n\tpath = sub\n\tignore = all\n[submodule \"b\"]\n\tpath = sub\n\tignore = none\n",
+            1,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        fixture.commit_gitmodules(&repo, Some(gitmodules));
+        fs::write(repo.join("sub/f.txt"), "two\n").unwrap();
+        assert_eq!(fixture.git_status_changes(&repo), expected, "{gitmodules}");
+        assert_eq!(dirty_of(&repo), MaybeKnown::Known(expected), "{gitmodules}");
+    }
+}
+
+#[test]
+fn a_submodule_that_cannot_be_read_leaves_the_count_unknown() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    let modules = repo.join(".git/modules/sub");
+
+    // Its configuration cannot be parsed.
+    let config = modules.join("config");
+    let kept = fs::read(&config).unwrap();
+    fs::write(&config, "[not a section\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+    fs::write(&config, kept).unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+
+    // Its index cannot be parsed.
+    let index = modules.join("index");
+    let kept = fs::read(&index).unwrap();
+    fs::write(&index, "not an index").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+    fs::write(&index, kept).unwrap();
+
+    // Its `.git` file names a directory that does not exist.
+    let dot_git = repo.join("sub/.git");
+    fs::write(&dot_git, "gitdir: ../.git/modules/gone\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+}
+
+#[test]
+fn a_submodule_without_a_checkout_reads_as_git_status_does() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    // Not initialized: nothing of the user is there.
+    fixture.submodule(&repo, &["deinit", "--force", "sub"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+    // The directory is gone: the gitlink is deleted on disk.
+    fs::remove_dir(repo.join("sub")).unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+}
+
+impl Fixture {
+    /// A repository `<repo>/<name>` with one commit, added to the index of `repo` as a gitlink
+    /// that `.gitmodules` does not name, and committed.
+    fn commit_unregistered_gitlink(&self, repo: &Path, name: &str) {
+        let inside = repo.join(name);
+        fs::create_dir_all(&inside).unwrap();
+        self.git(&inside, &["init", "-q"]);
+        self.commit(&inside, "f.txt", "one\n", "first");
+        self.git(repo, &["-c", "advice.addEmbeddedRepo=false", "add", name]);
+        self.git(repo, &["commit", "-q", "-m", "gitlink"]);
+    }
+
+    /// The paths that `git status` reports as changed, untracked files of `repo` left out.
+    fn git_changed(&self, repo: &Path) -> u64 {
+        let status = self.git(
+            repo,
+            &[
+                "status",
+                "--porcelain",
+                "--ignore-submodules=none",
+                "--untracked-files=no",
+            ],
+        );
+        u64::try_from(status.lines().count()).unwrap()
+    }
+
+    /// The paths that `git status` with no option reports as changed, so that the configuration
+    /// applies. Its untracked files of `repo` are left out.
+    fn git_status_changes(&self, repo: &Path) -> u64 {
+        let status = self.git(repo, &["status", "--porcelain"]);
+        let changed = status.lines().filter(|line| !line.starts_with("??"));
+        u64::try_from(changed.count()).unwrap()
+    }
+
+    /// `state` and `git status` count the same changed paths, `expected` of them.
+    fn assert_same_as_git(&self, repo: &Path, expected: u64) {
+        assert_eq!(self.git_changed(repo), expected, "git status");
+        assert_eq!(dirty_of(repo), MaybeKnown::Known(expected), "state");
+    }
+
+    /// Replaces the `.gitmodules` of `repo` with `gitmodules` and commits it; `None` removes the
+    /// file.
+    fn commit_gitmodules(&self, repo: &Path, gitmodules: Option<&str>) {
+        match gitmodules {
+            Some(text) => {
+                fs::write(repo.join(".gitmodules"), text).unwrap();
+                self.git(repo, &["add", ".gitmodules"]);
+            }
+            None => {
+                self.git(repo, &["rm", "-q", ".gitmodules"]);
+            }
+        }
+        self.git(repo, &["commit", "-q", "-m", "gitmodules"]);
+    }
+
+    /// `parent` with a clean submodule `s1`, which has a clean submodule `s2`.
+    fn parent_of_nested_submodule(&self, name: &str) -> PathBuf {
+        let inner = self.repo(&format!("{name}-inner"));
+        let middle = self.repo(&format!("{name}-middle"));
+        self.submodule(&middle, &["add", inner.to_str().unwrap(), "s2"]);
+        self.git(&middle, &["commit", "-q", "-m", "nested"]);
+        let repo = self.repo(name);
+        self.submodule(&repo, &["add", middle.to_str().unwrap(), "s1"]);
+        self.git(&repo, &["commit", "-q", "-m", "submodule"]);
+        self.submodule(&repo, &["update", "--init", "--recursive"]);
+        repo
+    }
+}
+
+/// A gitlink that `.gitmodules` does not name is a submodule for `git status`.
+#[test]
+fn an_unregistered_gitlink_is_read() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    fixture.commit_unregistered_gitlink(&repo, "extra");
+    let inside = repo.join("extra");
+    fixture.assert_same_as_git(&repo, 0);
+
+    fs::write(inside.join("new.txt"), "new\n").unwrap();
+    fixture.assert_same_as_git(&repo, 1);
+    fs::remove_file(inside.join("new.txt")).unwrap();
+    fs::write(inside.join("f.txt"), "two\n").unwrap();
+    fixture.assert_same_as_git(&repo, 1);
+    fixture.git(&inside, &["checkout", "-q", "--", "f.txt"]);
+    fixture.assert_same_as_git(&repo, 0);
+    fixture.commit(&inside, "g.txt", "g\n", "local commit");
+    fixture.assert_same_as_git(&repo, 1);
+
+    // No entry to read an `ignore` from: only `diff.ignoreSubmodules` applies.
+    fixture.git(&repo, &["config", "diff.ignoreSubmodules", "all"]);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+}
+
+#[test]
+fn an_unregistered_gitlink_beside_a_nested_submodule_is_read() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_nested_submodule("parent");
+    fixture.commit_unregistered_gitlink(&repo, "extra");
+    fixture.assert_same_as_git(&repo, 0);
+
+    fs::write(repo.join("extra/new.txt"), "new\n").unwrap();
+    fixture.assert_same_as_git(&repo, 1);
+}
+
+#[test]
+fn an_unregistered_gitlink_inside_a_submodule_is_read() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_nested_submodule("parent");
+    let inside = repo.join("s1");
+    fixture.commit_unregistered_gitlink(&inside, "extra");
+    fixture.git(&repo, &["add", "s1"]);
+    fixture.git(&repo, &["commit", "-q", "-m", "moved s1"]);
+    fixture.assert_same_as_git(&repo, 0);
+
+    fs::write(inside.join("extra/new.txt"), "new\n").unwrap();
+    fixture.assert_same_as_git(&repo, 1);
+}
+
+/// Each `.gitmodules` that does not name the gitlink as it is in the index.
+#[test]
+fn a_gitlink_is_read_whatever_gitmodules_says() {
+    let entry =
+        |path: &str| format!("[submodule \"sub\"]\n\tpath = {path}\n\turl = ../elsewhere\n");
+    for gitmodules in [
+        None,
+        Some(entry("other")),
+        Some(entry("sub/")),
+        Some(entry("./sub")),
+    ] {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_clean_submodule("parent");
+        fixture.commit_gitmodules(&repo, gitmodules.as_deref());
+        fixture.assert_same_as_git(&repo, 0);
+
+        fs::write(repo.join("sub/new.txt"), "new\n").unwrap();
+        fixture.assert_same_as_git(&repo, 1);
+        fs::remove_file(repo.join("sub/new.txt")).unwrap();
+        fs::write(repo.join("sub/f.txt"), "two\n").unwrap();
+        fixture.assert_same_as_git(&repo, 1);
+    }
+}
+
+#[test]
+fn an_unregistered_gitlink_that_cannot_be_read_leaves_the_count_unknown() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    fixture.commit_unregistered_gitlink(&repo, "extra");
+    let dot_git = repo.join("extra/.git");
+
+    fs::remove_dir_all(&dot_git).unwrap();
+    fs::write(&dot_git, "gitdir: ../gone\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+
+    fs::remove_file(&dot_git).unwrap();
+    fs::create_dir(&dot_git).unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+
+    // Without `.git`, it is not checked out, as for git.
+    fs::remove_dir(&dot_git).unwrap();
+    fixture.assert_same_as_git(&repo, 0);
+}
+
+#[test]
+fn filter_drivers_of_an_unregistered_gitlink_are_never_run() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    let inside = repo.join("extra");
+    fs::create_dir_all(&inside).unwrap();
+    fixture.git(&inside, &["init", "-q"]);
+    fixture.commit(
+        &inside,
+        ".gitattributes",
+        "*.bin filter=fake\n",
+        "attributes",
+    );
+    fixture.commit(&inside, "data.bin", "payload\n", "data");
+    fixture.git(
+        &repo,
+        &["-c", "advice.addEmbeddedRepo=false", "add", "extra"],
+    );
+    fixture.git(&repo, &["commit", "-q", "-m", "gitlink"]);
+    let marker = fixture.path("driver-ran");
+    fixture.install_driver(&inside, &marker);
+
+    fs::write(inside.join("data.bin"), "PAYLOAD\n").unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+    assert!(!marker.exists(), "the filter driver ran");
+}
+
+#[test]
+fn a_git_directory_without_a_repository_leaves_the_count_unknown() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    let dot_git = repo.join("sub/.git");
+    fs::remove_file(&dot_git).unwrap();
+    fs::create_dir(&dot_git).unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+}
+
+/// Runs `read` with `path` at mode 000. Skipped where the mode does not apply (root).
+fn with_no_access(path: &Path, read: impl FnOnce()) {
+    let kept = fs::metadata(path).unwrap().permissions();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(path).is_err() {
+        read();
+    } else {
+        eprintln!("skipped: mode 000 does not apply to this user");
+    }
+    fs::set_permissions(path, kept).unwrap();
+}
+
+#[test]
+fn a_submodule_without_access_leaves_the_count_unknown() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    fs::write(repo.join("sub/f.txt"), "two\n").unwrap();
+
+    with_no_access(&repo.join(".git/modules/sub"), || {
+        assert_eq!(Fixture::state(&repo).dirty, MaybeKnown::Unknown);
+    });
+    with_no_access(&repo.join("sub"), || {
+        assert_eq!(Fixture::state(&repo).dirty, MaybeKnown::Unknown);
+    });
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(1));
+}
+
+/// A parent with a submodule `s1` that holds a submodule `s2`, and what each `ignore` and untracked
+/// setting reads, against `git status` with no option: an untracked file at each depth, then a
+/// tracked edit.
+#[test]
+fn untracked_settings_carry_into_submodules_as_for_git_status() {
+    type Setup = fn(&Fixture, &Path);
+    fn outer(fixture: &Fixture, repo: &Path, value: &str) {
+        fixture.git(
+            repo,
+            &["config", "-f", ".gitmodules", "submodule.s1.ignore", value],
+        );
+        fixture.git(repo, &["add", ".gitmodules"]);
+        fixture.git(repo, &["commit", "-q", "-m", "ignore"]);
+    }
+    /// An `ignore` value of `s2` in `s1`, committed there and in the parent.
+    fn inner(fixture: &Fixture, repo: &Path, value: &str) {
+        let s1 = repo.join("s1");
+        fixture.git(
+            &s1,
+            &["config", "-f", ".gitmodules", "submodule.s2.ignore", value],
+        );
+        fixture.git(&s1, &["add", ".gitmodules"]);
+        fixture.git(&s1, &["commit", "-q", "-m", "ignore"]);
+        fixture.git(repo, &["add", "s1"]);
+        fixture.git(repo, &["commit", "-q", "-m", "moved s1"]);
+    }
+    let cases: [(&str, Setup); 11] = [
+        ("nothing set", |_, _| {}),
+        ("parent showUntrackedFiles=no", |fixture, repo| {
+            fixture.git(repo, &["config", "status.showUntrackedFiles", "no"]);
+        }),
+        ("s1 showUntrackedFiles=no", |fixture, repo| {
+            fixture.git(
+                &repo.join("s1"),
+                &["config", "status.showUntrackedFiles", "no"],
+            );
+        }),
+        ("s2 showUntrackedFiles=no", |fixture, repo| {
+            fixture.git(
+                &repo.join("s1/s2"),
+                &["config", "status.showUntrackedFiles", "no"],
+            );
+        }),
+        ("s1 ignore=untracked", |fixture, repo| {
+            outer(fixture, repo, "untracked");
+        }),
+        ("s2 ignore=untracked", |fixture, repo| {
+            inner(fixture, repo, "untracked");
+        }),
+        ("s1 ignore=untracked, s2 ignore=none", |fixture, repo| {
+            outer(fixture, repo, "untracked");
+            inner(fixture, repo, "none");
+        }),
+        ("parent no, s1 ignore=none", |fixture, repo| {
+            fixture.git(repo, &["config", "status.showUntrackedFiles", "no"]);
+            outer(fixture, repo, "none");
+        }),
+        ("parent no, s2 ignore=none", |fixture, repo| {
+            fixture.git(repo, &["config", "status.showUntrackedFiles", "no"]);
+            inner(fixture, repo, "none");
+        }),
+        ("parent no, diff.ignoreSubmodules=none", |fixture, repo| {
+            fixture.git(repo, &["config", "status.showUntrackedFiles", "no"]);
+            fixture.git(repo, &["config", "diff.ignoreSubmodules", "none"]);
+        }),
+        ("diff.ignoreSubmodules=untracked", |fixture, repo| {
+            fixture.git(repo, &["config", "diff.ignoreSubmodules", "untracked"]);
+        }),
+    ];
+    for (label, setup) in cases {
+        let fixture = Fixture::new();
+        let repo = fixture.parent_of_nested_submodule("parent");
+        setup(&fixture, &repo);
+        for (file, content) in [("s1/new.txt", "new\n"), ("s1/s2/new.txt", "new\n")] {
+            fs::write(repo.join(file), content).unwrap();
+            let git = fixture.git_status_changes(&repo);
+            assert_eq!(dirty_of(&repo), MaybeKnown::Known(git), "{label}: {file}");
+            fs::remove_file(repo.join(file)).unwrap();
+        }
+        fs::write(repo.join("s1/s2/f.txt"), "two\n").unwrap();
+        assert_eq!(fixture.git_status_changes(&repo), 1, "{label}: edit");
+        assert_eq!(dirty_of(&repo), MaybeKnown::Known(1), "{label}: edit");
+    }
+}
+
+#[test]
+fn a_gitlink_with_skip_worktree_is_left_out_as_for_git_status() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    fixture.commit(&repo.join("sub"), "g.txt", "g\n", "local commit");
+    fixture.git(&repo, &["update-index", "--skip-worktree", "sub"]);
+    assert_eq!(fixture.git_status_changes(&repo), 0);
+    assert_eq!(dirty_of(&repo), MaybeKnown::Known(0));
+}
+
+/// git reads the directory of `core.worktree`, and merges there.
+#[test]
+fn core_worktree_is_read_as_git_reads_it() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    let elsewhere = fixture.path("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join("f.txt"), "my edit\n").unwrap();
+    fixture.git(
+        &repo,
+        &["config", "core.worktree", elsewhere.to_str().unwrap()],
+    );
+    fixture.assert_same_as_git(&repo, 1);
+
+    fixture.git(&repo, &["config", "core.worktree", "../../elsewhere"]);
+    fixture.assert_same_as_git(&repo, 1);
+    fs::write(elsewhere.join("f.txt"), "one\n").unwrap();
+    fixture.assert_same_as_git(&repo, 0);
+}
+
+#[test]
+fn a_bare_repository_has_no_count() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    fixture.git(&repo, &["config", "core.bare", "true"]);
+    let state = Fixture::state(&repo);
+    assert_eq!(state.dirty, MaybeKnown::Unknown, "{state:?}");
+    assert!(state.error.is_some_and(|error| error.contains("dirty")));
+}
+
+/// `<name>` beside `repo`, a linked worktree of it on a new branch.
+fn linked_worktree(fixture: &Fixture, repo: &Path, name: &str) -> PathBuf {
+    let path = fixture.path(name);
+    fixture.git(
+        repo,
+        &["worktree", "add", "-q", path.to_str().unwrap(), "-b", name],
+    );
+    path
+}
+
+#[test]
+fn a_normal_linked_worktree_reads_as_for_git() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    let linked = linked_worktree(&fixture, &repo, "linked");
+    fixture.assert_same_as_git(&linked, 0);
+    fs::write(linked.join("f.txt"), "two\n").unwrap();
+    fixture.assert_same_as_git(&linked, 1);
+    fixture.assert_same_as_git(&repo, 0);
+}
+
+/// git merges in the directory of the common `core.worktree` here.
+#[test]
+fn core_worktree_of_the_common_configuration_stops_a_linked_worktree() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    let linked = linked_worktree(&fixture, &repo, "linked");
+    let other = fixture.path("real-tree");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("f.txt"), "my edit\n").unwrap();
+    fixture.git(&repo, &["config", "core.worktree", other.to_str().unwrap()]);
+
+    // Without the extension, git ignores the value, and so does the read.
+    fixture.assert_same_as_git(&linked, 0);
+
+    fixture.git(&repo, &["config", "extensions.worktreeConfig", "true"]);
+    assert_eq!(fixture.git_status_changes(&linked), 1);
+    assert_eq!(Fixture::state(&linked).dirty, MaybeKnown::Unknown);
+}
+
+#[test]
+fn a_directory_named_gitmodules_leaves_the_count_unknown() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    fixture.commit_gitmodules(&repo, None);
+    fs::create_dir(repo.join(".gitmodules")).unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+}
+
+/// `git worktree add` in a submodule shares its relative `core.worktree`, which git ignores there.
+#[test]
+fn a_linked_worktree_of_a_submodule_is_read() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    let linked = linked_worktree(&fixture, &repo.join("sub"), "linked");
+    fixture.assert_same_as_git(&linked, 0);
+    fs::write(linked.join("f.txt"), "two\n").unwrap();
+    fixture.assert_same_as_git(&linked, 1);
+}

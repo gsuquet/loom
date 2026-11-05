@@ -250,6 +250,12 @@ pub enum SkipReason {
         /// Commits of the upstream not in the branch.
         behind: u64,
     },
+    /// Right before a branch moves, git names another working tree than the one that the state
+    /// read used, or no working tree. No branch moves.
+    OtherWorkTree {
+        /// What git reported, in English.
+        detail: String,
+    },
     /// Another git process (an editor's automatic fetch, a command of the user) held a lock of
     /// the repository (`index.lock`, a ref lock) during this step. Retried at the next
     /// interval, without backoff. The lock is never removed.
@@ -282,6 +288,10 @@ impl fmt::Display for SkipReason {
                 f,
                 "{branch} diverged from its upstream ({ahead} ahead, {behind} behind)"
             ),
+            Self::OtherWorkTree { detail: text } => {
+                f.write_str("git would act on another working tree")?;
+                detail(f, Some(text.as_str()))
+            }
             Self::MergeRefused { stderr_tail } => {
                 f.write_str("git refused the fast-forward")?;
                 detail(f, stderr_tail.lines().find(|line| !line.trim().is_empty()))

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use loom_api::{ContextAssignment, Remote, RemoteUrl, RepoIdentity, RepoSummary};
+use loom_config::config::Config;
 use loom_forge::diff::{file_hashes, reduced_patch, since_last_review};
 use loom_forge::model::{MrKey, MrVersion, Sha};
 use loom_forge::{github, gitlab};
@@ -177,7 +178,7 @@ fn runner(home: &Path) -> GitRunner {
         // On a loaded machine, a stall past the grace gives an empty stderr tail, and the tests
         // read that tail. A test that needs a short grace sets its own.
         kill_grace: std::time::Duration::from_mins(1),
-        ..GitRunner::from_env()
+        ..GitRunner::from_config(&Config::default())
     }
 }
 

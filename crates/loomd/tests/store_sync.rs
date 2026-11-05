@@ -15,6 +15,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use loom_api::{BackupOutcome, BackupStep, ContextName};
+use loom_config::config::Config;
 use loom_store::port::TaskLocation;
 use loomd::repo_update::GitRunner;
 use loomd::store_git::{LocalStep, StoreCommits, sync};
@@ -67,7 +68,7 @@ impl Fixture {
     }
 
     fn runner(&self) -> GitRunner {
-        let mut runner = GitRunner::from_env();
+        let mut runner = GitRunner::from_config(&Config::default());
         runner.env = vec![
             (OsString::from("HOME"), Some(self.home().into())),
             (
