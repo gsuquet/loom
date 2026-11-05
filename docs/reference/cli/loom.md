@@ -3,9 +3,9 @@
 > Generated from the `clap` definitions by `mise run docs`. Do not edit by hand.
 > Conventions shared by every command: [conventions.md](conventions.md).
 
-Personal work engine: CLI and TUI.
+Personal work engine.
 
-With no command, opens the TUI when standard input and standard output are terminals, and prints the help otherwise.
+With no command, prints this help.
 
 ## Usage
 

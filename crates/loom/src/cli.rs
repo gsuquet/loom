@@ -21,10 +21,9 @@ pub static VERSION_INFO: LazyLock<VersionInfo> = LazyLock::new(|| {
 /// `--version` output: every build field, identical to `loomd --version`.
 static LONG_VERSION: LazyLock<String> = LazyLock::new(|| VERSION_INFO.to_string());
 
-/// Personal work engine: CLI and TUI.
+/// Personal work engine.
 ///
-/// With no command, opens the TUI when standard input and standard output are terminals, and
-/// prints the help otherwise.
+/// With no command, prints this help.
 #[derive(Debug, Parser)]
 #[command(
     name = "loom",
@@ -36,7 +35,7 @@ pub struct Cli {
     /// Options accepted by every command.
     #[command(flatten)]
     pub global: GlobalArgs,
-    /// Command to run. When absent, opens the TUI on a terminal or prints the help.
+    /// Command to run. When absent, prints the help.
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -944,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn no_command_parses_for_the_tui() {
+    fn no_command_parses() {
         let cli = Cli::try_parse_from(["loom"]).unwrap();
         assert!(cli.command.is_none());
         let cli = Cli::try_parse_from(["loom", "-c", "personal"]).unwrap();

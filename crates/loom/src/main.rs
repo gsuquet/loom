@@ -1,4 +1,4 @@
-//! `loom`: the CLI, later the TUI.
+//! `loom`: the CLI.
 
 mod on_use;
 mod pr_cmd;
@@ -12,7 +12,6 @@ mod service_cmd;
 mod start;
 mod sync_cmd;
 mod task_cmd;
-mod tui_cmd;
 mod upgrade;
 mod watchdog;
 
@@ -61,8 +60,6 @@ fn main() -> ExitCode {
         prompt_cmd::run(args, &cli.global);
         return ExitCode::SUCCESS;
     }
-    let interactive_tui =
-        cli.command.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
     let (config, config_problem) = telemetry_config();
     // The watchdog writes to `log/loomd.log`, which needs timestamps like loomd's own lines.
     let timestamps = matches!(cli.command, Some(Command::UpgradeWatchdog(_)));
@@ -70,7 +67,7 @@ fn main() -> ExitCode {
         &cli.global,
         &config,
         timestamps,
-        silent(cli.command.as_ref(), interactive_tui),
+        silent(cli.command.as_ref()),
     );
     if let Some(problem) = config_problem {
         warn!("traces are not exported: {problem}");
@@ -88,7 +85,7 @@ fn main() -> ExitCode {
         span.record("loom.context", context.as_str());
     }
     let result = span.in_scope(|| {
-        let registration = registers_on_use(cli.command.as_ref(), interactive_tui)
+        let registration = registers_on_use(cli.command.as_ref())
             .then(|| on_use::spawn(layout().ok(), None))
             .flatten();
         let result = run(&cli);
@@ -185,9 +182,9 @@ fn init_telemetry(
 
 /// Whether the command registers the repository of the current directory on use. Not the
 /// commands that register or remove repositories themselves, nor the internal watchdog.
-const fn registers_on_use(command: Option<&Command>, interactive_tui: bool) -> bool {
+const fn registers_on_use(command: Option<&Command>) -> bool {
     let Some(command) = command else {
-        return interactive_tui;
+        return false;
     };
     match command {
         Command::Repo { command } => match command {
@@ -229,20 +226,20 @@ const fn registers_on_use(command: Option<&Command>, interactive_tui: bool) -> b
 }
 
 /// Whether the command prints nothing on stderr, whatever happens:
-/// `loom repo register --on-use --background`, or the interactive TUI (which owns the screen).
-const fn silent(command: Option<&Command>, interactive_tui: bool) -> bool {
+/// `loom repo register --on-use --background`.
+const fn silent(command: Option<&Command>) -> bool {
     match command {
-        None => interactive_tui,
         Some(Command::Repo {
             command: RepoCommand::Register(args),
         }) => args.background,
-        Some(_) => false,
+        Some(_) | None => false,
     }
 }
 
 fn run(cli: &Cli) -> Result<Exit> {
     let Some(command) = &cli.command else {
-        return tui_cmd::run(&cli.global);
+        print(&format!("{}\n", Cli::command().render_help()))?;
+        return Ok(Exit::Success);
     };
     match command {
         // Before `layout()?`: never fails.

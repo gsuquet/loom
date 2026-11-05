@@ -32,7 +32,7 @@ use crate::{load_config, print};
 /// Path of the task list and of the creation endpoint.
 const TASKS_PATH: &str = "/v1/tasks";
 /// File where `loom go` writes the repository path for the shell wrapper (`loom shell-init`).
-pub const CD_FILE_ENV: &str = "LOOM_CD_FILE";
+const CD_FILE_ENV: &str = "LOOM_CD_FILE";
 /// Longest wait for a task request: right after it starts, loomd waits up to 10 s for the tasks
 /// it indexes before it answers a read or resolves an ID, and the default timeout is 5 s.
 const TASK_TIMEOUT: Duration = Duration::from_secs(15);
@@ -220,7 +220,7 @@ pub fn set(args: &SetArgs, layout: &Layout) -> Result<()> {
 }
 
 /// The file named by [`CD_FILE_ENV`], if set and non-empty.
-pub fn cd_file_from_env() -> Option<PathBuf> {
+fn cd_file_from_env() -> Option<PathBuf> {
     env::var_os(CD_FILE_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

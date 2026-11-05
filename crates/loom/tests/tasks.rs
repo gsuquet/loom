@@ -735,6 +735,21 @@ fn edit_opens_the_task_file_and_reports_an_invalid_one() {
         "{}",
         stderr(&failing)
     );
+
+    // An editor that does not exist ends with an error, not a panic, and changes nothing.
+    let missing = sandbox.run_env(
+        &sandbox.home(),
+        None,
+        &[("EDITOR", "/nonexistent/editor")],
+        &["edit", &id],
+    );
+    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
+    assert!(
+        !stderr(&missing).contains("panicked"),
+        "{}",
+        stderr(&missing)
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "not a task file\n");
 }
 
 #[test]

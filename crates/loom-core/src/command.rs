@@ -170,7 +170,7 @@ fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     T::deserialize(deserializer).map(Some)
 }
 
-/// A gesture available on a task, as offered by the CLI and the TUI.
+/// A gesture available on a task, as offered by the CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "action", content = "status", rename_all = "snake_case")]
 pub enum Action {
