@@ -33,6 +33,10 @@ One merge request, the same on both forges, with a force push between two versio
 - Threads: bob's question on `src/auth/jwt.rs` line 10 of V1, with alice's reply, unresolved and outdated in V2; bob's nitpick on `src/api/login.rs` line 6, resolved and still current; one general comment; on GitLab, one system note.
 - Drafts that carol publishes: a suggestion on `src/auth/jwt.rs` line 14 of V2, a comment on lines 9 to 11, a reply to bob's question that resolves it, then the verdict.
 
+`github/pull-files.moves.json` and `gitlab/merge-request-diffs.moves.json` hold the per-file patches of one more diff, on M1: `src/new.rs` added, `src/auth/mod.rs` deleted, `README.md` renamed to `docs/README.md` without a change, `src/api/login.rs` renamed to `src/api/signin.rs` with one changed line. `crates/loomd/tests/mr_refs.rs` makes the same commit and compares the hashes.
+
+`gitlab/merge-request-diffs.binary.json` has a body that is not a patch, next to one that is. The text of the first is composed, not captured: loom only reads whether the body starts with `@@`.
+
 ## GitHub (`github/`)
 
 Host `github.com`, API `https://api.github.com`, repository `acme/shop`, pull request #412 (node `PR_kwDOAAATic4AA9-c`).

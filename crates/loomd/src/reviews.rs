@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +30,7 @@ use loom_api::{
     Timestamp,
 };
 use loom_config::config::Config;
-use loom_config::forges::{ForgeCredential, ReviewRequests as ConfigRequests};
+use loom_config::forges::{ForgeCredential, ReviewRequests as ConfigRequests, TokenSource};
 use loom_config::machine::MachineName;
 use loom_forge::client::{
     ApiBase, Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient,
@@ -47,16 +48,18 @@ use loomd::forge::check::ForgeTarget;
 use loomd::forge::token::TokenResolver;
 use loomd::hooks;
 use loomd::recurring::{Runner, runner};
+use loomd::repo_update::GitRunner;
 use loomd::review_sync::{
     Belongs, MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, belongs, clone_of,
     finder_tells, github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
     url_host,
 };
-use loomd::shutdown::{JOIN_DEADLINE, join_within};
+use loomd::shutdown::{ChildGroups, JOIN_DEADLINE, join_within};
 use miette::{Context as _, IntoDiagnostic as _, Result};
 use tokio::sync::oneshot;
 use tracing::{Span, debug, info, info_span, warn};
 
+use crate::mr_worker::{self, MrWorker, MrWorkerHandle};
 use crate::tasks::{ReviewsApplied, TaskHandle};
 use crate::updater::random_unit;
 
@@ -69,6 +72,23 @@ fn host_peers(credentials: &[ForgeCredential<'_>], target: &ForgeTarget) -> usiz
         .iter()
         .filter(|other| other.host.as_str() == target.host && *other.context != target.context)
         .count()
+}
+
+/// The git of the MR refs. It does not inherit a `token_env` variable of the configuration: git
+/// uses the credentials of the user (ADR-0016, decision 6), and its hooks and credential helpers
+/// run with its environment.
+fn refs_runner(credentials: &[ForgeCredential<'_>], children: &Arc<ChildGroups>) -> GitRunner {
+    GitRunner {
+        children: Some(Arc::clone(children)),
+        env: credentials
+            .iter()
+            .filter_map(|credential| match credential.token {
+                TokenSource::Env(name) => Some((OsString::from(name), None)),
+                TokenSource::Command(_) => None,
+            })
+            .collect(),
+        ..GitRunner::from_env()
+    }
 }
 
 /// An MR to read: its key, its summary when the search found it, and its Review task.
@@ -119,6 +139,7 @@ pub struct ReviewPoller {
     requests: mpsc::Sender<Request>,
     stopping: Arc<AtomicBool>,
     thread: JoinHandle<()>,
+    refs: MrWorker,
 }
 
 /// What the API handlers use.
@@ -141,6 +162,8 @@ pub struct Setup {
     pub resolver: Arc<TokenResolver>,
     /// The task thread.
     pub tasks: TaskHandle,
+    /// Where the git commands of the MR refs register, so that the daemon can stop them.
+    pub children: Arc<ChildGroups>,
 }
 
 /// Whether this machine polls `target`: the first of `machines`, or any machine without them.
@@ -233,6 +256,14 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     if !hosts.is_empty() {
         info!(hosts = hosts.len(), "MR polls loaded");
     }
+    let user_agent = format!("loomd/{}", VERSION_INFO.version);
+    let (refs, refs_handle) = mr_worker::start(
+        refs_runner(&credentials, &setup.children),
+        setup.stores.clone(),
+        Arc::clone(&setup.resolver),
+        setup.tasks.clone(),
+        user_agent.clone(),
+    )?;
     let (requests, received) = mpsc::channel();
     let stopping = Arc::new(AtomicBool::new(false));
     let poller = Poller {
@@ -242,7 +273,8 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
         stores: setup.stores,
         resolver: setup.resolver,
         tasks: setup.tasks,
-        user_agent: format!("loomd/{}", VERSION_INFO.version),
+        user_agent,
+        refs: refs_handle,
     };
     let thread = thread::Builder::new()
         .name("reviews".to_owned())
@@ -254,6 +286,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             requests: requests.clone(),
             stopping,
             thread,
+            refs,
         },
         ReviewHandle { requests },
     ))
@@ -266,6 +299,7 @@ impl ReviewPoller {
         self.stopping.store(true, Ordering::Relaxed);
         let _ = self.requests.send(Request::Stop);
         join_within(self.thread, JOIN_DEADLINE, "reviews");
+        self.refs.stop();
     }
 }
 
@@ -330,6 +364,8 @@ struct Poller {
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
     user_agent: String,
+    /// The thread of the MR refs and diffs: a pass after each poll, outside of its outcome.
+    refs: MrWorkerHandle,
 }
 
 /// Why a poll of a host stopped.
@@ -550,6 +586,7 @@ impl Poller {
             }
             return None;
         };
+        self.refs.pass(&host.target);
         for failure in &applied.failed {
             if let Ok(key) = MrKey::parse(&failure.key) {
                 host.mrs.remove(&key.dir_name());

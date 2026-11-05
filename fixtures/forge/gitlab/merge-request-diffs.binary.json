@@ -1,0 +1,28 @@
+[
+  {
+    "old_path": "logo.png",
+    "new_path": "logo.png",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "diff": "Binary files a/logo.png and b/logo.png differ\n",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": false,
+    "too_large": false,
+    "collapsed": false
+  },
+  {
+    "old_path": "Cargo.lock",
+    "new_path": "Cargo.lock",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "diff": "@@ -1 +1 @@\n-# lock v1\n+# lock v2\n",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": false,
+    "too_large": false,
+    "collapsed": false
+  }
+]

@@ -12,6 +12,7 @@ pub mod events;
 pub mod exit;
 pub mod forge;
 pub mod hooks;
+pub mod mr_refs;
 pub mod recurring;
 pub mod repo_update;
 pub mod review_queue;

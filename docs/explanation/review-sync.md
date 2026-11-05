@@ -1,6 +1,6 @@
 # How loomd syncs the MRs to review
 
-> This page tells how `loomd` finds the merge requests (MRs) where you are a requested reviewer, how it keeps them in a queue until you start on one, and how it keeps one Review task for each MR that you started. It tells when an entry comes and goes, when a task opens and closes, which fields the sync changes, and what a poll writes. Endpoints: [reviews](../reference/api.md#reviews). Commands: [`loom review sync`](../reference/cli/loom.md#loom-review-sync), [`loom review queue`](../reference/cli/loom.md#loom-review-queue), [`loom review start`](../reference/cli/loom.md#loom-review-start). Files: [queue entry](../reference/task-file.md#queuemrs-queue-entry), [MR mirror](../reference/task-file.md#mrs-mr-mirror). Keys: [forges](../reference/configuration.md#forges). Decision: [ADR-0016](../adr/0016-mr-review-mirror.md).
+> This page tells how `loomd` finds the merge requests (MRs) where you are a requested reviewer, how it keeps them in a queue until you start on one, and how it keeps one Review task for each MR that you started. It tells when an entry comes and goes, when a task opens and closes, which fields the sync changes, and what a poll writes. Endpoints: [reviews](../reference/api.md#reviews). Commands: [`loom review sync`](../reference/cli/loom.md#loom-review-sync), [`loom review queue`](../reference/cli/loom.md#loom-review-queue), [`loom review start`](../reference/cli/loom.md#loom-review-start). Files: [queue entry](../reference/task-file.md#queuemrs-queue-entry), [MR mirror](../reference/task-file.md#mrs-mr-mirror). Keys: [forges](../reference/configuration.md#forges). Refs and diffs of an MR: [MR refs and diffs](mr-refs.md). Decision: [ADR-0016](../adr/0016-mr-review-mirror.md).
 
 ## The problem
 
@@ -136,6 +136,7 @@ A poll writes nothing when nothing changed:
 - The threads and your verdict are also read again one hour after their last read, because a resolved thread or a review does not always change the MR.
 - A `done` or `cancelled` task of a merged or closed MR is not read again. Only the archive moves it.
 - `loomd` writes a file only when its bytes change, with an atomic rename.
+- The refs and the patches come after the poll or the start, in a separate step, and only for an MR with a Review task. A failure of that step does not change the result of the poll. See [MR refs and diffs](mr-refs.md).
 - Each task that changed gets one commit of its store per poll. The message is the message of its events, otherwise `mr(<id>): <key> mirror updated`.
 - The entries that changed get one commit of the store per poll. The message is `queue: <n> added, <n> updated, <n> removed`.
 

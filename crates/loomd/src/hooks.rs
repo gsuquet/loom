@@ -20,6 +20,8 @@ pub const SHUTDOWN_GRACE_ENV: &str = "LOOM_TEST_SHUTDOWN_GRACE";
 pub const REVIEW_START_DELAY_ENV: &str = "LOOM_TEST_REVIEW_START_DELAY";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
+/// A file that gets one line for each poll whose pass of MR refs ended.
+pub const MR_PASS_FILE_ENV: &str = "LOOM_TEST_MR_PASS_FILE";
 /// Replaces the API of forge hosts.
 ///
 /// The value is the base URL of a fake forge for every host, or

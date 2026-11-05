@@ -158,6 +158,11 @@ enum Command {
         batch: Box<loomd::review_sync::MrBatch>,
         reply: mpsc::Sender<ReviewsApplied>,
     },
+    /// Write the clone and the diffs of an MR in its mirror (`loomd::mr_refs`).
+    RecordMrDiffs {
+        record: Box<loomd::mr_refs::DiffRecord>,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     /// Whether the file watcher runs, and the tasks that the last reconciliation could not read.
     Health {
         reply: oneshot::Sender<HealthState>,
@@ -475,6 +480,22 @@ impl TaskHandle {
         self.commands
             .send(Command::SyncReviews {
                 batch: Box::new(batch),
+                reply,
+            })
+            .ok()?;
+        answer.recv().ok()
+    }
+
+    /// Writes the clone and the diffs of an MR in its mirror on the task thread, and waits for
+    /// it: called by the worker of MR refs. `None` when the task thread is gone.
+    pub fn record_mr_diffs(
+        &self,
+        record: loomd::mr_refs::DiffRecord,
+    ) -> Option<Result<(), String>> {
+        let (reply, answer) = mpsc::channel();
+        self.commands
+            .send(Command::RecordMrDiffs {
+                record: Box::new(record),
                 reply,
             })
             .ok()?;
@@ -821,6 +842,9 @@ impl Worker {
                 }
                 Command::SyncReviews { batch, reply } => {
                     let _ = reply.send(self.sync_reviews(&batch));
+                }
+                Command::RecordMrDiffs { record, reply } => {
+                    let _ = reply.send(self.record_mr_diffs(&record));
                 }
                 Command::Health { reply } => {
                     let failed: Vec<TaskFailure> = self.failures.values().cloned().collect();
