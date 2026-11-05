@@ -54,7 +54,8 @@ An MR has an entry when it is open, it has no Review task in any context, and at
 | The MR is of another context now, that this machine polls with the same account | present | moved to the store of that context |
 | The MR is of another context now, in other cases | present | no change, and the poll reports it as failed |
 | The forge answers `404` for the MR, and the host answers | present | deleted, as for a closed MR |
-| A list or another read fails (a `403`, a `500`, no answer) | any | no change |
+| The list of MRs to review or a read of the MR fails, or any list gets no answer, a refused token or a rate limit | any | no change |
+| Another list fails (a `403`, a `500`) | any | the reasons from that list do not change, and each MR that was read follows its read |
 | An incomplete GitHub search does not show the MR | present | no change |
 
 An entry has one or more reasons. On GitHub, the only reason now is `review_requested`.
@@ -65,16 +66,18 @@ An entry has one or more reasons. On GitHub, the only reason now is `review_requ
 | `assigned` | You are in the assignees, and you are not the author. | You are not in the assignees. |
 | `mentioned` | You have a pending to-do for the MR, with the action `mentioned` or `directly_addressed`. | The to-do is done on the forge. `loomd` does not mark a to-do as done. |
 | `own_new_comments` | You are the author, and a note of another person is newer than your latest note and than `seen_at`. A system note does not count. | You open the entry, or you reply. |
-| `own_pipeline_failed` | You are the author, the status of `head_pipeline` is `failed`, and its SHA is the current head. | A new pipeline on the head is not failed, or the head changes. |
+| `own_pipeline_failed` | You are the author, the status of `head_pipeline` is `failed`, and the pipeline is of the current head. See [Pipeline results](#pipeline-results-and-updated_at). | A new pipeline on the head is not failed, or the head changes. |
 | `own_ready_to_merge` | You are the author, the MR is not a draft, `detailed_merge_status` is `mergeable`, and it has at least one approval. | The MR is not mergeable, is a draft, or has no approval. |
 
-While GitLab computes the status (`checking`, `unchecked`), `own_ready_to_merge` does not change.
+While GitLab computes the status (`checking`, `unchecked`, `preparing`, `approvals_syncing`), `own_ready_to_merge` does not change.
 
 ### Pipeline results and `updated_at`
 
 The GitLab documentation does not tell if a pipeline result changes the `updated_at` of an MR. The sync does not need this answer. `loomd` lists your open MRs in full at each poll, and reads each of them with its `ETag`. The status of `head_pipeline` is in the body of that read, so a new result gives a new body. Each MR without a task is also read in full each hour, without its `ETag`.
 
-An approval can also leave that body as it was. Thus, for an open MR of yours that is mergeable, is not a draft and has no approval, `loomd` reads the approvals at each poll, until the MR has one.
+An approval can also leave that body as it was. Thus, for an open MR of yours that is mergeable and is not a draft, `loomd` reads the approvals at each poll. It sees an approval that comes, and an approval that is revoked.
+
+A pipeline is of the current head when its SHA is the head. A merged results or merge train pipeline (its `ref` is `refs/merge-requests/<iid>/merge` or `/train`) runs on a temporary merge commit, so its SHA is never the head, and the API does not tell its head. If such a pipeline failed, `loomd` reports `own_pipeline_failed`. After a push, the reason can stay until GitLab has a new pipeline for the new head. Thus, an old failure can show for a short time, but a failure is never hidden.
 
 ### When you open an entry
 
@@ -82,7 +85,7 @@ An approval can also leave that body as it was. Thus, for an open MR of yours th
 
 `seen_at` is in the file of the store, not in `index.db`. Thus, it stays after a rebuild of `index.db` and after a restart, and a store sync brings it to another machine. If you delete `index.db`, a note that you saw does not come back.
 
-If no other reason holds, the file of your open MR stays with an empty list of reasons, so that it keeps `seen_at`. This file is not in the queue. When a new note or another reason comes, the entry comes back with its `seen_at`. The file goes when the MR is merged or closed, or when the forge answers `404`. After a `404` from a lost access, a note that you saw counts as new when the access comes back.
+If no other reason holds, the file of your open MR stays with an empty list of reasons, so that it keeps `seen_at`. This file is not in the queue, and a start does not count it. A machine that does not poll the context and host of the entry refuses the request, as for a start. When a new note or another reason comes, the entry comes back with its `seen_at`. The file goes when the MR is merged or closed, or when the forge answers `404`. After a `404` from a lost access, a note that you saw counts as new when the access comes back.
 
 A request is newer than your verdict in these cases. On GitHub, you are in the requested reviewers: GitHub removes you when you submit a review. On GitLab, your reviewer state is `unreviewed` on an MR that you approved. `loomd` reads the state only for an approved MR without a task. The GitLab documentation does not tell what a new request does to the state: this behavior is not verified on a real GitLab.
 
@@ -90,7 +93,7 @@ GitLab does not tell on which head you approved. For an MR without a task, `loom
 
 Your own MR never has the reason `review_requested`, even when GitLab lets you request your own review. It has no reason `assigned` when you are its assignee: only the `own_` reasons count for it, and `mentioned`.
 
-After an archived Review task, the mirror of that task tells what the last poll saw. A new entry needs a new head or a new request against that mirror. The mirror does not tell if you were assigned or mentioned, so an MR with only these reasons comes back only on a new head. Your own MR comes back when a reason holds. The archived task does not change. The start then creates a new task.
+After an archived Review task, the mirror of that task tells what the last poll saw. A new entry needs a new head or a new request against that mirror. The mirror does not tell if you were assigned or mentioned, so an MR with only these reasons comes back only on a new head. Your own MR comes back at its next full read when a reason holds: when the MR changes, and at most one hour later. The archived task does not change. The start then creates a new task.
 
 ## When you start on an MR
 
@@ -104,7 +107,7 @@ The poller thread does the start. A start waits for a poll that runs, and a poll
 | The forge does not answer, refuses the token or limits the rate | `502 forge`. The entry stays, no task is created. Do the start again. |
 | The MR is merged or closed since the last poll | `409 conflict`. No task, and the entry is deleted. |
 | The read shows that your direct request is gone, you are not in the assignees, and the entry has no `mentioned` reason | `409 conflict`. No task, and the entry is deleted. |
-| The MR is your own MR | `409 conflict`. No task. The entry stays while a reason holds. |
+| The MR is your own MR | `409 conflict`. No task. The entry stays while a reason holds. A file with no reason is not an entry: the answer is `404 not_found`. |
 | The entry has the reason `assigned` or `mentioned`, and you are not a reviewer | The task is created. Its `sync.json` records that you are not requested, so the next poll does not cancel it. |
 | The forge answers `404` for the MR | `404 not_found`. No task, and the entry is deleted. |
 | The forge answers `404` for another read of the MR | `502 forge`. The entry stays, no task is created. |
@@ -113,6 +116,8 @@ The poller thread does the start. A start waits for a poll that runs, and a poll
 | This machine does not poll the context and host of the entry (another machine polls it, or the credential was removed) | `400 invalid_request`. Start on the first machine of the context, or add the credential. A task created on another machine is not known to the poll until a store sync, and a second task could come from it. |
 
 A Review task follows the MR, your verdict and your requests. If you are unassigned, or if the to-do is done, the task does not change. If a request comes and goes after the start, without a verdict, the task is cancelled as for each request.
+
+If the MR has no request for you (it is only assigned or mentions you), `loomd` keeps no head for your approval. If you approved it and the author pushed before the start, your verdict counts for the new head.
 
 If you approved the MR before the start (GitLab), the task keeps the head of the poll that first showed your approval, not the current head. Thus, the `reviewed` ref points at that head, and a request removed later leaves the task open: the current head is still to review. If the clone does not have the commit of that head, for example after a rebase with no earlier fetch, the `reviewed` ref is absent. See [MR refs and diffs](mr-refs.md).
 

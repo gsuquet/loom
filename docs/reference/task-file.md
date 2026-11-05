@@ -221,7 +221,7 @@ A line reported as `newer_version` stops the recording of hand edits of the task
 
 ## `queue/mrs/`: queue entry
 
-An MR that waits on me and has no Review task has one file: `<store>/queue/mrs/<provider>-<key>.json`. `loomd` writes these files: do not change them. `<provider>-<key>` is the name of the [MR mirror](#mrs-mr-mirror) directory. `loomd` deletes the file when the MR leaves the queue. The exception is an open MR of mine with a `seen_at` and no reason left: its file stays with `reasons: []`, so that a note that I saw does not count as new again. Such a file is not in the queue. It goes when the MR is merged or closed, or when the forge answers `404`.
+An MR that waits on me and has no Review task has one file: `<store>/queue/mrs/<provider>-<key>.json`. `loomd` writes these files: do not change them. `<provider>-<key>` is the name of the [MR mirror](#mrs-mr-mirror) directory. `loomd` deletes the file when the MR leaves the queue. The exception is an open MR of mine with a `seen_at` and no reason left: its file stays with `reasons: []`, so that a note that I saw does not count as new again. Such a file is not in the queue, and a start does not count it. It goes when the MR is merged or closed, or when the forge answers `404`.
 
 | Key | Content |
 | --- | --- |
