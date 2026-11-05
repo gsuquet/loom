@@ -411,16 +411,24 @@ wait_until "a check of loomd $B to find it up to date" 30 result_is up_to_date
 step "publish $C: loomd $B pre-flights it, swaps, the watchdog rolls it back"
 downloads_before="$(asset_downloads)"
 publish "$C"
-wait_until "the watchdog to roll $C back" "$phase_timeout" result_is rolled_back
+# Not on `last_result = rolled_back`: the first check of the restored loomd, at most a second
+# after it starts here, overwrites it. This line is the watchdog's last: binaries restored, state
+# recorded, save pruned, loomd answering.
+rollback_done() {
+    daemon_logs >"$work/daemon.log"
+    grep -q "rolled back: the previous loomd answers version=$B" "$work/daemon.log"
+}
+wait_until "the watchdog to roll $C back" "$phase_timeout" rollback_done
 wait_until "loomd $B (PID $pid_b) to have exited" 15 process_gone "$pid_b"
-expect "rolled back from" "$(jget "$state_file" last_result.from)" "$B"
-expect "rolled back to" "$(jget "$state_file" last_result.to)" "$C"
 expect "failed_versions" "$(jget "$state_file" failed_versions)" "$C"
 expect "pending" "$(jget "$state_file" pending)" null
 # Pre-flight passed, then loomd C started in the real home and exited: the watchdog path.
 daemon_logs >"$work/daemon.log"
 grep -q "pre-flight check passed" "$work/daemon.log" || fail "no 'pre-flight check passed' in the daemon logs"
 ok "loomd $B logged: pre-flight check passed"
+grep -q "failed its health check, rolling back to $B: .*version=$C" "$work/daemon.log" ||
+    fail "the watchdog never logged the rollback of $C to $B"
+ok "the watchdog logged the rollback of $C to $B"
 grep -q "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX: the loom home" "$work/daemon.log" ||
     fail "loomd $C never failed in the real loom home"
 ok "loomd $C started in the real loom home and failed"
@@ -437,8 +445,10 @@ expect "status failed_versions" "$(jget "$status_file" update.failed_versions)" 
 loom status --no-start >"$work/status.txt"
 grep -q "^loomd $B running$" "$work/status.txt" || fail "loom status does not report loomd $B running"
 grep -q "^failed: *$C$" "$work/status.txt" || fail "loom status does not report $C as failed"
-grep -q "^last_result: rolled back $C -> $B at " "$work/status.txt" || fail "loom status does not report the rollback"
-ok "loom status reports $B running, $C failed and rolled back"
+# Either outcome: a check may already have replaced the rollback report.
+grep -Eq "^last_result: (rolled back $C -> $B|$C skipped) at " "$work/status.txt" ||
+    fail "loom status reports neither the rollback nor the skip of $C"
+ok "loom status reports $B running and $C failed"
 
 step "the next checks skip $C without downloading it"
 downloads_after="$(asset_downloads)"

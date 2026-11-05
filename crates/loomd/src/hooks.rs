@@ -22,6 +22,8 @@ pub const REVIEW_START_DELAY_ENV: &str = "LOOM_TEST_REVIEW_START_DELAY";
 pub const FULL_LIST_PERIOD_ENV: &str = "LOOM_TEST_FULL_LIST_PERIOD";
 /// Replaces the 30 days after which a 404 drops the approval row of an MR.
 pub const APPROVAL_EXPIRY_ENV: &str = "LOOM_TEST_APPROVAL_EXPIRY";
+/// Replaces the 10 s between the start of loomd and the first read of the forge metadata.
+pub const FORGE_METADATA_START_DELAY_ENV: &str = "LOOM_TEST_FORGE_METADATA_START_DELAY";
 /// loomd fails at start unless its loom home starts with this prefix.
 pub const FAIL_UNLESS_HOME_PREFIX_ENV: &str = "LOOM_TEST_FAIL_UNLESS_HOME_PREFIX";
 /// A file that gets one line for each poll or start whose pass of MR refs ended: `poll` or `start`.

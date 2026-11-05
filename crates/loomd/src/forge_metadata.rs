@@ -5,6 +5,7 @@
 //! store thread.
 
 use std::collections::BTreeSet;
+use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -16,6 +17,7 @@ use loomd::api::timestamp;
 use loomd::forge::check::ForgeTarget;
 use loomd::forge::metadata::{HttpProjects, plan, prune_read, read_target, reschedule, select};
 use loomd::forge::token::TokenResolver;
+use loomd::hooks;
 use loomd::schedule::jittered;
 use tracing::{debug, info, warn};
 
@@ -58,18 +60,30 @@ pub fn start(
 ) -> std::io::Result<Poller> {
     let (stop, stopped) = mpsc::channel();
     let store = store.clone();
+    let start_delay = hooks::duration_hook(
+        hooks::FORGE_METADATA_START_DELAY_ENV,
+        env::var(hooks::FORGE_METADATA_START_DELAY_ENV)
+            .ok()
+            .as_deref(),
+    )
+    .unwrap_or_else(|message| {
+        warn!("{message}");
+        None
+    })
+    .unwrap_or(TICK);
     info!(
         credentials = settings.targets.len(),
         "forge metadata poll started"
     );
     thread::Builder::new()
         .name("forge-metadata".to_owned())
-        .spawn(move || run(&settings, &store, &db, &stopped))?;
+        .spawn(move || run(&settings, start_delay, &store, &db, &stopped))?;
     Ok(Poller { stop })
 }
 
 fn run(
     settings: &Settings,
+    start_delay: Duration,
     store: &mpsc::Sender<Command>,
     db: &std::path::Path,
     stopped: &mpsc::Receiver<()>,
@@ -85,11 +99,13 @@ fn run(
     // queue of the store thread (a scan can hold it for a while).
     let mut read: BTreeSet<(usize, String)> = BTreeSet::new();
     let mut reader: Option<Reader> = None;
+    let mut wait = start_delay;
     loop {
-        match stopped.recv_timeout(TICK) {
+        match stopped.recv_timeout(wait) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
+        wait = TICK;
         if reader.is_none() {
             reader = Reader::open(db)
                 .inspect_err(|error| warn!(%error, "forge metadata: cannot open the index"))
