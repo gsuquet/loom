@@ -532,7 +532,7 @@ fn last_line(text: &str) -> Option<&str> {
 /// One check per remote endpoint loomd checked: `ok` when it answered, `fail` with the last
 /// line of git's error and the fix of its kind of failure otherwise.
 #[must_use]
-pub fn remote_checks(result: &RemoteCheckResult) -> Vec<DoctorCheck> {
+pub fn remote_checks(result: &RemoteCheckResult, token_env: &BTreeSet<&str>) -> Vec<DoctorCheck> {
     if result.remotes.is_empty() {
         return vec![check(
             "remote",
@@ -540,10 +540,14 @@ pub fn remote_checks(result: &RemoteCheckResult) -> Vec<DoctorCheck> {
             "no indexed repository has a remote",
         )];
     }
-    result.remotes.iter().map(remote_check).collect()
+    result
+        .remotes
+        .iter()
+        .map(|remote| remote_check(remote, token_env))
+        .collect()
 }
 
-fn remote_check(remote: &RemoteCheck) -> DoctorCheck {
+fn remote_check(remote: &RemoteCheck, token_env: &BTreeSet<&str>) -> DoctorCheck {
     let name = format!(
         "remote {} ({}, via {})",
         remote.endpoint, remote.scheme, remote.via
@@ -563,14 +567,30 @@ fn remote_check(remote: &RemoteCheck) -> DoctorCheck {
             };
             with_fix(
                 check(name, CheckStatus::Fail, detail),
-                remote_fix(*problem, remote),
+                remote_fix(*problem, remote, token_env),
             )
         }
     }
 }
 
+/// What an HTTPS failure adds when the configuration has `token_env` names: loomd's git does
+/// not get these variables, so a helper that reads one of them has no credential.
+fn token_env_note(token_env: &BTreeSet<&str>) -> String {
+    if token_env.is_empty() {
+        return String::new();
+    }
+    let names = token_env
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        ". loomd's git does not get the token_env variables ({names}): a credential helper that reads one of them finds nothing. Give the token another variable name, or use token_cmd, or store a login for the helper"
+    )
+}
+
 /// How to fix a remote loomd's git cannot reach.
-fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck) -> String {
+fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck, token_env: &BTreeSet<&str>) -> String {
     let RemoteCheck {
         endpoint,
         via,
@@ -585,7 +605,8 @@ fn remote_fix(problem: RemoteProblem, remote: &RemoteCheck) -> String {
             "SSH refused loomd's git: load the key in the agent loomd sees (`ssh-add`; see the ssh-agent check), or give git the key with `core.sshCommand` (per remote: `includeIf \"hasconfig:remote.*.url:…\"`); a new or changed host key: run `{try_it}` once in a terminal"
         ),
         RemoteProblem::HttpsAuth => format!(
-            "git has no credential for {endpoint} and cannot prompt: store one with a credential helper (run `{try_it}` once in a terminal with a helper configured), or switch the remote to SSH (`git -C {path} remote set-url {remote} <ssh url>`)"
+            "git has no credential for {endpoint} and cannot prompt: store one with a credential helper (run `{try_it}` once in a terminal with a helper configured), or switch the remote to SSH (`git -C {path} remote set-url {remote} <ssh url>`){}",
+            token_env_note(token_env)
         ),
         RemoteProblem::NotFound => format!(
             "the project was moved or deleted upstream, or access to it was lost: update the remote (`git -C {path} remote set-url {remote} <new url>`), or forget the clone (`loom repo forget {via}`)"
@@ -1297,6 +1318,7 @@ mod backup_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
     use loom_api::{
@@ -1702,9 +1724,66 @@ mod tests {
         }
     }
 
+    fn without_token_env(result: &RemoteCheckResult) -> Vec<DoctorCheck> {
+        remote_checks(result, &BTreeSet::new())
+    }
+
+    #[test]
+    fn an_https_failure_names_the_token_env_variables() {
+        let result = RemoteCheckResult {
+            remotes: vec![RemoteCheck {
+                endpoint: "https://gitlab.example.com".to_owned(),
+                scheme: RemoteScheme::Https,
+                via: "work/api".to_owned(),
+                path: "/home/me/work/api".into(),
+                remote: "origin".to_owned(),
+                result: RemoteCheckOutcome::Failed {
+                    problem: RemoteProblem::HttpsAuth,
+                    error: "exit status: 128".to_owned(),
+                    stderr_tail: "fatal: Authentication failed for 'https://gitlab.example.com/'\n"
+                        .to_owned(),
+                },
+            }],
+        };
+        let fix = |names: &[&'static str]| {
+            let names = names.iter().copied().collect();
+            remote_checks(&result, &names)[0].fix.clone().unwrap()
+        };
+
+        assert!(!fix(&[]).contains("token_env"));
+        let with_names = fix(&["GITLAB_TOKEN", "GH_TOKEN"]);
+        assert!(
+            with_names.contains("(`GH_TOKEN`, `GITLAB_TOKEN`)"),
+            "{with_names}"
+        );
+        assert!(with_names.contains("use token_cmd"), "{with_names}");
+    }
+
+    #[test]
+    fn a_failure_other_than_https_does_not_name_the_token_env_variables() {
+        let result = RemoteCheckResult {
+            remotes: vec![RemoteCheck {
+                endpoint: "git@gitlab.example.com".to_owned(),
+                scheme: RemoteScheme::Ssh,
+                via: "work/api".to_owned(),
+                path: "/home/me/work/api".into(),
+                remote: "origin".to_owned(),
+                result: RemoteCheckOutcome::Failed {
+                    problem: RemoteProblem::SshAuth,
+                    error: "exit status: 128".to_owned(),
+                    stderr_tail: "git@gitlab.example.com: Permission denied (publickey).\n"
+                        .to_owned(),
+                },
+            }],
+        };
+        let names = BTreeSet::from(["GITLAB_TOKEN"]);
+        let fix = remote_checks(&result, &names)[0].fix.clone().unwrap();
+        assert!(!fix.contains("token_env"), "{fix}");
+    }
+
     #[test]
     fn one_line_per_remote_with_the_fix_of_its_failure() {
-        let checks = remote_checks(&RemoteCheckResult {
+        let checks = without_token_env(&RemoteCheckResult {
             remotes: vec![
                 remote(
                     "git@github.com",
@@ -1777,7 +1856,7 @@ mod tests {
             report.contains("git -C /home/me/perso/loom ls-remote origin HEAD"),
             "{report}"
         );
-        let none = remote_checks(&RemoteCheckResult { remotes: vec![] });
+        let none = without_token_env(&RemoteCheckResult { remotes: vec![] });
         assert_eq!(none[0].status, CheckStatus::Ok);
     }
 

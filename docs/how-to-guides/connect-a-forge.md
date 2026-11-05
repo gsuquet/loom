@@ -4,7 +4,7 @@
 
 Before you start, make sure that `loom` and `loomd` are installed and that your contexts are defined ([configure contexts](configure-contexts.md)).
 
-`loomd` never stores the token. It gets the token from a command (`token_cmd`) or from a variable of its environment (`token_env`), and keeps it in memory only. git, its hooks and its helpers do not get a `token_env` variable. The keys are in the [configuration reference](../reference/configuration.md#forges).
+`loomd` never stores the token. It gets the token from a command (`token_cmd`) or from a variable of its environment (`token_env`), and keeps it in memory only. git, its hooks and its helpers do not get a `token_env` variable. A credential helper that reads a `token_env` variable does not get it, and git then has no credential. For example, `gh auth git-credential` reads `GH_TOKEN`, and `glab` reads `GITLAB_TOKEN`. To prevent this, use a dedicated variable name such as `LOOM_GITLAB_TOKEN`, use `token_cmd`, or store a login for the helper. The keys are in the [configuration reference](../reference/configuration.md#forges).
 
 ## Get a token
 
