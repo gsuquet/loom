@@ -51,7 +51,7 @@ pub trait TrackerPort: Connector {
 
 | Type | Holds |
 | --- | --- |
-| `Listing` | `items`, `complete`, `truncated`. `complete` is false when a page cap or an incomplete read stopped it, and an incomplete list never means an item left. `truncated` is `pool_limit` only |
+| `Listing` | `items`, `complete`, `truncated`, `wait`: the rate limit wait when a 429 held required reads inside `list`. `complete` is false when a page cap or an incomplete read stopped it, and an incomplete list never means an item left. `truncated` is `pool_limit` only |
 | `Item` | `ItemRef` (key, `remote_id`), title, web URL, proposed `Kind`, proposed importance, due, `RemoteState`, remote `updated`, the normalized snapshot, and `detail_read`: whether the read this item needs for a task happened |
 | `RemoteState` | `Open`, `Terminal`, `Firing { groups }`, `NotMine { assignee }` |
 | `ItemRead` | `Found(Item)` or `Gone` (404) |
@@ -90,7 +90,7 @@ Not extracted: `Conditional<T>`, since no vendor here documents a conditional re
 | Piece | Shape | Task |
 | --- | --- | --- |
 | `Known`, `Identity`, `tracker()` | Above | C3 |
-| `Capabilities`, `ConnectorKind` | `gitlab`, `github`, `datadog`, `jira`, `freshservice` | C1 |
+| `Capabilities`, `ConnectorKind`, `Secret` | In `loom-api`, with `ConnectorHealth`. `ConnectorKind`: `gitlab`, `github`, `datadog`, `jira`, `freshservice` | C1 |
 | `TrackedItem` | `{ key, status, listed, noted }`, what a poll knows of an item with a task. C4 owns the struct. C6 and D2 supply the reader, from `sync.json` or the snapshot | C4, C6, D2 |
 | Poll thread | Reads what it needs through `Reader` and files, as `Poller::keys` does: a `TrackedItem` for each item with a task. Calls `check` when it has no `Identity`, fills `Known`, decides what left a list | C4 |
 | `ConnectorBatch` | `context`, `connector`, `kind`, `started`, `identity`, `list: Option<Listing>`, `pool: Option<Listing>`, `reads: Vec<(ItemRef, ItemRead)>`, `mirrors: Vec<(ItemRef, MirrorRead)>`. `None`: not asked or failed, which changes nothing | C4 owns the type, C5 applies it |
@@ -156,11 +156,11 @@ extra_query = "tag:'payments'"            # added to the built query with AND
 - **Single writer**: threads only read the store, through `Reader` and files. All writes go through `TaskHandle::sync_connector(batch)`, a command of the task thread, like `sync_reviews`. A file is written by atomic rename only when its bytes change, and a poll with no change commits nothing. One commit per poll per context.
 - **Intervals**: `PollInterval` as for forges, minimum 1 min. Defaults: Datadog 1 min, Jira and Freshservice 5 min, pools 15 min. Jitter ±10 %, first poll 30 s after the start. `POST /v1/connectors/sync` wakes the threads and answers what each did.
 - **Backoff**: `next_poll` as it is: interval × 2^failures, at most × 8. A rate limit waits for `max(wait, interval)` and is not a failure.
-- **Rate limits**: 429 stops this instance only. Datadog: `X-RateLimit-Reset`, seconds. Jira: `Retry-After`. Freshservice: `Retry-After`. No wait given: 60 s. Before that, an adapter answers `Deferred` to optional reads (`read`, `pull`, the hourly monitor read) when Datadog or Freshservice `X-RateLimit-Remaining` is under 20 % of the limit, or Jira sends `X-RateLimit-NearLimit`. The Freshservice limit is shared by the whole account, including colleagues, so loom must not use it up. What was deferred waits for the next poll and counts as `Partial`. At most 50 such reads per poll, a new ticket's `pull` first.
-- **A new firing monitor's read is required**, not optional: neither the guard nor the 50 reads skip it, since no task or notification exists without it. Only a 429 holds it, which is `RateLimited { until }`, the wait above. If a firing monitor stays unread for 10 min, whatever the cause, the poll thread [notifies](#urgent) once per instance that alerts may be missing. It keeps that time in memory.
+- **Rate limits**: 429 stops this instance only. Datadog: `X-RateLimit-Reset`, seconds. Jira: `Retry-After`. Freshservice: `Retry-After`. No wait given: 60 s. Before that, an adapter answers `Deferred` to optional reads (`read`, `pull`, the hourly monitor read) when Datadog or Freshservice `X-RateLimit-Remaining` is under 20 % of the limit, or Jira sends `X-RateLimit-NearLimit`. The Freshservice limit is shared by the whole account, including colleagues, so loom must not use it up. What was deferred waits for the next poll and counts as `Partial`. At most 50 such reads per poll: the loop orders the calls, a new ticket's `pull` first, and the adapter, built for one poll, counts them and answers `Deferred`.
+- **A new firing monitor's read is required**, not optional: neither the guard nor the 50 reads skip it, since no task or notification exists without it. The Datadog adapter does it inside `list`, monitors with a group in `alert` before `warn`-only ones. A 429 there does not fail the list: `list` returns its items, the unread ones with `detail_read: false`, and the wait in `Listing`. The loop hands over the batch, health is `RateLimited { until }`, `Known` keeps what was read, and the next poll reads only the rest. If a firing monitor stays unread for 10 min, whatever the cause, the poll thread [notifies](#urgent) once per instance that alerts may be missing. It keeps that time in memory, and the notice re-arms when nothing is left unread.
 - **Conditional reads**: none. No vendor page here documents one. The full filtered list on each poll is what shows an item leaving, so there is no cursor to keep, and comparing the remote `updated` decides what to read in full. Datadog's list has no `updated`; its groups are compared instead.
 - **Failure**: one instance's failure touches only that instance. A failed or incomplete list changes no task and no entry. A failed `pool` leaves `list` applied, and the status says partial. A token refused: `invalidate`, and the next poll resolves it again.
-- **Datadog 403**: it can be either key, or a permission, and two more calls tell. `GET /api/v1/validate` checks the API key: a 403 is `Credential { which: Token }`. Then `GET /api/v2/validate_keys` checks both: a 401 or 403 is `Credential { which: AppKey }`. If both pass, the 403 was a missing permission: `Forbidden`. `TokenResolver::invalidate` then gets only that secret's `TokenSource`. Two `op` commands per poll would ask me to unlock each time.
+- **Datadog 403**: it can be either key, or a permission, and two more calls tell. `GET /api/v1/validate` checks the API key: a 403 is `Credential { which: Token }`. Then `GET /api/v2/validate_keys` checks both: a 401 or 403 is `Credential { which: AppKey }`. If both pass, the 403 was a missing permission: `Forbidden`. A 429 or 5xx from either call is that error, and invalidates nothing. `TokenResolver::invalidate` then gets only that secret's `TokenSource`, and the adapter keeps the answer for that poll. Two `op` commands per poll would ask me to unlock each time.
 - **Jira anonymous access**: the search and issue reads "can be accessed anonymously", so a dead token might give an empty success. The Jira adapter's `list` calls `GET /myself` first, which answers 401, and stops there on a failure. An empty list then means an empty list. This is not `check`, which the loop calls once.
 - **Shutdown**: one shared stop flag, checked before each vendor call, and one shared `JOIN_DEADLINE` for all threads together. They stop with the review poller, before `task_store`, since they wait on it. A call still running is left behind: its batch has no task thread to go to.
 - **Last successful sync**: the start time of the last poll whose `list` was complete. It is kept in `state/connectors.json`, machine-local, so it survives a restart and makes no store commit.
@@ -210,14 +210,14 @@ The app comes later, so the read-only phase has to reach me without it.
 
 - **`loom ls`** lists an urgent task in `inbox` or `ready`, ahead of every other rule (`is_listed` and `compare` in `loom-core`).
 - **`NotifyPort`** in loomd: `fn notify(&self, notification: &Notification) -> Result<(), NotifyError>`, with context and title. The first adapter uses the OS, with text only as arguments: `osascript -e '<fixed script reading argv>' -- <context> <title>` on macOS, and `notify-send -- <summary> <body>` on Linux, with `& < >` escaped since the body can carry markup. Without `--`, a title that starts with `-` is read as an option and the notification is lost. Text is capped at 200 characters, and the process at 5 s, so a stuck one cannot hold a poll thread. The poll thread calls it. The app takes over later behind the same port. A failure is logged and never stops a sync.
-- **It fires on**: a new urgent task, `urgent` being raised, an open urgent task that fires again after `flap_window` of quiet, a firing monitor unread for 10 min, and an expired token ([status](#connector-status)). Once each. A flap inside the window does not notify.
+- **It fires on**: a new urgent task, `urgent` being raised, an open task at an urgent priority with a new episode (see the table below), a firing monitor unread for 10 min, and a refused credential or permission ([status](#connector-status)). Once each. A flap inside the window does not notify.
 
 ### What the sync may change
 
 - **At creation only**: title, kind, `origin`, importance, due, `urgent`.
 - **Afterwards**: the status on the edges below, each preceded by a daemon note giving the reason; `urgent` raised when a group of an urgent monitor becomes `alert`, once per task; `origin.key` and `url` when a Jira issue moved.
 - **Always mine**: importance, due, pinned, notes, title, relations, `urgent` once set. An archived task is never changed, not even by a rename.
-- **Mirrors and snapshots** follow the remote freely. A remote title change updates the mirror, not the task.
+- **Mirrors and snapshots** follow the remote freely, except as below. A remote title change updates the mirror, not the task.
 
 ### Tickets: closing and reopening
 
@@ -240,7 +240,7 @@ A new task needs its `pull`: without it, the item creates nothing, counts as `Pa
 | `done` or `cancelled` | In the list and open, `listed` false at the last poll | Back to `ready`, with a note, as reviews do and as `is_legal_transition` requires |
 | `done` or `cancelled` | In the list and open, `listed` true at the last poll | Closing or dismissing sticks. When the remote `updated` moved, the mirror and `updated` in `sync.json` follow it, one commit per real change, so only a change after archiving counts above |
 
-`sync.json` and the snapshot hold `noted`, a closed set (`not_mine`, `gone`, `recovered`, and on an alert `urgent_raised`), so "a note, once" holds across restarts. It clears when the item is in a list again, or fires again, except `urgent_raised`: it stays with the task, so a flap never undoes my clearing `urgent`.
+`sync.json` and the snapshot hold `noted`, a closed set (`not_mine`, `gone`, `recovered`, and on an alert `urgent_raised`), so "a note, once" holds across restarts. It clears when the item is in a list again, or fires again, except `urgent_raised`, set too when a task is created urgent: it stays with the task, so a flap never undoes my clearing `urgent`.
 
 Terminal: Jira `status.statusCategory.key` is `done`. Freshservice `status` is 4 (Resolved) or 5 (Closed), or the ticket is `deleted` or `spam`.
 
@@ -250,7 +250,7 @@ One task per monitor episode, not per group. The snapshot is `tasks/<id>/remote/
 
 - **List**: `GET /api/v1/monitor/groups/search` with `query` and `group_status`, every page, grouped by `monitor_id`. It returns no priority, so `GET /api/v1/monitor/{id}` gives it once per new monitor, and again each hour. `priorities` is applied locally.
 - **Quiet**: a monitor with no group in the list is read with `group_states=all`. It is quiet only when every group in that read is `OK`. Anything else, such as an alert that became `No Data`, means no action, and it is read again after `flap_window`. `quiet_since` is the newest `state.groups[].last_resolved_ts`, or the poll that first saw it quiet, since the group search has no such field. It is read again when the window ends, and a firing clears it.
-- **A new task needs its priority**: a monitor whose [required read](#poll-loop) failed creates nothing, and counts as `Partial` or `RateLimited`. Otherwise an unread priority 1 monitor would stay a task that is not urgent.
+- **A new task needs its priority**: a monitor whose [required read](#poll-loop) failed creates nothing. Its health follows [the mapping](#connector-status): a 429 `RateLimited`, `Forbidden`, `Status` or `Parse` `Partial`, and `Credential` or `Transport` stop the poll. Otherwise an unread priority 1 monitor would stay a task that is not urgent.
 - **A firing** is a group whose `last_triggered_ts` is newer than the snapshot's, a group the snapshot does not hold, or a group that was `warn` in the snapshot and is `alert` now, so a dismissed warning cannot swallow an escalation. `last_triggered_ts` is an `Option<i64>`: without one, only the other two count. This works from a timestamp rather than from what two polls saw, so it holds across a restart and catches a flap between polls.
 
 Pure `decide_alert`:
@@ -260,13 +260,13 @@ Pure `decide_alert`:
 | None, or the last one archived and the firing is newer than its snapshot | A firing | New task. `urgent` when the state is alert and the priority is in `urgent_priorities` |
 | Open | A firing | Same task, one row: the snapshot follows, and the row counts firings and groups. No event per flap |
 | Open, not urgent, no `urgent_raised` | A group in `alert` that was not `alert` in the snapshot, at an urgent priority | `urgent` raised, and it [notifies](#urgent) |
-| Open, urgent | A firing, with `quiet_since` older than `flap_window` | Same task, and it notifies once |
+| Open, at an urgent priority | A group in `alert`, with `quiet_since` older than `flap_window` | Same task. It notifies once and leaves `urgent` as I set it: clearing it does not mute a new episode, and a flap does not notify |
 | `inbox`, not urgent | Quiet for `flap_window`, confirmed by one read | `cancelled`, with a note: it cleared itself. Not `done`, since an Investigation is done when its cause is identified |
 | `inbox`, urgent | Same | Stays, and the row says it recovered: I should see that a p0 happened. A note, once |
 | `ready`, `active` or `waiting` | Same | A note, once: the cause is still mine to find |
 | Open | Monitor read: 404 | A note, once. `inbox` and not urgent: `cancelled`. Urgent stays visible |
 | `done` or `cancelled` | A firing newer than the snapshot | New task: "a monitor that fires again comes back as a new row" |
-| `done` or `cancelled` | Still firing, no newer `last_triggered_ts` | Nothing, and the snapshot is left unchanged: dismissing holds while it stays down |
+| `done` or `cancelled` | Still firing, and no firing as defined above | Nothing, and the snapshot is left unchanged: dismissing holds while it stays down |
 
 Dismissing is `d` on the row, which cancels the task and clears every group on it. The snapshot keeps the timestamps the next firing is compared with.
 
@@ -338,8 +338,8 @@ pub enum ConnectorHealth {
 - **Read**: `GET /v1/connectors`, `loom connector status [--json]`. A change sends a change event, for the app. With #218, an empty `loom review queue` cannot tell a failed poll from nothing to do: it will read this.
 - **Another machine**: `polled_by: other` makes no claim on health. This machine does not know.
 - **Forges**: `ReviewSync` maps onto it. `Synced` with failures is `Partial`, `RateLimited` as it is, and a `Failed` from a 401 is `Credential`.
-- **From `ConnectorError`**, on `list`: `Credential`, `Forbidden`, `RateLimited` and `InvalidFilter` give the health of that name; `Status`, `Transport` and `Parse` give `Unreachable`. Each stops the poll. On one item's `read` or `pull`: `Credential`, `RateLimited` and `Transport` stop the poll the same way; `NotFound` is `ItemRead::Gone`; `Forbidden`, `Deferred`, `Status` and `Parse` are `Partial`, and the poll goes on.
-- **Notifications**: `Credential` twice in a row raises "expired token", counted in memory by the poll thread. The second try is there because a refusal first resolves the token again. A dead key would otherwise mean no alerts and no signal.
+- **From `ConnectorError`**, on `list`: `Credential`, `Forbidden`, `RateLimited` and `InvalidFilter` give the health of that name; `NotFound`, `Status`, `Transport` and `Parse` give `Unreachable`. Each stops the poll. `check` is the same. On `pool`: `Credential` and `RateLimited` are the same, and any other error is `Partial` with `list` applied. On one item's `read` or `pull`: `Credential`, `RateLimited` and `Transport` stop the poll the same way; `NotFound` is `ItemRead::Gone`; `Forbidden`, `Deferred`, `Status` and `Parse` are `Partial`, and the poll goes on.
+- **Notifications**: `Credential` or `Forbidden` on `list`, twice in a row, raises "expired token" with the reason, counted in memory by the poll thread. The second try is there because a refusal first resolves the token again. A dead key or a revoked permission would otherwise mean no alerts and no signal.
 
 ## Fixtures and tests
 
@@ -408,7 +408,7 @@ Only what an adapter needs, each from the pages under [Sources](#sources).
 
 ### Datadog facts
 
-- **Auth**: reads need both `DD-API-KEY` and `DD-APPLICATION-KEY`. `GET /api/v1/validate` checks only the API key and answers 403 when invalid. `GET /api/v2/validate_keys` checks both and answers 401 or 403 otherwise, so `check` uses it. The monitor endpoints declare the `monitors_read` permission.
+- **Auth**: reads need both `DD-API-KEY` and `DD-APPLICATION-KEY`. `GET /api/v1/validate` checks only the API key and answers 403 when invalid. `GET /api/v2/validate_keys` checks both and answers 401 or 403 otherwise, but its `x-permission` is `OPEN`, so it says nothing of `monitors_read`: `check` runs it, then one `groups/search` with a small `per_page`. The monitor endpoints declare the `monitors_read` permission.
 - **Sites**: `datadoghq.com`, `us3.datadoghq.com`, `us5.datadoghq.com`, `ap1.datadoghq.com`, `ap2.datadoghq.com`, `uk1.datadoghq.com`, `datadoghq.eu`, `ddog-gov.com`, `us2.ddog-gov.com`. API host `api.<site>`. "Each site is completely independent."
 - **Monitors**: `priority` is an integer from 1 (high) to 5 (low), so there is no P0. Only the full monitor has it: `MonitorSearchResult` and `MonitorGroupSearchResult` do not. States: `Alert`, `Ignored`, `No Data`, `OK`, `Skipped`, `Unknown`, `Warn`.
 - **Groups**: `GET /api/v1/monitor/groups/search` gives `monitor_id`, `monitor_name`, `group`, `group_tags`, `status`, `last_triggered_ts`, `last_nodata_ts`. `page` starts at 0, `per_page` defaults to 30, and `metadata` gives `page_count`.

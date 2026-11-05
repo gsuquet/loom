@@ -47,13 +47,13 @@ Design: [Connector ports](design/connector-ports.md), [Connectors](design/connec
 | C2 | Config: `[contexts.<ctx>.connectors.<name>]` per kind, validation, API base rules, `token_env_names`, `store.backup.allows_client_data`, reference page | Story | This design, C1, #217 | Agent |
 | C3 | `loom-connector`: ports, types, `ConnectorError`, capabilities, stub modules for the three adapters; `Transport` out of `Http`; the key encoder out of `MrKey::dir_name`; fake server root; `fixtures/connectors/`; crate row | Story | This design, C1 | Agent |
 | C4 | Poll loop: `loomd::poll` out of `review_sync`, one thread per instance, `sync_connector` on the task thread, `POST /v1/connectors/sync`, `ConnectorBatch` and `TrackedItem` types, `loom connector doctor`, `LOOM_TEST_CONNECTOR_API`; tested with an in-memory `IngestPort` | Story | C1, C2, C3, #218 | Agent |
-| C5 | Items: `origin` keys `connector` and `remote_id`, lookup, applying a `ConnectorBatch` in `tasks/connectors.rs`, `loom connector rename` and the block per item; no move of a connector task | Story | C4 | Agent |
+| C5 | Items: `origin` keys `connector` and `remote_id`, lookup, applying a `ConnectorBatch` in `tasks/connectors.rs`, `loom connector rename`, the block per item and its doctor clause; no move of a connector task | Story | C4 | Agent |
 | C6 | Tickets: `decide_ticket`, mirror writer with `.base` and `sync.json`, `queue/pool/` entries, `loom connector pool` | Story | C5 | Agent |
 | C7 | `fixtures/connectors/check.sh`: the read-only shape checks | Chore | C3 | Agent |
 | D1 | Datadog client and parsing: group search, monitor read, `classify`, sites, `check`, fixtures | Story | C3 | Agent |
 | D0 | Datadog shape checks: run `check.sh`, adjust the design | Chore | C7 | Me |
 | D2 | Datadog sync: `decide_alert`, snapshots in `remote/`, `urgent` in `task.md`, priority mapping | Story | C5, D0, D1 | Agent |
-| D2b | Reaching me: urgent first in `loom ls`, `NotifyPort` and its OS adapter, expired token notification | Story | D2 | Agent |
+| D2b | Reaching me: urgent first in `loom ls`, `NotifyPort` and its OS adapter, expired token and 10-minute unread notifications | Story | D2 | Agent |
 | D3 | Datadog real check | Chore | D2b | Me + agent |
 | J1 | Jira client and parsing: `search/jql`, issue, comments, `classify`, `check`, fixtures | Story | C3 | Agent |
 | J2 | ADF to Markdown (pure): placeholders, unknown nodes, `converter` version | Story | C3 | Agent |
