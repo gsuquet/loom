@@ -1,18 +1,20 @@
 # Tracker sync
 
-> Two-way sync and creation of Jira, GitLab and GitHub issues.
+> Two-way sync and creation of Jira, Freshservice, GitLab and GitHub issues. Jira and Freshservice start read-only: see [Mirrors](connector-ports.md#mirrors).
 
 Edit issues locally, in the file or the app, and push them upstream.
 
 ### Mirror layout
 
 ```
-tasks/<id>/issues/jira-CORE-1042/
+tasks/<id>/issues/jira-core-1042/
   issue.md          # editable: frontmatter (title, status, labels, assignee, priority) + description in Markdown
   comments.md       # read-only rendered thread
   drafts/*.md       # new comments waiting to be pushed
   .base/issue.md    # last synced state, base of the 3-way merge
+  .base/description.adf.json   # source of the description at base (`.html` on Freshservice)
   raw.json          # last full remote payload
+  sync.json         # key, remote ID, remote updated, listed, noted, assignee ID, version of the Markdown conversion
 ```
 
 ### Synced fields (v1)
@@ -31,8 +33,9 @@ Title, description, status, labels, assignee, priority, new comments. Not synced
 ### Provider specifics
 
 - **GitHub / GitLab**: Markdown native. Status = open/closed, plus scoped labels for workflow states (`workflow::review`) mapped per context. Write needs the GitLab `api` scope (`read_api` is not enough) and a fine-grained GitHub token with issues write.
+- **Freshservice**: descriptions are HTML. Replies and status changes only, no create. Status is a number, mapped per context.
 - **Jira**: the hard part.
-  - Cloud REST v3 descriptions and comments are ADF (JSON), Data Center uses wiki markup. Conversion to Markdown is lossy (panels, mentions, media, merged table cells, status lozenges): unsupported nodes are kept as opaque placeholders in the Markdown so a round-trip preserves them.
+  - Cloud REST v3 descriptions and comments are ADF (JSON), Data Center uses wiki markup. Loom targets Cloud only ([Jira facts](connector-ports.md#jira-facts)). Conversion to Markdown is lossy (panels, mentions, media, merged table cells, status lozenges): unsupported nodes are kept as opaque placeholders in the Markdown, naming a node in `.base/description.adf.json`, so a round-trip preserves them.
   - Status is changed through workflow transitions, not set. Loom finds the transition to the target status; if it requires fields (resolution, …), the app asks for them; if no transition exists, the edit is rejected.
   - Status vocabulary mapped per context (workflow table in config).
 
