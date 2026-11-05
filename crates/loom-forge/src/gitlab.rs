@@ -107,6 +107,57 @@ struct MergeRequest {
     diff_refs: Option<DiffRefs>,
     references: References,
     web_url: String,
+    #[serde(default)]
+    assignees: Vec<User>,
+    /// Only on the single merge request request.
+    #[serde(default)]
+    head_pipeline: Option<RawPipeline>,
+    #[serde(default)]
+    detailed_merge_status: Option<String>,
+}
+
+/// `head_pipeline`: lenient, since a field that loom cannot read must not fail the whole MR.
+#[derive(Deserialize)]
+struct RawPipeline {
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// What the single merge request request tells about why an MR waits on me, beside [`Mr`]: not in
+/// `mr.json`, or each pipeline result would make a commit of the mirror.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MrSignals {
+    /// The usernames of the assignees.
+    pub assignees: Vec<String>,
+    /// The pipeline of the head, `None` when the MR has none.
+    pub head_pipeline: Option<HeadPipeline>,
+    /// `detailed_merge_status`, such as `mergeable`.
+    pub merge_status: Option<String>,
+}
+
+/// The pipeline that runs on the head commit of an MR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadPipeline {
+    /// The commit of the pipeline, `None` when it is absent or not a SHA.
+    pub sha: Option<Sha>,
+    /// The status, such as `success` or `failed`.
+    pub status: String,
+}
+
+impl HeadPipeline {
+    /// The status of a pipeline that failed.
+    pub const FAILED: &'static str = "failed";
+}
+
+/// A merge request as the single merge request request gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MrRead {
+    /// The merge request.
+    pub mr: Mr,
+    /// Why it can wait on me.
+    pub signals: MrSignals,
 }
 
 fn key(payload: &'static str, mr: &MergeRequest) -> Result<MrKey, ParseError> {
@@ -147,14 +198,36 @@ fn username(user: Option<User>) -> String {
 /// [`ParseError`] when the body is not a GitLab merge request, its reference or state is not
 /// valid, or it has no `diff_refs` yet (GitLab computes them after a push).
 pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
+    parse_merge_request_read(body).map(|read| read.mr)
+}
+
+/// [`parse_merge_request`], with the [`MrSignals`] of the merge request.
+///
+/// # Errors
+///
+/// As [`parse_merge_request`].
+pub fn parse_merge_request_read(body: &[u8]) -> Result<MrRead, ParseError> {
     const PAYLOAD: &str = "GitLab merge request";
-    let mr: MergeRequest = json(PAYLOAD, body)?;
+    let mut mr: MergeRequest = json(PAYLOAD, body)?;
+    let signals = MrSignals {
+        assignees: std::mem::take(&mut mr.assignees)
+            .into_iter()
+            .map(|user| user.username)
+            .collect(),
+        head_pipeline: mr.head_pipeline.take().and_then(|pipeline| {
+            Some(HeadPipeline {
+                sha: pipeline.sha.and_then(|sha| Sha::try_from(sha).ok()),
+                status: pipeline.status?,
+            })
+        }),
+        merge_status: mr.detailed_merge_status.take(),
+    };
     let key = key(PAYLOAD, &mr)?;
     let state = state(PAYLOAD, &mr.state)?;
     let refs = mr
         .diff_refs
         .ok_or_else(|| invalid(PAYLOAD, "no diff_refs"))?;
-    Ok(Mr {
+    let mr = Mr {
         key,
         forge_ids: MrForgeIds::Gitlab {
             id: mr.id,
@@ -179,7 +252,8 @@ pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
         web_url: mr.web_url,
         created_at: mr.created_at.0,
         updated_at: mr.updated_at.0,
-    })
+    };
+    Ok(MrRead { mr, signals })
 }
 
 /// `POST /projects/<id>/merge_requests`: the created merge request, as a summary. GitLab
@@ -236,6 +310,75 @@ pub fn parse_merge_requests(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
     const PAYLOAD: &str = "GitLab merge requests";
     let mrs: Vec<MergeRequest> = json(PAYLOAD, body)?;
     mrs.into_iter().map(|mr| summary(PAYLOAD, mr)).collect()
+}
+
+/// An open merge request with a pending to-do that mentions me.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionedMr {
+    /// The key of the merge request.
+    pub key: MrKey,
+    /// The project of the merge request.
+    pub project_id: u64,
+}
+
+#[derive(Deserialize)]
+struct TodoProject {
+    id: u64,
+    path_with_namespace: String,
+}
+
+#[derive(Deserialize)]
+struct TodoTarget {
+    #[serde(default)]
+    iid: Option<u64>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Todo {
+    action_name: String,
+    target_type: String,
+    #[serde(default)]
+    project: Option<TodoProject>,
+    #[serde(default)]
+    target: Option<TodoTarget>,
+}
+
+/// `GET /todos?type=MergeRequest&state=pending&action=…`, one page: the open merge requests with
+/// a to-do `mentioned` or `directly_addressed`.
+///
+/// A to-do of any other kind, of a merged or closed merge request, or without its project is left
+/// out: a poll reads each entry on its own, and one odd to-do must not fail the list. The docs
+/// show no `references` on a target, so the key comes from the project and the IID.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a list of GitLab to-dos.
+pub fn parse_mention_todos(body: &[u8]) -> Result<Vec<MentionedMr>, ParseError> {
+    let todos: Vec<Todo> = json("GitLab to-dos", body)?;
+    Ok(todos
+        .into_iter()
+        .filter(|todo| {
+            todo.target_type == "MergeRequest"
+                && matches!(
+                    todo.action_name.as_str(),
+                    "mentioned" | "directly_addressed"
+                )
+        })
+        .filter_map(|todo| {
+            let project = todo.project?;
+            let target = todo.target?;
+            if target.state.as_deref() != Some("opened") {
+                return None;
+            }
+            let key = MrKey::parse(&format!("{}!{}", project.path_with_namespace, target.iid?));
+            Some(MentionedMr {
+                key: key.ok()?,
+                project_id: project.id,
+            })
+        })
+        .collect())
 }
 
 #[derive(Deserialize)]

@@ -740,3 +740,51 @@ fn the_reviewers_of_an_mr_come_with_their_state() {
     assert_eq!(reviewers[0].username, "carol");
     assert_eq!(reviewers[0].state, "approved");
 }
+
+#[test]
+fn the_lists_of_other_reasons_are_full_and_the_mentions_read_both_actions() {
+    let forge = FakeForge::start();
+    let list = "gitlab/merge-requests-reviews-for-me.json";
+    let todos = "/todos?type=MergeRequest&state=pending&action";
+    forge
+        .route(
+            Route::get("/merge_requests?scope=assigned_to_me&state=opened&per_page=100")
+                .fixture(list),
+        )
+        .route(
+            Route::get("/merge_requests?scope=created_by_me&state=opened&per_page=100")
+                .fixture(list),
+        )
+        .route(
+            Route::get(&format!("{todos}=mentioned&per_page=100"))
+                .fixture("gitlab/todos.empty.json"),
+        )
+        .route(
+            Route::get(&format!("{todos}=directly_addressed&per_page=100"))
+                .fixture("gitlab/todos-mentioned.json"),
+        );
+    let client = client(&forge);
+    assert_eq!(client.assigned_mrs().unwrap()[0].key, key());
+    assert_eq!(client.own_mrs().unwrap()[0].key, key());
+    assert_eq!(client.mentions().unwrap()[0].key, key());
+    let lines = forge.lines();
+    assert!(
+        lines.iter().all(|line| !line.contains("updated_after")),
+        "{lines:?}"
+    );
+    assert_eq!(lines.len(), 4, "{lines:?}");
+}
+
+#[test]
+fn a_refused_todos_list_is_a_forbidden_error() {
+    let forge = FakeForge::start();
+    forge.route(
+        Route::get("/todos?type=MergeRequest&state=pending&action=mentioned&per_page=100")
+            .status(403)
+            .body(r#"{"message":"403 Forbidden"}"#),
+    );
+    assert!(matches!(
+        client(&forge).mentions().unwrap_err(),
+        ForgeError::Forbidden { .. } | ForgeError::InsufficientScope { .. }
+    ));
+}

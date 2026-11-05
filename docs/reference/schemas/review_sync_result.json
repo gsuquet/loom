@@ -38,6 +38,64 @@
         }
       ]
     },
+    "ReviewList": {
+      "description": "A list of a poll that can fail without stopping the poll.",
+      "oneOf": [
+        {
+          "description": "The MRs assigned to me.",
+          "type": "string",
+          "const": "assigned"
+        },
+        {
+          "description": "The MRs that I wrote.",
+          "type": "string",
+          "const": "own"
+        },
+        {
+          "description": "My to-dos that mention me.",
+          "type": "string",
+          "const": "mentioned"
+        }
+      ]
+    },
+    "ReviewListFailure": {
+      "description": "A list that failed while the poll went on.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "Why, for humans. Never contains the token.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "How it failed.",
+          "$ref": "#/$defs/ReviewListFailureKind"
+        },
+        "list": {
+          "description": "The list.",
+          "$ref": "#/$defs/ReviewList"
+        }
+      },
+      "required": [
+        "list",
+        "kind",
+        "error"
+      ]
+    },
+    "ReviewListFailureKind": {
+      "description": "How a list failed.",
+      "oneOf": [
+        {
+          "description": "The forge refuses this list to the token: a permission is missing, and a retry does not\nhelp.",
+          "type": "string",
+          "const": "forbidden"
+        },
+        {
+          "description": "Another failure.",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    },
     "ReviewSync": {
       "description": "The poll of one forge host for one context.",
       "type": "object",
@@ -121,6 +179,13 @@
               "type": "array",
               "items": {
                 "$ref": "#/$defs/ReviewSyncFailure"
+              }
+            },
+            "failed_lists": {
+              "description": "The lists that failed while the poll went on. The reasons from such a list keep their\nlast value.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReviewListFailure"
               }
             },
             "mrs": {

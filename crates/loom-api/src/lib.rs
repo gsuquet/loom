@@ -62,8 +62,9 @@ pub use repo_update::{
     SyncResult, UpdateOutcome, UpdateStep,
 };
 pub use review::{
-    QueueReason, ReviewQueue, ReviewQueueEntry, ReviewStartRequest, ReviewStartResult, ReviewSync,
-    ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncRequest, ReviewSyncResult,
+    QueueReason, ReviewList, ReviewListFailure, ReviewListFailureKind, ReviewQueue,
+    ReviewQueueEntry, ReviewSeenRequest, ReviewSeenResult, ReviewStartRequest, ReviewStartResult,
+    ReviewSync, ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncRequest, ReviewSyncResult,
 };
 pub use search::{
     DEFAULT_SEARCH_LIMIT, RepoMatch, SearchField, SearchKind, SearchResult, SearchResults,

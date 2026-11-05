@@ -3,7 +3,8 @@
 use std::fmt::Write as _;
 
 use loom_api::{
-    ContextName, QueueReason, ReviewQueue, ReviewStartResult, ReviewSyncOutcome, ReviewSyncResult,
+    ContextName, QueueReason, ReviewList, ReviewQueue, ReviewStartResult, ReviewSyncOutcome,
+    ReviewSyncResult,
 };
 
 use crate::repo::encode_segment;
@@ -39,6 +40,19 @@ const EMPTY_QUEUE: &str = "The queue is empty. Run `loom review sync` to poll th
 const fn reason_name(reason: QueueReason) -> &'static str {
     match reason {
         QueueReason::ReviewRequested => "review_requested",
+        QueueReason::Assigned => "assigned",
+        QueueReason::Mentioned => "mentioned",
+        QueueReason::OwnNewComments => "own_new_comments",
+        QueueReason::OwnPipelineFailed => "own_pipeline_failed",
+        QueueReason::OwnReadyToMerge => "own_ready_to_merge",
+    }
+}
+
+const fn list_name(list: ReviewList) -> &'static str {
+    match list {
+        ReviewList::Assigned => "assigned",
+        ReviewList::Own => "own",
+        ReviewList::Mentioned => "mentioned",
     }
 }
 
@@ -108,6 +122,7 @@ pub fn render_sync(result: &ReviewSyncResult) -> String {
                 changed,
                 other_context,
                 failed,
+                failed_lists,
             } => {
                 let _ = write!(
                     text,
@@ -122,9 +137,20 @@ pub fn render_sync(result: &ReviewSyncResult) -> String {
                 if !failed.is_empty() {
                     let _ = write!(text, ", {} failed", failed.len());
                 }
+                if !failed_lists.is_empty() {
+                    let _ = write!(text, ", {} list(s) failed", failed_lists.len());
+                }
                 text.push('\n');
                 for failure in failed {
                     let _ = writeln!(text, "  {}: {}", failure.key, failure.error);
+                }
+                for failure in failed_lists {
+                    let _ = writeln!(
+                        text,
+                        "  list {}: {}",
+                        list_name(failure.list),
+                        failure.error
+                    );
                 }
             }
             ReviewSyncOutcome::RateLimited { until } => {
@@ -145,7 +171,11 @@ pub fn failures(result: &ReviewSyncResult) -> usize {
         .forges
         .iter()
         .filter(|forge| match &forge.outcome {
-            ReviewSyncOutcome::Synced { failed, .. } => !failed.is_empty(),
+            ReviewSyncOutcome::Synced {
+                failed,
+                failed_lists,
+                ..
+            } => !failed.is_empty() || !failed_lists.is_empty(),
             ReviewSyncOutcome::Failed { .. } => true,
             ReviewSyncOutcome::RateLimited { .. } => false,
         })
@@ -155,8 +185,9 @@ pub fn failures(result: &ReviewSyncResult) -> usize {
 #[cfg(test)]
 mod tests {
     use loom_api::{
-        ForgeKind, QueueReason, ReviewQueue, ReviewQueueEntry, ReviewSync, ReviewSyncFailure,
-        ReviewSyncOutcome, ReviewSyncResult, Timestamp,
+        ForgeKind, QueueReason, ReviewList, ReviewListFailure, ReviewListFailureKind, ReviewQueue,
+        ReviewQueueEntry, ReviewSync, ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncResult,
+        Timestamp,
     };
 
     use super::{
@@ -178,6 +209,51 @@ mod tests {
             queue_path(Some(&"company-a".parse().unwrap())),
             "/v1/reviews/queue?context=company-a"
         );
+    }
+
+    #[test]
+    fn a_list_that_failed_is_a_failure_and_is_shown() {
+        let result = ReviewSyncResult {
+            forges: vec![ReviewSync {
+                context: "company-a".parse().unwrap(),
+                host: "gitlab.example.com".to_owned(),
+                kind: ForgeKind::Gitlab,
+                last_success: None,
+                outcome: ReviewSyncOutcome::Synced {
+                    mrs: 1,
+                    added: Vec::new(),
+                    removed: Vec::new(),
+                    changed: Vec::new(),
+                    other_context: 0,
+                    failed: Vec::new(),
+                    failed_lists: vec![ReviewListFailure {
+                        list: ReviewList::Mentioned,
+                        kind: ReviewListFailureKind::Forbidden,
+                        error: "403 Forbidden".to_owned(),
+                    }],
+                },
+            }],
+        };
+        assert_eq!(failures(&result), 1);
+        assert_eq!(
+            render_sync(&result),
+            "company-a gitlab.example.com: 1 MR(s), 0 added to the queue, 0 removed, 0 changed, 1 list(s) failed\n  list mentioned: 403 Forbidden\n"
+        );
+    }
+
+    #[test]
+    fn each_reason_has_the_name_of_the_api() {
+        for (reason, name) in [
+            (QueueReason::ReviewRequested, "review_requested"),
+            (QueueReason::Assigned, "assigned"),
+            (QueueReason::Mentioned, "mentioned"),
+            (QueueReason::OwnNewComments, "own_new_comments"),
+            (QueueReason::OwnPipelineFailed, "own_pipeline_failed"),
+            (QueueReason::OwnReadyToMerge, "own_ready_to_merge"),
+        ] {
+            assert_eq!(reason_name(reason), name);
+            assert_eq!(serde_json::to_value(reason).unwrap(), name);
+        }
     }
 
     #[test]
@@ -237,6 +313,7 @@ mod tests {
                             key: "acme/shop#412".to_owned(),
                             error: "not found on the forge (404): Not Found".to_owned(),
                         }],
+                        failed_lists: Vec::new(),
                     },
                 ),
                 forge(

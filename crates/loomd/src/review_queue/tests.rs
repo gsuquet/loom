@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use loom_forge::github::parse_pull;
-use loom_forge::gitlab::parse_merge_request;
+use loom_forge::gitlab::{HeadPipeline, MrSignals, parse_merge_request};
+use loom_forge::model::{Comment, ThreadSubject};
 
 use super::*;
 
@@ -39,7 +40,14 @@ fn seen() -> EntrySeen {
         requested_after_verdict: false,
         own: false,
         archived: None,
+        other_reasons: Vec::new(),
+        parked: false,
+        has_seen_at: false,
     }
+}
+
+fn requested_reason() -> Vec<QueueReason> {
+    vec![QueueReason::ReviewRequested]
 }
 
 #[test]
@@ -396,7 +404,7 @@ fn start_refuses_a_closed_mr_my_own_and_a_request_that_is_gone() {
 #[test]
 fn an_entry_holds_the_fields_of_the_mr_and_keeps_what_the_poll_does_not_read() {
     let mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
-    let entry = entry_of(&mr, None);
+    let entry = entry_of(&mr, None, requested_reason());
     assert_eq!(entry.reasons, vec![QueueReason::ReviewRequested]);
     assert_eq!(entry.title, "Auth refactor");
     assert_eq!(entry.head_sha, sha(V1));
@@ -404,7 +412,10 @@ fn an_entry_holds_the_fields_of_the_mr_and_keeps_what_the_poll_does_not_read() {
 
     // The same MR gives the same bytes: a poll with no change writes nothing.
     let bytes = entry_bytes(&entry).unwrap();
-    assert_eq!(entry_bytes(&entry_of(&mr, Some(&entry))).unwrap(), bytes);
+    assert_eq!(
+        entry_bytes(&entry_of(&mr, Some(&entry), requested_reason())).unwrap(),
+        bytes
+    );
     assert_eq!(read_entry_bytes(&bytes), Some(entry.clone()));
     assert_eq!(read_entry_bytes(b"{"), None);
 
@@ -414,7 +425,7 @@ fn an_entry_holds_the_fields_of_the_mr_and_keeps_what_the_poll_does_not_read() {
         seen_at: Some(seen_at),
         ..entry
     };
-    let kept = entry_of(&mr, Some(&opened));
+    let kept = entry_of(&mr, Some(&opened), requested_reason());
     assert_eq!(kept.seen_at, Some(seen_at));
     assert_eq!(kept.reasons, vec![QueueReason::ReviewRequested]);
 }
@@ -422,7 +433,7 @@ fn an_entry_holds_the_fields_of_the_mr_and_keeps_what_the_poll_does_not_read() {
 #[test]
 fn a_gitlab_entry_keeps_the_project_id_and_the_file_name_is_the_mirror_name() {
     let mr = parse_merge_request(&fixture("gitlab/merge-request-88.v2.json")).unwrap();
-    let entry = entry_of(&mr, None);
+    let entry = entry_of(&mr, None, requested_reason());
     assert!(matches!(
         entry.forge_ids,
         MrForgeIds::Gitlab { project_id: 77, .. }
@@ -556,7 +567,7 @@ fn approval_step_table() {
 fn entry_seen_takes_each_fact_from_the_best_source() {
     let mr = parse_pull(&fixture("github/pull-412.v2.json")).unwrap();
     let v1_mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
-    let entry = entry_of(&v1_mr, None);
+    let entry = entry_of(&v1_mr, None, requested_reason());
     let base = EntryInput {
         read: None,
         stored: None,
@@ -568,6 +579,7 @@ fn entry_seen_takes_each_fact_from_the_best_source() {
         tracked: false,
         own: false,
         requested_after_verdict: false,
+        reasons: &ReasonsRead::UNKNOWN,
     };
     // Nothing to compare with: a 304 with neither an entry nor a mirror.
     assert_eq!(entry_seen(&base), None);
@@ -645,7 +657,7 @@ fn an_entry_of_another_format_version_is_not_read() {
     let mr = parse_pull(&fixture("github/pull-412.v1.json")).unwrap();
     let entry = QueueEntry {
         v: QueueEntry::VERSION + 1,
-        ..entry_of(&mr, None)
+        ..entry_of(&mr, None, requested_reason())
     };
     assert_eq!(read_entry_bytes(&entry_bytes(&entry).unwrap()), None);
 }
@@ -656,4 +668,819 @@ fn the_queue_commit_says_what_changed() {
         queue_message(1, 2, 3),
         "queue: 1 added, 2 updated, 3 removed"
     );
+}
+
+fn time(text: &str) -> Timestamp {
+    serde_json::from_value(serde_json::json!(text)).unwrap()
+}
+
+fn thread(comments: &[(&str, &str)]) -> Thread {
+    Thread {
+        id: "d1".to_owned(),
+        subject: ThreadSubject::General,
+        outdated: false,
+        resolved: false,
+        comments: comments
+            .iter()
+            .enumerate()
+            .map(|(index, (author, at))| Comment {
+                id: index.to_string(),
+                author: (*author).to_owned(),
+                body: "text".to_owned(),
+                created_at: time(at),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn assigned_table() {
+    let of = |names: &[&str]| -> Vec<String> { names.iter().map(|&n| n.to_owned()).collect() };
+    let table = [
+        ("assigned to me", of(&["carol"]), false, true),
+        ("another case of my login", of(&["Carol"]), false, true),
+        ("among others", of(&["alice", "carol"]), false, true),
+        ("assigned to another", of(&["alice"]), false, false),
+        ("no assignee", of(&[]), false, false),
+        ("my own MR, assigned to me", of(&["carol"]), true, false),
+    ];
+    for (name, assignees, own, expected) in table {
+        assert_eq!(is_assigned(&assignees, "carol", own), expected, "{name}");
+    }
+}
+
+#[test]
+fn new_comment_table() {
+    const T1: &str = "2026-10-21T10:00:00Z";
+    const T2: &str = "2026-10-21T11:00:00Z";
+    const T3: &str = "2026-10-21T12:00:00Z";
+    let table: Vec<(&str, Vec<Thread>, Option<&str>)> = vec![
+        ("no note", vec![], None),
+        ("a note of mine only", vec![thread(&[("carol", T1)])], None),
+        (
+            "my login in another case",
+            vec![thread(&[("Carol", T1)])],
+            None,
+        ),
+        (
+            "a note from someone else",
+            vec![thread(&[("bob", T1)])],
+            Some(T1),
+        ),
+        (
+            "I replied after it",
+            vec![thread(&[("bob", T1), ("carol", T2)])],
+            None,
+        ),
+        (
+            "someone wrote after my reply",
+            vec![thread(&[("bob", T1), ("carol", T2), ("bob", T3)])],
+            Some(T3),
+        ),
+        (
+            "the newest of two people",
+            vec![thread(&[("bob", T1), ("alice", T2)])],
+            Some(T2),
+        ),
+        (
+            "my reply in another thread counts",
+            vec![thread(&[("bob", T1)]), thread(&[("carol", T2)])],
+            None,
+        ),
+        (
+            "a note in the same second as mine is not newer",
+            vec![thread(&[("carol", T1), ("bob", T1)])],
+            None,
+        ),
+    ];
+    for (name, threads, expected) in table {
+        assert_eq!(new_comment(&threads, "carol"), expected.map(time), "{name}");
+    }
+}
+
+#[test]
+fn a_note_counts_only_when_newer_than_seen_at() {
+    let (t1, t2) = (time("2026-10-21T10:00:00Z"), time("2026-10-21T11:00:00Z"));
+    let table = [
+        ("no note, never seen", None, None, false),
+        ("no note, seen", None, Some(t1), false),
+        ("a note, never seen", Some(t1), None, true),
+        ("a note older than seen_at", Some(t1), Some(t2), false),
+        ("a note in the same second", Some(t1), Some(t1), false),
+        ("a note newer than seen_at", Some(t2), Some(t1), true),
+    ];
+    for (name, newest, seen_at, expected) in table {
+        assert_eq!(has_new_comment(newest, seen_at), expected, "{name}");
+    }
+}
+
+#[test]
+fn pipeline_failed_table() {
+    let pipeline = |sha_of: Option<&str>, status: &str| HeadPipeline {
+        sha: sha_of.map(sha),
+        status: status.to_owned(),
+    };
+    let table = [
+        ("no pipeline", None, false),
+        (
+            "failed on the head",
+            Some(pipeline(Some(V2), "failed")),
+            true,
+        ),
+        (
+            "failed on an older head",
+            Some(pipeline(Some(V1), "failed")),
+            false,
+        ),
+        (
+            "failed, with no SHA to compare",
+            Some(pipeline(None, "failed")),
+            false,
+        ),
+        (
+            "success on the head",
+            Some(pipeline(Some(V2), "success")),
+            false,
+        ),
+        (
+            "running on the head",
+            Some(pipeline(Some(V2), "running")),
+            false,
+        ),
+        (
+            "canceled on the head",
+            Some(pipeline(Some(V2), "canceled")),
+            false,
+        ),
+    ];
+    for (name, pipeline, expected) in table {
+        assert_eq!(
+            pipeline_failed(pipeline.as_ref(), &sha(V2)),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn ready_to_merge_table() {
+    let table = [
+        (
+            "mergeable, one approval",
+            Some("mergeable"),
+            false,
+            1,
+            Some(true),
+        ),
+        (
+            "mergeable, two approvals",
+            Some("mergeable"),
+            false,
+            2,
+            Some(true),
+        ),
+        (
+            "mergeable, no approval",
+            Some("mergeable"),
+            false,
+            0,
+            Some(false),
+        ),
+        ("a draft", Some("mergeable"), true, 1, Some(false)),
+        ("not approved", Some("not_approved"), false, 1, Some(false)),
+        ("a conflict", Some("conflict"), false, 1, Some(false)),
+        ("no status", None, false, 1, Some(false)),
+        ("GitLab computes it", Some("checking"), false, 1, None),
+        (
+            "GitLab did not compute it",
+            Some("unchecked"),
+            false,
+            1,
+            None,
+        ),
+        (
+            "a draft while GitLab computes it",
+            Some("checking"),
+            true,
+            1,
+            Some(false),
+        ),
+    ];
+    for (name, status, draft, approvals, expected) in table {
+        assert_eq!(ready_to_merge(status, draft, approvals), expected, "{name}");
+    }
+}
+
+#[test]
+fn a_full_read_tells_each_reason_and_only_my_own_mr_has_own_reasons() {
+    let mr = parse_merge_request(&fixture("gitlab/merge-request-88.v2.json")).unwrap();
+    let failed = MrSignals {
+        assignees: vec!["carol".to_owned()],
+        head_pipeline: Some(HeadPipeline {
+            sha: Some(mr.version.head_sha.clone()),
+            status: HeadPipeline::FAILED.to_owned(),
+        }),
+        merge_status: Some(MERGEABLE.to_owned()),
+    };
+    let threads = [thread(&[("bob", "2026-10-21T10:00:00Z")])];
+    let facts = |author: &str| {
+        let mut mr = mr.clone();
+        mr.author = author.to_owned();
+        mr
+    };
+    let theirs = facts("alice");
+    let read = reasons_read(&MrFacts {
+        mr: &theirs,
+        signals: &failed,
+        login: "carol",
+        threads: None,
+        approvals: 1,
+        mentioned: Some(true),
+    });
+    assert_eq!(
+        read,
+        ReasonsRead {
+            assigned: Some(true),
+            mentioned: Some(true),
+            new_comment: Some(None),
+            pipeline_failed: Some(false),
+            ready_to_merge: Some(false),
+        }
+    );
+    let mine = facts("carol");
+    let read = reasons_read(&MrFacts {
+        mr: &mine,
+        signals: &failed,
+        login: "carol",
+        threads: Some(&threads),
+        approvals: 1,
+        mentioned: None,
+    });
+    assert_eq!(
+        read,
+        ReasonsRead {
+            assigned: Some(false),
+            mentioned: None,
+            new_comment: Some(Some(time("2026-10-21T10:00:00Z"))),
+            pipeline_failed: Some(true),
+            ready_to_merge: Some(true),
+        }
+    );
+    // Discussions not read: the reason keeps its value.
+    let read = reasons_read(&MrFacts {
+        mr: &mine,
+        signals: &failed,
+        login: "carol",
+        threads: None,
+        approvals: 1,
+        mentioned: None,
+    });
+    assert_eq!(read.new_comment, None);
+}
+
+/// Name, the reasons in the file, what the poll read, `seen_at`, the reasons after.
+type OtherReasonsRow = (
+    &'static str,
+    Vec<QueueReason>,
+    ReasonsRead,
+    Option<Timestamp>,
+    Vec<QueueReason>,
+);
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one row per rule")]
+fn other_reasons_table() {
+    use QueueReason::{
+        Assigned, Mentioned, OwnNewComments, OwnPipelineFailed, OwnReadyToMerge, ReviewRequested,
+    };
+    let (t1, t2) = (time("2026-10-21T10:00:00Z"), time("2026-10-21T11:00:00Z"));
+    let unknown = ReasonsRead::UNKNOWN;
+    let table: Vec<OtherReasonsRow> = vec![
+        (
+            "nothing known, nothing stored",
+            vec![],
+            unknown,
+            None,
+            vec![],
+        ),
+        (
+            "review_requested is not its business",
+            vec![ReviewRequested],
+            unknown,
+            None,
+            vec![],
+        ),
+        (
+            "nothing known: each stays",
+            vec![
+                Assigned,
+                Mentioned,
+                OwnNewComments,
+                OwnPipelineFailed,
+                OwnReadyToMerge,
+            ],
+            unknown,
+            None,
+            vec![
+                Assigned,
+                Mentioned,
+                OwnNewComments,
+                OwnPipelineFailed,
+                OwnReadyToMerge,
+            ],
+        ),
+        (
+            "assigned comes",
+            vec![],
+            ReasonsRead {
+                assigned: Some(true),
+                ..unknown
+            },
+            None,
+            vec![Assigned],
+        ),
+        (
+            "assigned goes",
+            vec![Assigned],
+            ReasonsRead {
+                assigned: Some(false),
+                ..unknown
+            },
+            None,
+            vec![],
+        ),
+        (
+            "a list that failed keeps the mention",
+            vec![Mentioned],
+            ReasonsRead {
+                assigned: Some(false),
+                ..unknown
+            },
+            None,
+            vec![Mentioned],
+        ),
+        (
+            "the to-do is done",
+            vec![Mentioned],
+            ReasonsRead {
+                mentioned: Some(false),
+                ..unknown
+            },
+            None,
+            vec![],
+        ),
+        (
+            "one goes, the other stays",
+            vec![Assigned, Mentioned],
+            ReasonsRead {
+                mentioned: Some(false),
+                ..unknown
+            },
+            None,
+            vec![Assigned],
+        ),
+        (
+            "a note newer than seen_at",
+            vec![],
+            ReasonsRead {
+                new_comment: Some(Some(t2)),
+                ..unknown
+            },
+            Some(t1),
+            vec![OwnNewComments],
+        ),
+        (
+            "a note older than seen_at",
+            vec![],
+            ReasonsRead {
+                new_comment: Some(Some(t1)),
+                ..unknown
+            },
+            Some(t2),
+            vec![],
+        ),
+        (
+            "I replied",
+            vec![OwnNewComments],
+            ReasonsRead {
+                new_comment: Some(None),
+                ..unknown
+            },
+            None,
+            vec![],
+        ),
+        (
+            "the pipeline fails",
+            vec![],
+            ReasonsRead {
+                pipeline_failed: Some(true),
+                ..unknown
+            },
+            None,
+            vec![OwnPipelineFailed],
+        ),
+        (
+            "a new pipeline is not failed",
+            vec![OwnPipelineFailed],
+            ReasonsRead {
+                pipeline_failed: Some(false),
+                ..unknown
+            },
+            None,
+            vec![],
+        ),
+        (
+            "ready",
+            vec![],
+            ReasonsRead {
+                ready_to_merge: Some(true),
+                ..unknown
+            },
+            None,
+            vec![OwnReadyToMerge],
+        ),
+        (
+            "while GitLab computes, ready stays",
+            vec![OwnReadyToMerge],
+            ReasonsRead {
+                ready_to_merge: None,
+                pipeline_failed: Some(false),
+                ..unknown
+            },
+            None,
+            vec![OwnReadyToMerge],
+        ),
+        (
+            "not ready any more",
+            vec![OwnReadyToMerge],
+            ReasonsRead {
+                ready_to_merge: Some(false),
+                ..unknown
+            },
+            None,
+            vec![],
+        ),
+        (
+            "the MR is gone",
+            vec![
+                Assigned,
+                Mentioned,
+                OwnNewComments,
+                OwnPipelineFailed,
+                OwnReadyToMerge,
+            ],
+            ReasonsRead::NONE_HOLD,
+            None,
+            vec![],
+        ),
+        (
+            "the order is fixed",
+            vec![OwnReadyToMerge, Assigned],
+            unknown,
+            None,
+            vec![Assigned, OwnReadyToMerge],
+        ),
+    ];
+    for (name, stored, read, seen_at, expected) in table {
+        assert_eq!(other_reasons(&stored, &read, seen_at), expected, "{name}");
+    }
+}
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one row per rule")]
+fn entry_decision_with_other_reasons() {
+    use EntryDecision::{Absent, Add, DropParked, Keep, Park, Remove};
+    use QueueReason::{Assigned, OwnPipelineFailed};
+    let assigned = || EntrySeen {
+        requested: false,
+        other_reasons: vec![Assigned],
+        ..seen()
+    };
+    let mine = || EntrySeen {
+        requested: false,
+        own: true,
+        other_reasons: vec![OwnPipelineFailed],
+        ..seen()
+    };
+    let archived = |head: &str, requested: Option<bool>| {
+        Some(ArchivedSeen {
+            head: Some(sha(head)),
+            requested,
+        })
+    };
+    let table: Vec<(&str, EntrySeen, EntryDecision)> = vec![
+        ("assigned, not requested: a new entry", assigned(), Add),
+        (
+            "the request goes, assigned stays: the entry stays",
+            EntrySeen {
+                has_entry: true,
+                ..assigned()
+            },
+            Keep,
+        ),
+        (
+            "my verdict on the head, assigned stays: the entry stays",
+            EntrySeen {
+                has_entry: true,
+                requested: true,
+                verdict_on_head: true,
+                ..assigned()
+            },
+            Keep,
+        ),
+        (
+            "the last reason goes: the entry goes",
+            EntrySeen {
+                has_entry: true,
+                other_reasons: vec![],
+                ..assigned()
+            },
+            Remove,
+        ),
+        (
+            "merged: the entry goes with its reasons",
+            EntrySeen {
+                has_entry: true,
+                state: MrState::Merged,
+                ..assigned()
+            },
+            Remove,
+        ),
+        (
+            "a task: no entry for any reason",
+            EntrySeen {
+                tracked: true,
+                ..assigned()
+            },
+            Absent,
+        ),
+        (
+            "a task: the entry goes for any reason",
+            EntrySeen {
+                tracked: true,
+                has_entry: true,
+                ..assigned()
+            },
+            Remove,
+        ),
+        ("my own MR with a reason: an entry", mine(), Add),
+        (
+            "my own MR requested of me, no reason: none",
+            EntrySeen {
+                requested: true,
+                other_reasons: vec![],
+                ..mine()
+            },
+            Absent,
+        ),
+        (
+            "archived, assigned, same head, not requested: none",
+            EntrySeen {
+                archived: archived(V2, Some(false)),
+                ..assigned()
+            },
+            Absent,
+        ),
+        (
+            "archived, assigned, new head: an entry",
+            EntrySeen {
+                archived: archived(V1, Some(false)),
+                ..assigned()
+            },
+            Add,
+        ),
+        (
+            "archived, my own MR, same head: an entry",
+            EntrySeen {
+                archived: archived(V2, Some(false)),
+                ..mine()
+            },
+            Add,
+        ),
+        (
+            "seen, no reason left, my open MR: the file stays",
+            EntrySeen {
+                has_entry: true,
+                has_seen_at: true,
+                other_reasons: vec![],
+                ..mine()
+            },
+            Park,
+        ),
+        (
+            "no reason left, never seen: the file goes",
+            EntrySeen {
+                has_entry: true,
+                other_reasons: vec![],
+                ..mine()
+            },
+            Remove,
+        ),
+        (
+            "seen, no reason left, not my MR: the file goes",
+            EntrySeen {
+                has_entry: true,
+                has_seen_at: true,
+                other_reasons: vec![],
+                ..assigned()
+            },
+            Remove,
+        ),
+        (
+            "seen, merged: the file goes",
+            EntrySeen {
+                has_entry: true,
+                has_seen_at: true,
+                state: MrState::Merged,
+                other_reasons: vec![],
+                ..mine()
+            },
+            Remove,
+        ),
+        (
+            "parked, nothing new: the file stays",
+            EntrySeen {
+                parked: true,
+                has_seen_at: true,
+                other_reasons: vec![],
+                ..mine()
+            },
+            Absent,
+        ),
+        (
+            "parked, a reason again: an entry",
+            EntrySeen {
+                parked: true,
+                has_seen_at: true,
+                ..mine()
+            },
+            Add,
+        ),
+        (
+            "parked, merged: the file goes",
+            EntrySeen {
+                parked: true,
+                has_seen_at: true,
+                state: MrState::Merged,
+                other_reasons: vec![],
+                ..mine()
+            },
+            DropParked,
+        ),
+        (
+            "parked, gone: the file goes",
+            EntrySeen {
+                parked: true,
+                has_seen_at: true,
+                own: false,
+                other_reasons: vec![],
+                ..mine()
+            },
+            DropParked,
+        ),
+    ];
+    for (name, seen, expected) in table {
+        assert_eq!(decide_entry(&seen), expected, "{name}");
+    }
+}
+
+#[test]
+fn entry_reasons_table() {
+    use QueueReason::{Assigned, OwnPipelineFailed, ReviewRequested};
+    let table: Vec<(&str, EntrySeen, Vec<QueueReason>)> = vec![
+        ("requested", seen(), vec![ReviewRequested]),
+        (
+            "requested and assigned, in order",
+            EntrySeen {
+                other_reasons: vec![Assigned],
+                ..seen()
+            },
+            vec![ReviewRequested, Assigned],
+        ),
+        (
+            "my verdict: only assigned",
+            EntrySeen {
+                verdict_on_head: true,
+                other_reasons: vec![Assigned],
+                ..seen()
+            },
+            vec![Assigned],
+        ),
+        (
+            "my own MR: never requested",
+            EntrySeen {
+                own: true,
+                other_reasons: vec![OwnPipelineFailed],
+                ..seen()
+            },
+            vec![OwnPipelineFailed],
+        ),
+        (
+            "no reason",
+            EntrySeen {
+                requested: false,
+                ..seen()
+            },
+            vec![],
+        ),
+    ];
+    for (name, seen, expected) in table {
+        assert_eq!(entry_reasons(&seen), expected, "{name}");
+    }
+}
+
+#[test]
+fn a_304_keeps_the_review_reason_as_the_file_holds_it() {
+    let mr = parse_merge_request(&fixture("gitlab/merge-request-88.v2.json")).unwrap();
+    let held = |reasons: Vec<QueueReason>| entry_of(&mr, None, reasons);
+    let input = |stored| EntryInput {
+        read: None,
+        stored,
+        archived_mr: None,
+        archived_state: None,
+        archived: false,
+        verdict: None,
+        requested: Some(true),
+        tracked: false,
+        own: false,
+        requested_after_verdict: false,
+        reasons: &ReasonsRead::UNKNOWN,
+    };
+    // Still in the reviewers, and my verdict took this reason away at an earlier read.
+    let assigned = held(vec![QueueReason::Assigned]);
+    let seen = entry_seen(&input(Some(&assigned))).unwrap();
+    assert_eq!(entry_reasons(&seen), [QueueReason::Assigned]);
+    let requested = held(requested_reason());
+    let seen = entry_seen(&input(Some(&requested))).unwrap();
+    assert_eq!(entry_reasons(&seen), requested_reason());
+    // An incomplete search with another reason stored does not invent a request.
+    let seen = entry_seen(&EntryInput {
+        requested: None,
+        ..input(Some(&assigned))
+    })
+    .unwrap();
+    assert_eq!(entry_reasons(&seen), [QueueReason::Assigned]);
+    // A file with no reason is parked, not an entry.
+    let parked = EntryInput {
+        own: true,
+        requested: Some(false),
+        ..input(None)
+    };
+    let mut file = held(vec![]);
+    file.seen_at = Some(time("2026-10-21T10:00:00Z"));
+    let seen = entry_seen(&EntryInput {
+        stored: Some(&file),
+        ..parked
+    })
+    .unwrap();
+    assert!(seen.parked && seen.has_seen_at && !seen.has_entry);
+    assert_eq!(decide_entry(&seen), EntryDecision::Absent);
+}
+
+#[test]
+fn an_open_entry_loses_only_its_comment_reason() {
+    use QueueReason::{Assigned, OwnNewComments, OwnPipelineFailed};
+    let mr = parse_merge_request(&fixture("gitlab/merge-request-88.v2.json")).unwrap();
+    let at = time("2026-10-21T10:00:00Z");
+    let entry = entry_of(&mr, None, vec![OwnNewComments, OwnPipelineFailed]);
+    let opened = mark_seen(&entry, at);
+    assert_eq!(opened.reasons, [OwnPipelineFailed]);
+    assert_eq!(opened.seen_at, Some(at));
+    assert_eq!(opened.head_sha, entry.head_sha);
+    let only = entry_of(&mr, None, vec![OwnNewComments]);
+    assert_eq!(mark_seen(&only, at).reasons, []);
+    let other = entry_of(&mr, None, vec![Assigned]);
+    assert_eq!(mark_seen(&other, at).reasons, [Assigned]);
+    // The file keeps its `seen_at` when the poll rewrites it.
+    let kept = entry_of(&mr, Some(&opened), vec![OwnPipelineFailed]);
+    assert_eq!(kept.seen_at, Some(at));
+}
+
+#[test]
+fn a_start_is_refused_only_when_no_reason_is_left() {
+    let table = [
+        ("my request is there", true, true, false, false),
+        ("my request is gone", true, false, false, true),
+        (
+            "my request is gone, another reason holds",
+            true,
+            false,
+            true,
+            false,
+        ),
+        (
+            "a team request: a read cannot tell",
+            false,
+            false,
+            false,
+            false,
+        ),
+    ];
+    for (name, was_requested, reviewer, other_reason, expected) in table {
+        assert_eq!(
+            waits_no_more(was_requested, reviewer, other_reason),
+            expected,
+            "{name}"
+        );
+    }
 }

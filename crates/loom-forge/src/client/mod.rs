@@ -512,6 +512,28 @@ pub trait GitlabForge: Forge {
         updated_after: Option<Timestamp>,
     ) -> Result<Vec<MrSummary>, ForgeError>;
 
+    /// The open merge requests assigned to me (`scope=assigned_to_me`), in full.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn assigned_mrs(&self) -> Result<Vec<MrSummary>, ForgeError>;
+
+    /// The open merge requests that I wrote (`scope=created_by_me`), in full: a pipeline result
+    /// may not change `updated_at`, so `updated_after` could hide one.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn own_mrs(&self) -> Result<Vec<MrSummary>, ForgeError>;
+
+    /// The open merge requests with a pending to-do `mentioned` or `directly_addressed`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn mentions(&self) -> Result<Vec<crate::gitlab::MentionedMr>, ForgeError>;
+
     /// The merge request; with `etag`, [`Conditional::NotModified`] when it did not change.
     ///
     /// # Errors
@@ -522,6 +544,17 @@ pub trait GitlabForge: Forge {
         mr: GitlabMr,
         etag: Option<&str>,
     ) -> Result<Conditional<Mr>, ForgeError>;
+
+    /// [`Self::merge_request`], with what it tells about why the MR waits on me.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError`].
+    fn merge_request_read(
+        &self,
+        mr: GitlabMr,
+        etag: Option<&str>,
+    ) -> Result<Conditional<crate::gitlab::MrRead>, ForgeError>;
 
     /// The versions of the merge request, newest first.
     ///

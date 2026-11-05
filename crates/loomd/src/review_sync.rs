@@ -692,6 +692,8 @@ pub struct MrUpdate {
     pub gone: bool,
     /// The MR is of this context now: the entry goes to its store. Its other fields are not used.
     pub moved_to: Option<ContextName>,
+    /// What this poll read about the reasons other than a review request.
+    pub reasons: crate::review_queue::ReasonsRead,
 }
 
 /// One poll of a context and forge host, for the task thread.

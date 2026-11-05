@@ -63,6 +63,10 @@ pub enum ReviewSyncOutcome {
         /// The MRs whose sync failed: their last snapshot is kept.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed: Vec<ReviewSyncFailure>,
+        /// The lists that failed while the poll went on. The reasons from such a list keep their
+        /// last value.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed_lists: Vec<ReviewListFailure>,
     },
     /// The host was not polled: it limits the rate of requests until `until`.
     RateLimited {
@@ -85,12 +89,56 @@ pub struct ReviewSyncFailure {
     pub error: String,
 }
 
+/// A list of a poll that can fail without stopping the poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewList {
+    /// The MRs assigned to me.
+    Assigned,
+    /// The MRs that I wrote.
+    Own,
+    /// My to-dos that mention me.
+    Mentioned,
+}
+
+/// How a list failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewListFailureKind {
+    /// The forge refuses this list to the token: a permission is missing, and a retry does not
+    /// help.
+    Forbidden,
+    /// Another failure.
+    Other,
+}
+
+/// A list that failed while the poll went on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewListFailure {
+    /// The list.
+    pub list: ReviewList,
+    /// How it failed.
+    pub kind: ReviewListFailureKind,
+    /// Why, for humans. Never contains the token.
+    pub error: String,
+}
+
 /// Why an MR waits on me.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueReason {
     /// I am a requested reviewer, and my verdict is not on the current head.
     ReviewRequested,
+    /// I am an assignee, and I am not the author.
+    Assigned,
+    /// A pending to-do on the forge mentions me.
+    Mentioned,
+    /// My MR has a note from another person that I did not see.
+    OwnNewComments,
+    /// A pipeline failed on the current head of my MR.
+    OwnPipelineFailed,
+    /// My MR can be merged and has an approval.
+    OwnReadyToMerge,
 }
 
 /// An MR that waits on me and has no Review task.
@@ -122,6 +170,28 @@ pub struct ReviewQueueEntry {
 pub struct ReviewQueue {
     /// The entries, sorted by context, then key.
     pub entries: Vec<ReviewQueueEntry>,
+}
+
+/// Body of `POST /v1/reviews/queue/{key}/seen`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewSeenRequest {
+    /// The context of the MR. Necessary only when two contexts have this key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextName>,
+}
+
+/// Answer of `POST /v1/reviews/queue/{key}/seen`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewSeenResult {
+    /// The context of the MR.
+    pub context: ContextName,
+    /// The key of the MR, such as `company-a/checkout!88`.
+    pub key: String,
+    /// The time that this request wrote.
+    pub seen_at: Timestamp,
+    /// The reasons that are left. If empty: the MR left the queue.
+    pub reasons: Vec<QueueReason>,
 }
 
 /// Body of `POST /v1/reviews/queue/{key}/start`.

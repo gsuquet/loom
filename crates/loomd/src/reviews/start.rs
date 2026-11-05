@@ -6,19 +6,23 @@
 use std::time::Instant;
 
 use axum::http::StatusCode;
-use loom_api::{ApiError, ContextName, ErrorCode, ForgeKind, ReviewSyncOutcome, TaskId};
+use loom_api::{
+    ApiError, ContextName, ErrorCode, ForgeKind, QueueReason, ReviewSyncOutcome, TaskId,
+};
 use loom_forge::client::{GithubClient, GitlabClient, GitlabMr, Token};
 use loom_forge::model::{MrKey, MrState};
 use loom_store::Reader;
 use loomd::api::{internal, invalid_request, unavailable};
-use loomd::review_queue::{StartRefusal, StartTarget, active_reviews_of, can_start, start_target};
+use loomd::review_queue::{
+    StartRefusal, StartTarget, active_reviews_of, can_start, start_target, waits_no_more,
+};
 use loomd::review_sync::{MrUpdate, url_host};
 use tokio::sync::oneshot;
 use tracing::Span;
 
 use super::{
-    Poller, ReadFailure, Request, ReviewHandle, Stopped, forget_etag, github_update, gitlab_update,
-    gone_update, project_id,
+    GitlabRead, Poller, ReadFailure, Request, ReviewHandle, Stopped, forget_etag, github_update,
+    gitlab_update, gone_update, project_id,
 };
 use crate::mr_worker::PassTrigger;
 use crate::repos::Failure;
@@ -129,15 +133,19 @@ impl Poller {
                         .iter()
                         .find(|(other, _)| *other == name)
                         .and_then(|(_, entry)| {
-                            Some((url_host(&entry.web_url)?, project_id(&entry.forge_ids)))
+                            Some((
+                                url_host(&entry.web_url)?,
+                                project_id(&entry.forge_ids),
+                                entry.reasons.contains(&QueueReason::Mentioned),
+                            ))
                         });
-                let Some((host, project)) = project else {
+                let Some((host, project, mentioned)) = project else {
                     return Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
                         internal(format!("the entry of MR `{key}` has no web URL host")),
                     ));
                 };
-                self.start_entry(&name, &host, project, key)
+                self.start_entry(&name, &host, (project, mentioned), key)
             }
         }
     }
@@ -148,7 +156,7 @@ impl Poller {
         &mut self,
         context: &ContextName,
         host: &str,
-        project: Option<u64>,
+        (project, mentioned): (Option<u64>, bool),
         key: &MrKey,
     ) -> Result<(TaskId, bool), Failure> {
         let Some(index) = self
@@ -219,7 +227,9 @@ impl Poller {
             .mrs
             .get(&key.dir_name())
             .is_some_and(|cache| cache.direct);
-        let request_gone = was_direct && !reviewer;
+        // An MR can be in the queue for a reason other than a request: an assignee, or a to-do.
+        let assigned = update.reasons.assigned == Some(true);
+        let request_gone = waits_no_more(was_direct, reviewer, assigned || mentioned);
         let refusal = update
             .mr
             .as_ref()
@@ -326,7 +336,18 @@ impl Poller {
             project_id,
             iid: key.number(),
         };
-        gitlab_update(client, key, mr, Some(true), &login, cache, true).map_err(StartRead::from)
+        // GitLab has no team requests: the read tells whether I am requested. An MR assigned to
+        // me is not a request, and `sync.json` must not say so: the next poll would see a removed
+        // request, and cancel the task.
+        let read = GitlabRead {
+            key,
+            reference: mr,
+            found: Some(false),
+            mentioned: None,
+            login: &login,
+            mirrored: true,
+        };
+        gitlab_update(client, &read, cache).map_err(StartRead::from)
     }
 }
 
@@ -349,7 +370,7 @@ fn refused(key: &MrKey, refusal: StartRefusal) -> Failure {
         StartRefusal::NotOpen(MrState::Merged) => "is merged",
         StartRefusal::NotOpen(MrState::Closed | MrState::Open) => "is closed",
         StartRefusal::Own => "is my own MR",
-        StartRefusal::RequestGone => "no longer requests my review",
+        StartRefusal::RequestGone => "no longer waits on me",
     };
     (
         StatusCode::CONFLICT,

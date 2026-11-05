@@ -64,6 +64,8 @@ pub const REVIEWS_SYNC_PATH: &str = "/v1/reviews/sync";
 pub const REVIEWS_QUEUE_PATH: &str = "/v1/reviews/queue";
 /// Starts on an MR of the queue: `{key}` is its percent-encoded key.
 pub const REVIEWS_QUEUE_START_PATH: &str = "/v1/reviews/queue/{key}/start";
+/// Tells that I opened an entry of the queue: `{key}` is its percent-encoded key.
+pub const REVIEWS_QUEUE_SEEN_PATH: &str = "/v1/reviews/queue/{key}/seen";
 
 /// Query parameters of `GET /v1/reviews/queue`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

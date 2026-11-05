@@ -1,0 +1,173 @@
+[
+  {
+    "id": 102,
+    "project": {
+      "id": 77,
+      "name": "checkout",
+      "name_with_namespace": "Company A / checkout",
+      "path": "checkout",
+      "path_with_namespace": "company-a/checkout"
+    },
+    "author": {
+      "name": "Alice Example",
+      "username": "alice",
+      "id": 11,
+      "state": "active",
+      "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/11/avatar.png",
+      "web_url": "https://gitlab.example.com/alice"
+    },
+    "action_name": "mentioned",
+    "target_type": "MergeRequest",
+    "target": {
+      "id": 3088,
+      "iid": 88,
+      "project_id": 77,
+      "title": "Auth refactor",
+      "description": "",
+      "state": "opened",
+      "created_at": "2026-10-21T15:00:00.000Z",
+      "updated_at": "2026-10-23T11:06:00.000Z",
+      "target_branch": "main",
+      "source_branch": "auth-refactor",
+      "upvotes": 0,
+      "downvotes": 0,
+      "author": {
+        "name": "Alice Example",
+        "username": "alice",
+        "id": 11,
+        "state": "active",
+        "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/11/avatar.png",
+        "web_url": "https://gitlab.example.com/alice"
+      },
+      "assignee": null,
+      "source_project_id": 77,
+      "target_project_id": 77,
+      "labels": [],
+      "draft": false,
+      "work_in_progress": false,
+      "milestone": null,
+      "merge_when_pipeline_succeeds": false,
+      "merge_status": "can_be_merged",
+      "user_notes_count": 3
+    },
+    "target_url": "https://gitlab.example.com/company-a/checkout/-/merge_requests/88",
+    "body": "Auth refactor",
+    "state": "pending",
+    "created_at": "2026-10-23T11:10:00.000Z",
+    "updated_at": "2026-10-23T11:10:00.000Z"
+  },
+  {
+    "id": 103,
+    "project": {
+      "id": 77,
+      "name": "checkout",
+      "name_with_namespace": "Company A / checkout",
+      "path": "checkout",
+      "path_with_namespace": "company-a/checkout"
+    },
+    "author": {
+      "name": "Alice Example",
+      "username": "alice",
+      "id": 11,
+      "state": "active",
+      "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/11/avatar.png",
+      "web_url": "https://gitlab.example.com/alice"
+    },
+    "action_name": "mentioned",
+    "target_type": "MergeRequest",
+    "target": {
+      "id": 3070,
+      "iid": 70,
+      "project_id": 77,
+      "title": "Auth refactor",
+      "description": "",
+      "state": "merged",
+      "created_at": "2026-10-21T15:00:00.000Z",
+      "updated_at": "2026-10-23T11:06:00.000Z",
+      "target_branch": "main",
+      "source_branch": "auth-refactor",
+      "upvotes": 0,
+      "downvotes": 0,
+      "author": {
+        "name": "Alice Example",
+        "username": "alice",
+        "id": 11,
+        "state": "active",
+        "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/11/avatar.png",
+        "web_url": "https://gitlab.example.com/alice"
+      },
+      "assignee": null,
+      "source_project_id": 77,
+      "target_project_id": 77,
+      "labels": [],
+      "draft": false,
+      "work_in_progress": false,
+      "milestone": null,
+      "merge_when_pipeline_succeeds": false,
+      "merge_status": "can_be_merged",
+      "user_notes_count": 3
+    },
+    "target_url": "https://gitlab.example.com/company-a/checkout/-/merge_requests/70",
+    "body": "Auth refactor",
+    "state": "pending",
+    "created_at": "2026-10-23T11:10:00.000Z",
+    "updated_at": "2026-10-23T11:10:00.000Z"
+  },
+  {
+    "id": 104,
+    "project": {
+      "id": 77,
+      "name": "checkout",
+      "name_with_namespace": "Company A / checkout",
+      "path": "checkout",
+      "path_with_namespace": "company-a/checkout"
+    },
+    "author": {
+      "name": "Alice Example",
+      "username": "alice",
+      "id": 11,
+      "state": "active",
+      "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/11/avatar.png",
+      "web_url": "https://gitlab.example.com/alice"
+    },
+    "action_name": "marked",
+    "target_type": "MergeRequest",
+    "target": {
+      "id": 3088,
+      "iid": 88,
+      "project_id": 77,
+      "title": "Auth refactor",
+      "description": "",
+      "state": "opened",
+      "created_at": "2026-10-21T15:00:00.000Z",
+      "updated_at": "2026-10-23T11:06:00.000Z",
+      "target_branch": "main",
+      "source_branch": "auth-refactor",
+      "upvotes": 0,
+      "downvotes": 0,
+      "author": {
+        "name": "Alice Example",
+        "username": "alice",
+        "id": 11,
+        "state": "active",
+        "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/11/avatar.png",
+        "web_url": "https://gitlab.example.com/alice"
+      },
+      "assignee": null,
+      "source_project_id": 77,
+      "target_project_id": 77,
+      "labels": [],
+      "draft": false,
+      "work_in_progress": false,
+      "milestone": null,
+      "merge_when_pipeline_succeeds": false,
+      "merge_status": "can_be_merged",
+      "user_notes_count": 3
+    },
+    "target_url": "https://gitlab.example.com/company-a/checkout/-/merge_requests/88",
+    "body": "Auth refactor",
+    "state": "pending",
+    "created_at": "2026-10-23T11:10:00.000Z",
+    "updated_at": "2026-10-23T11:10:00.000Z"
+  }
+]

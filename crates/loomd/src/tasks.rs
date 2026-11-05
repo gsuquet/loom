@@ -153,6 +153,12 @@ enum Command {
         context: Option<ContextName>,
         reply: Reply<ReviewQueue>,
     },
+    /// I opened an entry of the queue.
+    ReviewSeen {
+        context: Option<ContextName>,
+        key: loom_forge::model::MrKey,
+        reply: Reply<loom_api::ReviewSeenResult>,
+    },
     /// Apply a poll of a forge: Review tasks and MR mirrors (`loomd::review_sync`).
     SyncReviews {
         batch: Box<loomd::review_sync::MrBatch>,
@@ -472,6 +478,20 @@ impl TaskHandle {
     pub async fn review_queue(&self, context: Option<ContextName>) -> Result<ReviewQueue, Failure> {
         self.send(|reply, _| Command::ReviewQueue { context, reply })
             .await
+    }
+
+    /// I opened the entry of `key`, on the task thread: a poll that applies later sees `seen_at`.
+    pub async fn review_seen(
+        &self,
+        context: Option<ContextName>,
+        key: loom_forge::model::MrKey,
+    ) -> Result<loom_api::ReviewSeenResult, Failure> {
+        self.send(|reply, _| Command::ReviewSeen {
+            context,
+            key,
+            reply,
+        })
+        .await
     }
 
     /// Applies the poll `batch` on the task thread, after the commands before it, and waits for
@@ -840,6 +860,13 @@ impl Worker {
                 }
                 Command::ReviewQueue { context, reply } => {
                     let _ = reply.send(Ok(self.review_queue(context.as_ref())));
+                }
+                Command::ReviewSeen {
+                    context,
+                    key,
+                    reply,
+                } => {
+                    let _ = reply.send(self.review_seen(context.as_ref(), &key));
                 }
                 Command::SyncReviews { batch, reply } => {
                     let _ = reply.send(self.sync_reviews(&batch));
