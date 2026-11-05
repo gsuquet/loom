@@ -10,8 +10,9 @@ use serde::Deserialize;
 
 use crate::error::{ErrorBody, ForgeTime, ParseError, invalid, json};
 use crate::model::{
-    Anchor, Comment, FileChange, FileDiff, ForgeUser, Mr, MrForgeIds, MrKey, MrState, MrSummary,
-    MrVersion, Sha, Side, Thread, ThreadSubject,
+    Anchor, Comment, FileChange, FileDiff, ForgeUser, HeadPipeline, MergeStatus, Mr, MrForgeIds,
+    MrKey, MrRead, MrSignals, MrState, MrSummary, MrVersion, PipelineCommit, PipelineOutcome, Sha,
+    Side, Thread, ThreadSubject,
 };
 
 #[derive(Deserialize)]
@@ -121,43 +122,45 @@ struct MergeRequest {
 struct RawPipeline {
     #[serde(default)]
     sha: Option<String>,
+    #[serde(default, rename = "ref")]
+    reference: Option<String>,
     #[serde(default)]
     status: Option<String>,
 }
 
-/// What the single merge request request tells about why an MR waits on me, beside [`Mr`]: not in
-/// `mr.json`, or each pipeline result would make a commit of the mirror.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MrSignals {
-    /// The usernames of the assignees.
-    pub assignees: Vec<String>,
-    /// The pipeline of the head, `None` when the MR has none.
-    pub head_pipeline: Option<HeadPipeline>,
-    /// `detailed_merge_status`, such as `mergeable`.
-    pub merge_status: Option<String>,
+/// `detailed_merge_status` to a [`MergeStatus`]: GitLab documents these four as still computing.
+fn merge_status(status: Option<&str>) -> MergeStatus {
+    match status {
+        Some("mergeable") => MergeStatus::Mergeable,
+        Some("checking" | "unchecked" | "preparing" | "approvals_syncing") => {
+            MergeStatus::Computing
+        }
+        Some(_) | None => MergeStatus::NotMergeable,
+    }
 }
 
-/// The pipeline that runs on the head commit of an MR.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeadPipeline {
-    /// The commit of the pipeline, `None` when it is absent or not a SHA.
-    pub sha: Option<Sha>,
-    /// The status, such as `success` or `failed`.
-    pub status: String,
-}
-
-impl HeadPipeline {
-    /// The status of a pipeline that failed.
-    pub const FAILED: &'static str = "failed";
-}
-
-/// A merge request as the single merge request request gives it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MrRead {
-    /// The merge request.
-    pub mr: Mr,
-    /// Why it can wait on me.
-    pub signals: MrSignals,
+/// `head_pipeline` to a [`HeadPipeline`]. GitLab has no field that gives the head of a merged
+/// results or merge train pipeline (`source_sha` is not in the API): its `ref` tells what it is,
+/// and its `sha` is a temporary merge commit. A branch can also end in `/merge`, so only the ref
+/// of a merge request counts.
+fn head_pipeline(pipeline: RawPipeline) -> Option<HeadPipeline> {
+    let merged = pipeline
+        .reference
+        .as_deref()
+        .and_then(|reference| reference.strip_prefix("refs/merge-requests/"))
+        .is_some_and(|rest| rest.ends_with("/merge") || rest.ends_with("/train"));
+    Some(HeadPipeline {
+        commit: if merged {
+            PipelineCommit::MergedResult
+        } else {
+            PipelineCommit::Commit(pipeline.sha.and_then(|sha| Sha::try_from(sha).ok()))
+        },
+        outcome: if pipeline.status? == "failed" {
+            PipelineOutcome::Failed
+        } else {
+            PipelineOutcome::Other
+        },
+    })
 }
 
 fn key(payload: &'static str, mr: &MergeRequest) -> Result<MrKey, ParseError> {
@@ -214,13 +217,8 @@ pub fn parse_merge_request_read(body: &[u8]) -> Result<MrRead, ParseError> {
             .into_iter()
             .map(|user| user.username)
             .collect(),
-        head_pipeline: mr.head_pipeline.take().and_then(|pipeline| {
-            Some(HeadPipeline {
-                sha: pipeline.sha.and_then(|sha| Sha::try_from(sha).ok()),
-                status: pipeline.status?,
-            })
-        }),
-        merge_status: mr.detailed_merge_status.take(),
+        head_pipeline: mr.head_pipeline.take().and_then(head_pipeline),
+        merge_status: merge_status(mr.detailed_merge_status.as_deref()),
     };
     let key = key(PAYLOAD, &mr)?;
     let state = state(PAYLOAD, &mr.state)?;

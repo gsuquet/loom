@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use loom_forge::github::parse_pull;
-use loom_forge::gitlab::{HeadPipeline, MrSignals, parse_merge_request};
+use loom_forge::gitlab::parse_merge_request;
 use loom_forge::model::{Comment, ThreadSubject};
 
 use super::*;
@@ -776,40 +776,35 @@ fn a_note_counts_only_when_newer_than_seen_at() {
 
 #[test]
 fn pipeline_failed_table() {
-    let pipeline = |sha_of: Option<&str>, status: &str| HeadPipeline {
-        sha: sha_of.map(sha),
-        status: status.to_owned(),
-    };
+    use PipelineOutcome::{Failed, Other};
+    let on = |commit: PipelineCommit, outcome| HeadPipeline { commit, outcome };
+    let commit = |text: &str| PipelineCommit::Commit(Some(sha(text)));
     let table = [
         ("no pipeline", None, false),
-        (
-            "failed on the head",
-            Some(pipeline(Some(V2), "failed")),
-            true,
-        ),
+        ("failed on the head", Some(on(commit(V2), Failed)), true),
         (
             "failed on an older head",
-            Some(pipeline(Some(V1), "failed")),
+            Some(on(commit(V1), Failed)),
             false,
         ),
         (
             "failed, with no SHA to compare",
-            Some(pipeline(None, "failed")),
+            Some(on(PipelineCommit::Commit(None), Failed)),
             false,
         ),
         (
-            "success on the head",
-            Some(pipeline(Some(V2), "success")),
+            "another state on the head",
+            Some(on(commit(V2), Other)),
             false,
         ),
         (
-            "running on the head",
-            Some(pipeline(Some(V2), "running")),
-            false,
+            "a merged result that failed",
+            Some(on(PipelineCommit::MergedResult, Failed)),
+            true,
         ),
         (
-            "canceled on the head",
-            Some(pipeline(Some(V2), "canceled")),
+            "a merged result in another state",
+            Some(on(PipelineCommit::MergedResult, Other)),
             false,
         ),
     ];
@@ -824,43 +819,17 @@ fn pipeline_failed_table() {
 
 #[test]
 fn ready_to_merge_table() {
+    use MergeStatus::{Computing, Mergeable, NotMergeable};
     let table = [
+        ("mergeable, one approval", Mergeable, false, 1, Some(true)),
+        ("mergeable, two approvals", Mergeable, false, 2, Some(true)),
+        ("mergeable, no approval", Mergeable, false, 0, Some(false)),
+        ("a draft", Mergeable, true, 1, Some(false)),
+        ("not mergeable", NotMergeable, false, 1, Some(false)),
+        ("the forge computes it", Computing, false, 1, None),
         (
-            "mergeable, one approval",
-            Some("mergeable"),
-            false,
-            1,
-            Some(true),
-        ),
-        (
-            "mergeable, two approvals",
-            Some("mergeable"),
-            false,
-            2,
-            Some(true),
-        ),
-        (
-            "mergeable, no approval",
-            Some("mergeable"),
-            false,
-            0,
-            Some(false),
-        ),
-        ("a draft", Some("mergeable"), true, 1, Some(false)),
-        ("not approved", Some("not_approved"), false, 1, Some(false)),
-        ("a conflict", Some("conflict"), false, 1, Some(false)),
-        ("no status", None, false, 1, Some(false)),
-        ("GitLab computes it", Some("checking"), false, 1, None),
-        (
-            "GitLab did not compute it",
-            Some("unchecked"),
-            false,
-            1,
-            None,
-        ),
-        (
-            "a draft while GitLab computes it",
-            Some("checking"),
+            "a draft while the forge computes it",
+            Computing,
             true,
             1,
             Some(false),
@@ -877,10 +846,10 @@ fn a_full_read_tells_each_reason_and_only_my_own_mr_has_own_reasons() {
     let failed = MrSignals {
         assignees: vec!["carol".to_owned()],
         head_pipeline: Some(HeadPipeline {
-            sha: Some(mr.version.head_sha.clone()),
-            status: HeadPipeline::FAILED.to_owned(),
+            commit: PipelineCommit::Commit(Some(mr.version.head_sha.clone())),
+            outcome: PipelineOutcome::Failed,
         }),
-        merge_status: Some(MERGEABLE.to_owned()),
+        merge_status: MergeStatus::Mergeable,
     };
     let threads = [thread(&[("bob", "2026-10-21T10:00:00Z")])];
     let facts = |author: &str| {

@@ -16,7 +16,7 @@
 //! - A rate limit waits for its reset, another failure backs off as automatic updates do; the
 //!   other hosts go on, and the mirrors keep their last snapshot.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,8 +36,10 @@ use loom_forge::client::{
     ApiBase, Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient,
     GitlabForge as _, GitlabMr, ReviewRequests, Token,
 };
-use loom_forge::gitlab::{MrRead, MrReviewer};
-use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, MrSummary, Sha, Thread};
+use loom_forge::gitlab::MrReviewer;
+use loom_forge::model::{
+    MergeStatus, Mr, MrForgeIds, MrKey, MrRead, MrState, MrSummary, Sha, Thread,
+};
 use loom_forge::{MrContexts, mr_context};
 use loom_repo::ContextRules;
 use loom_store::files::TASKS_DIR;
@@ -49,7 +51,7 @@ use loomd::forge::token::TokenResolver;
 use loomd::hooks;
 use loomd::recurring::{Runner, runner};
 use loomd::repo_update::GitRunner;
-use loomd::review_queue::{MERGEABLE, MrFacts, ReasonsRead, reasons_read};
+use loomd::review_queue::{MrFacts, ReasonsRead, reasons_read};
 use loomd::review_sync::{
     Belongs, MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, belongs, clone_of,
     finder_tells, github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
@@ -141,7 +143,12 @@ pub struct ReviewPoller {
 #[derive(Clone)]
 pub struct ReviewHandle {
     requests: mpsc::Sender<Request>,
+    /// The contexts and forge hosts that this machine polls.
+    polled: Polled,
 }
+
+/// The contexts and forge hosts that this machine polls.
+pub type Polled = Arc<BTreeSet<(ContextName, String)>>;
 
 /// What the poller needs from the daemon.
 pub struct Setup {
@@ -193,6 +200,16 @@ pub fn hooked_duration(name: &str, default: Duration) -> Duration {
             None
         })
         .unwrap_or(default)
+}
+
+/// The contexts and forge hosts of `hosts`.
+fn polled_of(hosts: &[Host]) -> Polled {
+    Arc::new(
+        hosts
+            .iter()
+            .map(|host| (host.target.context.clone(), host.target.host.clone()))
+            .collect(),
+    )
 }
 
 /// Starts the poller thread.
@@ -255,6 +272,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
     if !hosts.is_empty() {
         info!(hosts = hosts.len(), "MR polls loaded");
     }
+    let polled_hosts = polled_of(&hosts);
     let user_agent = format!("loomd/{}", VERSION_INFO.version);
     let (refs, refs_handle) = mr_worker::start(
         refs_runner(config, &setup.children),
@@ -288,7 +306,10 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             thread,
             refs,
         },
-        ReviewHandle { requests },
+        ReviewHandle {
+            requests,
+            polled: polled_hosts,
+        },
     ))
 }
 
@@ -304,6 +325,12 @@ impl ReviewPoller {
 }
 
 impl ReviewHandle {
+    /// The contexts and forge hosts that this machine polls.
+    #[must_use]
+    pub fn polled(&self) -> Polled {
+        Arc::clone(&self.polled)
+    }
+
     /// Polls the hosts of `context`, or of every context, now, and answers what each poll did.
     /// `None` when the poller is gone.
     pub async fn sync(&self, context: Option<ContextName>) -> Option<ReviewSyncResult> {
@@ -349,6 +376,10 @@ struct Host {
 
 /// What a poll remembers of an MR, in memory: a restart reads every MR in full once.
 #[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts of the last full read"
+)]
 struct MrCache {
     etag: Option<String>,
     head: Option<Sha>,
@@ -356,9 +387,13 @@ struct MrCache {
     direct: bool,
     /// I wrote the MR, at its last full read: a 304 does not tell.
     own: bool,
-    /// My open MR is mergeable, not a draft and has no approval, at its last full read. An
-    /// approval may not change the body of the MR, so its `ETag` does not show one.
-    waits_for_approval: bool,
+    /// My open MR is mergeable and not a draft, at its last full read. An approval may not change
+    /// the body of the MR, so its `ETag` does not show one that comes or goes.
+    watches_approvals: bool,
+    /// The MR had an approval, at its last full read.
+    approved: bool,
+    /// A to-do mentions me, at the last poll: a new one reads the MR once without its `ETag`.
+    mentioned: bool,
     /// The project of a GitLab merge request.
     project_id: Option<u64>,
     threads_at: Option<Instant>,
@@ -480,16 +515,14 @@ impl OtherLists {
     /// nothing; another failure stops only that list.
     fn read(client: &GitlabClient) -> Result<Self, Stopped> {
         let mut lists = Self::default();
-        for (list, read) in [
-            (ReviewList::Assigned, client.assigned_mrs()),
-            (ReviewList::Own, client.own_mrs()),
-        ] {
-            if let Some(mrs) = lists.of(list, read)? {
-                lists.found.extend(mrs.into_iter().map(|mr| AlsoListed {
-                    key: mr.key,
-                    project_id: mr.project_id,
-                }));
-            }
+        // One after the other: a failure of the host on the first must not read the next.
+        let assigned = lists.of(ReviewList::Assigned, client.assigned_mrs())?;
+        let own = lists.of(ReviewList::Own, client.own_mrs())?;
+        for mr in assigned.into_iter().chain(own).flatten() {
+            lists.found.push(AlsoListed {
+                key: mr.key,
+                project_id: mr.project_id,
+            });
         }
         if let Some(mentions) = lists.of(ReviewList::Mentioned, client.mentions())? {
             lists.mentioned = Some(
@@ -1047,6 +1080,10 @@ impl Poller {
                 (Belongs::Elsewhere, other) if self.can_move_to(index, &other) => {
                     settled.push(moved_update(entry.key, other));
                 }
+                // A file with no reason is not in the queue: nothing to report.
+                (Belongs::Elsewhere, _) if entry.reasons.is_empty() => {
+                    keys.push((entry.key, None, None));
+                }
                 (Belongs::Elsewhere, other) => {
                     held.push(ReviewSyncFailure {
                         key: entry.key.to_string(),
@@ -1253,9 +1290,11 @@ impl Poller {
                 .as_ref()
                 .map(|mentioned| mentioned.contains(&key.dir_name()));
             // A to-do does not change the MR: a 304 would give nothing to write its entry from.
-            if mentions == Some(true) && !mirrored && !has_entry {
+            let newly_mentioned = mentions == Some(true) && !cache.mentioned;
+            if newly_mentioned && !mirrored && !has_entry {
                 cache.etag = None;
             }
+            cache.mentioned = mentions.unwrap_or(cache.mentioned);
             let read = GitlabRead {
                 key: &key,
                 reference: mr,
@@ -1496,6 +1535,35 @@ struct GitlabRead<'a> {
     mirrored: bool,
 }
 
+/// Reads the merge request. A 304 of my mergeable MR is checked against its approvals, which can
+/// change with the same body: then, or when the approvals answer 404, the MR is read in full, so
+/// that a 404 on the MR itself decides.
+fn gitlab_read(
+    client: &GitlabClient,
+    reference: GitlabMr,
+    mirrored: bool,
+    cache: &MrCache,
+) -> Result<Conditional<MrRead>, ReadFailure> {
+    let read = client
+        .merge_request_read(reference, conditional(cache, mirrored))
+        .map_err(ReadFailure::of_the_mr)?;
+    if !matches!(read, Conditional::NotModified) || !cache.watches_approvals {
+        return Ok(read);
+    }
+    let moved = match client.approvals(reference) {
+        Ok(approvals) => approvals.approved_by.is_empty() == cache.approved,
+        Err(ForgeError::NotFound { .. }) => true,
+        Err(error) => return Err(error.into()),
+    };
+    if moved {
+        client
+            .merge_request_read(reference, None)
+            .map_err(ReadFailure::of_the_mr)
+    } else {
+        Ok(read)
+    }
+}
+
 /// The GitLab merge request of `read`: in full when it changed since the `ETag` of `cache`.
 fn gitlab_update(
     client: &GitlabClient,
@@ -1510,13 +1578,7 @@ fn gitlab_update(
         login,
         mirrored,
     } = *query;
-    // An approval may leave the body as it was, so the ETag would hide it.
-    if cache.waits_for_approval && !client.approvals(reference)?.approved_by.is_empty() {
-        cache.etag = None;
-    }
-    let read = client
-        .merge_request_read(reference, conditional(cache, mirrored))
-        .map_err(ReadFailure::of_the_mr)?;
+    let read = gitlab_read(client, reference, mirrored, cache)?;
     match read {
         Conditional::Modified { value, etag } => {
             let MrRead { mr, signals } = value;
@@ -1548,11 +1610,11 @@ fn gitlab_update(
             cache.etag = etag;
             cache.direct = is_reviewer(&mr, login);
             cache.own = own;
-            cache.waits_for_approval = own
+            cache.watches_approvals = own
                 && mr.state == MrState::Open
                 && !mr.draft
-                && signals.merge_status.as_deref() == Some(MERGEABLE)
-                && approvals.approved_by.is_empty();
+                && signals.merge_status == MergeStatus::Mergeable;
+            cache.approved = !approvals.approved_by.is_empty();
             cache.threads_at = Some(Instant::now());
             cache.head = Some(head.clone());
             Ok(MrUpdate {

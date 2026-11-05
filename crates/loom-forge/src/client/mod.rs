@@ -554,7 +554,7 @@ pub trait GitlabForge: Forge {
         &self,
         mr: GitlabMr,
         etag: Option<&str>,
-    ) -> Result<Conditional<crate::gitlab::MrRead>, ForgeError>;
+    ) -> Result<Conditional<crate::model::MrRead>, ForgeError>;
 
     /// The versions of the merge request, newest first.
     ///

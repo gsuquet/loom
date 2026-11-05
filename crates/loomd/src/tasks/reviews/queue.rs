@@ -291,12 +291,22 @@ impl Worker {
         &mut self,
         context: Option<&ContextName>,
         key: &MrKey,
+        polled: &crate::reviews::Polled,
     ) -> Result<ReviewSeenResult, Failure> {
         let found: Vec<(ContextName, QueueEntry)> = self
             .stores
             .iter()
             .filter_map(|(name, root)| Some((name.clone(), read_entry(root, key)?)))
             .collect();
+        // An entry wins over a file with no reason, which only keeps a `seen_at`.
+        let found = if found.iter().any(|(_, entry)| !entry.reasons.is_empty()) {
+            found
+                .into_iter()
+                .filter(|(_, entry)| !entry.reasons.is_empty())
+                .collect()
+        } else {
+            found
+        };
         let hosts: Vec<(ContextName, Option<String>)> = found
             .iter()
             .map(|(name, entry)| (name.clone(), url_host(&entry.web_url)))
@@ -333,6 +343,16 @@ impl Worker {
             .find(|(other, _)| *other == name)
             .map(|(_, entry)| entry)
             .ok_or_else(|| cannot(format!("no entry of MR `{key}` in context `{name}`")))?;
+        // As for a start: this machine must poll what it writes on.
+        let host = url_host(&entry.web_url).unwrap_or_default();
+        if !polled.contains(&(name.clone(), host.clone())) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                invalid_request(format!(
+                    "this machine does not poll {host} for context `{name}`: open MR `{key}` on the first machine of the context, or add a credential for the host if it was removed"
+                )),
+            ));
+        }
         let at = now();
         let opened = mark_seen(entry, at);
         let wrote = write_entry(root, &opened).map_err(cannot)?;

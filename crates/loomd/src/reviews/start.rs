@@ -103,6 +103,8 @@ impl Poller {
             .stores
             .iter()
             .filter_map(|(name, root)| Some((name.clone(), read_entry(root, key)?)))
+            // A file with no reason only keeps a `seen_at`: it is not in the queue.
+            .filter(|(_, entry)| !entry.reasons.is_empty())
             .collect();
         let hosts: Vec<(ContextName, Option<String>)> = entries
             .iter()

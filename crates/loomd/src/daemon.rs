@@ -1299,7 +1299,11 @@ async fn review_seen(
             Ok((key, body.0))
         });
     match request {
-        Ok((key, request)) => respond(app.tasks.review_seen(request.context, key).await),
+        Ok((key, request)) => respond(
+            app.tasks
+                .review_seen(request.context, key, app.reviews.polled())
+                .await,
+        ),
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }
 }

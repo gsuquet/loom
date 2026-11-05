@@ -15,8 +15,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_api::{ContextName, QueueReason, ReviewQueueEntry, TaskId, Timestamp};
-use loom_forge::gitlab::{HeadPipeline, MrSignals};
-use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, Sha, Thread};
+use loom_forge::model::{
+    HeadPipeline, MergeStatus, Mr, MrForgeIds, MrKey, MrSignals, MrState, PipelineCommit,
+    PipelineOutcome, Sha, Thread,
+};
 use loom_store::IndexedTask;
 use loom_store::files::QUEUE_DIR;
 use loom_store::port::TaskLocation;
@@ -317,11 +319,7 @@ pub fn reasons_read(facts: &MrFacts<'_>) -> ReasonsRead {
             ),
         ),
         ready_to_merge: if own {
-            ready_to_merge(
-                facts.signals.merge_status.as_deref(),
-                facts.mr.draft,
-                facts.approvals,
-            )
+            ready_to_merge(facts.signals.merge_status, facts.mr.draft, facts.approvals)
         } else {
             Some(false)
         },
@@ -359,28 +357,31 @@ pub fn has_new_comment(newest: Option<Timestamp>, seen_at: Option<Timestamp>) ->
 }
 
 /// A pipeline failed on `head`: a failure on an older head says nothing about this one. Pure.
+///
+/// A merged results or merge train pipeline cannot be compared with the head, and counts: after a
+/// push it can show a failure of the older head for a while, but a failure is never hidden.
 #[must_use]
 pub fn pipeline_failed(pipeline: Option<&HeadPipeline>, head: &Sha) -> bool {
     pipeline.is_some_and(|pipeline| {
-        pipeline.status == HeadPipeline::FAILED && pipeline.sha.as_ref() == Some(head)
+        pipeline.outcome == PipelineOutcome::Failed
+            && match &pipeline.commit {
+                PipelineCommit::MergedResult => true,
+                PipelineCommit::Commit(sha) => sha.as_ref() == Some(head),
+            }
     })
 }
 
-/// `detailed_merge_status` values while GitLab computes it.
-const MERGE_STATUS_COMPUTING: [&str; 2] = ["checking", "unchecked"];
-/// The `detailed_merge_status` of an MR that can merge.
-pub const MERGEABLE: &str = "mergeable";
-
-/// My MR can be merged and has an approval, and it is not a draft. `None` while GitLab computes
+/// My MR can be merged and has an approval, and it is not a draft. `None` while the forge computes
 /// the status: the reason does not change, so it does not come and go at each push. Pure.
 #[must_use]
-pub fn ready_to_merge(status: Option<&str>, draft: bool, approvals: usize) -> Option<bool> {
+pub const fn ready_to_merge(status: MergeStatus, draft: bool, approvals: usize) -> Option<bool> {
     if draft {
         return Some(false);
     }
     match status {
-        Some(status) if MERGE_STATUS_COMPUTING.contains(&status) => None,
-        status => Some(status == Some(MERGEABLE) && approvals > 0),
+        MergeStatus::Computing => None,
+        MergeStatus::Mergeable => Some(approvals > 0),
+        MergeStatus::NotMergeable => Some(false),
     }
 }
 

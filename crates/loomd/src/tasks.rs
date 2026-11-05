@@ -157,6 +157,7 @@ enum Command {
     ReviewSeen {
         context: Option<ContextName>,
         key: loom_forge::model::MrKey,
+        polled: crate::reviews::Polled,
         reply: Reply<loom_api::ReviewSeenResult>,
     },
     /// Apply a poll of a forge: Review tasks and MR mirrors (`loomd::review_sync`).
@@ -485,10 +486,12 @@ impl TaskHandle {
         &self,
         context: Option<ContextName>,
         key: loom_forge::model::MrKey,
+        polled: crate::reviews::Polled,
     ) -> Result<loom_api::ReviewSeenResult, Failure> {
         self.send(|reply, _| Command::ReviewSeen {
             context,
             key,
+            polled,
             reply,
         })
         .await
@@ -864,9 +867,10 @@ impl Worker {
                 Command::ReviewSeen {
                     context,
                     key,
+                    polled,
                     reply,
                 } => {
-                    let _ = reply.send(self.review_seen(context.as_ref(), &key));
+                    let _ = reply.send(self.review_seen(context.as_ref(), &key, &polled));
                 }
                 Command::SyncReviews { batch, reply } => {
                     let _ = reply.send(self.sync_reviews(&batch));

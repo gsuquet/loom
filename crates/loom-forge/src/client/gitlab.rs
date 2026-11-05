@@ -10,12 +10,12 @@ use super::{
 use crate::error::ParseError;
 use crate::gitlab::request::{ApproveBody, BulkPublishBody, DraftNoteBody};
 use crate::gitlab::{
-    Approvals, DraftNote, MentionedMr, MrRead, MrReviewer, TokenInfo, parse_approvals,
+    Approvals, DraftNote, MentionedMr, MrReviewer, TokenInfo, parse_approvals,
     parse_branch_merge_requests, parse_diffs, parse_discussions, parse_draft_note,
     parse_draft_notes, parse_mention_todos, parse_merge_request_read, parse_merge_request_summary,
     parse_merge_requests, parse_project, parse_reviewers, parse_token, parse_user, parse_versions,
 };
-use crate::model::{FileDiff, Mr, MrSummary, MrVersion, Sha, Thread};
+use crate::model::{FileDiff, Mr, MrRead, MrSummary, MrVersion, Sha, Thread};
 use crate::open::{NewMr, create_request, find_request};
 
 /// The largest page that GitLab gives.

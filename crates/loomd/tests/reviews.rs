@@ -6339,7 +6339,6 @@ fn a_list_that_fails_keeps_the_entries_and_is_reported() {
         let failed = gitlab_failed_lists(&result);
         assert_eq!(failed.len(), 1, "{list}: {failed:?}");
         assert_eq!((failed[0].list, failed[0].kind), (name, kind), "{list}");
-        assert!(!failed[0].error.contains(GITLAB_TOKEN));
         assert_eq!(reasons_of(&sandbox), Some(held.clone()), "{list}");
         assert_eq!(snapshot(&sandbox.store("company-a")), before, "{list}");
 
@@ -6484,5 +6483,492 @@ fn a_poll_with_every_list_costs_five_list_requests_and_one_etag_read_and_commits
         .filter(|request| request.contains("/merge_requests/88"))
         .collect();
     assert_eq!(reads, [MR_88], "{result:?}");
+    daemon.stop();
+}
+
+const APPROVALS_88: &str = "GET /projects/77/merge_requests/88/approvals";
+const VERSIONS_88: &str = "GET /projects/77/merge_requests/88/versions";
+
+fn count_of(sandbox: &Sandbox, what: &str) -> usize {
+    sandbox
+        .gitlab
+        .requests()
+        .iter()
+        .filter(|request| *request == what)
+        .count()
+}
+
+fn not_found() -> Route {
+    Route {
+        status: 404,
+        ..route(r#"{"message":"404 Not found"}"#)
+    }
+}
+
+/// My own open MR that is mergeable, with a new comment, so that it has an entry and its
+/// approvals are read at each poll.
+fn own_mergeable_with_an_entry(sandbox: &Sandbox) {
+    set_own(sandbox, "W/\"a\"", |mr| {
+        mr["detailed_merge_status"] = json!("mergeable");
+    });
+    set_notes(sandbox, &[("bob", NOTE_T1, false)]);
+    sandbox.sync();
+    assert_eq!(reasons_of(sandbox), Some(vec![QueueReason::OwnNewComments]));
+}
+
+#[test]
+fn waiting_for_approval_and_a_404_removes_the_entry() {
+    // The MR answers 404, with or without its approvals.
+    for approvals_too in [true, false] {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        own_mergeable_with_an_entry(&sandbox);
+        sandbox.gitlab.set(MR_88, not_found());
+        if approvals_too {
+            sandbox.gitlab.set(APPROVALS_88, not_found());
+        }
+        set_list(&sandbox, OWN, false);
+        let result = sandbox.sync();
+        assert_eq!(reasons_of(&sandbox), None, "{result:?}");
+        assert_eq!(entry_file(&sandbox), None);
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")).5,
+            0,
+            "{result:?}"
+        );
+        daemon.stop();
+    }
+}
+
+#[test]
+fn a_404_on_the_approvals_alone_reads_the_mr_and_stays_a_failure() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    own_mergeable_with_an_entry(&sandbox);
+    sandbox.gitlab.set(APPROVALS_88, not_found());
+    let reads = count_of(&sandbox, MR_88);
+    let result = sandbox.sync();
+    // A 304 proves nothing here: the MR itself is read in full, and it is there.
+    assert_eq!(count_of(&sandbox, MR_88), reads + 2);
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).5,
+        1
+    );
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnNewComments])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn an_approval_revoked_on_the_same_etag_ends_the_reason() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |mr| {
+        mr["detailed_merge_status"] = json!("mergeable");
+    });
+    set_approved_by(&sandbox, &["bob"]);
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnReadyToMerge])
+    );
+    // No change: the approvals are read, the MR stays a 304.
+    let before = snapshot(&sandbox.store("company-a"));
+    sandbox.sync();
+    assert_eq!(snapshot(&sandbox.store("company-a")), before);
+    set_approved_by(&sandbox, &[]);
+    sandbox.sync();
+    assert_eq!(reasons_of(&sandbox), None);
+    daemon.stop();
+}
+
+#[test]
+fn a_status_that_gitlab_is_computing_does_not_end_ready_to_merge() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |mr| {
+        mr["detailed_merge_status"] = json!("mergeable");
+    });
+    set_approved_by(&sandbox, &["bob"]);
+    sandbox.sync();
+    for (etag, status) in [
+        ("W/\"b\"", "preparing"),
+        ("W/\"c\"", "approvals_syncing"),
+        ("W/\"d\"", "unchecked"),
+    ] {
+        set_mr(&sandbox, etag, |mr| {
+            mr["author"] = carol();
+            mr["detailed_merge_status"] = json!(status);
+        });
+        sandbox.sync();
+        assert_eq!(
+            reasons_of(&sandbox),
+            Some(vec![QueueReason::OwnReadyToMerge]),
+            "{status}"
+        );
+    }
+    daemon.stop();
+}
+
+#[test]
+fn a_failed_merged_results_or_train_pipeline_counts_and_a_branch_of_that_name_does_not() {
+    const MERGE_COMMIT: &str = "1604b0c46c395822e4e9478777f8e54ac99fe5b9";
+    let fixture_body = fixture_json("gitlab/merge-request-88.merged-results.json");
+    let table = [
+        (
+            "merged results",
+            "refs/merge-requests/88/merge",
+            MERGE_COMMIT,
+            true,
+        ),
+        (
+            "merge train",
+            "refs/merge-requests/88/train",
+            MERGE_COMMIT,
+            true,
+        ),
+        // A pipeline for the MR on its own head compares its SHA.
+        (
+            "detached, older head",
+            "refs/merge-requests/88/head",
+            V1,
+            false,
+        ),
+        (
+            "detached, on the head",
+            "refs/merge-requests/88/head",
+            V2,
+            true,
+        ),
+        // A source branch can end in `/merge`: only the MR ref has no comparable SHA.
+        ("a branch named so", "feature/merge", V1, false),
+    ];
+    for (name, reference, sha, expected) in table {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |mr| {
+            mr["head_pipeline"] = json!({
+                "sha": sha,
+                "ref": reference,
+                "status": "failed",
+            });
+        });
+        sandbox.sync();
+        let reasons = expected.then(|| vec![QueueReason::OwnPipelineFailed]);
+        assert_eq!(reasons_of(&sandbox), reasons, "{name}");
+        daemon.stop();
+    }
+    // The composed fixture too.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    sandbox
+        .gitlab
+        .set(MR_88, with_etag(fixture_body.to_string(), "W/\"f\""));
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnPipelineFailed])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_host_failure_on_the_first_list_stops_the_second() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.gitlab.set(
+        ASSIGNED,
+        Route {
+            status: 429,
+            headers: vec![("retry-after", "3600".to_owned())],
+            ..route(r#"{"message":"429"}"#)
+        },
+    );
+    let result = sandbox.sync();
+    assert!(
+        matches!(
+            poll(&result, "company-a", "gitlab.example.com").outcome,
+            ReviewSyncOutcome::RateLimited { .. }
+        ),
+        "{result:?}"
+    );
+    for later in [OWN, MENTIONED, ADDRESSED] {
+        assert_eq!(count_of(&sandbox, later), 0, "{later}");
+    }
+    daemon.stop();
+}
+
+#[test]
+fn a_list_failure_that_echoes_the_token_is_redacted() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.gitlab.set(
+        MENTIONED,
+        Route {
+            status: 403,
+            ..route(format!(r#"{{"message":"refused for {GITLAB_TOKEN}"}}"#))
+        },
+    );
+    let result = sandbox.sync();
+    let failed = gitlab_failed_lists(&result);
+    assert_eq!(failed.len(), 1, "{result:?}");
+    assert!(!failed[0].error.contains(GITLAB_TOKEN), "{failed:?}");
+    assert!(failed[0].error.contains("refused"), "{failed:?}");
+    daemon.stop();
+}
+
+#[test]
+fn approvals_are_read_at_each_poll_only_for_my_own_mergeable_mr() {
+    // Mine, mergeable: one read per poll, on a 304.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |mr| {
+        mr["detailed_merge_status"] = json!("mergeable");
+    });
+    sandbox.sync();
+    let reads = count_of(&sandbox, APPROVALS_88);
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, APPROVALS_88), reads + 1);
+    daemon.stop();
+
+    // Mine, not mergeable, or a draft; and the MR of another, mergeable: none on a 304.
+    let table: [(&str, bool, &str, bool); 3] = [
+        ("not mergeable", true, "conflict", false),
+        ("a draft", true, "mergeable", true),
+        ("of another", false, "mergeable", false),
+    ];
+    for (name, mine, status, draft) in table {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_list(&sandbox, ASSIGNED, true);
+        set_own(&sandbox, "W/\"a\"", |mr| {
+            if !mine {
+                mr["author"] = fixture_json("gitlab/merge-request-88.v2.json")["author"].clone();
+            }
+            mr["assignees"] = json!([carol()]);
+            mr["detailed_merge_status"] = json!(status);
+            mr["draft"] = json!(draft);
+        });
+        sandbox.sync();
+        let reads = count_of(&sandbox, APPROVALS_88);
+        sandbox.sync();
+        assert_eq!(count_of(&sandbox, APPROVALS_88), reads, "{name}");
+        daemon.stop();
+    }
+}
+
+#[test]
+fn a_mention_with_an_entry_or_a_task_keeps_the_etag_of_the_mr() {
+    // An entry: the 304 holds, so no approvals are read.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    no_review_list(&sandbox);
+    set_mentioned(&sandbox, MENTIONED, true);
+    set_mr(&sandbox, "W/\"a\"", |_| {});
+    sandbox.sync();
+    assert_eq!(reasons_of(&sandbox), Some(vec![QueueReason::Mentioned]));
+    let reads = count_of(&sandbox, APPROVALS_88);
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, APPROVALS_88), reads);
+    daemon.stop();
+
+    // A task: no versions are read again.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync_and_start();
+    sandbox.sync();
+    set_mentioned(&sandbox, MENTIONED, true);
+    let reads = count_of(&sandbox, VERSIONS_88);
+    sandbox.sync();
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, VERSIONS_88), reads);
+    assert_eq!(reasons_of(&sandbox), None);
+    daemon.stop();
+}
+
+#[test]
+fn a_mention_that_gives_no_entry_is_read_without_its_etag_once() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    sandbox.sync();
+    let id = start(&socket, GITLAB_KEY).task.summary.id.to_string();
+    let done = request(
+        &socket,
+        "POST",
+        &format!("/v1/tasks/{id}/actions/done"),
+        None,
+    );
+    assert_eq!(done.status, 200, "{}", done.body);
+    daemon.stop();
+    let store = sandbox.store("company-a");
+    fs::create_dir_all(store.join("archive/2026")).unwrap();
+    fs::rename(
+        store.join("tasks").join(&id),
+        store.join("archive/2026").join(&id),
+    )
+    .unwrap();
+
+    // Archived, same head: a to-do alone brings no entry back.
+    let daemon = sandbox.start();
+    set_mentioned(&sandbox, MENTIONED, true);
+    sandbox.sync();
+    assert_eq!(reasons_of(&sandbox), None);
+    let reads = count_of(&sandbox, APPROVALS_88);
+    sandbox.sync();
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, APPROVALS_88), reads);
+    assert_eq!(reasons_of(&sandbox), None);
+    daemon.stop();
+}
+
+#[test]
+fn opening_an_entry_is_refused_on_a_machine_that_does_not_poll_it_and_can_be_repeated() {
+    let sandbox = Sandbox::new();
+    let config = CONFIG.replace(
+        "[contexts.company-a]\n",
+        "[contexts.company-a]\nmachines = [\"work\", \"laptop\"]\n",
+    );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    let daemon = sandbox.start();
+    let dir = sandbox.store("company-a").join("queue/mrs");
+    fs::create_dir_all(&dir).unwrap();
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["author"] = carol();
+    let file = "gitlab-company-a%2Fcheckout%2188.json";
+    fs::write(
+        dir.join(file),
+        json!({
+            "v": 1,
+            "key": KEY_88,
+            "forge_ids": {"forge": "gitlab", "id": mr["id"], "project_id": 77},
+            "title": mr["title"],
+            "author": "carol",
+            "web_url": mr["web_url"],
+            "head_sha": V2,
+            "updated_at": "2026-10-23T11:06:00Z",
+            "reasons": ["own_new_comments"],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let before = fs::read(dir.join(file)).unwrap();
+    let refused = seen(&sandbox.socket());
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(fs::read(dir.join(file)).unwrap(), before);
+    daemon.stop();
+
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+    sandbox.sync();
+    let first: ReviewSeenResult = ok(&seen(&sandbox.socket()));
+    assert_eq!(first.reasons, []);
+    let again: ReviewSeenResult = ok(&seen(&sandbox.socket()));
+    assert_eq!(again.reasons, []);
+    daemon.stop();
+}
+
+#[test]
+fn a_file_with_no_reason_is_not_there_for_a_start() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+    sandbox.sync();
+    let _: ReviewSeenResult = ok(&seen(&socket));
+    let requests = sandbox.gitlab.requests().len();
+    let refused = start_response(&socket, GITLAB_KEY);
+    assert_eq!(refused.status, 404, "{}", refused.body);
+    assert_eq!(sandbox.gitlab.requests().len(), requests);
+    assert!(entry_file(&sandbox).is_some());
+    daemon.stop();
+}
+
+#[test]
+fn a_file_with_no_reason_of_another_context_is_not_reported_at_each_poll() {
+    let sandbox = sandbox_for_a_move(
+        "\n[contexts.personal.forges.\"gitlab.example.com\"]\ntoken_env = \"LOOM_TEST_CLIENT_TOKEN\"\n",
+    );
+    let mut other = fixture_json("gitlab/user.json");
+    other["username"] = json!("carol-client");
+    sandbox.gitlab.set(
+        &format!("GET /user@{CLIENT_TOKEN}"),
+        route(other.to_string()),
+    );
+    for list in ["GET /merge_requests", OWN, ASSIGNED] {
+        sandbox
+            .gitlab
+            .set(&format!("{list}@{CLIENT_TOKEN}"), route(EMPTY_LIST));
+    }
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+    sandbox.sync();
+    sandbox.sync();
+    let _: ReviewSeenResult = ok(&seen(&sandbox.socket()));
+    register_the_clone(&sandbox);
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).5,
+        0,
+        "{result:?}"
+    );
+    assert!(entry_file(&sandbox).is_some());
+    daemon.stop();
+}
+
+#[test]
+fn a_new_mention_on_an_entry_keeps_the_etag_and_adds_the_reason() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    no_review_list(&sandbox);
+    set_list(&sandbox, ASSIGNED, true);
+    set_mr(&sandbox, "W/\"a\"", |mr| {
+        mr["assignees"] = json!([carol()]);
+    });
+    sandbox.sync();
+    assert_eq!(reasons_of(&sandbox), Some(vec![QueueReason::Assigned]));
+    set_mentioned(&sandbox, MENTIONED, true);
+    let reads = count_of(&sandbox, APPROVALS_88);
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, APPROVALS_88), reads);
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::Assigned, QueueReason::Mentioned])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn a_file_with_no_reason_in_another_context_makes_no_key_ambiguous() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let socket = sandbox.socket();
+    no_review_list(&sandbox);
+    set_list(&sandbox, ASSIGNED, true);
+    set_mr(&sandbox, "W/\"a\"", |mr| {
+        mr["assignees"] = json!([carol()]);
+    });
+    sandbox.sync();
+    let mut parked = entry_file(&sandbox).unwrap();
+    parked["reasons"] = json!([]);
+    let dir = sandbox.store("personal").join("queue/mrs");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("gitlab-company-a%2Fcheckout%2188.json"),
+        parked.to_string(),
+    )
+    .unwrap();
+
+    let answer: ReviewSeenResult = ok(&seen(&socket));
+    assert_eq!(answer.context.as_str(), "company-a");
+    let started = start(&socket, GITLAB_KEY);
+    assert!(started.created);
     daemon.stop();
 }
