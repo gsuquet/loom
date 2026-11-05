@@ -32,15 +32,20 @@ const TASKS: usize = 5_000;
 const RUNS: usize = 60;
 /// Limit of the latency test on [`Timing::p50`] and [`Timing::floor`]. The target is 100 ms; a
 /// shared CI runner running a debug build gets slack. In the recorded runs, p50 stayed under
-/// 52 ms at a load average of 100 (p95 reached 295 ms, which is why it is only printed).
+/// 52 ms at a load average of 100.
 const LATENCY_LIMIT: Duration = Duration::from_millis(250);
+/// Ceiling on [`Timing::p95`]. It catches stalls (a held lock, repeated waits of
+/// `tasks::READY_TIMEOUT`), not a tail of some hundreds of ms: the highest recorded p95 is 295 ms
+/// at a load average of about 110, about 7 times less.
+const P95_CEILING: Duration = Duration::from_secs(2);
 /// Least limit on the time from the start of loomd to the tasks and repository states read.
-/// Recorded: 11 to 16 s idle, 22 to 30 s with 30 CPU hogs.
+/// Recorded: 11 to 25 s without synthetic load, 22 to 30 s with 30 CPU hogs. A stall of 30 s still
+/// passes on an idle machine (ready in 39 to 46 s); one of 120 s fails.
 const MIN_READY_LIMIT: Duration = Duration::from_mins(1);
-/// Limit on that time, in times the fixtures took on the same machine at the same moment, which
-/// tells a loaded disk from a slow index: with 16 `F_FULLFSYNC` writers as well, the fixtures took
-/// 168 to 307 s and the index 181 to 183 s. A stall of a first index fails on an idle machine (the
-/// fixtures take 1.5 s there); under such a load, only one longer than about 2.5 min does.
+/// Limit on that time, in times the fixtures took on the same machine just before, as a measure
+/// of its load. With 16 `F_FULLFSYNC` writers as well, the fixtures took 116 to 307 s and the index
+/// 181 to 183 s, so that a stall of about 7 min passes after fixtures of 307 s. This limit has not
+/// run under that load, and could trip on an fsync load starting after the fixtures.
 const READY_LIMIT_TO_FIXTURES: u32 = 2;
 
 const CONFIG: &str = r#"
@@ -552,6 +557,11 @@ fn search_answers_within_budget_on_1000_repositories_and_5000_tasks() {
             search.floor < LATENCY_LIMIT,
             "floor {:?} over {LATENCY_LIMIT:?} ({scenario})",
             search.floor
+        );
+        assert!(
+            search.p95 < P95_CEILING,
+            "p95 {:?} over {P95_CEILING:?} ({scenario})",
+            search.p95
         );
     }
 }

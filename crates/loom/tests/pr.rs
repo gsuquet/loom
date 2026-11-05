@@ -145,22 +145,6 @@ impl Sandbox {
         );
     }
 
-    /// The requests of `loom pr`: all of them, without the forge metadata poll of the `loomd` it
-    /// starts. That poll runs 10 s after the start of a loomd and has no test hook, and a test on
-    /// a busy machine outlasts that.
-    fn pr_requests(&self) -> Vec<fake_forge::Recorded> {
-        let mut requests = self.forge.requests();
-        requests.retain(|request| !from_the_metadata_poll(request));
-        requests
-    }
-
-    fn pr_lines(&self) -> Vec<String> {
-        self.pr_requests()
-            .iter()
-            .map(fake_forge::Recorded::line)
-            .collect()
-    }
-
     /// `loom --color=never <args>` in the repository, with the token and the fake forge.
     fn loom(&self, args: &[&str]) -> Output {
         Command::new(loom_bin())
@@ -168,7 +152,9 @@ impl Sandbox {
             .envs(isolation::isolated_env(&self.home()))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("LOOM_TEST_FORGE_API", self.forge.base())
-            // No MR poll of the loomd started here, in a test outlasting its usual 30 s delay.
+            // The polls of the loomd started here: the requests checked are those of `loom pr`,
+            // in a test on a busy machine outlasting their usual delays (10 s and 30 s).
+            .env("LOOM_TEST_FORGE_METADATA_START_DELAY", "1h")
             .env("LOOM_TEST_REVIEW_START_DELAY", "1h")
             .env(TOKEN_ENV, TOKEN)
             .env("PWD", self.repo())
@@ -239,21 +225,6 @@ fn find_files(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
         } else if path.file_name().is_some_and(|file| file == name) {
             found.push(path);
         }
-    }
-}
-
-/// Whether `request` is the read of a project by the forge metadata poll: on GitHub the query
-/// `graphql::REPOSITORY` of `loom-forge` (private there), on GitLab `GET /projects/<path>`. The
-/// fake forge answers 404 to it, so the poll stops there.
-fn from_the_metadata_poll(request: &fake_forge::Recorded) -> bool {
-    match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/graphql") => request.json()["query"].as_str().is_some_and(|query| {
-            query.contains("repository(owner: $owner, name: $name) { databaseId url isArchived")
-        }),
-        ("GET", path) => path
-            .strip_prefix("/projects/")
-            .is_some_and(|project| !project.contains(['/', '?'])),
-        _ => false,
     }
 }
 
@@ -351,7 +322,7 @@ fn pr_pushes_the_branch_and_opens_a_draft_linked_to_the_focus_task() {
         "origin"
     );
     // The draft request: title and kind template of the task, never its notes.
-    let requests = sandbox.pr_requests();
+    let requests = sandbox.forge.requests();
     let lines: Vec<String> = requests.iter().map(fake_forge::Recorded::line).collect();
     assert_eq!(lines, [format!("GET {FIND}"), format!("POST {CREATE}")]);
     assert_eq!(
@@ -396,7 +367,7 @@ fn pr_links_the_open_mr_of_the_branch_instead_of_opening_one() {
     let text = sandbox.ok(&["pr"]);
     assert!(text.starts_with("pushed fix/login to origin\n"), "{text}");
     assert!(text.contains("linked open MR acme/shop#412"), "{text}");
-    assert_eq!(sandbox.pr_lines(), [format!("GET {FIND}")]);
+    assert_eq!(sandbox.forge.lines(), [format!("GET {FIND}")]);
     assert_eq!(delivery_keys(&sandbox.task(&id)), ["acme/shop#412"]);
     assert!(sandbox.events(&id).contains(r#""action":"linked""#));
 }
@@ -427,7 +398,7 @@ fn a_dry_run_prints_the_push_and_the_requests_and_does_neither() {
     assert_eq!(report.result.outcome, MrOutcome::Planned);
     assert_eq!(report.result.mr, None);
 
-    assert_eq!(sandbox.pr_lines(), [] as [String; 0]);
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
     assert!(!sandbox.remote_branches().contains("fix/login"));
     assert_eq!(delivery_keys(&sandbox.task(&id)), [] as [String; 0]);
 }
@@ -458,7 +429,7 @@ fn pr_refuses_the_default_branch_and_a_branch_with_nothing_ahead() {
         "{}",
         stderr(&output)
     );
-    assert_eq!(sandbox.pr_lines(), [] as [String; 0]);
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
     assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
 }
 
@@ -486,7 +457,7 @@ fn a_refused_push_shows_the_git_error_and_opens_no_mr() {
         error.contains("pushes to fix/* are closed today"),
         "{error}"
     );
-    assert_eq!(sandbox.pr_lines(), [] as [String; 0]);
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
     assert_eq!(delivery_keys(&sandbox.task(&id)), [] as [String; 0]);
 }
 
@@ -510,7 +481,6 @@ fn a_context_without_a_credential_for_the_host_opens_nothing() {
     }
     // Refused before the push.
     assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
-    // Strict: without a credential, no poll runs either.
     assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
 }
 
@@ -526,7 +496,7 @@ fn a_refused_token_is_resolved_again_and_the_request_sent_again_once() {
     let text = sandbox.ok(&["pr", &id]);
     assert!(text.contains("opened draft MR acme/shop#412"), "{text}");
     assert_eq!(
-        sandbox.pr_lines(),
+        sandbox.forge.lines(),
         [
             format!("GET {FIND}"),
             format!("GET {FIND}"),
@@ -588,7 +558,7 @@ fn pr_opens_a_gitlab_draft_with_the_draft_title_prefix() {
         text.contains("opened draft MR company-a/checkout!88"),
         "{text}"
     );
-    let requests = sandbox.pr_requests();
+    let requests = sandbox.forge.requests();
     assert_eq!(requests[1].line(), format!("POST {create}"));
     assert_eq!(requests[1].json()["title"], "Draft: Login timeout");
     assert_eq!(requests[1].json()["source_branch"], "fix/login");
@@ -627,7 +597,7 @@ fn a_read_only_task_is_refused_before_the_push() {
         "{error}"
     );
     assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
-    assert_eq!(sandbox.pr_lines(), [] as [String; 0]);
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
 }
 
 #[test]
@@ -650,5 +620,5 @@ fn an_upstream_with_another_branch_name_is_refused() {
         "{error}"
     );
     assert_eq!(sandbox.remote_branches().trim(), "refs/heads/main");
-    assert_eq!(sandbox.pr_lines(), [] as [String; 0]);
+    assert_eq!(sandbox.forge.lines(), [] as [String; 0]);
 }
