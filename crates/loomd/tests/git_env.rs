@@ -754,3 +754,76 @@ fn a_skip_hash_index_is_read_past_git_index_file() {
     let body = read_state(&sandbox, "app");
     assert_eq!(body["state"]["dirty"]["known"], 1, "{body}");
 }
+
+/// gix follows `core.worktree` only with `core.bare` set, and git merges there without it: the
+/// edit there must stop the update.
+#[test]
+fn core_worktree_without_core_bare_stops_the_update() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let other = sandbox.dir.path().join("real-tree");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("f.txt"), "my edit\n").unwrap();
+    sandbox.git(&repo, &["config", "--unset", "core.bare"]);
+    sandbox.git(&repo, &["config", "core.worktree", other.to_str().unwrap()]);
+    fs::write(seed.join("g.txt"), "new\n").unwrap();
+    sandbox.git(&seed, &["add", "-A"]);
+    sandbox.git(&seed, &["commit", "-q", "-m", "change"]);
+    sandbox.git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    let head = sandbox.head(&repo);
+
+    with_and_without_git_work_tree(&sandbox, |sandbox| {
+        let body = read_state(sandbox, "app");
+        assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+        let synced = request(
+            &sandbox.socket(),
+            "POST",
+            "/v1/repos/sync",
+            Some(&serde_json::json!({})),
+        );
+        assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+        assert_eq!(sandbox.head(&repo), head);
+        assert!(!other.join("g.txt").exists());
+    });
+}
+
+/// gix does not read a symlink `.gitmodules`, and goes to the index of `GIT_INDEX_FILE`.
+#[test]
+fn a_symlink_gitmodules_does_not_stop_the_index_check() {
+    let sandbox = Sandbox::new("");
+    let (repo, seed) = sandbox.clone_with_remote("app");
+    let sub = new_origin(&sandbox, "sub-origin");
+    let saved = sandbox.dir.path().join("saved-index");
+    sandbox.git(
+        &repo,
+        &["submodule", "add", "-q", sub.to_str().unwrap(), "sub"],
+    );
+    sandbox.git(&repo, &["commit", "-q", "-m", "submodule"]);
+    saved_index_that_ignores(&sandbox, &repo, "sub", &saved);
+    sandbox.git(&repo, &["push", "-q", "origin", "HEAD:main"]);
+    sandbox.git(&seed, &["pull", "-q", "origin", "main"]);
+    sandbox.push(&seed, "two\n");
+    let target = sandbox.dir.path().join("gitmodules-target");
+    fs::write(&target, "[submodule \"sub\"]\n\tpath = sub\n\turl = x\n").unwrap();
+    std::os::unix::fs::symlink(&target, repo.join(".gitmodules")).unwrap();
+    fs::write(repo.join("sub/s.txt"), "my edit\n").unwrap();
+    let head = sandbox.head(&repo);
+
+    let _daemon = sandbox.start_with(&[("GIT_INDEX_FILE", saved.as_path())]);
+    let body = read_state(&sandbox, "app");
+    assert_eq!(body["state"]["dirty"], "unknown", "{body}");
+    assert!(
+        body["state"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("is not <git_dir>/index")),
+        "{body}"
+    );
+    let synced = request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/repos/sync",
+        Some(&serde_json::json!({})),
+    );
+    assert!(!synced.body.contains("fast_forwarded"), "{}", synced.body);
+    assert_eq!(sandbox.head(&repo), head);
+}

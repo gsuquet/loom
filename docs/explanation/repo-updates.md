@@ -52,7 +52,7 @@ Nothing else ever occurs: no rebase, reset, stash, checkout, branch deletion or 
 
 ## Two independent guards
 
-The decision of loom is the first guard: it reads the state with `gix` and refuses when anything is doubtful. git is the second guard. `git merge --ff-only` refuses anything but a fast-forward, and refuses to overwrite an untracked file that the new commits would create. `git fetch <remote> <a>:<b>` refuses to move a branch other than forward, and refuses a branch checked out in any working tree. A branch moves only when the two guards agree, so a gap in one guard is caught by the other.
+The decision of loom is the first guard: it reads the state with `gix` and refuses when anything is doubtful. git is the second guard. `git merge --ff-only` refuses anything but a fast-forward, and refuses to overwrite an untracked file that the new commits would create. `git fetch <remote> <a>:<b>` refuses to move a branch other than forward, and refuses a branch checked out in any working tree. A branch moves only when the two guards agree. git refuses only what would overwrite a file: a local change to a file that the new commits do not touch does not stop `git merge --ff-only`. For such a change, the decision of loom is the only guard.
 
 When git refuses, the update reports it as skipped (`git refused the fast-forward: …`), and does not retry before the next interval. The typical case is an untracked file with the same name as a file that the remote added.
 
@@ -99,7 +99,7 @@ When `loomd` stops, it does not interrupt an update that runs. The git command o
 
 ## Differences from `git status`
 
-`dirty` of a repository state follows `git status` for changes of tracked files and of submodules, at each depth. It reads the working tree of `core.worktree`, as git does. It differs in these cases. In each case, the state says dirty or unknown where git says clean or gives a count, so the update stops. Thus, the difference cannot move a branch over local work.
+`dirty` of a repository state follows `git status` for changes of tracked files and of submodules, at each depth. It reads the working tree of `core.worktree`, as git does, or leaves every field unknown when it cannot read that directory. It differs in these cases. In each case, the state says dirty or unknown where git says clean or gives a count, so the update stops. Thus, the difference cannot move a branch over local work.
 
 - A submodule with `ignore = all` whose directory was removed or replaced by a file counts as one path. git reads no change.
 - A gitlink with `assume-unchanged` is read. git reads no change.
@@ -109,8 +109,10 @@ When `loomd` stops, it does not interrupt an update that runs. The git command o
 - A `.gitmodules` entry of a gitlink with an invalid `ignore` value, or a `.gitmodules` file that cannot be parsed, leaves `dirty` unknown.
 - A changed file that needs a filter driver leaves `dirty` unknown, because `loomd` never runs the driver.
 - `status.showUntrackedFiles = false` (the boolean form) in the repository does not hide the untracked files of its submodules. `no` hides them.
-- `core.worktree` from an included file leaves every field unknown. git does not follow includes for this key, and `gix` does.
-- With `GIT_INDEX_FILE` set in the environment of `loomd`, a repository or submodule with a gitlink and no `.gitmodules` file in its working tree leaves `dirty` unknown. `loomd` cannot find an `ignore` value there without that index.
+- `core.worktree` from an included file leaves every field unknown.
+- `core.worktree` that is not the directory that the read would use leaves every field unknown, for example without `core.bare` in the same configuration. A linked worktree with `core.worktree` in the common configuration also leaves every field unknown, with or without `extensions.worktreeConfig`. git ignores the value without that extension.
+- A directory named `.gitmodules` leaves `dirty` unknown.
+- With `GIT_INDEX_FILE` set in the environment of `loomd`, a repository or submodule with a gitlink and no regular `.gitmodules` file in its working tree leaves `dirty` unknown, because `loomd` cannot find an `ignore` value without that index. A repository without a gitlink can also read unknown when that index holds a `.gitmodules` file.
 - An empty `GIT_WORK_TREE` or `GIT_INDEX_FILE` in the environment of `loomd` leaves every field unknown.
 - A sparse index leaves `dirty` unknown. A SHA-256 repository leaves every field unknown.
 

@@ -426,12 +426,6 @@ fn open_repository(path: &Path, config: GitConfig) -> Result<gix::Repository, St
     let permissions = open_permissions(config);
     let options = gix::open::Options::default().permissions(permissions);
     let mut repo = gix::open_opts(path, options).map_err(|error| error.to_string())?;
-    if worktree_is_included(&repo) {
-        return Err(
-            "core.worktree comes from an included file: git does not follow it, and gix does"
-                .to_owned(),
-        );
-    }
     if std::env::var_os("GIT_WORK_TREE").is_some() {
         // A second open without that variable: as without it, `core.bare` gives no working tree
         // and `core.worktree` gives its path. git merges there, so a read must look there.
@@ -442,24 +436,50 @@ fn open_repository(path: &Path, config: GitConfig) -> Result<gix::Repository, St
         repo.set_workdir(own.workdir().map(Path::to_owned))
             .map_err(|error| error.to_string())?;
     }
+    check_configured_worktree(&repo)?;
     repo.clear_namespace();
     Ok(repo)
 }
 
-/// Whether the repository configuration has `core.worktree` in an included file. git merges in
-/// another directory than the one that `gix` would read: the read cannot speak for that merge.
-fn worktree_is_included(repo: &gix::Repository) -> bool {
-    let config = repo.config_snapshot();
-    let sections = config.plumbing().sections_by_name("core");
-    sections.into_iter().flatten().any(|section| {
+/// An error when the last `core.worktree` of the repository configuration is not the working
+/// tree of `repo`, or comes from an included file. git merges in the directory it reads from
+/// that value, and `gix` can read another one (without `core.bare`, in a linked worktree, through
+/// an include): the read cannot speak for that merge.
+fn check_configured_worktree(repo: &gix::Repository) -> Result<(), String> {
+    let snapshot = repo.config_snapshot();
+    let sections = snapshot.plumbing().sections_by_name("core");
+    let configured = sections.into_iter().flatten().filter_map(|section| {
         let meta = section.meta();
-        meta.level > 0
-            && matches!(
-                meta.source,
-                gix::config::Source::Local | gix::config::Source::Worktree
-            )
-            && section.value("worktree").is_some()
-    })
+        matches!(
+            meta.source,
+            gix::config::Source::Local | gix::config::Source::Worktree
+        )
+        .then(|| section.value("worktree").map(|value| (value, meta.level)))
+        .flatten()
+    });
+    let Some((value, level)) = configured.last() else {
+        return Ok(());
+    };
+    if level > 0 {
+        return Err("core.worktree comes from an included file".to_owned());
+    }
+    // A bare repository has no working tree to compare: its read fails with its own reason.
+    let Some(workdir) = repo.workdir() else {
+        return Ok(());
+    };
+    let path = gix::path::from_bstr(BStr::new(&*value)).map_err(|error| error.to_string())?;
+    let canonical = |path: &Path| {
+        path.canonicalize()
+            .map_err(|error| format!("core.worktree {}: {error}", path.display()))
+    };
+    if canonical(&repo.git_dir().join(path))? == canonical(workdir)? {
+        Ok(())
+    } else {
+        Err(format!(
+            "core.worktree is not the working tree of this read ({})",
+            workdir.display()
+        ))
+    }
 }
 
 /// The index of `repo` in its git directory, or an empty one when it has none. `gix` follows
@@ -940,11 +960,16 @@ fn configured_ignores(
     repo: &gix::Repository,
     gitlinks: &BTreeMap<BString, gix::ObjectId>,
 ) -> Result<BTreeMap<BString, Ignore>, String> {
-    // Without the file, gix reads it from the index, and follows `GIT_INDEX_FILE` to do so.
+    // Without a regular file, gix reads it from the index, also from one that is not its own.
     if repo.index_path() != repo.git_dir().join("index")
-        && !repo.modules_path().is_some_and(|path| path.exists())
+        && !repo
+            .modules_path()
+            .is_some_and(|path| fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()))
     {
-        return Err("GIT_INDEX_FILE is set and the working tree has no .gitmodules".to_owned());
+        return Err(
+            "the index is not <git_dir>/index and the working tree has no regular .gitmodules"
+                .to_owned(),
+        );
     }
     let mut ignores = BTreeMap::new();
     let submodules = repo.submodules().map_err(|error| error.to_string())?;

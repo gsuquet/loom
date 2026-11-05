@@ -1499,3 +1499,52 @@ fn a_bare_repository_has_no_count() {
     assert_eq!(state.dirty, MaybeKnown::Unknown, "{state:?}");
     assert!(state.error.is_some_and(|error| error.contains("dirty")));
 }
+
+/// `<name>` beside `repo`, a linked worktree of it on a new branch.
+fn linked_worktree(fixture: &Fixture, repo: &Path, name: &str) -> PathBuf {
+    let path = fixture.path(name);
+    fixture.git(
+        repo,
+        &["worktree", "add", "-q", path.to_str().unwrap(), "-b", name],
+    );
+    path
+}
+
+#[test]
+fn a_normal_linked_worktree_reads_as_for_git() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    let linked = linked_worktree(&fixture, &repo, "linked");
+    fixture.assert_same_as_git(&linked, 0);
+    fs::write(linked.join("f.txt"), "two\n").unwrap();
+    fixture.assert_same_as_git(&linked, 1);
+    fixture.assert_same_as_git(&repo, 0);
+}
+
+/// git merges in the directory of the common `core.worktree` here.
+#[test]
+fn core_worktree_of_the_common_configuration_stops_a_linked_worktree() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo("parent");
+    let linked = linked_worktree(&fixture, &repo, "linked");
+    let other = fixture.path("real-tree");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("f.txt"), "my edit\n").unwrap();
+    fixture.git(&repo, &["config", "core.worktree", other.to_str().unwrap()]);
+
+    // Without the extension, git ignores the value: unknown is the listed difference.
+    assert_eq!(Fixture::state(&linked).dirty, MaybeKnown::Unknown);
+
+    fixture.git(&repo, &["config", "extensions.worktreeConfig", "true"]);
+    assert_eq!(fixture.git_status_changes(&linked), 1);
+    assert_eq!(Fixture::state(&linked).dirty, MaybeKnown::Unknown);
+}
+
+#[test]
+fn a_directory_named_gitmodules_leaves_the_count_unknown() {
+    let fixture = Fixture::new();
+    let repo = fixture.parent_of_clean_submodule("parent");
+    fixture.commit_gitmodules(&repo, None);
+    fs::create_dir(repo.join(".gitmodules")).unwrap();
+    assert_eq!(dirty_of(&repo), MaybeKnown::Unknown);
+}
