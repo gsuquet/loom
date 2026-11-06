@@ -31,6 +31,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `POST` | `/v1/reviews/sync` | `200` | [`ReviewSyncResult`](#reviewsyncresult); takes a [`ReviewSyncRequest`](#reviewsyncrequest) |
 | `GET` | `/v1/reviews/queue` | `200` | [`ReviewQueue`](#reviewqueue); with `?context=<name>`, of one context |
 | `POST` | `/v1/reviews/queue/{key}/start` | `200` | [`ReviewStartResult`](#reviewstartresult); takes a [`ReviewStartRequest`](#reviewstartrequest) |
+| `POST` | `/v1/reviews/queue/{key}/seen` | `200` | [`ReviewSeenResult`](#reviewseenresult); takes a [`ReviewSeenRequest`](#reviewseenrequest) |
 | `POST` | `/v1/tasks/reindex` | `200` | [`ReindexResult`](#reindexresult) |
 | `GET` | `/v1/tasks` | `200` | [`TaskList`](#tasklist) |
 | `POST` | `/v1/tasks` | `200` | [`TaskDetail`](#taskdetail) of the new task; takes a [`NewTask`](#newtask) |
@@ -277,7 +278,7 @@ The title is the title of the task. The description is the body template of the 
 
 ### Reviews
 
-`loomd` polls each forge host that a held context has a credential for ([forges](configuration.md#forges)). It finds the open MRs where I am a requested reviewer, and writes one queue entry per MR. An MR that I start on has one Review task. How and why: [review sync](../explanation/review-sync.md). The files: [queue entry](task-file.md#queuemrs-queue-entry), [mirror](task-file.md#mrs-mr-mirror).
+`loomd` polls each forge host that a held context has a credential for ([forges](configuration.md#forges)). It finds the open MRs that wait on me, and writes one queue entry per MR. An MR that I start on has one Review task. How and why: [review sync](../explanation/review-sync.md). The files: [queue entry](task-file.md#queuemrs-queue-entry), [mirror](task-file.md#mrs-mr-mirror).
 
 `POST /v1/reviews/sync` takes a [`ReviewSyncRequest`](#reviewsyncrequest). It polls now the hosts of the context that the request names, or of every context. It ignores the schedule and the backoff, but not a rate limit. When every poll ended, it answers with a [`ReviewSyncResult`](#reviewsyncresult). A context that has no credential, or that this machine does not poll, gives an empty `forges` list.
 
@@ -285,15 +286,17 @@ The title is the title of the task. The description is the body template of the 
 
 `POST /v1/reviews/queue/{key}/start` starts on an MR. `{key}` is the MR key, percent-encoded (`acme%2Fshop%23412`), as for `/v1/tasks/{id}`. It reads the MR on the forge, creates the Review task in `active` with its mirror, deletes the entry, and answers with the task. If the MR has a Review task that is not archived, it answers with that task, `created` is `false`, and it does not call the forge. A second start never creates a second task, also when the task is in another context. It waits for a poll that runs. The errors are in [errors](#errors).
 
+`POST /v1/reviews/queue/{key}/seen` tells that I opened an entry. It takes a [`ReviewSeenRequest`](#reviewseenrequest). `{key}` is as for the start. It writes `seen_at` in the entry file with the time of `loomd`, removes the reason `own_new_comments`, and answers with a [`ReviewSeenResult`](#reviewseenresult). It does not call a forge, and it does not wait for a poll. It keeps the other reasons. If no reason is left, the MR is not in the queue any more, and its file keeps `seen_at`. A second request on a file with no reason writes the new time. Errors: `400 invalid_request` for a bad key, when two contexts have this key and the request names none, or when this machine does not poll the context and host of the entry; `404 not_found` when the key has no file in the queue.
+
 | Property | Value |
 | --- | --- |
 | Hosts | Each context held on this machine, for each forge host that it has a credential for. A context with `machines` is polled only on the first machine of its list. |
 | Schedule | 30 s after the start, then every `[forges."<host>"] poll_interval` (default 5 min), with ±10 % at random. |
 | GitHub calls | `GET <api>/user` once, then `GET /search/issues` (`review-requested:@me`, or `user-review-requested:@me` when `review_requests = "direct"`). Then, for each MR found, each MR of the queue and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /repos/<project>/pulls/<n>` with `If-None-Match`. When the MR changed: its reviews. For an MR with a Review task, also its review threads (GraphQL) and its comments. |
-| GitLab calls | `GET <api>/user` once, then `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` from the second poll, and full at least once per hour and at the next poll after a `404` removes an entry. Then, for each MR listed, each MR of the queue and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /projects/<id>/merge_requests/<iid>` with `If-None-Match`. When the MR changed: its approvals, and my reviewer state (`/reviewers`) when I approved and the MR has no Review task. For an MR with a Review task, also its versions and its discussions. An MR without a task that I approved is also read one by one until it leaves, or up to 30 days after my approval when it answers `404`. |
+| GitLab calls | `GET <api>/user` once, then `GET /merge_requests?scope=reviews_for_me&state=opened`, with `updated_after` from the second poll, and full at least once per hour and at the next poll after a `404` removes an entry. Then, always full: `GET /merge_requests?scope=assigned_to_me&state=opened`, `GET /merge_requests?scope=created_by_me&state=opened`, and `GET /todos?type=MergeRequest&state=pending` once with `action=mentioned` and once with `action=directly_addressed`. Then, for each MR of these lists, each MR of the queue and each MR of a Review task (except a `done` or `cancelled` task of a merged or closed MR): `GET /projects/<id>/merge_requests/<iid>` with `If-None-Match`. When the MR changed: its approvals, and my reviewer state (`/reviewers`) when I approved and the MR has no Review task. For an MR with a Review task, also its versions and its discussions. For my own MR, also its discussions, and its versions when its merged results or merge train pipeline failed. An open MR of mine that is mergeable and is not a draft: its approvals at each poll. An MR without a task that I approved is also read one by one until it leaves, or up to 30 days after my approval when it answers `404`. |
 | Threads | For an MR with a Review task: when the MR changed, and at most one hour after the last pull of the threads. The hourly read also reads my verdict (GitHub reviews, GitLab approvals). An MR without a Review task is read in full each hour, without `If-None-Match`, for my verdict. |
 | Rate limit | `429`, or `403` with no remaining requests: the host is not polled until the reset. Other hosts go on. |
-| Failures | A host that does not answer, or that refuses the token, stops its poll: its entries do not change, and its mirrors keep their last snapshot. The next poll waits 2, then 4, then 8 times the interval, never more. A failure of one MR stops only that MR. When a failure of one MR stops the host, the MRs read before it are applied. When `loomd` stops, a poll stops before its next forge call. |
+| Failures | A host that does not answer, or that refuses the token, stops its poll: its entries do not change, and its mirrors keep their last snapshot. A GitLab list other than `reviews_for_me` that fails for another reason, such as a `403`, stops only that list: the answer gives it in `failed_lists`. The next poll waits 2, then 4, then 8 times the interval, never more. A failure of one MR stops only that MR. When a failure of one MR stops the host, the MRs read before it are applied. When `loomd` stops, a poll stops before its next forge call. |
 | Writes | The task thread writes the Review tasks, the mirrors and the entries. A file is written only when its content changes. Each task that changed gets one commit per poll. The entries that changed get one commit per poll. A poll with no change makes no commit. |
 | Secrets | The answer, the logs and the traces never contain the token. |
 
@@ -422,6 +425,8 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `BackupRequest` | [`schemas/backup_request.json`](schemas/backup_request.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
 | `ReviewQueue` | [`schemas/review_queue.json`](schemas/review_queue.json) |
+| `ReviewSeenRequest` | [`schemas/review_seen_request.json`](schemas/review_seen_request.json) |
+| `ReviewSeenResult` | [`schemas/review_seen_result.json`](schemas/review_seen_result.json) |
 | `ReviewStartRequest` | [`schemas/review_start_request.json`](schemas/review_start_request.json) |
 | `ReviewStartResult` | [`schemas/review_start_result.json`](schemas/review_start_result.json) |
 | `ReviewSyncRequest` | [`schemas/review_sync_request.json`](schemas/review_sync_request.json) |
@@ -461,10 +466,12 @@ A change to any API type that breaks compatibility adds a new value. Compatible 
 
 | Message | Unknown fields |
 | --- | --- |
-| Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, `ReviewSyncRequest`, `ReviewStartRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan`, `GET /v1/tasks` and `GET /v1/reviews/queue`. |
+| Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, `ReviewSyncRequest`, `ReviewStartRequest`, `ReviewSeenRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan`, `GET /v1/tasks` and `GET /v1/reviews/queue`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
+Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`, `reasons`, `list`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
+
+A new value of `reasons` (`QueueReason`) or `list` (`ReviewList`) keeps the API version, although an older client rejects the answer that holds it. This is an exception to the rule above: `loom` and `loomd` upgrade together, and each new connector adds such values.
 
 ### Scalar encodings
 
@@ -1206,8 +1213,27 @@ Answer of [`GET /v1/reviews/queue`](#reviews).
 | `web_url` | string | The page of the MR on the forge. |
 | `head_sha` | string | The head SHA at the last read of the MR. |
 | `updated_at` | string: timestamp | The time of the last change of the MR on the forge. |
-| `reasons` | list of strings | Why the MR waits on me. Always at least one. Values: `review_requested`. |
-| `seen_at` | string: timestamp, optional | The time when I last opened the entry. No command sets it now. |
+| `reasons` | list of strings | Why the MR waits on me. Always at least one. Values: `review_requested`, `assigned`, `mentioned`, `own_new_comments`, `own_pipeline_failed`, `own_ready_to_merge`. |
+| `seen_at` | string: timestamp, optional | The time when I last opened the entry, set by [`POST /v1/reviews/queue/{key}/seen`](#reviews). |
+
+### `ReviewSeenRequest`
+
+Body of [`POST /v1/reviews/queue/{key}/seen`](#reviews). An empty object is valid.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string, optional | The context of the MR. Necessary only when two contexts have this key. |
+
+### `ReviewSeenResult`
+
+Answer of [`POST /v1/reviews/queue/{key}/seen`](#reviews).
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string | The context of the MR. |
+| `key` | string | The key of the MR. |
+| `seen_at` | string: timestamp | The time that this request wrote. |
+| `reasons` | list of strings | The reasons that are left. If empty: the MR left the queue. |
 
 ### `ReviewStartRequest`
 
@@ -1256,7 +1282,7 @@ Answer of [`POST /v1/reviews/sync`](#reviews).
 
 | `outcome` | Fields | When |
 | --- | --- | --- |
-| `synced` | `mrs`, `added`, `removed`, `changed`, `other_context`, `failed` | The host answered. `mrs`: the MRs polled. `added`: the keys of the MRs added to the queue. `removed`: the keys of the MRs removed from the queue. `changed`: the IDs of the Review tasks whose status or mirror changed. `other_context`: the MRs found that belong to another context, not written. `failed`: list of `{key, error}`, the MRs that failed. Empty lists are absent. |
+| `synced` | `mrs`, `added`, `removed`, `changed`, `other_context`, `failed` | The host answered. `mrs`: the MRs polled. `added`: the keys of the MRs added to the queue. `removed`: the keys of the MRs removed from the queue. `changed`: the IDs of the Review tasks whose status or mirror changed. `other_context`: the MRs found that belong to another context, not written. `failed`: list of `{key, error}`, the MRs that failed. `failed_lists`: list of `{list, kind, error}`, the GitLab lists that failed while the poll went on. `list`: `assigned`, `own` or `mentioned`. `kind`: `forbidden` (the forge refuses the token this list) or `other`. Empty lists are absent. |
 | `rate_limited` | `until` | The host limits the rate. The poll did not run. `until`: the reset. |
 | `failed` | `error` | The poll stopped. The entries of the host do not change, and its mirrors keep their last snapshot. |
 

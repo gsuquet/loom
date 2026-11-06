@@ -10,12 +10,12 @@ use super::{
 use crate::error::ParseError;
 use crate::gitlab::request::{ApproveBody, BulkPublishBody, DraftNoteBody};
 use crate::gitlab::{
-    Approvals, DraftNote, MrReviewer, TokenInfo, parse_approvals, parse_branch_merge_requests,
-    parse_diffs, parse_discussions, parse_draft_note, parse_draft_notes, parse_merge_request,
-    parse_merge_request_summary, parse_merge_requests, parse_project, parse_reviewers, parse_token,
-    parse_user, parse_versions,
+    Approvals, DraftNote, MentionedMr, MrReviewer, TokenInfo, parse_approvals,
+    parse_branch_merge_requests, parse_diffs, parse_discussions, parse_draft_note,
+    parse_draft_notes, parse_mention_todos, parse_merge_request_read, parse_merge_request_summary,
+    parse_merge_requests, parse_project, parse_reviewers, parse_token, parse_user, parse_versions,
 };
-use crate::model::{FileDiff, Mr, MrSummary, MrVersion, Sha, Thread};
+use crate::model::{FileDiff, Mr, MrRead, MrSummary, MrVersion, Sha, Thread};
 use crate::open::{NewMr, create_request, find_request};
 
 /// The largest page that GitLab gives.
@@ -178,6 +178,27 @@ fn review_requests_query(updated_after: Option<Timestamp>, per_page: u8) -> Stri
     format!("/merge_requests?scope=reviews_for_me&state=opened{after}&per_page={per_page}")
 }
 
+/// The query of the open merge requests of one `scope`, in full. Pure.
+fn scope_query(scope: &str, per_page: u8) -> String {
+    format!("/merge_requests?scope={scope}&state=opened&per_page={per_page}")
+}
+
+/// The query of my pending to-dos of merge requests with one `action`: the API takes one. Pure.
+fn todos_query(action: &str, per_page: u8) -> String {
+    format!("/todos?type=MergeRequest&state=pending&action={action}&per_page={per_page}")
+}
+
+/// Each MR once: results can move between pages while they are read. Pure.
+fn unique_mrs(all: Vec<MrSummary>) -> Vec<MrSummary> {
+    let mut unique: Vec<MrSummary> = Vec::with_capacity(all.len());
+    for mr in all {
+        if !unique.iter().any(|seen| seen.key == mr.key) {
+            unique.push(mr);
+        }
+    }
+    unique
+}
+
 /// `text` as one segment of a URL path: every byte but letters, digits, `-`, `_` and `~`
 /// percent-encoded (`.` too, so that `..` is not a dot segment), so a discussion ID cannot
 /// change the path. Pure.
@@ -250,14 +271,33 @@ impl GitlabForge for GitlabClient {
             &review_requests_query(updated_after, self.per_page),
             parse_merge_requests,
         )?;
-        // Results can move between pages while they are read: each MR once.
-        let mut unique: Vec<MrSummary> = Vec::with_capacity(all.len());
-        for mr in all {
-            if !unique.iter().any(|seen| seen.key == mr.key) {
-                unique.push(mr);
+        Ok(unique_mrs(all))
+    }
+
+    fn assigned_mrs(&self) -> Result<Vec<MrSummary>, ForgeError> {
+        let query = scope_query("assigned_to_me", self.per_page);
+        Ok(unique_mrs(self.list(&query, parse_merge_requests)?))
+    }
+
+    fn own_mrs(&self) -> Result<Vec<MrSummary>, ForgeError> {
+        let query = scope_query("created_by_me", self.per_page);
+        Ok(unique_mrs(self.list(&query, parse_merge_requests)?))
+    }
+
+    fn mentions(&self) -> Result<Vec<MentionedMr>, ForgeError> {
+        let mut mentions = self.list(
+            &todos_query("mentioned", self.per_page),
+            parse_mention_todos,
+        )?;
+        for mention in self.list(
+            &todos_query("directly_addressed", self.per_page),
+            parse_mention_todos,
+        )? {
+            if !mentions.iter().any(|seen| seen.key == mention.key) {
+                mentions.push(mention);
             }
         }
-        Ok(unique)
+        Ok(mentions)
     }
 
     fn merge_request(
@@ -265,6 +305,20 @@ impl GitlabForge for GitlabClient {
         mr: GitlabMr,
         etag: Option<&str>,
     ) -> Result<Conditional<Mr>, ForgeError> {
+        Ok(match self.merge_request_read(mr, etag)? {
+            Conditional::Modified { value, etag } => Conditional::Modified {
+                value: value.mr,
+                etag,
+            },
+            Conditional::NotModified => Conditional::NotModified,
+        })
+    }
+
+    fn merge_request_read(
+        &self,
+        mr: GitlabMr,
+        etag: Option<&str>,
+    ) -> Result<Conditional<MrRead>, ForgeError> {
         let url = self.http.url(&self.mr_path(mr, "", false));
         let headers: Vec<(&str, &str)> = etag
             .map(|etag| ("If-None-Match", etag))
@@ -276,7 +330,7 @@ impl GitlabForge for GitlabClient {
         }
         let answer = self.success(answer)?;
         Ok(Conditional::Modified {
-            value: self.parse(&answer.body, parse_merge_request)?,
+            value: self.parse(&answer.body, parse_merge_request_read)?,
             etag: answer.headers.get("etag").map(str::to_owned),
         })
     }
@@ -366,7 +420,10 @@ impl GitlabForge for GitlabClient {
 mod tests {
     use loom_api::Timestamp;
 
-    use super::{Headers, next_page, path_segment, review_requests_query, total, with_page};
+    use super::{
+        Headers, next_page, path_segment, review_requests_query, scope_query, todos_query, total,
+        with_page,
+    };
 
     #[test]
     fn open_merge_requests_from_x_total() {
@@ -428,6 +485,18 @@ mod tests {
         assert_eq!(
             with_page("https://h/x?per_page=20", 2),
             "https://h/x?per_page=20&page=2"
+        );
+    }
+
+    #[test]
+    fn the_lists_of_other_reasons_never_use_updated_after() {
+        assert_eq!(
+            scope_query("created_by_me", 100),
+            "/merge_requests?scope=created_by_me&state=opened&per_page=100"
+        );
+        assert_eq!(
+            todos_query("mentioned", 100),
+            "/todos?type=MergeRequest&state=pending&action=mentioned&per_page=100"
         );
     }
 

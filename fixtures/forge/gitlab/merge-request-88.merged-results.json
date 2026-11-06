@@ -1,0 +1,106 @@
+{
+  "id": 3088,
+  "iid": 88,
+  "project_id": 77,
+  "title": "Auth refactor",
+  "description": "Refactor the token checks.\n\nCloses #40.",
+  "state": "opened",
+  "created_at": "2026-10-21T10:05:00.000Z",
+  "updated_at": "2026-10-23T11:06:00.000Z",
+  "merged_by": null,
+  "merge_user": null,
+  "merged_at": null,
+  "closed_by": null,
+  "closed_at": null,
+  "target_branch": "main",
+  "source_branch": "auth-refactor",
+  "user_notes_count": 4,
+  "upvotes": 0,
+  "downvotes": 0,
+  "author": {
+    "id": 13,
+    "username": "carol",
+    "name": "Carol Example",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/13/avatar.png",
+    "web_url": "https://gitlab.example.com/carol"
+  },
+  "assignees": [
+    {
+      "id": 13,
+      "username": "carol",
+      "name": "Carol Example",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/13/avatar.png",
+      "web_url": "https://gitlab.example.com/carol"
+    }
+  ],
+  "assignee": {
+    "id": 13,
+    "username": "carol",
+    "name": "Carol Example",
+    "state": "active",
+    "locked": false,
+    "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/13/avatar.png",
+    "web_url": "https://gitlab.example.com/carol"
+  },
+  "reviewers": [
+    {
+      "id": 12,
+      "username": "bob",
+      "name": "Bob Example",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/12/avatar.png",
+      "web_url": "https://gitlab.example.com/bob"
+    }
+  ],
+  "source_project_id": 77,
+  "target_project_id": 77,
+  "labels": [
+    "security"
+  ],
+  "draft": false,
+  "work_in_progress": false,
+  "milestone": null,
+  "merge_when_pipeline_succeeds": false,
+  "merge_status": "can_be_merged",
+  "detailed_merge_status": "ci_must_pass",
+  "sha": "84280c47b6aa128c645b1fbea54aded8b32e8463",
+  "merge_commit_sha": null,
+  "squash_commit_sha": null,
+  "discussion_locked": null,
+  "should_remove_source_branch": null,
+  "force_remove_source_branch": true,
+  "reference": "!88",
+  "references": {
+    "short": "!88",
+    "relative": "!88",
+    "full": "company-a/checkout!88"
+  },
+  "web_url": "https://gitlab.example.com/company-a/checkout/-/merge_requests/88",
+  "squash": false,
+  "has_conflicts": false,
+  "blocking_discussions_resolved": false,
+  "changes_count": "3",
+  "diff_refs": {
+    "base_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26",
+    "head_sha": "84280c47b6aa128c645b1fbea54aded8b32e8463",
+    "start_sha": "ee047f5164ae63069c7237b6f24c66d34f9eff26"
+  },
+  "first_contribution": false,
+  "head_pipeline": {
+    "id": 9001,
+    "iid": 41,
+    "project_id": 77,
+    "sha": "1604b0c46c395822e4e9478777f8e54ac99fe5b9",
+    "ref": "refs/merge-requests/88/merge",
+    "status": "failed",
+    "source": "merge_request_event",
+    "created_at": "2026-10-23T11:06:30.000Z",
+    "updated_at": "2026-10-23T11:20:00.000Z",
+    "web_url": "https://gitlab.example.com/company-a/checkout/-/pipelines/9001"
+  }
+}

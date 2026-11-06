@@ -26,8 +26,8 @@ use futures_util::StreamExt as _;
 use loom_api::{
     ApiError, ApiVersion, BackupRequest, ContextName, DaemonDiagnostics, ErrorCode,
     ForgeCheckResult, ForgeKind, MrAction, MrOpenRequest, MrOpenResult, MrOutcome, RegisterRequest,
-    RepoList, ReviewStartRequest, ReviewStartResult, ReviewSyncRequest, SearchKind, SearchResults,
-    StatusResponse, SyncRequest, Timestamp, UpdateState,
+    RepoList, ReviewSeenRequest, ReviewStartRequest, ReviewStartResult, ReviewSyncRequest,
+    SearchKind, SearchResults, StatusResponse, SyncRequest, Timestamp, UpdateState,
 };
 use loom_config::config::{Config, parse_config};
 use loom_config::forges::DEFAULT_POLL_INTERVAL;
@@ -45,12 +45,12 @@ use loom_update::auto;
 use loomd::api::{
     DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, FORGE_CHECK_PATH, REMOTE_CHECK_PATH, REPO_PATH,
     REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, REVIEWS_QUEUE_PATH,
-    REVIEWS_QUEUE_START_PATH, REVIEWS_SYNC_PATH, RepoGetQuery, RepoQuery, ReviewQueueQuery,
-    SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH,
-    TASK_GO_PATH, TASK_MOVE_PATH, TASK_MR_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH,
-    TASKS_HEALTH_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error,
-    home_value, internal, invalid_request, method_not_allowed, not_found, register_path,
-    repo_filter, search_request, slug, status_at, timestamp,
+    REVIEWS_QUEUE_SEEN_PATH, REVIEWS_QUEUE_START_PATH, REVIEWS_SYNC_PATH, RepoGetQuery, RepoQuery,
+    ReviewQueueQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH,
+    TASK_EVENTS_PATH, TASK_GO_PATH, TASK_MOVE_PATH, TASK_MR_PATH, TASK_PATH, TASK_UNDO_PATH,
+    TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH,
+    agent_socket, clock_error, home_value, internal, invalid_request, method_not_allowed,
+    not_found, register_path, repo_filter, search_request, slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
@@ -664,6 +664,7 @@ fn router(app: App) -> Router {
         .route(REVIEWS_SYNC_PATH, post(sync_reviews))
         .route(REVIEWS_QUEUE_PATH, get(review_queue))
         .route(REVIEWS_QUEUE_START_PATH, post(start_review))
+        .route(REVIEWS_QUEUE_SEEN_PATH, post(review_seen))
         .fallback(fallback_not_found)
         .method_not_allowed_fallback(fallback_method_not_allowed)
         .layer(middleware::from_fn(request_span))
@@ -1281,6 +1282,30 @@ async fn start_review(
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
     respond(start_review_of(&app, key, request).await)
+}
+
+/// I opened an entry of the queue: writes its `seen_at`. No forge call.
+async fn review_seen(
+    State(app): State<Arc<App>>,
+    path: Result<UrlPath<String>, PathRejection>,
+    body: Result<Json<ReviewSeenRequest>, JsonRejection>,
+) -> Response {
+    let request = path
+        .map_err(|rejection| invalid_request(rejection.body_text()))
+        .and_then(|UrlPath(key)| {
+            let body = body.map_err(|rejection| invalid_request(rejection.body_text()))?;
+            let key = MrKey::parse(&key)
+                .map_err(|error| invalid_request(format!("invalid MR key `{key}`: {error}")))?;
+            Ok((key, body.0))
+        });
+    match request {
+        Ok((key, request)) => respond(
+            app.tasks
+                .review_seen(request.context, key, app.reviews.polled())
+                .await,
+        ),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
 }
 
 async fn start_review_of(

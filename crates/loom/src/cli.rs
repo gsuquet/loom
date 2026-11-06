@@ -338,31 +338,34 @@ pub struct SyncArgs {
 /// Review commands.
 #[derive(Debug, clap::Subcommand)]
 pub enum ReviewCommand {
-    /// Poll the forges now for the merge requests where I am a requested reviewer.
+    /// Poll the forges now for the merge requests that wait on me.
     ///
     /// Polls every forge host that has a credential for a context of this machine, or only the
-    /// hosts of the context that `-c` names. Each MR to review gets a queue entry
-    /// (`loom review queue`) and no task, until `loom review start`. An MR whose request is
-    /// removed, whose head has my verdict, or that is merged or closed leaves the queue. A new
+    /// hosts of the context that `-c` names. Each MR that waits on me gets a queue entry
+    /// (`loom review queue`) and no task, until `loom review start`. On GitLab, an MR can wait
+    /// on me because I am a requested reviewer or an assignee, because a to-do mentions me, or
+    /// because it is my own MR with new comments, a failed pipeline or an approval to merge. An
+    /// MR with no reason left, or that is merged or closed, leaves the queue. A new
     /// head after my verdict reopens a Review task; a merged or closed MR closes it. An MR of
-    /// another context is not written to this store. The command fails if a poll or an MR
-    /// fails; its entries and the copies of its MRs stay as they were. A rate limit of a forge
-    /// is not a failure.
+    /// another context is not written to this store. The command fails if a poll, a list or an
+    /// MR fails. A poll or an MR that fails keeps its entries and its copies. After a list that
+    /// fails, the poll still updates each MR that it read, and the reason `mentioned` keeps its
+    /// last value. A rate limit of a forge is not a failure.
     /// loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it
     /// is stopped.
     Sync(ReviewSyncArgs),
     /// List the merge requests that wait on me and have no Review task.
     ///
     /// Lists the entries of every context of this machine, or only of the context that `-c`
-    /// names. Reads the files of the stores: the forges are not called. Run `loom review sync`
+    /// names, each with its reasons. Reads the files of the stores: the forges are not called. Run `loom review sync`
     /// for a poll now. Starts loomd if it is stopped.
     Queue(ReviewQueueArgs),
     /// Start on a merge request of the queue: create its Review task.
     ///
     /// Reads the MR on the forge, creates the Review task in `active` with a copy of the MR in
     /// the task directory (`mrs/`), and removes the entry. If the MR already has a Review task,
-    /// the command shows this task and creates nothing. If the forge fails, the entry stays and
-    /// no task is created: run the command again. Use `-c` when two contexts have this key.
+    /// the command shows this task and creates nothing. My own MR gets no task. If the forge
+    /// fails, the entry stays and no task is created: run the command again. Use `-c` when two contexts have this key.
     /// Starts loomd if it is stopped.
     Start(ReviewStartArgs),
 }

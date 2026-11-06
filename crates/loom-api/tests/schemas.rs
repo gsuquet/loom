@@ -25,7 +25,8 @@ use loom_api::{
     PlannedAction, PrReport, Profile, QueueReason, RegisterRequest, ReindexResult, Remote,
     RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl,
     RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RestartVia, ReviewQueue, ReviewQueueEntry, ReviewStartRequest,
+    RepoUpdatePolicy, RestartVia, ReviewList, ReviewListFailure, ReviewListFailureKind,
+    ReviewQueue, ReviewQueueEntry, ReviewSeenRequest, ReviewSeenResult, ReviewStartRequest,
     ReviewStartResult, ReviewSyncOutcome, ReviewSyncRequest, ReviewSyncResult, RollbackReport,
     ScanIssue, ScanResult, SearchField, SearchResult, SearchResults, ServicePlatform,
     ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse, SyncOutcome,
@@ -71,6 +72,8 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("repo_state", schema_for!(RepoState)),
         ("repo_summary", schema_for!(RepoSummary)),
         ("review_queue", schema_for!(ReviewQueue)),
+        ("review_seen_request", schema_for!(ReviewSeenRequest)),
+        ("review_seen_result", schema_for!(ReviewSeenResult)),
         ("review_start_request", schema_for!(ReviewStartRequest)),
         ("review_start_result", schema_for!(ReviewStartResult)),
         ("review_sync_request", schema_for!(ReviewSyncRequest)),
@@ -261,11 +264,49 @@ fn review_queue_samples_validate_and_an_older_sync_answer_can_be_read() {
             web_url: "https://github.com/acme/shop/pull/412".to_owned(),
             head_sha: "7ebf283bfee25ab48f95c0c55181a4ca66b4c990".to_owned(),
             updated_at: Timestamp::from_unix_secs(1_791_792_000).unwrap(),
-            reasons: vec![QueueReason::ReviewRequested],
+            reasons: vec![
+                QueueReason::ReviewRequested,
+                QueueReason::Assigned,
+                QueueReason::Mentioned,
+                QueueReason::OwnNewComments,
+                QueueReason::OwnPipelineFailed,
+                QueueReason::OwnReadyToMerge,
+            ],
             seen_at: None,
         }],
     };
     assert_eq!(violations(&queue).unwrap().len(), 0);
+    let seen = ReviewSeenResult {
+        context: "work".parse().unwrap(),
+        key: "company-a/checkout!88".to_owned(),
+        seen_at: Timestamp::from_unix_secs(1_791_792_000).unwrap(),
+        reasons: vec![],
+    };
+    assert_eq!(violations(&seen).unwrap().len(), 0);
+    assert_eq!(violations(&ReviewSeenRequest::default()).unwrap().len(), 0);
+    assert!(serde_json::from_str::<ReviewSeenRequest>(r#"{"x":1}"#).is_err());
+    let failed_list = ReviewSyncResult {
+        forges: vec![loom_api::ReviewSync {
+            context: "work".parse().unwrap(),
+            host: "gitlab.example.com".to_owned(),
+            kind: ForgeKind::Gitlab,
+            last_success: None,
+            outcome: ReviewSyncOutcome::Synced {
+                mrs: 0,
+                added: vec![],
+                removed: vec![],
+                changed: vec![],
+                other_context: 0,
+                failed: vec![],
+                failed_lists: vec![ReviewListFailure {
+                    list: ReviewList::Mentioned,
+                    kind: ReviewListFailureKind::Forbidden,
+                    error: "403 Forbidden".to_owned(),
+                }],
+            },
+        }],
+    };
+    assert_eq!(violations(&failed_list).unwrap().len(), 0);
     let request = ReviewStartRequest {
         context: Some("work".parse().unwrap()),
     };
@@ -278,7 +319,8 @@ fn review_queue_samples_validate_and_an_older_sync_answer_can_be_read() {
     let older: ReviewSyncResult = serde_json::from_str(older).unwrap();
     assert!(matches!(
         &older.forges[0].outcome,
-        ReviewSyncOutcome::Synced { added, removed, .. } if added.is_empty() && removed.is_empty()
+        ReviewSyncOutcome::Synced { added, removed, failed_lists, .. }
+            if added.is_empty() && removed.is_empty() && failed_lists.is_empty()
     ));
 }
 

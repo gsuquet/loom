@@ -137,6 +137,69 @@ pub struct Mr {
     pub updated_at: Timestamp,
 }
 
+/// What a full read of an MR tells about why it waits on me, beside [`Mr`]: not in `mr.json`, or
+/// each pipeline result would make a commit of the mirror.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MrSignals {
+    /// The logins of the assignees.
+    pub assignees: Vec<String>,
+    /// The pipeline of the head, `None` when the MR has none.
+    pub head_pipeline: Option<HeadPipeline>,
+    /// Whether the MR can merge.
+    pub merge_status: MergeStatus,
+}
+
+/// The latest pipeline of an MR, as far as the forge tells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadPipeline {
+    /// The commit that it ran on.
+    pub commit: PipelineCommit,
+    /// How it ended.
+    pub outcome: PipelineOutcome,
+    /// When the forge created it, `None` when it cannot be read.
+    pub created_at: Option<Timestamp>,
+}
+
+/// The commit that a pipeline ran on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineCommit {
+    /// A commit that can be compared with the head; `None` when it cannot be read.
+    Commit(Option<Sha>),
+    /// A temporary merge of the head and its target (merged results, merge train): the forge does
+    /// not tell which head it was for.
+    MergedResult,
+}
+
+/// How a pipeline ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineOutcome {
+    /// It failed.
+    Failed,
+    /// Any other state: running, a success, cancelled.
+    Other,
+}
+
+/// Whether an MR can merge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MergeStatus {
+    /// It can merge.
+    Mergeable,
+    /// The forge is still computing it: this tells nothing.
+    Computing,
+    /// It cannot merge, or the forge does not tell.
+    #[default]
+    NotMergeable,
+}
+
+/// An MR with what its full read tells about why it waits on me.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MrRead {
+    /// The MR.
+    pub mr: Mr,
+    /// Why it can wait on me.
+    pub signals: MrSignals,
+}
+
 /// An MR in a list of MRs to review: the fields that the forge search gives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MrSummary {

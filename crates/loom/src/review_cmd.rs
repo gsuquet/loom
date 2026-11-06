@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use loom::cli::{GlobalArgs, ReviewQueueArgs, ReviewStartArgs, ReviewSyncArgs};
 use loom::review::{
-    SYNC_PATH, failures, queue_path, render_queue, render_start, render_sync, start_path,
+    SYNC_PATH, failure_message, queue_path, render_queue, render_start, render_sync, start_path,
 };
 use loom_api::{
     ReviewQueue, ReviewStartRequest, ReviewStartResult, ReviewSyncRequest, ReviewSyncResult,
@@ -89,10 +89,5 @@ pub fn sync(args: &ReviewSyncArgs, global: &GlobalArgs, layout: &Layout) -> Resu
         render_sync(&result)
     };
     print(&text)?;
-    match failures(&result) {
-        0 => Ok(()),
-        count => Err(miette!(
-            "{count} forge poll(s) failed: their MRs keep their last snapshot"
-        )),
-    }
+    failure_message(&result).map_or(Ok(()), |message| Err(miette!("{message}")))
 }

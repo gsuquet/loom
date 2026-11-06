@@ -5,21 +5,28 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use loom_api::{ContextName, ForgeKind, ReviewQueue, Timestamp};
+use axum::http::StatusCode;
+use loom_api::{
+    ApiError, ContextName, ErrorCode, ForgeKind, ReviewQueue, ReviewSeenResult, StatusName, TaskId,
+    Timestamp,
+};
 use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, Sha};
 use loom_store::files::ARCHIVE_DIR;
 use loom_store::port::TaskLocation;
 use loom_store::{IndexedTask, MrApproval};
+use loomd::api::{internal, invalid_request};
 use loomd::hooks;
 use loomd::review_queue::{
-    APPROVAL_EXPIRY, ApprovalStep, EntryDecision, EntryInput, QueueEntry, active_reviews_of,
-    approval_key, approval_step, decide_entry, entry_bytes, entry_name, entry_of, entry_seen,
-    queue_dir, queue_message, read_entry_bytes,
+    APPROVAL_EXPIRY, ApprovalStep, EntryDecision, EntryInput, QueueEntry, ReasonsRead, StartTarget,
+    active_reviews_of, approval_key, approval_step, decide_entry, entry_bytes, entry_name,
+    entry_of, entry_reasons, entry_seen, mark_seen, merged_entry, queue_dir, queue_message,
+    read_entry_bytes, start_target,
 };
 use loomd::review_sync::{MrBatch, MrUpdate, SeenVerdict, find_review, mirror_dir, url_host};
 use tracing::{info, warn};
 
 use super::{Previous, ReviewsApplied, Worker, can_create, read_previous, write_mirror};
+use crate::repos::Failure;
 use crate::reviews::hooked_duration;
 use crate::tasks::{log_commit, now};
 
@@ -54,22 +61,17 @@ impl Worker {
         let stored = stored.filter(|_| !foreign);
         let verdict = self.approval_head(batch, update, tracked)?;
         if let Some(target) = &update.moved_to {
-            return self.move_entry(batch, update, stored.as_ref(), target, tracked, applied);
+            if let Some(entry) = stored.as_ref() {
+                self.move_entry(batch, entry, target, tracked)?;
+                report_move(entry, applied, updated);
+            }
+            return Ok(());
         }
         if tracked && stored.is_none() {
             return Ok(());
         }
         let archived = matches!(review, Some((_, _, TaskLocation::Archived(_))));
-        let previous = match review {
-            Some((id, _, TaskLocation::Archived(year))) => read_previous(&mirror_dir(
-                &root
-                    .join(ARCHIVE_DIR)
-                    .join(format!("{year:04}"))
-                    .join(id.as_str()),
-                &update.key,
-            )),
-            Some((_, _, TaskLocation::Active)) | None => Previous::default(),
-        };
+        let previous = archived_mirror(&root, &update.key, review.as_ref());
         let read = update.mr.as_ref();
         let known = read.or(previous.mr.as_ref());
         // A 304, and neither an entry nor a mirror: nothing changed.
@@ -84,17 +86,30 @@ impl Worker {
             tracked,
             own: update.own,
             requested_after_verdict: update.requested_after_verdict,
+            // A 404: as for a closed MR, no reason holds.
+            reasons: if update.gone {
+                &ReasonsRead::NONE_HOLD
+            } else {
+                &update.reasons
+            },
         }) else {
             return Ok(());
         };
-        let name = entry_name(&update.key);
-        let dir = queue_dir(&root);
-        let write = |mr: &Mr| -> Result<bool, String> {
-            can_create(&root, rows, batch, mr)?;
-            let bytes =
-                entry_bytes(&entry_of(mr, stored.as_ref())).map_err(|error| error.to_string())?;
-            write_mirror(&dir, &[(name.as_str(), bytes.as_slice())])
-                .map_err(|error| format!("cannot write the entry {}: {error}", dir.display()))
+        let reasons = entry_reasons(&seen);
+        // Follows the MR when this poll read it, otherwise only the reasons change.
+        let write = |mr: Option<&Mr>| -> Result<bool, String> {
+            let entry = match (mr, stored.as_ref()) {
+                (Some(mr), stored) => {
+                    can_create(&root, rows, batch, mr)?;
+                    entry_of(mr, stored, reasons.clone())
+                }
+                (None, Some(stored)) => QueueEntry {
+                    reasons: reasons.clone(),
+                    ..stored.clone()
+                },
+                (None, None) => return Err("no read of the MR for its entry".to_owned()),
+            };
+            write_entry(&root, &entry)
         };
         match decide_entry(&seen) {
             EntryDecision::Absent => {}
@@ -105,17 +120,23 @@ impl Worker {
                         batch.host
                     ));
                 }
-                let mr = known.ok_or_else(|| "no read of the MR for its entry".to_owned())?;
-                write(mr)?;
+                write(known)?;
                 info!(%context, key = %update.key, "MR added to the queue");
                 applied.added.push(update.key.to_string());
             }
             EntryDecision::Keep => {
-                if let Some(mr) = read
-                    && write(mr)?
-                {
+                if write(read)? {
                     *updated += 1;
                 }
+            }
+            EntryDecision::Park => {
+                write(read)?;
+                info!(%context, key = %update.key, "MR removed from the queue, its file keeps seen_at");
+                applied.removed.push(update.key.to_string());
+            }
+            EntryDecision::DropParked => {
+                remove_entry(&root, &update.key)?;
+                *updated += 1;
             }
             EntryDecision::Remove => {
                 remove_entry(&root, &update.key)?;
@@ -203,15 +224,10 @@ impl Worker {
     fn move_entry(
         &mut self,
         batch: &MrBatch,
-        update: &MrUpdate,
-        stored: Option<&QueueEntry>,
+        entry: &QueueEntry,
         target: &ContextName,
         tracked: bool,
-        applied: &mut ReviewsApplied,
     ) -> Result<(), String> {
-        let Some(entry) = stored else {
-            return Ok(());
-        };
         let root = self
             .stores
             .get(&batch.context)
@@ -225,41 +241,160 @@ impl Worker {
         // A task means no entry anywhere; an entry there is already this one, or is of another
         // host, which is reported.
         if !tracked {
-            match read_entry(&target_root, &update.key) {
+            let moved = match read_entry(&target_root, &entry.key) {
                 Some(other) if other.web_url != entry.web_url => {
                     return Err(format!(
                         "the queue of context `{target}` has an entry of this key on another forge host: the entry stays in this context"
                     ));
                 }
-                Some(_) => {}
-                None => {
-                    let bytes = entry_bytes(entry).map_err(|error| error.to_string())?;
-                    let dir = queue_dir(&target_root);
-                    let name = entry_name(&update.key);
-                    write_mirror(&dir, &[(name.as_str(), bytes.as_slice())]).map_err(|error| {
-                        format!("cannot write the entry {}: {error}", dir.display())
-                    })?;
-                    let result = self.commits.commit_queue(target, &queue_message(1, 0, 0));
-                    log_commit(target, None, result);
-                }
+                Some(other) => merged_entry(&other, entry),
+                None => entry.clone(),
+            };
+            if write_entry(&target_root, &moved)? {
+                let result = self.commits.commit_queue(target, &queue_message(1, 0, 0));
+                log_commit(target, None, result);
             }
         }
-        remove_entry(&root, &update.key)?;
-        info!(context = %batch.context, %target, key = %update.key, "MR moved to the queue of its context");
-        applied.removed.push(update.key.to_string());
+        remove_entry(&root, &entry.key)?;
+        info!(context = %batch.context, %target, key = %entry.key, "MR moved to the queue of its context");
         Ok(())
     }
 
-    /// The entries of the queue of `context`, or of every context, sorted.
+    /// The entries of the queue of `context`, or of every context, sorted. A file with no reason
+    /// only keeps a `seen_at`: it is not in the queue.
     pub(in crate::tasks) fn review_queue(&self, context: Option<&ContextName>) -> ReviewQueue {
         let mut entries = Vec::new();
         for (name, root) in &self.stores {
             if context.is_none_or(|context| context == name) {
-                entries.extend(read_queue(root).iter().map(|entry| entry.to_api(name)));
+                entries.extend(
+                    read_queue(root)
+                        .iter()
+                        .filter(|entry| !entry.reasons.is_empty())
+                        .map(|entry| entry.to_api(name)),
+                );
             }
         }
         ReviewQueue { entries }
     }
+
+    /// I opened the entry of `key`: writes `seen_at` and removes `own_new_comments`, in the file
+    /// of the store, which a rebuild of `index.db` does not touch. No forge call.
+    pub(in crate::tasks) fn review_seen(
+        &mut self,
+        context: Option<&ContextName>,
+        key: &MrKey,
+        polled: &crate::reviews::Polled,
+    ) -> Result<ReviewSeenResult, Failure> {
+        let found: Vec<(ContextName, QueueEntry)> = self
+            .stores
+            .iter()
+            .filter_map(|(name, root)| Some((name.clone(), read_entry(root, key)?)))
+            .collect();
+        // An entry wins over a file with no reason, which only keeps a `seen_at`.
+        let found = if found.iter().any(|(_, entry)| !entry.reasons.is_empty()) {
+            found
+                .into_iter()
+                .filter(|(_, entry)| !entry.reasons.is_empty())
+                .collect()
+        } else {
+            found
+        };
+        let hosts: Vec<(ContextName, Option<String>)> = found
+            .iter()
+            .map(|(name, entry)| (name.clone(), url_host(&entry.web_url)))
+            .collect();
+        let name = match start_target(context, &[], &hosts) {
+            StartTarget::Entry(name) => name,
+            StartTarget::Task(_) | StartTarget::NotFound => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    ApiError::new(
+                        ErrorCode::NotFound,
+                        format!("MR `{key}` has no queue entry"),
+                    ),
+                ));
+            }
+            StartTarget::Ambiguous(contexts) => {
+                let contexts: Vec<&str> = contexts.iter().map(ContextName::as_str).collect();
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    invalid_request(format!(
+                        "MR `{key}` is in several contexts ({}): name one",
+                        contexts.join(", ")
+                    )),
+                ));
+            }
+        };
+        let cannot = |error: String| (StatusCode::INTERNAL_SERVER_ERROR, internal(error));
+        let root = self
+            .stores
+            .get(&name)
+            .ok_or_else(|| cannot(format!("no store for context `{name}`")))?;
+        let entry = found
+            .iter()
+            .find(|(other, _)| *other == name)
+            .map(|(_, entry)| entry)
+            .ok_or_else(|| cannot(format!("no entry of MR `{key}` in context `{name}`")))?;
+        // As for a start: this machine must poll what it writes on.
+        let host = url_host(&entry.web_url).unwrap_or_default();
+        if !polled.contains(&(name.clone(), host.clone())) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                invalid_request(format!(
+                    "this machine does not poll {host} for context `{name}`: open MR `{key}` on the first machine of the context, or add a credential for the host if it was removed"
+                )),
+            ));
+        }
+        let at = now();
+        let opened = mark_seen(entry, at);
+        let wrote = write_entry(root, &opened).map_err(cannot)?;
+        if wrote {
+            let result = self.commits.commit_queue(&name, &queue_message(0, 1, 0));
+            log_commit(&name, None, result);
+        }
+        Ok(ReviewSeenResult {
+            context: name,
+            key: key.to_string(),
+            seen_at: at,
+            reasons: opened.reasons,
+        })
+    }
+}
+
+/// A file with no reason is not in the queue: its move is only a commit, nothing left the queue.
+fn report_move(entry: &QueueEntry, applied: &mut ReviewsApplied, updated: &mut usize) {
+    if entry.reasons.is_empty() {
+        *updated += 1;
+    } else {
+        applied.removed.push(entry.key.to_string());
+    }
+}
+
+/// The mirror of the archived Review task of `key`, if `review` is one.
+fn archived_mirror(
+    root: &Path,
+    key: &MrKey,
+    review: Option<&(TaskId, Option<StatusName>, TaskLocation)>,
+) -> Previous {
+    match review {
+        Some((id, _, TaskLocation::Archived(year))) => read_previous(&mirror_dir(
+            &root
+                .join(ARCHIVE_DIR)
+                .join(format!("{year:04}"))
+                .join(id.as_str()),
+            key,
+        )),
+        Some((_, _, TaskLocation::Active)) | None => Previous::default(),
+    }
+}
+
+/// Writes `entry` in the store at `root`, when its bytes change. `true` when it wrote.
+fn write_entry(root: &Path, entry: &QueueEntry) -> Result<bool, String> {
+    let bytes = entry_bytes(entry).map_err(|error| error.to_string())?;
+    let name = entry_name(&entry.key);
+    let dir = queue_dir(root);
+    write_mirror(&dir, &[(name.as_str(), bytes.as_slice())])
+        .map_err(|error| format!("cannot write the entry {}: {error}", dir.display()))
 }
 
 /// Deletes the entry of `key` in the store at `root`; already gone is not a failure.

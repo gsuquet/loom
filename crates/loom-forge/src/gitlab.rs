@@ -10,8 +10,9 @@ use serde::Deserialize;
 
 use crate::error::{ErrorBody, ForgeTime, ParseError, invalid, json};
 use crate::model::{
-    Anchor, Comment, FileChange, FileDiff, ForgeUser, Mr, MrForgeIds, MrKey, MrState, MrSummary,
-    MrVersion, Sha, Side, Thread, ThreadSubject,
+    Anchor, Comment, FileChange, FileDiff, ForgeUser, HeadPipeline, MergeStatus, Mr, MrForgeIds,
+    MrKey, MrRead, MrSignals, MrState, MrSummary, MrVersion, PipelineCommit, PipelineOutcome, Sha,
+    Side, Thread, ThreadSubject,
 };
 
 #[derive(Deserialize)]
@@ -107,6 +108,65 @@ struct MergeRequest {
     diff_refs: Option<DiffRefs>,
     references: References,
     web_url: String,
+    #[serde(default)]
+    assignees: Vec<User>,
+    /// Only on the single merge request request.
+    #[serde(default)]
+    head_pipeline: Option<RawPipeline>,
+    #[serde(default)]
+    detailed_merge_status: Option<String>,
+}
+
+/// `head_pipeline`: lenient, since a field that loom cannot read must not fail the whole MR.
+#[derive(Deserialize)]
+struct RawPipeline {
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default, rename = "ref")]
+    reference: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// `detailed_merge_status` to a [`MergeStatus`]: GitLab documents these four as still computing.
+fn merge_status(status: Option<&str>) -> MergeStatus {
+    match status {
+        Some("mergeable") => MergeStatus::Mergeable,
+        Some("checking" | "unchecked" | "preparing" | "approvals_syncing") => {
+            MergeStatus::Computing
+        }
+        Some(_) | None => MergeStatus::NotMergeable,
+    }
+}
+
+/// `head_pipeline` to a [`HeadPipeline`]. GitLab has no field that gives the head of a merged
+/// results or merge train pipeline (`source_sha` is not in the API): its `ref` tells what it is,
+/// and its `sha` is a temporary merge commit. A branch can also end in `/merge`, so only the ref
+/// of a merge request counts.
+fn head_pipeline(pipeline: RawPipeline) -> Option<HeadPipeline> {
+    let merged = pipeline
+        .reference
+        .as_deref()
+        .and_then(|reference| reference.strip_prefix("refs/merge-requests/"))
+        .is_some_and(|rest| rest.ends_with("/merge") || rest.ends_with("/train"));
+    Some(HeadPipeline {
+        commit: if merged {
+            PipelineCommit::MergedResult
+        } else {
+            PipelineCommit::Commit(pipeline.sha.and_then(|sha| Sha::try_from(sha).ok()))
+        },
+        outcome: if pipeline.status? == "failed" {
+            PipelineOutcome::Failed
+        } else {
+            PipelineOutcome::Other
+        },
+        created_at: pipeline
+            .created_at
+            .and_then(|at| serde_json::from_value::<ForgeTime>(at.into()).ok())
+            .map(|at| at.0),
+    })
 }
 
 fn key(payload: &'static str, mr: &MergeRequest) -> Result<MrKey, ParseError> {
@@ -147,14 +207,31 @@ fn username(user: Option<User>) -> String {
 /// [`ParseError`] when the body is not a GitLab merge request, its reference or state is not
 /// valid, or it has no `diff_refs` yet (GitLab computes them after a push).
 pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
+    parse_merge_request_read(body).map(|read| read.mr)
+}
+
+/// [`parse_merge_request`], with the [`MrSignals`] of the merge request.
+///
+/// # Errors
+///
+/// As [`parse_merge_request`].
+pub fn parse_merge_request_read(body: &[u8]) -> Result<MrRead, ParseError> {
     const PAYLOAD: &str = "GitLab merge request";
-    let mr: MergeRequest = json(PAYLOAD, body)?;
+    let mut mr: MergeRequest = json(PAYLOAD, body)?;
+    let signals = MrSignals {
+        assignees: std::mem::take(&mut mr.assignees)
+            .into_iter()
+            .map(|user| user.username)
+            .collect(),
+        head_pipeline: mr.head_pipeline.take().and_then(head_pipeline),
+        merge_status: merge_status(mr.detailed_merge_status.as_deref()),
+    };
     let key = key(PAYLOAD, &mr)?;
     let state = state(PAYLOAD, &mr.state)?;
     let refs = mr
         .diff_refs
         .ok_or_else(|| invalid(PAYLOAD, "no diff_refs"))?;
-    Ok(Mr {
+    let mr = Mr {
         key,
         forge_ids: MrForgeIds::Gitlab {
             id: mr.id,
@@ -179,7 +256,8 @@ pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
         web_url: mr.web_url,
         created_at: mr.created_at.0,
         updated_at: mr.updated_at.0,
-    })
+    };
+    Ok(MrRead { mr, signals })
 }
 
 /// `POST /projects/<id>/merge_requests`: the created merge request, as a summary. GitLab
@@ -236,6 +314,75 @@ pub fn parse_merge_requests(body: &[u8]) -> Result<Vec<MrSummary>, ParseError> {
     const PAYLOAD: &str = "GitLab merge requests";
     let mrs: Vec<MergeRequest> = json(PAYLOAD, body)?;
     mrs.into_iter().map(|mr| summary(PAYLOAD, mr)).collect()
+}
+
+/// An open merge request with a pending to-do that mentions me.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionedMr {
+    /// The key of the merge request.
+    pub key: MrKey,
+    /// The project of the merge request.
+    pub project_id: u64,
+}
+
+#[derive(Deserialize)]
+struct TodoProject {
+    id: u64,
+    path_with_namespace: String,
+}
+
+#[derive(Deserialize)]
+struct TodoTarget {
+    #[serde(default)]
+    iid: Option<u64>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Todo {
+    action_name: String,
+    target_type: String,
+    #[serde(default)]
+    project: Option<TodoProject>,
+    #[serde(default)]
+    target: Option<TodoTarget>,
+}
+
+/// `GET /todos?type=MergeRequest&state=pending&action=…`, one page: the open merge requests with
+/// a to-do `mentioned` or `directly_addressed`.
+///
+/// A to-do of any other kind, of a merged or closed merge request, or without its project is left
+/// out: a poll reads each entry on its own, and one odd to-do must not fail the list. The docs
+/// show no `references` on a target, so the key comes from the project and the IID.
+///
+/// # Errors
+///
+/// [`ParseError`] when the body is not a list of GitLab to-dos.
+pub fn parse_mention_todos(body: &[u8]) -> Result<Vec<MentionedMr>, ParseError> {
+    let todos: Vec<Todo> = json("GitLab to-dos", body)?;
+    Ok(todos
+        .into_iter()
+        .filter(|todo| {
+            todo.target_type == "MergeRequest"
+                && matches!(
+                    todo.action_name.as_str(),
+                    "mentioned" | "directly_addressed"
+                )
+        })
+        .filter_map(|todo| {
+            let project = todo.project?;
+            let target = todo.target?;
+            if target.state.as_deref() != Some("opened") {
+                return None;
+            }
+            let key = MrKey::parse(&format!("{}!{}", project.path_with_namespace, target.iid?));
+            Some(MentionedMr {
+                key: key.ok()?,
+                project_id: project.id,
+            })
+        })
+        .collect())
 }
 
 #[derive(Deserialize)]

@@ -7,13 +7,18 @@
 //! - [`can_start`]: whether the MR that the start read can get a Review task.
 //! - [`approval_step`]: the head of my GitLab approval of an MR without a task.
 //! - [`entry_seen`]: what a poll knows of an MR, for [`decide_entry`].
+//! - [`reasons_read`], [`other_reasons`], [`entry_reasons`]: why an MR waits on me.
+//! - [`mark_seen`]: what `POST /v1/reviews/queue/{key}/seen` does to an entry.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_api::{ContextName, QueueReason, ReviewQueueEntry, TaskId, Timestamp};
-use loom_forge::model::{Mr, MrForgeIds, MrKey, MrState, Sha};
+use loom_forge::model::{
+    HeadPipeline, MergeStatus, Mr, MrForgeIds, MrKey, MrSignals, MrState, MrVersion,
+    PipelineCommit, PipelineOutcome, Sha, Thread,
+};
 use loom_store::IndexedTask;
 use loom_store::files::QUEUE_DIR;
 use loom_store::port::TaskLocation;
@@ -85,14 +90,10 @@ pub fn entry_name(key: &MrKey) -> String {
     format!("{}.json", key.dir_name())
 }
 
-/// The entry of `mr`, for the `review_requested` reason. A `stored` entry keeps what the poll
-/// does not read: `seen_at`, and its other reasons. Pure.
+/// The entry of `mr`, with `reasons`. A `stored` entry keeps what the poll does not read:
+/// `seen_at`. Pure.
 #[must_use]
-pub fn entry_of(mr: &Mr, stored: Option<&QueueEntry>) -> QueueEntry {
-    let mut reasons = stored.map_or_else(Vec::new, |stored| stored.reasons.clone());
-    if !reasons.contains(&QueueReason::ReviewRequested) {
-        reasons.push(QueueReason::ReviewRequested);
-    }
+pub fn entry_of(mr: &Mr, stored: Option<&QueueEntry>, reasons: Vec<QueueReason>) -> QueueEntry {
     QueueEntry {
         v: QueueEntry::VERSION,
         key: mr.key.clone(),
@@ -163,6 +164,12 @@ pub struct EntrySeen {
     pub own: bool,
     /// The last archived Review task of the MR.
     pub archived: Option<ArchivedSeen>,
+    /// The reasons that hold now other than `review_requested`, in the order of [`REASONS`].
+    pub other_reasons: Vec<QueueReason>,
+    /// The MR has a file with no reason: my own MR, kept for its `seen_at`.
+    pub parked: bool,
+    /// The file of the MR has a `seen_at`.
+    pub has_seen_at: bool,
 }
 
 /// What to do with the entry of an MR.
@@ -176,29 +183,41 @@ pub enum EntryDecision {
     Keep,
     /// Delete the entry. No event: an entry is not a task.
     Remove,
+    /// The MR leaves the queue, and its file stays with no reason, for its `seen_at`.
+    Park,
+    /// Delete a file with no reason. The queue does not change.
+    DropParked,
 }
 
 /// What a poll does with the entry of an MR. Pure.
 ///
-/// An MR waits on me when it is open, I am a requested reviewer, my verdict is not on its
-/// current head or a request is newer than it, I am not its author, and it has no Review task.
-/// After an archived Review task,
-/// a new entry needs a new head or a new request, against what the mirror of that task saw.
+/// An MR waits on me when it is open, it has no Review task, and a reason holds.
+///
+/// After an archived Review task, a new entry needs a new head or a new request, against what the
+/// mirror of that task saw. The mirror does not hold whether I was assigned or mentioned, so these
+/// need a new head; my own MR needs nothing, as a task of it is only an old one.
+///
+/// A file with no reason keeps the `seen_at` of my own open MR: `index.db` can be rebuilt, and
+/// a note that I saw must not count as new again.
 #[must_use]
 pub fn decide_entry(seen: &EntrySeen) -> EntryDecision {
-    let waits = !seen.tracked
-        && seen.state == MrState::Open
-        && seen.requested
-        && (!seen.verdict_on_head || seen.requested_after_verdict)
-        && !seen.own;
+    let open = !seen.tracked && seen.state == MrState::Open;
+    let requested = review_requested_holds(seen);
+    let waits = open && (requested || !seen.other_reasons.is_empty());
+    let keeps_seen_at = open && seen.own && seen.has_seen_at;
     match (seen.has_entry, waits) {
         (true, true) => EntryDecision::Keep,
+        (true, false) if keeps_seen_at => EntryDecision::Park,
         (true, false) => EntryDecision::Remove,
+        (false, false) if seen.parked && !keeps_seen_at => EntryDecision::DropParked,
         (false, false) => EntryDecision::Absent,
         (false, true) => {
-            let new = seen.archived.as_ref().is_none_or(|archived| {
-                archived.head.as_ref() != Some(&seen.head) || archived.requested == Some(false)
-            });
+            let new = seen.parked
+                || seen.own
+                || seen.archived.as_ref().is_none_or(|archived| {
+                    archived.head.as_ref() != Some(&seen.head)
+                        || (requested && archived.requested == Some(false))
+                });
             if new {
                 EntryDecision::Add
             } else {
@@ -206,6 +225,271 @@ pub fn decide_entry(seen: &EntrySeen) -> EntryDecision {
             }
         }
     }
+}
+
+/// I am a requested reviewer of an MR that I did not write, and my verdict is not on its current
+/// head or a request is newer than it.
+const fn review_requested_holds(seen: &EntrySeen) -> bool {
+    seen.requested && (!seen.verdict_on_head || seen.requested_after_verdict) && !seen.own
+}
+
+/// Every reason, in the order of the entry file: the same reasons give the same bytes.
+pub const REASONS: [QueueReason; 6] = [
+    QueueReason::ReviewRequested,
+    QueueReason::Assigned,
+    QueueReason::Mentioned,
+    QueueReason::OwnNewComments,
+    QueueReason::OwnPipelineFailed,
+    QueueReason::OwnReadyToMerge,
+];
+
+/// What one poll read about the reasons other than `review_requested`. `None`: this poll does not
+/// know (a 304, a list that failed, or GitHub), and the entry keeps its value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReasonsRead {
+    /// I am an assignee of an MR that I did not write.
+    pub assigned: Option<bool>,
+    /// I have a pending to-do that mentions me.
+    pub mentioned: Option<bool>,
+    /// The discussions were read: the newest note that counts against `seen_at`, if any.
+    /// Compared on the task thread, so that a `seen` during the poll wins.
+    pub new_comment: Option<Option<Timestamp>>,
+    /// A pipeline failed on the current head of my MR.
+    pub pipeline_failed: Option<bool>,
+    /// My MR can be merged and has an approval.
+    pub ready_to_merge: Option<bool>,
+}
+
+impl ReasonsRead {
+    /// Nothing known: each reason keeps its value.
+    pub const UNKNOWN: Self = Self {
+        assigned: None,
+        mentioned: None,
+        new_comment: None,
+        pipeline_failed: None,
+        ready_to_merge: None,
+    };
+
+    /// The forge no longer shows the MR: no reason holds.
+    pub const NONE_HOLD: Self = Self {
+        assigned: Some(false),
+        mentioned: Some(false),
+        new_comment: Some(None),
+        pipeline_failed: Some(false),
+        ready_to_merge: Some(false),
+    };
+}
+
+/// What a full read of a GitLab MR tells, for [`reasons_read`].
+#[derive(Debug, Clone, Copy)]
+pub struct MrFacts<'a> {
+    /// The MR.
+    pub mr: &'a Mr,
+    /// The other fields of its read.
+    pub signals: &'a MrSignals,
+    /// The login of the token.
+    pub login: &'a str,
+    /// The discussions, `None` when this read did not need them.
+    pub threads: Option<&'a [Thread]>,
+    /// How many users approved the MR.
+    pub approvals: usize,
+    /// Whether a pending to-do mentions me, `None` when that list failed.
+    pub mentioned: Option<bool>,
+    /// When the forge first had the current head, when the read needed it.
+    pub head_since: Option<Timestamp>,
+}
+
+/// The reasons that a full read tells. Pure.
+#[must_use]
+pub fn reasons_read(facts: &MrFacts<'_>) -> ReasonsRead {
+    let own = facts.mr.author.eq_ignore_ascii_case(facts.login);
+    ReasonsRead {
+        assigned: Some(is_assigned(&facts.signals.assignees, facts.login, own)),
+        mentioned: facts.mentioned,
+        // Not my MR: the `own_` reasons do not hold. Mine: the discussions tell, if read.
+        new_comment: if own {
+            facts
+                .threads
+                .map(|threads| new_comment(threads, facts.login))
+        } else {
+            Some(None)
+        },
+        pipeline_failed: if own {
+            pipeline_failed(
+                facts.signals.head_pipeline.as_ref(),
+                &facts.mr.version.head_sha,
+                facts.head_since,
+            )
+        } else {
+            Some(false)
+        },
+        ready_to_merge: if own {
+            ready_to_merge(facts.signals.merge_status, facts.mr.draft, facts.approvals)
+        } else {
+            Some(false)
+        },
+    }
+}
+
+/// I am an assignee of an MR that I did not write. My own MRs are often assigned to me, so that
+/// case counts only through the `own_` reasons. Pure.
+#[must_use]
+pub fn is_assigned(assignees: &[String], login: &str, own: bool) -> bool {
+    !own && assignees
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(login))
+}
+
+/// The newest note from someone else that is newer than my latest note. Pure.
+#[must_use]
+pub fn new_comment(threads: &[Thread], login: &str) -> Option<Timestamp> {
+    let comments = || threads.iter().flat_map(|thread| &thread.comments);
+    let mine = comments()
+        .filter(|comment| comment.author.eq_ignore_ascii_case(login))
+        .map(|comment| comment.created_at)
+        .max();
+    comments()
+        .filter(|comment| !comment.author.eq_ignore_ascii_case(login))
+        .map(|comment| comment.created_at)
+        .max()
+        .filter(|newest| mine.is_none_or(|mine| *newest > mine))
+}
+
+/// Whether the note found by [`new_comment`] is newer than the time I opened the entry. Pure.
+#[must_use]
+pub fn has_new_comment(newest: Option<Timestamp>, seen_at: Option<Timestamp>) -> bool {
+    newest.is_some_and(|newest| seen_at.is_none_or(|seen| newest > seen))
+}
+
+/// A pipeline failed on `head`: a failure on an older head says nothing about this one. Pure.
+///
+/// A merged results or merge train pipeline runs on a temporary merge commit, which says nothing
+/// about the head. `head_since` dates the head: the pipeline is of it unless it was created before
+/// that. GitLab keeps `head_pipeline` after a push that creates no pipeline, so without this date
+/// the queue would report a failure on a head that never ran. `None`: it cannot be dated, and the
+/// reason keeps its value.
+#[must_use]
+pub fn pipeline_failed(
+    pipeline: Option<&HeadPipeline>,
+    head: &Sha,
+    head_since: Option<Timestamp>,
+) -> Option<bool> {
+    let Some(pipeline) = pipeline else {
+        return Some(false);
+    };
+    if pipeline.outcome != PipelineOutcome::Failed {
+        return Some(false);
+    }
+    match &pipeline.commit {
+        PipelineCommit::Commit(sha) => Some(sha.as_ref() == Some(head)),
+        PipelineCommit::MergedResult => Some(pipeline.created_at? >= head_since?),
+    }
+}
+
+/// Whether [`pipeline_failed`] needs the time of the head: the one case that costs a request. Pure.
+#[must_use]
+pub fn needs_head_time(pipeline: Option<&HeadPipeline>) -> bool {
+    pipeline.is_some_and(|pipeline| {
+        pipeline.outcome == PipelineOutcome::Failed
+            && pipeline.commit == PipelineCommit::MergedResult
+    })
+}
+
+/// When the forge first had `head`: the oldest of its versions, since a new base gives a later
+/// version of the same head. Pure.
+#[must_use]
+pub fn head_since(versions: &[MrVersion], head: &Sha) -> Option<Timestamp> {
+    versions
+        .iter()
+        .filter(|version| version.head_sha == *head)
+        .filter_map(|version| version.created_at)
+        .min()
+}
+
+/// My MR can be merged and has an approval, and it is not a draft. `None` while the forge computes
+/// the status: the reason does not change, so it does not come and go at each push. Pure.
+#[must_use]
+pub const fn ready_to_merge(status: MergeStatus, draft: bool, approvals: usize) -> Option<bool> {
+    if draft {
+        return Some(false);
+    }
+    match status {
+        MergeStatus::Computing => None,
+        MergeStatus::Mergeable => Some(approvals > 0),
+        MergeStatus::NotMergeable => Some(false),
+    }
+}
+
+/// The reasons other than `review_requested` after a poll: what it read, and otherwise what the
+/// file holds. Pure.
+#[must_use]
+pub fn other_reasons(
+    stored: &[QueueReason],
+    read: &ReasonsRead,
+    seen_at: Option<Timestamp>,
+) -> Vec<QueueReason> {
+    REASONS
+        .into_iter()
+        .filter(|reason| {
+            let known = match reason {
+                QueueReason::ReviewRequested => return false,
+                QueueReason::Assigned => read.assigned,
+                QueueReason::Mentioned => read.mentioned,
+                QueueReason::OwnNewComments => read
+                    .new_comment
+                    .map(|newest| has_new_comment(newest, seen_at)),
+                QueueReason::OwnPipelineFailed => read.pipeline_failed,
+                QueueReason::OwnReadyToMerge => read.ready_to_merge,
+            };
+            known.unwrap_or_else(|| stored.contains(reason))
+        })
+        .collect()
+}
+
+/// The reasons of the entry file after a poll, in the order of [`REASONS`]. Pure.
+#[must_use]
+pub fn entry_reasons(seen: &EntrySeen) -> Vec<QueueReason> {
+    let requested = review_requested_holds(seen).then_some(QueueReason::ReviewRequested);
+    requested
+        .into_iter()
+        .chain(seen.other_reasons.iter().copied())
+        .collect()
+}
+
+/// The entry of `target` after the entry `source` of the same MR moves onto it: a file with no
+/// reason must not drop the reasons of the entry, and the later `seen_at` wins. Pure.
+#[must_use]
+pub fn merged_entry(target: &QueueEntry, source: &QueueEntry) -> QueueEntry {
+    QueueEntry {
+        reasons: REASONS
+            .into_iter()
+            .filter(|reason| target.reasons.contains(reason) || source.reasons.contains(reason))
+            .collect(),
+        seen_at: target.seen_at.max(source.seen_at),
+        ..target.clone()
+    }
+}
+
+/// The entry after I open it, at `at`: `own_new_comments` goes, the other reasons stay. Pure.
+#[must_use]
+pub fn mark_seen(entry: &QueueEntry, at: Timestamp) -> QueueEntry {
+    QueueEntry {
+        reasons: entry
+            .reasons
+            .iter()
+            .copied()
+            .filter(|reason| *reason != QueueReason::OwnNewComments)
+            .collect(),
+        seen_at: Some(at),
+        ..entry.clone()
+    }
+}
+
+/// A start of an MR whose read shows no reason left: my direct request is gone, and no other
+/// reason holds (an assignee, or a to-do that mentions me). Pure.
+#[must_use]
+pub const fn waits_no_more(was_requested: bool, reviewer: bool, other_reason: bool) -> bool {
+    was_requested && !reviewer && !other_reason
 }
 
 /// The context and the task or entry that a start names.
@@ -272,12 +556,12 @@ pub enum StartRefusal {
     NotOpen(MrState),
     /// I am the author: my own MRs never get a Review task.
     Own,
-    /// The read shows that my direct request is gone.
+    /// The read shows that my direct request is gone, and no other reason is left.
     RequestGone,
 }
 
-/// Whether the MR that a start read can get a Review task. `request_gone`: the read shows that a
-/// direct request is gone; a read does not show a request through a team. Pure.
+/// Whether the MR that a start read can get a Review task. `request_gone`: [`waits_no_more`]; a
+/// read does not show a request through a team. Pure.
 ///
 /// # Errors
 ///
@@ -362,6 +646,8 @@ pub struct EntryInput<'a> {
     pub own: bool,
     /// A request is known to be newer than my verdict.
     pub requested_after_verdict: bool,
+    /// What this poll read about the other reasons.
+    pub reasons: &'a ReasonsRead,
 }
 
 /// The facts of [`decide_entry`]: the state and head come from the read, else from the entry,
@@ -388,15 +674,32 @@ pub fn entry_seen(input: &EntryInput<'_>) -> Option<EntrySeen> {
             next_verdict(known, shown, latest.clone()).0
         },
     );
+    let had_request = input
+        .stored
+        .map(|entry| entry.reasons.contains(&QueueReason::ReviewRequested));
     // Unknown (an incomplete search): as at the last poll.
     let requested = input
         .requested
-        .or_else(|| input.stored.map(|_| true))
+        .or(had_request)
         .or_else(|| recorded.map(|state| state.requested))
         .unwrap_or(false);
+    // A 304, with no verdict read: an entry that lost this reason to my verdict does not get it
+    // back. It can have other reasons now, so a stored entry no longer means "requested".
+    let unread = input.read.is_none() && input.verdict.is_none();
+    let requested = requested && !(unread && had_request == Some(false));
+    let stored_reasons = input
+        .stored
+        .map_or(&[][..], |entry| entry.reasons.as_slice());
     Some(EntrySeen {
         tracked: input.tracked,
-        has_entry: input.stored.is_some(),
+        has_entry: !stored_reasons.is_empty(),
+        parked: input.stored.is_some() && stored_reasons.is_empty(),
+        has_seen_at: input.stored.is_some_and(|entry| entry.seen_at.is_some()),
+        other_reasons: other_reasons(
+            stored_reasons,
+            input.reasons,
+            input.stored.and_then(|entry| entry.seen_at),
+        ),
         state,
         verdict_on_head: verdict.is_some_and(|verdict| verdict.sha == head),
         requested_after_verdict: input.requested_after_verdict,

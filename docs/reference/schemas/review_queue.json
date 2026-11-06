@@ -30,6 +30,31 @@
           "description": "I am a requested reviewer, and my verdict is not on the current head.",
           "type": "string",
           "const": "review_requested"
+        },
+        {
+          "description": "I am an assignee, and I am not the author.",
+          "type": "string",
+          "const": "assigned"
+        },
+        {
+          "description": "A pending to-do on the forge mentions me.",
+          "type": "string",
+          "const": "mentioned"
+        },
+        {
+          "description": "My MR has a note from another person that I did not see.",
+          "type": "string",
+          "const": "own_new_comments"
+        },
+        {
+          "description": "A pipeline failed on the current head of my MR.",
+          "type": "string",
+          "const": "own_pipeline_failed"
+        },
+        {
+          "description": "My MR can be merged and has an approval.",
+          "type": "string",
+          "const": "own_ready_to_merge"
         }
       ]
     },

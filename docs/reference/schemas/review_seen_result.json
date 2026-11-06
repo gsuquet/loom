@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewSeenResult",
+  "description": "Answer of `POST /v1/reviews/queue/{key}/seen`.",
+  "type": "object",
+  "properties": {
+    "context": {
+      "description": "The context of the MR.",
+      "$ref": "#/$defs/ContextName"
+    },
+    "key": {
+      "description": "The key of the MR, such as `company-a/checkout!88`.",
+      "type": "string"
+    },
+    "reasons": {
+      "description": "The reasons that are left. If empty: the MR left the queue.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/QueueReason"
+      }
+    },
+    "seen_at": {
+      "description": "The time that this request wrote.",
+      "$ref": "#/$defs/Timestamp"
+    }
+  },
+  "required": [
+    "context",
+    "key",
+    "seen_at",
+    "reasons"
+  ],
+  "$defs": {
+    "ContextName": {
+      "description": "Context name: 1 to 64 lowercase ASCII letters, digits and `-`. The first character is a letter. The last character is not `-`.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "QueueReason": {
+      "description": "Why an MR waits on me.",
+      "oneOf": [
+        {
+          "description": "I am a requested reviewer, and my verdict is not on the current head.",
+          "type": "string",
+          "const": "review_requested"
+        },
+        {
+          "description": "I am an assignee, and I am not the author.",
+          "type": "string",
+          "const": "assigned"
+        },
+        {
+          "description": "A pending to-do on the forge mentions me.",
+          "type": "string",
+          "const": "mentioned"
+        },
+        {
+          "description": "My MR has a note from another person that I did not see.",
+          "type": "string",
+          "const": "own_new_comments"
+        },
+        {
+          "description": "A pipeline failed on the current head of my MR.",
+          "type": "string",
+          "const": "own_pipeline_failed"
+        },
+        {
+          "description": "My MR can be merged and has an approval.",
+          "type": "string",
+          "const": "own_ready_to_merge"
+        }
+      ]
+    },
+    "Timestamp": {
+      "description": "RFC 3339 instant in UTC with whole seconds, such as 2026-10-12T08:00:00Z.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

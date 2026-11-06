@@ -73,9 +73,11 @@ Host `gitlab.example.com`, API `https://gitlab.example.com/api/v4`, project `com
 | `GET /user` | 200 | | `user.json` |
 | `GET /personal_access_tokens/self` | 200 | | `personal-access-token-self.json` (`api`), `.read-api.json` (`read_api`) |
 | `GET /merge_requests?scope=reviews_for_me&state=opened&updated_after=…&per_page=100` (no `updated_after` on the first poll) | 200 | `x-next-page`, `link` | `merge-requests-reviews-for-me.json`, `.empty.json` |
+| `GET /merge_requests?scope=assigned_to_me&state=opened&per_page=100`, `scope=created_by_me` | 200 | `x-next-page`, `link` | same shape, composed in the tests |
+| `GET /todos?type=MergeRequest&state=pending&action=mentioned&per_page=100`, `action=directly_addressed` | 200 | `x-next-page`, `link` | `todos-mentioned.json`, `todos.empty.json` (shape of `doc/api/todos.md`, not recorded live) |
 | `GET /projects/company-a%2Fcheckout`: the forge metadata of a repo card | 200 | | `project.json` (archived) |
 | `GET /projects/77/merge_requests?state=opened&per_page=1` | 200 | `x-total` (left out above 10,000) | composed in `crates/loom-forge/tests/gitlab_client.rs` |
-| `GET /projects/77/merge_requests/88` | 200 | `etag` | `merge-request-88.v1.json`, `merge-request-88.v2.json` |
+| `GET /projects/77/merge_requests/88` | 200 | `etag` | `merge-request-88.v1.json`, `merge-request-88.v2.json`, `merge-request-88.own-failed.json` (my own MR: `assignees`, `head_pipeline`, `detailed_merge_status`; shape of `doc/api/merge_requests.md`, not recorded live), `merge-request-88.merged-results.json` (the same, with a failed merged results pipeline: `sha` is the temporary merge commit, `ref` is `refs/merge-requests/88/merge`) |
 | `GET /projects/77/merge_requests/88/versions?per_page=100` | 200 | | `merge-request-88-versions.json` (newest first) |
 | `GET /projects/77/merge_requests/88/diffs?per_page=100` | 200 | `x-next-page` | `merge-request-88-diffs.json` |
 | `GET /projects/77/merge_requests/88/discussions?per_page=2` | 200 | `x-next-page: 2`, `x-total-pages: 2` | `merge-request-88-discussions.page-1.json` |

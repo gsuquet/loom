@@ -8,12 +8,13 @@ use common::{M1, M2, V1, V2, edit, sha, time};
 use loom_api::ForgeKind;
 use loom_forge::ParseError;
 use loom_forge::gitlab::{
-    parse_approvals, parse_diffs, parse_discussions, parse_draft_note, parse_draft_notes,
-    parse_error, parse_merge_request, parse_merge_requests, parse_token, parse_user,
-    parse_versions,
+    MentionedMr, parse_approvals, parse_diffs, parse_discussions, parse_draft_note,
+    parse_draft_notes, parse_error, parse_mention_todos, parse_merge_request,
+    parse_merge_request_read, parse_merge_requests, parse_token, parse_user, parse_versions,
 };
 use loom_forge::model::{
-    Anchor, FileChange, MrForgeIds, MrKey, MrState, MrVersion, Side, ThreadSubject,
+    Anchor, FileChange, HeadPipeline, MergeStatus, MrForgeIds, MrKey, MrState, MrVersion,
+    PipelineCommit, PipelineOutcome, Side, ThreadSubject,
 };
 
 macro_rules! fixture {
@@ -437,4 +438,167 @@ fn error_bodies() {
         Err(ParseError::Invalid { .. })
     ));
     assert!(matches!(parse_error(b"oops"), Err(ParseError::Json { .. })));
+}
+
+#[test]
+fn the_single_merge_request_gives_its_assignees_pipeline_and_merge_status() {
+    let read = parse_merge_request_read(fixture!("merge-request-88.own-failed.json")).unwrap();
+    assert_eq!(read.mr.author, "carol");
+    assert_eq!(read.signals.assignees, ["carol"]);
+    assert_eq!(read.signals.merge_status, MergeStatus::NotMergeable);
+    assert_eq!(
+        read.signals.head_pipeline,
+        Some(HeadPipeline {
+            commit: PipelineCommit::Commit(Some(read.mr.version.head_sha.clone())),
+            outcome: PipelineOutcome::Failed,
+            created_at: Some(time("2026-10-23T11:06:30Z")),
+        })
+    );
+    // Without a pipeline, as a list or an MR with no CI gives it.
+    let read = parse_merge_request_read(fixture!("merge-request-88.v2.json")).unwrap();
+    assert_eq!(read.signals.head_pipeline, None);
+    assert_eq!(read.signals.assignees, ["alice"]);
+    // A merged results pipeline runs on a temporary merge commit.
+    let read = parse_merge_request_read(fixture!("merge-request-88.merged-results.json")).unwrap();
+    assert_eq!(
+        read.signals.head_pipeline,
+        Some(HeadPipeline {
+            commit: PipelineCommit::MergedResult,
+            outcome: PipelineOutcome::Failed,
+            created_at: Some(time("2026-10-23T11:06:30Z")),
+        })
+    );
+}
+
+#[test]
+fn head_pipeline_table() {
+    let sha_text = V2;
+    let table: [(&str, &str, &str, PipelineCommit, PipelineOutcome); 6] = [
+        (
+            "a branch",
+            "auth-refactor",
+            "failed",
+            PipelineCommit::Commit(Some(sha(sha_text))),
+            PipelineOutcome::Failed,
+        ),
+        (
+            "a branch named so",
+            "feature/merge",
+            "failed",
+            PipelineCommit::Commit(Some(sha(sha_text))),
+            PipelineOutcome::Failed,
+        ),
+        (
+            "detached",
+            "refs/merge-requests/88/head",
+            "success",
+            PipelineCommit::Commit(Some(sha(sha_text))),
+            PipelineOutcome::Other,
+        ),
+        (
+            "merged results",
+            "refs/merge-requests/88/merge",
+            "failed",
+            PipelineCommit::MergedResult,
+            PipelineOutcome::Failed,
+        ),
+        (
+            "merge train",
+            "refs/merge-requests/88/train",
+            "running",
+            PipelineCommit::MergedResult,
+            PipelineOutcome::Other,
+        ),
+        (
+            "canceled",
+            "main",
+            "canceled",
+            PipelineCommit::Commit(Some(sha(sha_text))),
+            PipelineOutcome::Other,
+        ),
+    ];
+    let mut mr: serde_json::Value =
+        serde_json::from_slice(fixture!("merge-request-88.own-failed.json")).unwrap();
+    for (name, reference, status, commit, outcome) in table {
+        mr["head_pipeline"] = serde_json::json!({
+            "sha": sha_text,
+            "ref": reference,
+            "status": status,
+            "created_at": "2026-10-23T11:06:30.000+02:00",
+        });
+        let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            read.signals.head_pipeline,
+            Some(HeadPipeline {
+                commit,
+                outcome,
+                created_at: Some(time("2026-10-23T09:06:30Z")),
+            }),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn merge_status_table() {
+    use MergeStatus::{Computing, Mergeable, NotMergeable};
+    let mut mr: serde_json::Value =
+        serde_json::from_slice(fixture!("merge-request-88.own-failed.json")).unwrap();
+    for (status, expected) in [
+        ("mergeable", Mergeable),
+        ("checking", Computing),
+        ("unchecked", Computing),
+        ("preparing", Computing),
+        ("approvals_syncing", Computing),
+        ("not_approved", NotMergeable),
+        ("conflict", NotMergeable),
+        ("a value of a later GitLab", NotMergeable),
+    ] {
+        mr["detailed_merge_status"] = serde_json::json!(status);
+        let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
+        assert_eq!(read.signals.merge_status, expected, "{status}");
+    }
+    mr["detailed_merge_status"] = serde_json::Value::Null;
+    let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
+    assert_eq!(read.signals.merge_status, NotMergeable);
+}
+
+#[test]
+fn a_pipeline_field_that_cannot_be_read_does_not_fail_the_merge_request() {
+    let mut mr: serde_json::Value =
+        serde_json::from_slice(fixture!("merge-request-88.own-failed.json")).unwrap();
+    mr["head_pipeline"]["sha"] = serde_json::json!("not a sha");
+    let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
+    assert_eq!(
+        read.signals.head_pipeline.unwrap().commit,
+        PipelineCommit::Commit(None)
+    );
+    mr["head_pipeline"]["created_at"] = serde_json::json!("not a time");
+    let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
+    assert_eq!(read.signals.head_pipeline.unwrap().created_at, None);
+    mr["head_pipeline"] = serde_json::Value::Null;
+    let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
+    assert_eq!(read.signals.head_pipeline, None);
+}
+
+#[test]
+fn only_open_merge_requests_that_mention_me_come_from_the_todos() {
+    // The fixture also has a merged target and an action of another kind.
+    let mentions = parse_mention_todos(fixture!("todos-mentioned.json")).unwrap();
+    assert_eq!(
+        mentions,
+        [MentionedMr {
+            key: MrKey::new(ForgeKind::Gitlab, "company-a/checkout", 88).unwrap(),
+            project_id: 77,
+        }]
+    );
+    assert_eq!(
+        parse_mention_todos(fixture!("todos.empty.json")).unwrap(),
+        []
+    );
+    assert!(parse_mention_todos(b"{}").is_err());
+    // A to-do of another type, or with no project, is left out and fails nothing.
+    let odd = br#"[{"action_name":"mentioned","target_type":"Issue","project":null,"target":{"iid":1,"state":"opened"}},
+                   {"action_name":"directly_addressed","target_type":"MergeRequest","project":null,"target":{"iid":1,"state":"opened"}}]"#;
+    assert_eq!(parse_mention_todos(odd).unwrap(), []);
 }
