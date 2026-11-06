@@ -885,12 +885,11 @@ fn only_a_failed_merged_result_needs_the_time_of_the_head() {
 
 #[test]
 fn the_time_of_a_head_is_its_first_version() {
-    let version = |head: &str, at: Option<&str>| MrVersion {
+    // No mirror version: a null in its other SHAs does not stop it from dating the head.
+    let version = |head: &str, at: Option<&str>| VersionRead {
         head_sha: sha(head),
-        base_sha: sha(V1),
-        merge_base: None,
-        forge_version_id: None,
         created_at: at.map(time),
+        version: None,
     };
     let versions = [
         version(V2, Some("2026-10-21T11:00:00Z")),

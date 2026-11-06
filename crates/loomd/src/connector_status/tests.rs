@@ -232,7 +232,14 @@ fn a_refused_list_is_forbidden_and_keeps_what_else_failed() {
 
 #[test]
 fn a_rate_limit_is_as_it_is_and_keeps_the_counts() {
-    let poll = forge_poll(&ReviewSyncOutcome::RateLimited { until: at(60) }, None, 2);
+    let poll = forge_poll(
+        &ReviewSyncOutcome::RateLimited {
+            until: at(60),
+            failed_lists: vec![],
+        },
+        None,
+        2,
+    );
     assert_eq!(poll.health, ConnectorHealth::RateLimited { until: at(60) });
     assert!(!poll.success);
     assert_eq!(poll.items, None);
@@ -242,6 +249,7 @@ fn a_rate_limit_is_as_it_is_and_keeps_the_counts() {
 fn a_stopped_poll_follows_its_cause_and_keeps_the_counts() {
     let failed = ReviewSyncOutcome::Failed {
         error: "why".to_owned(),
+        failed_lists: vec![],
     };
     let cases = [
         (

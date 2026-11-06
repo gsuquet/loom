@@ -20,7 +20,7 @@ use crate::github::{PendingReview, Review, SearchPage, SubmittedReview};
 use crate::gitlab::request::{BulkPublishBody, DraftNoteBody};
 use crate::gitlab::{Approvals, DraftNote, TokenInfo};
 use crate::model::{
-    Anchor, FileDiff, ForgeUser, Mr, MrKey, MrSummary, MrVersion, Sha, Thread, VerdictKind,
+    Anchor, FileDiff, ForgeUser, Mr, MrKey, MrSummary, Sha, Thread, VerdictKind, VersionRead,
 };
 use crate::open::NewMr;
 
@@ -561,7 +561,7 @@ pub trait GitlabForge: Forge {
     /// # Errors
     ///
     /// [`ForgeError`].
-    fn versions(&self, mr: GitlabMr) -> Result<Vec<MrVersion>, ForgeError>;
+    fn versions(&self, mr: GitlabMr) -> Result<Vec<VersionRead>, ForgeError>;
 
     /// The diffs of the files of the current version.
     ///

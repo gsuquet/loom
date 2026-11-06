@@ -55,6 +55,7 @@ An MR has an entry when it is open, it has no Review task in any context, and at
 | The MR is of another context now, in other cases | present | no change, and the poll reports it as failed |
 | The forge answers `404` for the MR, and the host answers | present | deleted, as for a closed MR |
 | The list of MRs to review or a read of the MR fails, or any list gets no answer, a refused token or a rate limit | any | no change |
+| A failed merged results pipeline of an open MR of yours cannot be dated | any | `own_pipeline_failed` keeps its last value, and the MR follows its read for the other reasons |
 | Another list fails (a `403`, a `500`) | any | `mentioned` keeps its last value, and each MR that was read follows its read for the other reasons |
 | An incomplete GitHub search does not show the MR | present | no change |
 
@@ -77,7 +78,13 @@ The GitLab documentation does not tell if a pipeline result changes the `updated
 
 An approval can also leave that body as it was. Thus, for an open MR of yours that is mergeable and is not a draft, `loomd` reads the approvals at each poll. It sees an approval that comes, and an approval that is revoked.
 
-A pipeline is of the current head when its SHA is the head. A merged results or merge train pipeline (its `ref` is `refs/merge-requests/<iid>/merge` or `/train`) runs on a temporary merge commit, so its SHA is never the head, and the API does not tell its head. If such a pipeline failed, `loomd` reads the versions of the MR, one request. The failure counts only if the pipeline was not created before the first version with the current head. Thus, a push that creates no pipeline removes the reason, and a new pipeline that fails gives it. If `loomd` cannot read the versions, the reason does not change, and the poll reports the MR as failed. After a push back to an older head, a failure of the head between them counts until a new pipeline.
+A pipeline is of the current head when its SHA is the head. A merged results or merge train pipeline (its `ref` is `refs/merge-requests/<iid>/merge` or `/train`) runs on a temporary merge commit, so its SHA is never the head, and the API does not tell its head. If such a pipeline failed on an open MR, `loomd` reads the versions of the MR, one request. A merged or closed MR is not dated, because it leaves the queue. The failure counts only if the pipeline was not created before the first version with the current head. Thus, a push that creates no pipeline removes the reason, and a new pipeline that fails gives it.
+
+If `loomd` cannot read the versions, or they do not date the head, only this reason does not change. The rest of the read applies, for example a new note or the merge state. The poll reports the MR as failed, and the next poll reads the MR in full. A refused token, a rate limit or no answer on this read stops the poll, as on each read.
+
+A version with a null SHA does not go in the mirror. It still dates the head, if it has its head SHA and its time. A version with no head SHA tells nothing, and `loomd` skips it.
+
+After a push back to an older head, a failure of the head between them counts until a new pipeline.
 
 ### When you open an entry
 
@@ -114,6 +121,8 @@ The poller thread does the start. A start waits for a poll that runs, and a poll
 | No entry and no Review task | `404 not_found`. A start creates no task for an MR that is not in the queue. |
 | Two contexts have this key | `400 invalid_request`. Name the context with `-c`. |
 | This machine does not poll the context and host of the entry (another machine polls it, or the credential was removed) | `400 invalid_request`. Start on the first machine of the context, or add the credential. A task created on another machine is not known to the poll until a store sync, and a second task could come from it. |
+
+A start does not read the versions for a mirror when the MR is merged or closed, or when it is your own MR, because no task comes from it. Thus, a failure of the versions does not change the answer `409 conflict`.
 
 A Review task follows the MR, your verdict and your requests. If you are unassigned, or if the to-do is done, the task does not change. If a request comes and goes after the start, without a verdict, the task is cancelled as for each request.
 
@@ -184,12 +193,12 @@ A poll writes nothing when nothing changed:
 ## When a forge fails
 
 - A host that does not answer, or that refuses the token, stops its own poll only. The other hosts go on.
-- The entries do not change, and the mirrors keep their last snapshot. The MRs that the stopped poll read before the failure are applied all the same. Thus, one MR that fails does not hold back the others. The answer of `loom review sync` and the log of `loomd` give the error. The answer also gives the time of the last poll that succeeded. `loomd` keeps this time in memory only: after a restart, it is empty until a poll succeeds. [`loom connector status`](../reference/cli/loom.md#loom-connector-status) gives the result of the last poll of each host, also of a scheduled poll, and keeps its times across a restart.
+- The MRs that the stopped poll did not read keep their entries and their last snapshot. The MRs that it read before the failure are applied all the same. Thus, one MR that fails does not hold back the others. The answer of `loom review sync` and the log of `loomd` give the error. The answer also gives the time of the last poll that succeeded. `loomd` keeps this time in memory only: after a restart, it is empty until a poll succeeds. [`loom connector status`](../reference/cli/loom.md#loom-connector-status) gives the result of the last poll of each host, also of a scheduled poll, and keeps its times across a restart.
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.
-- A failure of `assigned_to_me`, `created_by_me` or the to-dos, other than a refused token, a rate limit or no answer, stops only that list. For example, a token cannot read the to-dos. The answer gives it in `failed_lists`, and the next poll reads the list again. [`loom connector status`](../reference/cli/loom.md#loom-connector-status) also shows the list, after a scheduled poll too: as `forbidden` when the host refuses the list to the token, otherwise as `partial`. `loom review sync` exits with an error and tells that a list failed. It does not tell that the MRs keep their last snapshot, because the poll updated them. `mentioned` keeps its last value. An MR that only this list finds waits for the next poll that reads it. An MR with an entry is still read, and follows its read for the other reasons.
-- A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` on the MR itself, for an MR with only an entry and not in the list, is not a failure: the entry is deleted, and the next GitLab list is full, without `updated_after`. A lost access looks the same. If the access comes back before that next poll, the entry comes back at that poll. If not, it comes back at the next full list, also when the MR did not change: `loomd` lists in full at least once per hour, so at most about one hour after the access comes back, or at the first poll after that hour when the polls are less frequent. A `404` on another read of the MR, such as its reviews or approvals, is a failure, and the entry stays.
+- A failure of `assigned_to_me`, `created_by_me` or the to-dos, other than a refused token, a rate limit or no answer, stops only that list. For example, a token cannot read the to-dos. The answer gives it in `failed_lists`, and the next poll reads the list again. [`loom connector status`](../reference/cli/loom.md#loom-connector-status) also shows the list, after a scheduled poll too: as `forbidden` when the host refuses the list to the token, otherwise as `partial`. `loom review sync` exits with an error and tells that a list failed. It does not tell that the MRs keep their last snapshot, because the poll updated them. `mentioned` keeps its last value. An MR that only this list finds waits for the next poll that reads it. An MR with an entry is still read, and follows its read for the other reasons. If the same poll stops after this failure, the answer gives `failed_lists` with the reason of the stop, and `loom review sync` exits with an error, also for a rate limit.
+- A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` on the MR itself, for an MR with only an entry and not in the list, is not a failure: the entry is deleted, and the next GitLab list is full, without `updated_after`. A lost access looks the same. If the access comes back before that next poll, the entry comes back at that poll. If not, it comes back at the next full list, also when the MR did not change: `loomd` lists in full at least once per hour, so at most about one hour after the access comes back, or at the first poll after that hour when the polls are less frequent. A `404` on another read of the MR, such as its reviews or approvals, is a failure, and the entry stays. A merged results pipeline that cannot be dated is also reported as a failure, but the rest of the read applies: see [Pipeline results](#pipeline-results-and-updated_at).
 - When `loomd` stops, a poll that runs stops before its next forge call.
 
 ## Limits
@@ -213,4 +222,4 @@ A poll writes nothing when nothing changed:
 - GitLab, in a project that keeps the approvals: after a push opens the task again, the approval that stays does not close it. Approve again after a reset, or close the task.
 - If a task that `loomd` cannot read (a broken hand edit) holds the mirror of an MR, the MR gets no entry and no second task: the poll reports it as failed until you fix the file.
 - When an MR that the GitLab list found fails, and it has no task, GitLab lists the MRs from the same time again at the next poll.
-- `loom review sync` exits with status 0 when a forge limits the rate: the answer gives the time of the reset.
+- `loom review sync` exits with status 0 when a forge limits the rate and no list failed before the limit in that poll: the answer gives the time of the reset.

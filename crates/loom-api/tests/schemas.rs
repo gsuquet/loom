@@ -28,13 +28,13 @@ use loom_api::{
     RemoteScheme, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState,
     RepoSummary, RepoSync, RepoUpdatePolicy, RestartVia, ReviewList, ReviewListFailure,
     ReviewListFailureKind, ReviewQueue, ReviewQueueEntry, ReviewSeenRequest, ReviewSeenResult,
-    ReviewStartRequest, ReviewStartResult, ReviewSyncOutcome, ReviewSyncRequest, ReviewSyncResult,
-    RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult, SearchResults, Secret,
-    ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse,
-    SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField, TaskStoreHealth, Timestamp,
-    Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState,
-    UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource,
-    Upstream, VersionInfo,
+    ReviewStartRequest, ReviewStartResult, ReviewSync, ReviewSyncOutcome, ReviewSyncRequest,
+    ReviewSyncResult, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
+    SearchResults, Secret, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
+    StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField,
+    TaskStoreHealth, Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode,
+    UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -453,6 +453,60 @@ fn capabilities_are_constant_per_kind() {
         ConnectorKind::from(ForgeKind::Gitlab),
         ConnectorKind::Gitlab
     );
+}
+
+#[test]
+fn a_stopped_poll_keeps_its_failed_lists_and_an_answer_without_them_can_be_read() {
+    let failed_lists = vec![ReviewListFailure {
+        list: ReviewList::Own,
+        kind: ReviewListFailureKind::Other,
+        error: "500".to_owned(),
+    }];
+    let until = Timestamp::from_unix_secs(0).unwrap();
+    for outcome in [
+        ReviewSyncOutcome::RateLimited {
+            until,
+            failed_lists: failed_lists.clone(),
+        },
+        ReviewSyncOutcome::Failed {
+            error: "timeout".to_owned(),
+            failed_lists,
+        },
+    ] {
+        let result = ReviewSyncResult {
+            forges: vec![ReviewSync {
+                context: "work".parse().unwrap(),
+                host: "gitlab.example.com".to_owned(),
+                kind: ForgeKind::Gitlab,
+                last_success: None,
+                outcome,
+            }],
+        };
+        assert_eq!(violations(&result).unwrap().len(), 0);
+    }
+    // Empty lists are absent, and an answer from before these fields can be read.
+    for (outcome, json) in [
+        (
+            ReviewSyncOutcome::RateLimited {
+                until,
+                failed_lists: Vec::new(),
+            },
+            serde_json::json!({"outcome": "rate_limited", "until": "1970-01-01T00:00:00Z"}),
+        ),
+        (
+            ReviewSyncOutcome::Failed {
+                error: "timeout".to_owned(),
+                failed_lists: Vec::new(),
+            },
+            serde_json::json!({"outcome": "failed", "error": "timeout"}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(&outcome).unwrap(), json);
+        assert_eq!(
+            serde_json::from_value::<ReviewSyncOutcome>(json).unwrap(),
+            outcome
+        );
+    }
 }
 
 #[test]

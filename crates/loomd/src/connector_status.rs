@@ -158,12 +158,12 @@ pub fn forge_poll(
                 items: Some(items),
             }
         }
-        ReviewSyncOutcome::RateLimited { until } => ForgePoll {
+        ReviewSyncOutcome::RateLimited { until, .. } => ForgePoll {
             health: ConnectorHealth::RateLimited { until: *until },
             success: false,
             items: None,
         },
-        ReviewSyncOutcome::Failed { error } => {
+        ReviewSyncOutcome::Failed { error, .. } => {
             let error = error.clone();
             let health = match stop {
                 Some(ForgeStop::Credential) => ConnectorHealth::Credential {

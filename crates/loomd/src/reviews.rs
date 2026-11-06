@@ -517,8 +517,19 @@ struct Fetched {
     stopped: Option<Stopped>,
     /// The time of the GitLab list of this poll, when it was full.
     full_list: Option<Instant>,
-    /// The lists that failed while the poll went on.
-    failed_lists: Vec<ReviewListFailure>,
+}
+
+impl Fetched {
+    /// The MRs of this poll, each one once: an MR can be in `updates` and in `failed`, when its
+    /// read applies and it is reported (a held entry, a pipeline that cannot be dated).
+    fn mrs(&self) -> usize {
+        self.updates
+            .iter()
+            .map(|update| update.key.to_string())
+            .chain(self.failed.iter().map(|failure| failure.key.clone()))
+            .collect::<HashSet<_>>()
+            .len()
+    }
 }
 
 /// An MR that a list other than the MRs to review found.
@@ -535,24 +546,23 @@ struct OtherLists {
     found: Vec<AlsoListed>,
     /// The mirror directory names of the MRs that a to-do mentions; `None` when that list failed.
     mentioned: Option<HashSet<String>>,
-    failed: Vec<ReviewListFailure>,
 }
 
 impl OtherLists {
     /// Reads the three lists. A failure that is the host's own stops the poll, and changes
-    /// nothing; another failure stops only that list.
-    fn read(client: &GitlabClient) -> Result<Self, Stopped> {
+    /// nothing; another failure stops only that list, and goes in `failed`, which outlives a stop.
+    fn read(client: &GitlabClient, failed: &mut Vec<ReviewListFailure>) -> Result<Self, Stopped> {
         let mut lists = Self::default();
         // One after the other: a failure of the host on the first must not read the next.
-        let assigned = lists.of(ReviewList::Assigned, client.assigned_mrs())?;
-        let own = lists.of(ReviewList::Own, client.own_mrs())?;
+        let assigned = Self::of(failed, ReviewList::Assigned, client.assigned_mrs())?;
+        let own = Self::of(failed, ReviewList::Own, client.own_mrs())?;
         for mr in assigned.into_iter().chain(own).flatten() {
             lists.found.push(AlsoListed {
                 key: mr.key,
                 project_id: mr.project_id,
             });
         }
-        if let Some(mentions) = lists.of(ReviewList::Mentioned, client.mentions())? {
+        if let Some(mentions) = Self::of(failed, ReviewList::Mentioned, client.mentions())? {
             lists.mentioned = Some(
                 mentions
                     .iter()
@@ -570,7 +580,7 @@ impl OtherLists {
     }
 
     fn of<T>(
-        &mut self,
+        failed: &mut Vec<ReviewListFailure>,
         list: ReviewList,
         read: Result<T, ForgeError>,
     ) -> Result<Option<T>, Stopped> {
@@ -596,7 +606,7 @@ impl OtherLists {
                     | ForgeError::Parse(_)
                     | ForgeError::Unexpected(_) => ReviewListFailureKind::Other,
                 };
-                self.failed.push(ReviewListFailure {
+                failed.push(ReviewListFailure {
                     list,
                     kind,
                     error: error.to_string(),
@@ -689,7 +699,10 @@ impl Poller {
         let outcome = match host.rate_limited {
             Some((until, at)) if until > Instant::now() => {
                 debug!(until = %at, "rate limited, poll skipped");
-                ReviewSyncOutcome::RateLimited { until: at }
+                ReviewSyncOutcome::RateLimited {
+                    until: at,
+                    failed_lists: Vec::new(),
+                }
             }
             Some(_) | None => self.poll_now(index, started),
         };
@@ -697,7 +710,7 @@ impl Poller {
         let host = &mut self.hosts[index];
         let (poll, failed) = match &outcome {
             ReviewSyncOutcome::Synced { .. } => (PollOutcome::Done, false),
-            ReviewSyncOutcome::RateLimited { until } => (
+            ReviewSyncOutcome::RateLimited { until, .. } => (
                 PollOutcome::RateLimited(Duration::from_secs(
                     until.unix_secs().saturating_sub(started.unix_secs()),
                 )),
@@ -753,10 +766,13 @@ impl Poller {
                 self.hosts[index].stop = Some(ForgeStop::Credential);
                 return ReviewSyncOutcome::Failed {
                     error: error.to_string(),
+                    failed_lists: Vec::new(),
                 };
             }
         };
         self.hosts[index].attempted = true;
+        // Beside the result: a poll that stops later still reports them.
+        let mut failed_lists = Vec::new();
         let fetched = match target.kind {
             ForgeKind::Github => {
                 let client =
@@ -766,29 +782,29 @@ impl Poller {
             ForgeKind::Gitlab => {
                 let client =
                     GitlabClient::new(&self.hosts[index].api, token.clone(), &self.user_agent);
-                self.poll_gitlab(index, &client)
+                self.poll_gitlab(index, &client, &mut failed_lists)
             }
         };
+        for failure in &mut failed_lists {
+            failure.error = token.redact(&failure.error);
+            warn!(list = ?failure.list, error = %failure.error, "cannot read a list of MRs, the reason `mentioned` keeps its last value");
+        }
         match fetched {
             Ok(mut fetched) => {
                 for failure in &mut fetched.failed {
                     failure.error = token.redact(&failure.error);
-                    warn!(key = %failure.key, error = %failure.error, "cannot poll an MR, its mirror keeps its last snapshot");
-                }
-                for failure in &mut fetched.failed_lists {
-                    failure.error = token.redact(&failure.error);
-                    warn!(list = ?failure.list, error = %failure.error, "cannot read a list of MRs, its reasons keep their last value");
+                    warn!(key = %failure.key, error = %failure.error, "an MR failed in this poll: what was not read keeps its last snapshot");
                 }
                 match fetched.stopped.take() {
                     // One MR that stops the host does not hold back the MRs read before it.
                     Some(stopped) => {
                         let _ = self.hand_over(index, fetched.updates, PassTrigger::Poll);
-                        self.stopped(index, stopped, &token)
+                        self.stopped(index, stopped, &token, failed_lists)
                     }
-                    None => self.apply(index, fetched, started),
+                    None => self.apply(index, fetched, failed_lists, started),
                 }
             }
-            Err(stopped) => self.stopped(index, stopped, &token),
+            Err(stopped) => self.stopped(index, stopped, &token, failed_lists),
         }
     }
 
@@ -838,11 +854,18 @@ impl Poller {
     }
 
     /// Hands the MRs fetched from host `index` to the task thread.
-    fn apply(&mut self, index: usize, fetched: Fetched, started: Timestamp) -> ReviewSyncOutcome {
-        let mrs = fetched.updates.len() + fetched.failed.len();
+    fn apply(
+        &mut self,
+        index: usize,
+        fetched: Fetched,
+        failed_lists: Vec<ReviewListFailure>,
+        started: Timestamp,
+    ) -> ReviewSyncOutcome {
+        let mrs = fetched.mrs();
         let Some(applied) = self.hand_over(index, fetched.updates, PassTrigger::Poll) else {
             return ReviewSyncOutcome::Failed {
                 error: "loomd is stopping".to_owned(),
+                failed_lists,
             };
         };
         let host = &mut self.hosts[index];
@@ -881,12 +904,19 @@ impl Poller {
             changed: applied.changed,
             other_context: fetched.other_context,
             failed,
-            failed_lists: fetched.failed_lists,
+            failed_lists,
         }
     }
 
-    /// The outcome of a poll of host `index` that stopped: the mirrors keep their snapshot.
-    fn stopped(&mut self, index: usize, stopped: Stopped, token: &Token) -> ReviewSyncOutcome {
+    /// The outcome of a poll of host `index` that stopped: each MR that it did not read keeps its
+    /// snapshot, and the answer keeps `failed_lists`.
+    fn stopped(
+        &mut self,
+        index: usize,
+        stopped: Stopped,
+        token: &Token,
+        failed_lists: Vec<ReviewListFailure>,
+    ) -> ReviewSyncOutcome {
         let host = &mut self.hosts[index];
         host.stop = Some(stop_cause(&stopped));
         let error = match stopped {
@@ -898,7 +928,10 @@ impl Poller {
                         .unwrap_or(now);
                 warn!(%until, "the forge limits the rate, MRs polled after the reset");
                 host.rate_limited = Some((Instant::now() + wait, until));
-                return ReviewSyncOutcome::RateLimited { until };
+                return ReviewSyncOutcome::RateLimited {
+                    until,
+                    failed_lists,
+                };
             }
             Stopped::Forge(error @ ForgeError::Unauthorized { .. }) => {
                 // Resolved again at the next poll: it may have been renewed.
@@ -914,7 +947,10 @@ impl Poller {
             error = error.as_str(),
             "MR poll failed, the mirrors keep their last snapshot"
         );
-        ReviewSyncOutcome::Failed { error }
+        ReviewSyncOutcome::Failed {
+            error,
+            failed_lists,
+        }
     }
 
     /// The login of the token of host `index`.
@@ -1216,7 +1252,6 @@ impl Poller {
             untracked,
             stopped: None,
             full_list: None,
-            failed_lists: Vec::new(),
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
@@ -1275,7 +1310,12 @@ impl Poller {
             .or_else(|| projects.get(&name).copied())
     }
 
-    fn poll_gitlab(&mut self, index: usize, client: &GitlabClient) -> Result<Fetched, Stopped> {
+    fn poll_gitlab(
+        &mut self,
+        index: usize,
+        client: &GitlabClient,
+        failed_lists: &mut Vec<ReviewListFailure>,
+    ) -> Result<Fetched, Stopped> {
         self.go_on()?;
         let login = self.login(index, client)?;
         let host = &self.hosts[index];
@@ -1288,8 +1328,7 @@ impl Poller {
         let OtherLists {
             found: also,
             mentioned,
-            failed: failed_lists,
-        } = OtherLists::read(client)?;
+        } = OtherLists::read(client, failed_lists)?;
         // Found by a list: a 404 on such an MR stays a failure, as a list can lag behind.
         let also_listed: HashSet<String> = also.iter().map(|mr| mr.key.dir_name()).collect();
         let ToRead {
@@ -1311,7 +1350,6 @@ impl Poller {
             untracked,
             stopped: None,
             full_list: listed_at,
-            failed_lists,
         };
         for (key, found, task) in keys {
             if let Err(stopped) = self.go_on() {
@@ -1356,9 +1394,13 @@ impl Poller {
                 mentioned: mentions,
                 login: &login,
                 mirrored,
+                start: false,
             };
             match gitlab_update(client, &read, cache) {
-                Ok(update) => fetched.updates.push(update),
+                Ok((update, undated)) => {
+                    fetched.updates.push(update);
+                    fetched.failed.extend(undated);
+                }
                 // Gone from a host that answers: as for a closed MR. A task keeps its rules.
                 Err(ReadFailure::MrGone(_)) if unlisted => {
                     self.hosts[index].mrs.remove(&key.dir_name());
@@ -1587,6 +1629,8 @@ struct GitlabRead<'a> {
     login: &'a str,
     /// It has a mirror, which needs its versions and threads: an entry does not hold them.
     mirrored: bool,
+    /// A start: `mirrored`, unless the MR turns out to be one that a start refuses.
+    start: bool,
 }
 
 /// Reads the merge request. A 304 of my mergeable MR is checked against its approvals, which can
@@ -1621,12 +1665,28 @@ fn gitlab_read(
     Ok((read, approvals))
 }
 
-/// The GitLab merge request of `read`: in full when it changed since the `ETag` of `cache`.
+/// When the forge first had `head`, and why the versions could not tell it. A failure that is the
+/// host's own stops the poll.
+fn read_head_since(
+    client: &GitlabClient,
+    reference: GitlabMr,
+    head: &Sha,
+) -> Result<(Option<Timestamp>, Option<ForgeError>), ForgeError> {
+    match client.versions(reference) {
+        Ok(reads) => Ok((head_since(&reads, head), None)),
+        Err(error) if stops_the_host(&error) => Err(error),
+        Err(error) => Ok((None, Some(error))),
+    }
+}
+
+/// The GitLab merge request of `read`: in full when it changed since the `ETag` of `cache`. A
+/// failed merged results pipeline that cannot be dated holds back only its reason: the failure
+/// comes with the update, and no `ETag` stays, so that the next poll dates it again.
 fn gitlab_update(
     client: &GitlabClient,
     query: &GitlabRead<'_>,
     cache: &mut MrCache,
-) -> Result<MrUpdate, ReadFailure> {
+) -> Result<(MrUpdate, Option<ReviewSyncFailure>), ReadFailure> {
     let GitlabRead {
         key,
         reference,
@@ -1634,6 +1694,7 @@ fn gitlab_update(
         mentioned,
         login,
         mirrored,
+        start,
     } = *query;
     let (read, read_approvals) = gitlab_read(client, reference, mirrored, cache)?;
     match read {
@@ -1641,7 +1702,10 @@ fn gitlab_update(
             let MrRead { mr, signals } = value;
             let own = is_author(&mr, login);
             let head = mr.version.head_sha.clone();
-            let versions = if mirrored {
+            let open = mr.state == MrState::Open;
+            // A start that is refused gets no mirror: a failure of this read must not hide why.
+            let reads_versions = mirrored && (!start || (open && !own));
+            let version_reads = if reads_versions {
                 client.versions(reference)?
             } else {
                 Vec::new()
@@ -1659,14 +1723,16 @@ fn gitlab_update(
             } else {
                 None
             };
-            // One request, only for my failed merged results pipeline; a task holds this read.
-            let first_version = if !own || !needs_head_time(signals.head_pipeline.as_ref()) {
-                None
-            } else if mirrored {
-                head_since(&versions, &head)
-            } else {
-                head_since(&client.versions(reference)?, &head)
-            };
+            // One request, only for my failed merged results pipeline of an open MR: a merged or
+            // closed MR leaves the queue. A task holds this read.
+            let (first_version, versions_failure) =
+                if !open || !own || !needs_head_time(signals.head_pipeline.as_ref()) {
+                    (None, None)
+                } else if reads_versions {
+                    (head_since(&version_reads, &head), None)
+                } else {
+                    read_head_since(client, reference, &head)?
+                };
             let reasons = reasons_read(&MrFacts {
                 mr: &mr,
                 signals: &signals,
@@ -1676,14 +1742,17 @@ fn gitlab_update(
                 mentioned,
                 head_since: first_version,
             });
-            // Neither a guess nor a silent keep: the entry stays, and the MR is reported.
-            if reasons.pipeline_failed.is_none() {
-                return Err(ForgeError::Unexpected(
-                    "cannot date the failed merged results pipeline against the head: its reason does not change".to_owned(),
-                )
-                .into());
-            }
-            cache.etag = etag;
+            // Neither a guess nor a silent keep: the reason stays, and the MR is reported.
+            let undated = (open && reasons.pipeline_failed.is_none()).then(|| {
+                let cause = versions_failure.map_or_else(String::new, |error| format!(" ({error})"));
+                ReviewSyncFailure {
+                    key: key.to_string(),
+                    error: format!(
+                        "cannot date the failed merged results pipeline against the head{cause}: its reason does not change"
+                    ),
+                }
+            });
+            cache.etag = if undated.is_some() { None } else { etag };
             cache.direct = is_reviewer(&mr, login);
             cache.own = own;
             cache.watches_approvals = own
@@ -1693,12 +1762,15 @@ fn gitlab_update(
             cache.approved = !approvals.approved_by.is_empty();
             cache.threads_at = Some(Instant::now());
             cache.head = Some(head.clone());
-            Ok(MrUpdate {
+            let update = MrUpdate {
                 key: key.clone(),
                 requested: requested(found, cache.direct),
                 own,
                 mr: Some(mr),
-                versions,
+                versions: version_reads
+                    .into_iter()
+                    .filter_map(|read| read.version)
+                    .collect(),
                 threads: threads.filter(|_| mirrored),
                 verdict: Some(gitlab_verdict(approvals.user_has_approved, &head)),
                 start: false,
@@ -1706,9 +1778,12 @@ fn gitlab_update(
                 gone: false,
                 moved_to: None,
                 reasons,
-            })
+            };
+            Ok((update, undated))
         }
-        Conditional::NotModified => gitlab_not_modified(client, query, cache),
+        Conditional::NotModified => {
+            gitlab_not_modified(client, query, cache).map(|update| (update, None))
+        }
     }
 }
 
