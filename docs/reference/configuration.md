@@ -55,7 +55,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | Key | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `default_context` | string: context name | none | Context of the repositories no other rule matches. See [contexts and repositories](#contexts-and-repositories). |
-| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
+| `[contexts.<name>] match.paths`, `match.hosts`, `update`, `store.path`, `store.backup.remote`, `store.backup.allows_client_data`, `machines` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[tasks] archive_after` | string: duration | `"7d"` | The time after its close time (when it became `done` or `cancelled`) at which a task moves from `tasks/<id>/` to `archive/<yyyy>/<id>/`. `<yyyy>` is the UTC year of the close time. Duration syntax of `[update] check_interval`. At least `"1d"`. See [archive](#archive). |
 | `[[contexts.<name>.schedules]]` | | | See [schedules](#schedules). |
 | `[tasks] sync_interval` | string: duration | `"15m"` | Time between two syncs of each context store with its `store.backup.remote`. Duration syntax of `[update] check_interval`. At least `"1m"`. See [store backup](#store-backup). |
@@ -63,6 +63,7 @@ Error: invalid configuration /home/me/.loom/config.toml:3:1: unknown field `foo`
 | `[repos."<path>"] context`, `update` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[forges."<host>"] kind` | | | See [contexts and repositories](#contexts-and-repositories). |
 | `[forges."<host>"] token_cmd`, `token_env`, `poll_interval`, `review_requests`; `[contexts.<name>.forges."<host>"] token_cmd`, `token_env` | | | See [forges](#forges). |
+| `[contexts.<name>.connectors.<connector>]` | | | See [connectors](#connectors). |
 | `[daemon] service` | boolean | `true` | `false`: `loom service install` refuses with exit code 1 and a message that names this key and the file. `loom service uninstall` and `loom service status` still work. Does not stop or remove an installed service. |
 | `[telemetry] enabled` | boolean | `false` | Export traces. See [`[telemetry]`](#telemetry). |
 | `[telemetry] otlp_endpoint` | string | none | OTLP/HTTP traces endpoint. See [`[telemetry]`](#telemetry). |
@@ -131,6 +132,7 @@ kind = "gitlab"
 | `[contexts.<name>] update` | string: `"ff"`, `"fetch"`, `"off"` | none (`ff`) | Update policy of the context's repositories. `ff`: fetch, then fast-forward the branch `HEAD` is on and the default branch when it is safe. `fetch`: fetch only, no branch moves. `off`: no automatic update runs a git command. The fetches of MR refs do not read this key: see [MR refs and diffs](../explanation/mr-refs.md). |
 | `[contexts.<name>] store.path` | string: path | `<loom home>/contexts/<name>` | Root of the context's task store. Same path rules as `match.paths`; `~` is the user's home, not the loom home. Two contexts cannot have the same `store.path`. |
 | `[contexts.<name>] store.backup.remote` | string: git URL or path | none | Repository the context store is pushed to and pulled from (see [store backup](#store-backup)). Not empty, no whitespace or control characters, first character not `-`. Two contexts cannot have the same remote: their stores would diverge at once. |
+| `[contexts.<name>] store.backup.allows_client_data` | boolean | `false` | `true` states that the client data of the [connectors](#connectors) of the context can go to `store.backup.remote`. Only with `store.backup.remote`. |
 | `[contexts.<name>] machines` | array of strings: machine names | none (every machine) | The machines that hold the context's store, by their [`machine.toml`](#machinetoml) `id`. At least one entry when given; each entry follows the rules of `id`. On a machine it does not name, `loomd` does not load the store: no `tasks/` is created, its tasks are not indexed. The repositories of the context are matched as usual. |
 | `[repos] roots` | array of strings: paths | `["~/perso", "~/work"]` | Same path rules as `match.paths`. May be empty. |
 | `[repos] max_depth` | integer | `4` | 0 to 4294967295. Deepest directory level examined below each root. The root is level 0. |
@@ -193,6 +195,114 @@ Both keys in one table:
 ```text
 Error: invalid configuration /home/me/.loom/config.toml:1:1: token_cmd and token_env are both set: give only one source for the token
 ```
+
+### Connectors
+
+A `[contexts.<name>.connectors.<connector>]` table configures one Datadog, Jira or Freshservice instance of a context. There is no table for all contexts, and each context has its own secrets.
+
+`loomd` reads and validates these tables when it starts. An invalid table stops `loomd`, like any other error in the file. In this version, no process polls these tables, calls these tools or uses their secrets. An instance also does not show in [`loom connector status`](cli/loom.md#loom-connector-status).
+
+An older `loomd` refuses a file with these tables. Upgrade all machines before you add one.
+
+```toml
+[contexts.company-a.connectors.datadog]
+kind = "datadog"
+site = "datadoghq.eu"
+token_cmd = "op read op://company-a/datadog/api-key"
+app_key_cmd = "op read op://company-a/datadog/app-key"
+query = 'tag:"team:payments" env:prod'
+
+[contexts.company-a.connectors.jira]
+kind = "jira"
+site = "company-a.atlassian.net"
+email = "me@company-a.example"
+token_cmd = "op read op://company-a/jira/token"
+pool_jql = "project = OPS AND assignee is EMPTY AND statusCategory != Done ORDER BY created DESC, key"
+
+[contexts.company-a.connectors.freshservice]
+kind = "freshservice"
+site = "company-a.freshservice.com"
+token_env = "LOOM_FRESHSERVICE_TOKEN"
+agent_id = 12000000001
+group_ids = [12000000002]
+```
+
+`<connector>` is the name of the instance: 1 to 64 lowercase ASCII letters, digits and `_`.
+
+These keys apply to all kinds:
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `kind` | string: `"datadog"`, `"jira"`, `"freshservice"` | required | The kind of the instance. Forges use [`[forges]`](#forges). |
+| `site` | string: host name | required | Lowercase host name without scheme, user, port or path. See [API addresses](#api-addresses). |
+| `token_cmd`, `token_env` | string | required | The rules of [`[forges."<host>"]`](#forges). Exactly one of them. For Datadog, this is the API key. For Freshservice, this is the API key. |
+| `poll_interval` | string: duration | `"1m"` for Datadog, `"5m"` for Jira and Freshservice | Duration syntax of `[update] check_interval`. At least `"1m"`. |
+
+These keys apply to `kind = "datadog"` only:
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `app_key_cmd`, `app_key_env` | string | required | The rules of `token_cmd` and `token_env`. Exactly one of them. The application key. |
+| `query` | string | required | Not blank. Datadog monitor search syntax. |
+| `states` | array of strings: `"alert"`, `"warn"`, `"no data"` | `["alert", "warn"]` | At least one entry. |
+| `priorities` | array of integers | none (all, and monitors with no priority) | At least one entry when given. Each entry is 1 to 5. |
+| `urgent_priorities` | array of integers | `[1, 2]` | Each entry is 1 to 5. May be empty. |
+| `flap_window` | string: duration | `"30m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. |
+
+These keys apply to `kind = "jira"` only:
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `email` | string | required | One email address, with no space and no `:`. |
+| `list_jql` | string | `assignee = currentUser() AND statusCategory != Done ORDER BY key` | Not blank. |
+| `pool_jql` | string | none (no pool) | Not blank. |
+
+These keys apply to `kind = "freshservice"` only:
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `agent_id` | integer | required | Above 0. |
+| `group_ids` | array of integers | none (no pool) | At least one entry when given. Each entry is above 0. |
+| `workspace_id` | integer | none (primary workspace) | 0 or above. |
+| `open_statuses` | array of integers | `[2, 3]` | At least one entry. Each entry is above 0, and not `4` or `5`. |
+| `extra_query` | string | none | Not blank. |
+
+These keys apply to `kind = "jira"` and `kind = "freshservice"`:
+
+| Key | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `pool_interval` | string: duration | `"15m"` | Duration syntax of `[update] check_interval`. At least `"1m"`. |
+| `pool_limit` | integer | `200` | 1 to 4294967295. |
+
+A key of another kind is an error at the line of that key:
+
+```text
+Error: invalid configuration /home/me/.loom/config.toml:6:12: `pool_jql` is not a key of a `datadog` connector
+```
+
+`loomd` also refuses these configurations. The error is at the table of the instance:
+
+| Case | Rule |
+| --- | --- |
+| The name is a forge host of the context | The name is the same as a host for which the context has a [forge credential](#forges). `[forges.gitlab]` with a `token_env` and a connector named `gitlab` is an example. Connector status identifies an instance by context and name. |
+| Two instances of one context on one site | Two instances of a context have the same `kind` and `site`. Datadog is not included, because a Datadog site holds many organizations. |
+| Two contexts on one site, without a filter | Two contexts have Jira or Freshservice instances on one `site`, and one of them has no filter of its own. A Jira instance has a filter of its own when `list_jql` is not the default text. A Freshservice instance has a filter of its own when it has `workspace_id` or `extra_query`. |
+| Two contexts on one site, same filter | Two contexts have Jira or Freshservice instances on one `site`, with the same filter. |
+| Client data in a backup | The context has `store.backup.remote`, and `store.backup.allows_client_data` is not `true`. The store holds the data of each connector in plain text, and [the store backup](#store-backup) pushes all of it to the remote. Before you set this key, make sure that the client allows this remote. A context without `store.backup.remote` has no such rule. |
+
+#### API addresses
+
+`site` decides the only address that gets the secrets of the instance:
+
+| `kind` | `site` | API address |
+| --- | --- | --- |
+| `datadog` | One of `datadoghq.com`, `us3.datadoghq.com`, `us5.datadoghq.com`, `ap1.datadoghq.com`, `ap2.datadoghq.com`, `uk1.datadoghq.com`, `datadoghq.eu`, `ddog-gov.com`, `us2.ddog-gov.com` | `https://api.<site>` |
+| `jira` | Ends with `.atlassian.net`. Jira Cloud only. | `https://<site>/rest/api/3` |
+| `freshservice` | Ends with `.freshservice.com` | `https://<site>/api/v2` |
+
+#### Secrets of connectors
+
+The git commands of `loomd` do not get a `token_env` or `app_key_env` variable, as for [forges](#forges). This applies to each instance of each context, also a context that this machine does not hold.
 
 ### Schedules
 
