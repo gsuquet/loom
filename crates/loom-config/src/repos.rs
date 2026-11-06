@@ -13,6 +13,7 @@ use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use toml::Spanned;
 
+use crate::connectors::{Connector, ConnectorName, RawConnector};
 use crate::duration::{format_duration, parse_duration};
 use crate::forges::ContextForge;
 pub use crate::forges::ForgeConfig;
@@ -44,6 +45,13 @@ pub struct ContextConfig {
     /// `[contexts.<name>.forges."<host>"]`: the context's own forge credentials.
     #[serde(default)]
     pub forges: BTreeMap<ForgeHost, Spanned<ContextForge>>,
+    /// `[contexts.<name>.connectors.<connector>]`: the connector instances of the context.
+    /// [`crate::config::parse_config`] builds them after the file is read.
+    #[serde(skip)]
+    pub connectors: BTreeMap<ConnectorName, Spanned<Connector>>,
+    /// The same tables, as the file gives them. Empty after [`crate::config::parse_config`].
+    #[serde(default, rename = "connectors")]
+    pub(crate) connector_tables: BTreeMap<ConnectorName, Spanned<RawConnector>>,
 }
 
 impl ContextConfig {
@@ -133,6 +141,10 @@ pub struct StoreBackup {
     /// `store.backup.remote`: URL or path of the git repository the store is pushed to and
     /// pulled from.
     pub remote: Spanned<BackupRemote>,
+    /// `store.backup.allows_client_data`: I checked that the client allows the data of the
+    /// context's connectors on this remote, where the store is in plain text.
+    #[serde(default)]
+    pub allows_client_data: bool,
 }
 
 /// `store.backup.remote`: a git URL or path, as `git remote add` takes it. Not empty, no

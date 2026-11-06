@@ -50,20 +50,30 @@ fn token_source(
     token_cmd: Option<String>,
     token_env: Option<String>,
 ) -> Result<Option<TokenSource>, String> {
-    match (token_cmd, token_env) {
-        (Some(_), Some(_)) => Err(
-            "token_cmd and token_env are both set: give only one source for the token".to_owned(),
-        ),
+    secret_source(("token_cmd", "token_env", "token"), token_cmd, token_env)
+}
+
+/// The `*_cmd` and `*_env` keys of one secret of a table: at most one of them. `keys` names the
+/// two keys and the secret. Errors never hold the text of a command.
+pub(crate) fn secret_source(
+    (cmd_key, env_key, secret): (&str, &str, &str),
+    command: Option<String>,
+    variable: Option<String>,
+) -> Result<Option<TokenSource>, String> {
+    match (command, variable) {
+        (Some(_), Some(_)) => Err(format!(
+            "{cmd_key} and {env_key} are both set: give only one source for the {secret}"
+        )),
         (Some(command), None) => {
             if command.trim().is_empty() {
-                return Err("token_cmd is empty".to_owned());
+                return Err(format!("{cmd_key} is empty"));
             }
             Ok(Some(TokenSource::Command(command)))
         }
         (None, Some(name)) => {
             if !is_env_name(&name) {
                 return Err(format!(
-                    "invalid token_env `{name}`: expected the name of an environment variable (letters, digits, `_`, not starting with a digit)"
+                    "invalid {env_key} `{name}`: expected the name of an environment variable (letters, digits, `_`, not starting with a digit)"
                 ));
             }
             Ok(Some(TokenSource::Env(name)))
@@ -96,6 +106,22 @@ impl PollInterval {
     pub const fn get(self) -> Duration {
         self.0
     }
+
+    pub(crate) const fn new(duration: Duration) -> Self {
+        Self(duration)
+    }
+
+    /// `text` as the value of `key`, at least [`MIN_POLL_INTERVAL`].
+    pub(crate) fn parse(key: &str, text: &str) -> Result<Self, String> {
+        let duration = parse_duration(text).map_err(|error| format!("{key}: {error}"))?;
+        if duration < MIN_POLL_INTERVAL {
+            return Err(format!(
+                "{key} `{text}` is shorter than the minimum {}",
+                format_duration(MIN_POLL_INTERVAL)
+            ));
+        }
+        Ok(Self(duration))
+    }
 }
 
 impl Default for PollInterval {
@@ -107,15 +133,7 @@ impl Default for PollInterval {
 impl<'de> Deserialize<'de> for PollInterval {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
-        let duration = parse_duration(&text)
-            .map_err(|error| D::Error::custom(format!("poll_interval: {error}")))?;
-        if duration < MIN_POLL_INTERVAL {
-            return Err(D::Error::custom(format!(
-                "poll_interval `{text}` is shorter than the minimum {}",
-                format_duration(MIN_POLL_INTERVAL)
-            )));
-        }
-        Ok(Self(duration))
+        Self::parse("poll_interval", &text).map_err(D::Error::custom)
     }
 }
 
@@ -264,9 +282,9 @@ impl Config {
         })
     }
 
-    /// Every `token_env` name of the configuration: each host table and each context table,
-    /// also of a host table that the context tables replace, and of a context not held on this
-    /// machine. These variables can hold a token, so the git commands of loomd do not get them.
+    /// Every `token_env` and `app_key_env` name of the configuration: each host table, each
+    /// context table and each connector, also of a host table that the context tables replace,
+    /// and of a context not held on this machine. These variables can hold a token, so the git commands of loomd do not get them.
     #[must_use]
     pub fn token_env_names(&self) -> BTreeSet<&str> {
         let hosts = self
@@ -278,8 +296,14 @@ impl Config {
             .values()
             .flat_map(|context| context.forges.values())
             .map(|forge| &forge.get_ref().token);
+        let connectors = self
+            .contexts
+            .values()
+            .flat_map(|context| context.connectors.values())
+            .flat_map(|connector| connector.get_ref().secrets());
         hosts
             .chain(contexts)
+            .chain(connectors)
             .filter_map(|token| match token {
                 TokenSource::Env(name) => Some(name.as_str()),
                 TokenSource::Command(_) => None,

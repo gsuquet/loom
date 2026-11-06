@@ -352,29 +352,32 @@ impl std::error::Error for ConfigError {}
 ///
 /// [`ConfigError`] on a TOML syntax error or an unknown key, with its location.
 pub fn parse_config(text: &str, path: &Path) -> Result<Config, ConfigError> {
-    let config: Config = toml::from_str(text).map_err(|error| ConfigError {
+    let mut config: Config = toml::from_str(text).map_err(|error| ConfigError {
         path: path.to_path_buf(),
         location: error.span().map(|span| location(text, span.start)),
         message: error.message().trim_end().to_owned(),
     })?;
-    validate(&config, text).map_err(|Invalid { span, message }| ConfigError {
-        path: path.to_path_buf(),
-        location: Some(location(text, span.start)),
-        message,
-    })?;
+    validate(&config, text)
+        .and_then(|()| crate::connectors::resolve(&mut config, text))
+        .map_err(|Invalid { span, message }| ConfigError {
+            path: path.to_path_buf(),
+            location: Some(location(text, span.start)),
+            message,
+        })?;
     Ok(config)
 }
 
 /// A rule across keys that the configuration breaks, at `span`.
-struct Invalid {
-    span: Range<usize>,
-    message: String,
+pub(crate) struct Invalid {
+    pub(crate) span: Range<usize>,
+    pub(crate) message: String,
 }
 
 /// Checks across keys: contexts named by `default_context` and `[repos."<path>"] context`
 /// exist, no `match.paths`, `match.hosts`, `store.path` or `store.backup.remote` entry is in
 /// two contexts, no repository path is given twice, no schedule ID twice in a context, the
 /// forge of every `[contexts.<ctx>.forges."<host>"]` host is known.
+/// [`crate::connectors::resolve`] checks the connector tables after this.
 fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let check_defined = |name: &Spanned<ContextName>, key: &str| {
         if name.get_ref().is_unassigned() {
