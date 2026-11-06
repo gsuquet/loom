@@ -55,7 +55,7 @@ An MR has an entry when it is open, it has no Review task in any context, and at
 | The MR is of another context now, in other cases | present | no change, and the poll reports it as failed |
 | The forge answers `404` for the MR, and the host answers | present | deleted, as for a closed MR |
 | The list of MRs to review or a read of the MR fails, or any list gets no answer, a refused token or a rate limit | any | no change |
-| Another list fails (a `403`, a `500`) | any | the reasons from that list do not change, and each MR that was read follows its read |
+| Another list fails (a `403`, a `500`) | any | `mentioned` keeps its last value, and each MR that was read follows its read for the other reasons |
 | An incomplete GitHub search does not show the MR | present | no change |
 
 An entry has one or more reasons. On GitHub, the only reason now is `review_requested`.
@@ -77,7 +77,7 @@ The GitLab documentation does not tell if a pipeline result changes the `updated
 
 An approval can also leave that body as it was. Thus, for an open MR of yours that is mergeable and is not a draft, `loomd` reads the approvals at each poll. It sees an approval that comes, and an approval that is revoked.
 
-A pipeline is of the current head when its SHA is the head. A merged results or merge train pipeline (its `ref` is `refs/merge-requests/<iid>/merge` or `/train`) runs on a temporary merge commit, so its SHA is never the head, and the API does not tell its head. If such a pipeline failed, `loomd` reports `own_pipeline_failed`. After a push, the reason can stay until GitLab has a new pipeline for the new head. Thus, an old failure can show for a short time, but a failure is never hidden.
+A pipeline is of the current head when its SHA is the head. A merged results or merge train pipeline (its `ref` is `refs/merge-requests/<iid>/merge` or `/train`) runs on a temporary merge commit, so its SHA is never the head, and the API does not tell its head. If such a pipeline failed, `loomd` reads the versions of the MR, one request. The failure counts only if the pipeline was not created before the first version with the current head. Thus, a push that creates no pipeline removes the reason, and a new pipeline that fails gives it. If `loomd` cannot read the versions, the reason does not change, and the poll reports the MR as failed. After a push back to an older head, a failure of the head between them counts until a new pipeline.
 
 ### When you open an entry
 
@@ -188,7 +188,7 @@ A poll writes nothing when nothing changed:
 - The next poll waits 2, then 4, then 8 times the interval, never more.
 - A rate limit (`429`, or `403` with no remaining requests) stops the poll until the reset.
 - When the token is refused (`401`), `loomd` gets the token again at the next poll: it can be a new one.
-- A failure of `assigned_to_me`, `created_by_me` or the to-dos, other than a refused token, a rate limit or no answer, stops only that list. For example, a token cannot read the to-dos. The answer gives it in `failed_lists`, `loom review sync` exits with an error, and the next poll reads the list again. `mentioned` keeps its last value. An MR that only this list finds waits for the next poll that reads it. An MR with an entry is still read, and follows its read.
+- A failure of `assigned_to_me`, `created_by_me` or the to-dos, other than a refused token, a rate limit or no answer, stops only that list. For example, a token cannot read the to-dos. The answer gives it in `failed_lists`, and the next poll reads the list again. `loom review sync` exits with an error and tells that a list failed. It does not tell that the MRs keep their last snapshot, because the poll updated them. `mentioned` keeps its last value. An MR that only this list finds waits for the next poll that reads it. An MR with an entry is still read, and follows its read for the other reasons.
 - A failure of one MR (for example, a `404` for an MR with a Review task, or a `403`) stops only that MR. Its entry or its mirror does not change, and the next poll reads it in full. A `404` on the MR itself, for an MR with only an entry and not in the list, is not a failure: the entry is deleted, and the next GitLab list is full, without `updated_after`. A lost access looks the same. If the access comes back before that next poll, the entry comes back at that poll. If not, it comes back at the next full list, also when the MR did not change: `loomd` lists in full at least once per hour, so at most about one hour after the access comes back, or at the first poll after that hour when the polls are less frequent. A `404` on another read of the MR, such as its reviews or approvals, is a failure, and the entry stays.
 - When `loomd` stops, a poll that runs stops before its next forge call.
 
