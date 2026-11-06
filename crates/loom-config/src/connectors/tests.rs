@@ -6,7 +6,7 @@ use loom_api::{ConnectorKind, ContextName};
 
 use super::{
     Connector, ConnectorName, ConnectorSettings, DatadogSettings, FreshserviceSettings,
-    JiraSettings, MonitorState,
+    JiraSettings, MonitorState, RawConnector,
 };
 use crate::config::{Config, ConfigError, parse_config};
 use crate::forges::TokenSource;
@@ -227,6 +227,32 @@ fn the_api_address_follows_the_kind_and_the_site() {
         connector(&config, "a", "freshservice").api_base(),
         "https://company-a.freshservice.com/api/v2"
     );
+}
+
+/// The first TOML block of `page` after `heading`.
+fn example<'a>(page: &'a str, heading: &str) -> &'a str {
+    let (_, rest) = page.split_once(heading).unwrap();
+    let (_, rest) = rest.split_once("```toml\n").unwrap();
+    rest.split_once("```").unwrap().0
+}
+
+#[test]
+fn the_examples_of_the_docs_parse() {
+    for (page, heading) in [
+        (
+            include_str!("../../../../docs/reference/configuration.md"),
+            "### Connectors",
+        ),
+        (
+            include_str!("../../../../docs/design/connector-ports.md"),
+            "## Connector instances",
+        ),
+    ] {
+        let config = parse(example(page, heading));
+        for name in ["datadog", "jira", "freshservice"] {
+            connector(&config, "company-a", name);
+        }
+    }
 }
 
 #[test]
@@ -873,6 +899,25 @@ fn debug_does_not_print_the_commands() {
     let config = parse(FULL);
     let printed = format!("{config:?}");
     assert!(!printed.contains("op://"), "{printed}");
+}
+
+#[test]
+fn debug_of_a_raw_table_does_not_print_the_commands() {
+    let raw: RawConnector = toml::from_str(
+        "kind = \"jira\"\nsite = \"company-a.atlassian.net\"\ntoken_cmd = \"op read op://secret\"\n",
+    )
+    .unwrap();
+    let printed = format!("{raw:?}");
+    assert!(!printed.contains("op://"), "{printed}");
+}
+
+#[test]
+fn the_raw_tables_are_gone_after_parsing() {
+    let config = parse(FULL);
+    for context in config.contexts.values() {
+        assert_eq!(context.connectors.len(), 3);
+        assert!(context.connector_tables.is_empty());
+    }
 }
 
 #[test]
