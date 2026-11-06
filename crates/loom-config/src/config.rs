@@ -377,6 +377,7 @@ pub(crate) struct Invalid {
 /// exist, no `match.paths`, `match.hosts`, `store.path` or `store.backup.remote` entry is in
 /// two contexts, no repository path is given twice, no schedule ID twice in a context, the
 /// forge of every `[contexts.<ctx>.forges."<host>"]` host is known.
+/// [`crate::connectors::resolve`] checks the connector tables after this.
 fn validate(config: &Config, text: &str) -> Result<(), Invalid> {
     let check_defined = |name: &Spanned<ContextName>, key: &str| {
         if name.get_ref().is_unassigned() {

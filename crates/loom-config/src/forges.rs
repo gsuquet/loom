@@ -282,9 +282,9 @@ impl Config {
         })
     }
 
-    /// Every `token_env` name of the configuration: each host table and each context table,
-    /// also of a host table that the context tables replace, and of a context not held on this
-    /// machine. These variables can hold a token, so the git commands of loomd do not get them.
+    /// Every `token_env` and `app_key_env` name of the configuration: each host table, each
+    /// context table and each connector, also of a host table that the context tables replace,
+    /// and of a context not held on this machine. These variables can hold a token, so the git commands of loomd do not get them.
     #[must_use]
     pub fn token_env_names(&self) -> BTreeSet<&str> {
         let hosts = self
@@ -296,8 +296,14 @@ impl Config {
             .values()
             .flat_map(|context| context.forges.values())
             .map(|forge| &forge.get_ref().token);
+        let connectors = self
+            .contexts
+            .values()
+            .flat_map(|context| context.connectors.values())
+            .flat_map(|connector| connector.get_ref().secrets());
         hosts
             .chain(contexts)
+            .chain(connectors)
             .filter_map(|token| match token {
                 TokenSource::Env(name) => Some(name.as_str()),
                 TokenSource::Command(_) => None,

@@ -325,7 +325,7 @@ fn the_name_is_lowercase_letters_digits_and_underscore() {
     for name in [
         "jira-2",
         "Jira",
-        "jira.eu",
+        "\"jira.eu\"",
         "\"\"",
         "\"a b\"",
         "\"jira/x\"",
@@ -366,17 +366,10 @@ fn a_name_equal_to_a_host_with_no_credential_there_is_accepted() {
     ));
 }
 
-/// `body` with its `site` line replaced.
+/// `body` with this `site` as its first key, on line 2 of a table.
 fn with_site(body: &str, site: &str) -> String {
-    body.lines()
-        .map(|line| {
-            if line.starts_with("site = ") {
-                format!("site = \"{site}\"\n")
-            } else {
-                format!("{line}\n")
-            }
-        })
-        .collect()
+    let line = format!("site = \"{site}\"\n");
+    format!("{line}{}", without(body, "site"))
 }
 
 #[test]
@@ -417,7 +410,7 @@ fn a_site_outside_the_rule_of_its_kind_is_refused() {
         (FRESHSERVICE, "company-afreshservice.com"),
         (FRESHSERVICE, "company-a.atlassian.net"),
     ] {
-        assert_refused(&table("x", &with_site(body, site)), 3, "site");
+        assert_refused(&table("x", &with_site(body, site)), 2, "site");
     }
 }
 
@@ -449,14 +442,14 @@ fn a_site_that_is_not_a_bare_hostname_is_refused() {
             let site = format!("{prefix}{suffix}");
             assert_refused(
                 &table("x", &with_site(body, &site)),
-                3,
+                2,
                 "expected a lowercase host name",
             );
         }
         let long = format!("{}{suffix}", "a".repeat(64));
         assert_refused(
             &table("x", &with_site(body, &long)),
-            3,
+            2,
             "expected a lowercase host name",
         );
     }
@@ -468,7 +461,7 @@ fn a_site_that_is_not_a_bare_hostname_is_refused() {
     ] {
         assert_refused(
             &table("x", &with_site(DATADOG, site)),
-            3,
+            2,
             "expected a lowercase host name",
         );
     }
@@ -484,7 +477,7 @@ fn a_long_site_label_of_63_characters_is_accepted() {
 fn without(body: &str, key: &str) -> String {
     body.lines()
         .filter(|line| !line.starts_with(key))
-        .map(|line| format!("{line}\n"))
+        .flat_map(|line| [line, "\n"])
         .collect()
 }
 
@@ -636,7 +629,7 @@ fn invalid_values_are_refused_at_their_line() {
             "open_statuses: 5 is terminal",
         ),
         (FRESHSERVICE, "extra_query = \"\"", "extra_query is blank"),
-        (FRESHSERVICE, "workspace_id = -1", "workspace_id"),
+        (FRESHSERVICE, "workspace_id = -1", "expected u64"),
     ] {
         let name = line.split(' ').next().unwrap();
         let text = table("x", &format!("{}{line}\n", without(body, name)));
@@ -723,48 +716,51 @@ fn two_contexts_on_one_site_must_each_say_what_is_theirs() {
     ));
 
     let default_jql = "assignee = currentUser() AND statusCategory != Done ORDER BY key";
-    for (first, second, line, needle) in [
+    // `refused` is the context of the refusal.
+    for (first, second, refused, needle) in [
         // The default on one side only, either side.
-        (JIRA.to_owned(), own_jql("project = B"), 1, "list_jql"),
-        (own_jql("project = A"), JIRA.to_owned(), 8, "list_jql"),
+        (JIRA.to_owned(), own_jql("project = B"), "a", "list_jql"),
+        (own_jql("project = A"), JIRA.to_owned(), "b", "list_jql"),
         // The default's own text is the default.
-        (own_jql(default_jql), own_jql("project = B"), 1, "list_jql"),
+        (
+            own_jql(default_jql),
+            own_jql("project = B"),
+            "a",
+            "list_jql",
+        ),
         (
             FRESHSERVICE.to_owned(),
             own_workspace(2),
-            1,
+            "a",
             "workspace_id or extra_query",
         ),
         (
             own_query("tag:'a'"),
             FRESHSERVICE.to_owned(),
-            8,
+            "b",
             "workspace_id or extra_query",
         ),
         // The same filter says nothing.
         (
             own_jql("project = A"),
             own_jql("project = A"),
-            8,
+            "b",
             "the same filter",
         ),
-        (own_workspace(1), own_workspace(1), 8, "the same filter"),
+        (own_workspace(1), own_workspace(1), "b", "the same filter"),
         (
             own_query("tag:'a'"),
             own_query("tag:'a'"),
-            8,
+            "b",
             "the same filter",
         ),
     ] {
-        let text = format!(
-            "{}{}",
-            in_context("a", "x", &first),
-            in_context("b", "x", &second)
-        );
-        let line = if line == 1 {
+        let first = in_context("a", "x", &first);
+        let text = format!("{first}{}", in_context("b", "x", &second));
+        let line = if refused == "a" {
             1
         } else {
-            in_context("a", "x", &first).lines().count() + 1
+            first.lines().count() + 1
         };
         assert_refused(&text, line, needle);
     }
