@@ -240,6 +240,17 @@ pub struct MrVersion {
     pub created_at: Option<Timestamp>,
 }
 
+/// What one GitLab version tells: it can date its head with a null in its other SHAs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionRead {
+    /// The head commit.
+    pub head_sha: Sha,
+    /// The time when the forge recorded the version, when it gives it.
+    pub created_at: Option<Timestamp>,
+    /// The version for a mirror; `None` when it has a null SHA, as it then tells no diff.
+    pub version: Option<MrVersion>,
+}
+
 /// The diff of one file of an MR, as the forge gives it: the patch of the forge, used to check
 /// anchors and to show an MR without a local clone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -491,6 +491,19 @@ struct Fetched {
     full_list: Option<Instant>,
 }
 
+impl Fetched {
+    /// The MRs of this poll, each one once: an MR can be in `updates` and in `failed`, when its
+    /// read applies and it is reported (a held entry, a pipeline that cannot be dated).
+    fn mrs(&self) -> usize {
+        self.updates
+            .iter()
+            .map(|update| update.key.to_string())
+            .chain(self.failed.iter().map(|failure| failure.key.clone()))
+            .collect::<HashSet<_>>()
+            .len()
+    }
+}
+
 /// An MR that a list other than the MRs to review found.
 struct AlsoListed {
     key: MrKey,
@@ -728,7 +741,7 @@ impl Poller {
             Ok(mut fetched) => {
                 for failure in &mut fetched.failed {
                     failure.error = token.redact(&failure.error);
-                    warn!(key = %failure.key, error = %failure.error, "cannot poll an MR, its mirror keeps its last snapshot");
+                    warn!(key = %failure.key, error = %failure.error, "an MR failed in this poll: what was not read keeps its last snapshot");
                 }
                 match fetched.stopped.take() {
                     // One MR that stops the host does not hold back the MRs read before it.
@@ -796,7 +809,7 @@ impl Poller {
         failed_lists: Vec<ReviewListFailure>,
         started: Timestamp,
     ) -> ReviewSyncOutcome {
-        let mrs = fetched.updates.len() + fetched.failed.len();
+        let mrs = fetched.mrs();
         let Some(applied) = self.hand_over(index, fetched.updates, PassTrigger::Poll) else {
             return ReviewSyncOutcome::Failed {
                 error: "loomd is stopping".to_owned(),
@@ -1599,6 +1612,20 @@ fn gitlab_read(
     Ok((read, approvals))
 }
 
+/// When the forge first had `head`, and why the versions could not tell it. A failure that is the
+/// host's own stops the poll.
+fn read_head_since(
+    client: &GitlabClient,
+    reference: GitlabMr,
+    head: &Sha,
+) -> Result<(Option<Timestamp>, Option<ForgeError>), ForgeError> {
+    match client.versions(reference) {
+        Ok(reads) => Ok((head_since(&reads, head), None)),
+        Err(error) if stops_the_host(&error) => Err(error),
+        Err(error) => Ok((None, Some(error))),
+    }
+}
+
 /// The GitLab merge request of `read`: in full when it changed since the `ETag` of `cache`. A
 /// failed merged results pipeline that cannot be dated holds back only its reason: the failure
 /// comes with the update, and no `ETag` stays, so that the next poll dates it again.
@@ -1625,7 +1652,7 @@ fn gitlab_update(
             let open = mr.state == MrState::Open;
             // A start that is refused gets no mirror: a failure of this read must not hide why.
             let reads_versions = mirrored && (!start || (open && !own));
-            let versions = if reads_versions {
+            let version_reads = if reads_versions {
                 client.versions(reference)?
             } else {
                 Vec::new()
@@ -1645,22 +1672,14 @@ fn gitlab_update(
             };
             // One request, only for my failed merged results pipeline of an open MR: a merged or
             // closed MR leaves the queue. A task holds this read.
-            let mut versions_failure = None;
-            let first_version = if !open || !own || !needs_head_time(signals.head_pipeline.as_ref())
-            {
-                None
-            } else if reads_versions {
-                head_since(&versions, &head)
-            } else {
-                match client.versions(reference) {
-                    Ok(versions) => head_since(&versions, &head),
-                    Err(error) if stops_the_host(&error) => return Err(error.into()),
-                    Err(error) => {
-                        versions_failure = Some(error);
-                        None
-                    }
-                }
-            };
+            let (first_version, versions_failure) =
+                if !open || !own || !needs_head_time(signals.head_pipeline.as_ref()) {
+                    (None, None)
+                } else if reads_versions {
+                    (head_since(&version_reads, &head), None)
+                } else {
+                    read_head_since(client, reference, &head)?
+                };
             let reasons = reasons_read(&MrFacts {
                 mr: &mr,
                 signals: &signals,
@@ -1695,7 +1714,10 @@ fn gitlab_update(
                 requested: requested(found, cache.direct),
                 own,
                 mr: Some(mr),
-                versions,
+                versions: version_reads
+                    .into_iter()
+                    .filter_map(|read| read.version)
+                    .collect(),
                 threads: threads.filter(|_| mirrored),
                 verdict: Some(gitlab_verdict(approvals.user_has_approved, &head)),
                 start: false,

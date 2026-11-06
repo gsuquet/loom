@@ -2451,6 +2451,12 @@ fn a_moved_entry_stays_and_is_reported_when_another_account_polls_its_context() 
     };
     assert_eq!(failed.len(), 1, "{result:?}");
     assert!(failed[0].error.contains("personal"), "{failed:?}");
+    // Held and still read: one MR.
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).0,
+        1,
+        "{result:?}"
+    );
     sandbox.sync();
     assert_eq!(queue(&socket, Some("company-a")).entries.len(), 1);
     assert_eq!(queue(&socket, Some("personal")).entries.len(), 0);
@@ -7488,6 +7494,12 @@ fn a_pipeline_that_cannot_be_dated_keeps_only_its_reason() {
         };
         assert_eq!(failed.len(), 1, "{name}: {result:?}");
         assert_eq!(failed[0].key, KEY_88, "{name}");
+        // Read and reported: one MR.
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")).0,
+            1,
+            "{name}: {result:?}"
+        );
         assert!(
             failed[0].error.contains("cannot date"),
             "{name}: {failed:?}"
@@ -7520,28 +7532,37 @@ fn a_pipeline_that_cannot_be_dated_keeps_only_its_reason() {
 }
 
 #[test]
-fn a_rate_limit_on_the_date_of_a_pipeline_stops_the_poll_and_applies_nothing_of_that_mr() {
-    let sandbox = Sandbox::new();
-    let daemon = sandbox.start();
-    set_own(&sandbox, "W/\"a\"", |_| {});
-    own_undated_mr(&sandbox, "W/\"b\"", "opened");
-    sandbox.sync();
-    sandbox.gitlab.set(VERSIONS_88, answer_with(429, "429"));
-    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
-    own_undated_mr(&sandbox, "W/\"c\"", "opened");
-    let result = sandbox.sync();
-    assert!(
-        matches!(
-            poll(&result, "company-a", "gitlab.example.com").outcome,
-            ReviewSyncOutcome::RateLimited { .. }
-        ),
-        "{result:?}"
-    );
-    assert_eq!(
-        reasons_of(&sandbox),
-        Some(vec![QueueReason::OwnPipelineFailed])
-    );
-    daemon.stop();
+fn a_failure_of_the_host_on_the_date_of_a_pipeline_stops_the_poll_and_applies_nothing_of_that_mr() {
+    for status in [429, 401] {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |_| {});
+        own_undated_mr(&sandbox, "W/\"b\"", "opened");
+        sandbox.sync();
+        sandbox
+            .gitlab
+            .set(VERSIONS_88, answer_with(status, &status.to_string()));
+        set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+        own_undated_mr(&sandbox, "W/\"c\"", "opened");
+        let result = sandbox.sync();
+        let outcome = &poll(&result, "company-a", "gitlab.example.com").outcome;
+        match status {
+            429 => assert!(
+                matches!(outcome, ReviewSyncOutcome::RateLimited { .. }),
+                "{outcome:?}"
+            ),
+            _ => assert!(
+                matches!(outcome, ReviewSyncOutcome::Failed { .. }),
+                "{outcome:?}"
+            ),
+        }
+        assert_eq!(
+            reasons_of(&sandbox),
+            Some(vec![QueueReason::OwnPipelineFailed]),
+            "{status}"
+        );
+        daemon.stop();
+    }
 }
 
 #[test]
@@ -7564,6 +7585,37 @@ fn an_old_version_with_a_null_sha_does_not_stop_the_date_of_the_head() {
         Some(vec![QueueReason::OwnPipelineFailed])
     );
     daemon.stop();
+}
+
+#[test]
+fn a_first_version_with_a_null_sha_still_dates_the_head() {
+    // The first version of the head, before the pipeline; a later one of that head, after it.
+    // Dated from the later one, the failure would go with nothing reported.
+    for field in ["base_commit_sha", "start_commit_sha"] {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        let mut versions = fixture_json("gitlab/merge-request-88-versions.json");
+        let mut later = versions[0].clone();
+        later["id"] = json!(9999);
+        later["created_at"] = json!("2026-10-23T12:00:00.000Z");
+        versions[0][field] = Value::Null;
+        versions.as_array_mut().unwrap().insert(0, later);
+        sandbox.gitlab.set(VERSIONS_88, route(versions.to_string()));
+        set_own(&sandbox, "W/\"a\"", |_| {});
+        own_undated_mr(&sandbox, "W/\"b\"", "opened");
+        let result = sandbox.sync();
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")).5,
+            0,
+            "{field}: {result:?}"
+        );
+        assert_eq!(
+            reasons_of(&sandbox),
+            Some(vec![QueueReason::OwnPipelineFailed]),
+            "{field}"
+        );
+        daemon.stop();
+    }
 }
 
 #[test]

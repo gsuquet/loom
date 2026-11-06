@@ -11,7 +11,7 @@ use loom_forge::gitlab::{
     MentionedMr, parse_approvals, parse_diffs, parse_discussions, parse_draft_note,
     parse_draft_notes, parse_error, parse_mention_todos, parse_merge_request,
     parse_merge_request_read, parse_merge_request_summary, parse_merge_requests, parse_token,
-    parse_user, parse_versions,
+    parse_user, parse_version_reads, parse_versions,
 };
 use loom_forge::model::{
     Anchor, FileChange, HeadPipeline, MergeStatus, MrForgeIds, MrKey, MrState, MrVersion,
@@ -203,6 +203,34 @@ fn a_version_with_a_null_sha_is_skipped_and_the_others_stay() {
         assert_eq!(versions.len(), 1, "{field}");
         assert_eq!(versions[0].forge_version_id, Some(202), "{field}");
     }
+}
+
+#[test]
+fn a_version_with_a_null_sha_still_dates_its_head() {
+    for field in ["base_commit_sha", "start_commit_sha"] {
+        let mut versions: serde_json::Value =
+            serde_json::from_slice(fixture!("merge-request-88-versions.json")).unwrap();
+        versions[1][field] = serde_json::Value::Null;
+        let reads = parse_version_reads(versions.to_string().as_bytes()).unwrap();
+        assert_eq!(reads.len(), 2, "{field}");
+        assert_eq!(reads[1].head_sha, sha(V1), "{field}");
+        assert_eq!(
+            reads[1].created_at,
+            Some(time("2026-10-21T10:05:00Z")),
+            "{field}"
+        );
+        assert_eq!(reads[1].version, None, "{field}");
+        assert!(reads[0].version.is_some(), "{field}");
+    }
+    // No time: in the mirror, and it dates nothing. No head: it tells nothing.
+    let mut versions: serde_json::Value =
+        serde_json::from_slice(fixture!("merge-request-88-versions.json")).unwrap();
+    versions[0]["created_at"] = serde_json::Value::Null;
+    versions[1]["head_commit_sha"] = serde_json::Value::Null;
+    let reads = parse_version_reads(versions.to_string().as_bytes()).unwrap();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].created_at, None);
+    assert_eq!(reads[0].version.as_ref().unwrap().created_at, None);
 }
 
 #[test]

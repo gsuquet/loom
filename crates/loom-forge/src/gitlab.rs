@@ -12,7 +12,7 @@ use crate::error::{ErrorBody, ForgeTime, ParseError, invalid, json};
 use crate::model::{
     Anchor, Comment, FileChange, FileDiff, ForgeUser, HeadPipeline, MergeStatus, Mr, MrForgeIds,
     MrKey, MrRead, MrSignals, MrState, MrSummary, MrVersion, PipelineCommit, PipelineOutcome, Sha,
-    Side, Thread, ThreadSubject,
+    Side, Thread, ThreadSubject, VersionRead,
 };
 
 #[derive(Deserialize)]
@@ -396,26 +396,45 @@ struct Version {
     head_commit_sha: Option<Sha>,
     base_commit_sha: Option<Sha>,
     start_commit_sha: Option<Sha>,
-    created_at: ForgeTime,
+    created_at: Option<ForgeTime>,
 }
 
-/// `GET /projects/<id>/merge_requests/<iid>/versions`, newest first as GitLab gives them. A version
-/// with a null SHA is skipped: it tells no diff, and it must not fail the read of the others.
+/// The versions of [`parse_version_reads`] that a mirror can hold: those with no null SHA.
+///
+/// # Errors
+///
+/// As [`parse_version_reads`].
+pub fn parse_versions(body: &[u8]) -> Result<Vec<MrVersion>, ParseError> {
+    Ok(parse_version_reads(body)?
+        .into_iter()
+        .filter_map(|read| read.version)
+        .collect())
+}
+
+/// `GET /projects/<id>/merge_requests/<iid>/versions`, newest first as GitLab gives them. A null
+/// must not fail the read of the others. A version with no head SHA tells nothing, and is skipped.
 ///
 /// # Errors
 ///
 /// [`ParseError`] when the body is not a list of GitLab merge request versions.
-pub fn parse_versions(body: &[u8]) -> Result<Vec<MrVersion>, ParseError> {
+pub fn parse_version_reads(body: &[u8]) -> Result<Vec<VersionRead>, ParseError> {
     let versions: Vec<Version> = json("GitLab merge request versions", body)?;
     Ok(versions
         .into_iter()
         .filter_map(|version| {
-            Some(MrVersion {
-                head_sha: version.head_commit_sha?,
-                base_sha: version.start_commit_sha?,
-                merge_base: Some(version.base_commit_sha?),
-                forge_version_id: Some(version.id),
-                created_at: Some(version.created_at.0),
+            let head_sha = version.head_commit_sha?;
+            let created_at = version.created_at.map(|time| time.0);
+            let shas = version.start_commit_sha.zip(version.base_commit_sha);
+            Some(VersionRead {
+                version: shas.map(|(base_sha, merge_base)| MrVersion {
+                    head_sha: head_sha.clone(),
+                    base_sha,
+                    merge_base: Some(merge_base),
+                    forge_version_id: Some(version.id),
+                    created_at,
+                }),
+                head_sha,
+                created_at,
             })
         })
         .collect())
