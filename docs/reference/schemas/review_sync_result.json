@@ -175,7 +175,7 @@
               }
             },
             "failed": {
-              "description": "The MRs whose sync failed: their last snapshot is kept.",
+              "description": "The MRs whose sync failed: what the poll did not read keeps its last snapshot.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/ReviewSyncFailure"
@@ -189,7 +189,7 @@
               }
             },
             "mrs": {
-              "description": "The MRs polled: the MRs to review, the MRs of the queue and the MRs of the Review\ntasks.",
+              "description": "The MRs polled, each one once: the MRs to review, the MRs of the queue and the MRs of\nthe Review tasks.",
               "type": "integer",
               "format": "uint",
               "minimum": 0

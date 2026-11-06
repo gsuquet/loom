@@ -82,7 +82,7 @@ A pipeline is of the current head when its SHA is the head. A merged results or 
 
 If `loomd` cannot read the versions, or they do not date the head, only this reason does not change. The rest of the read applies, for example a new note or the merge state. The poll reports the MR as failed, and the next poll reads the MR in full. A refused token, a rate limit or no answer on this read stops the poll, as on each read.
 
-`loomd` skips a version with a null SHA. If that version is the first version of the head, the next version dates the head. If it is the only version of the head, the head cannot be dated.
+A version with a null SHA does not go in the mirror. It still dates the head, if it has its head SHA and its time. A version with no head SHA tells nothing, and `loomd` skips it.
 
 After a push back to an older head, a failure of the head between them counts until a new pipeline.
 

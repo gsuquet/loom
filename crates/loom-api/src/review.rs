@@ -45,8 +45,8 @@ pub struct ReviewSync {
 pub enum ReviewSyncOutcome {
     /// The host answered. An MR that failed is in `failed`: the others are synced.
     Synced {
-        /// The MRs polled: the MRs to review, the MRs of the queue and the MRs of the Review
-        /// tasks.
+        /// The MRs polled, each one once: the MRs to review, the MRs of the queue and the MRs of
+        /// the Review tasks.
         mrs: usize,
         /// The keys of the MRs that this poll added to the queue.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -60,7 +60,7 @@ pub enum ReviewSyncOutcome {
         /// The MRs to review that belong to another context: not written to this store.
         #[serde(default)]
         other_context: usize,
-        /// The MRs whose sync failed: their last snapshot is kept.
+        /// The MRs whose sync failed: what the poll did not read keeps its last snapshot.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed: Vec<ReviewSyncFailure>,
         /// The lists that failed while the poll went on. The reason `mentioned` keeps its last
