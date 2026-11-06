@@ -33,7 +33,7 @@ pub fn queue(args: &ReviewQueueArgs, global: &GlobalArgs, layout: &Layout) -> Re
     let text = if args.json {
         serde_json::to_string_pretty(&queue).into_diagnostic()? + "\n"
     } else {
-        render_queue(&queue)
+        render_queue(&queue, None)
     };
     print(&text)
 }

@@ -3,8 +3,8 @@
 use std::fmt::Write as _;
 
 use loom_api::{
-    ContextName, QueueReason, ReviewList, ReviewListFailure, ReviewQueue, ReviewStartResult,
-    ReviewSyncOutcome, ReviewSyncResult,
+    ConnectorList, ContextName, QueueReason, ReviewList, ReviewListFailure, ReviewQueue,
+    ReviewStartResult, ReviewSyncOutcome, ReviewSyncResult,
 };
 
 use crate::repo::encode_segment;
@@ -35,6 +35,9 @@ pub fn start_path(key: &str) -> String {
 
 /// The text of an empty queue. It does not claim that nothing waits: a poll that fails changes no
 /// entry, and this command calls no forge.
+const NOTHING_TO_DO: &str = "";
+const PROBLEM_HEADER: &str = "";
+const PROBLEM_FOOTER: &str = "";
 const EMPTY_QUEUE: &str = "The queue is empty. Run `loom review sync` to poll the forges now.\n";
 
 const fn reason_name(reason: QueueReason) -> &'static str {
@@ -58,8 +61,9 @@ const fn list_name(list: ReviewList) -> &'static str {
 
 /// One line per entry: context, key, reasons, title, author, URL.
 #[must_use]
-pub fn render_queue(queue: &ReviewQueue) -> String {
+pub fn render_queue(queue: &ReviewQueue, connectors: Option<&ConnectorList>) -> String {
     if queue.entries.is_empty() {
+        let _ = connectors;
         return EMPTY_QUEUE.to_owned();
     }
     let mut text = String::new();
@@ -223,14 +227,15 @@ pub fn failure_message(result: &ReviewSyncResult) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use loom_api::{
-        ForgeKind, QueueReason, ReviewList, ReviewListFailure, ReviewListFailureKind, ReviewQueue,
-        ReviewQueueEntry, ReviewSync, ReviewSyncFailure, ReviewSyncOutcome, ReviewSyncResult,
-        Timestamp,
+        ConnectorCounts, ConnectorFailure, ConnectorHealth, ConnectorKind, ConnectorList,
+        ConnectorStatus, ForgeKind, PolledBy, QueueReason, ReviewList, ReviewListFailure,
+        ReviewListFailureKind, ReviewQueue, ReviewQueueEntry, ReviewSync, ReviewSyncFailure,
+        ReviewSyncOutcome, ReviewSyncResult, Secret, Timestamp,
     };
 
     use super::{
-        EMPTY_QUEUE, failure_message, queue_path, reason_name, render_queue, render_sync,
-        start_path,
+        EMPTY_QUEUE, NOTHING_TO_DO, PROBLEM_FOOTER, PROBLEM_HEADER, failure_message, queue_path,
+        reason_name, render_queue, render_sync, start_path,
     };
 
     #[test]
@@ -303,9 +308,12 @@ mod tests {
     #[test]
     fn renders_the_queue_and_says_when_it_is_empty() {
         assert_eq!(
-            render_queue(&ReviewQueue {
-                entries: Vec::new()
-            }),
+            render_queue(
+                &ReviewQueue {
+                    entries: Vec::new()
+                },
+                None
+            ),
             EMPTY_QUEUE
         );
         let queue = ReviewQueue {
@@ -322,7 +330,7 @@ mod tests {
             }],
         };
         assert_eq!(
-            render_queue(&queue),
+            render_queue(&queue, None),
             "personal acme/shop#412 [review_requested] Auth refactor (alice) https://github.com/acme/shop/pull/412\n"
         );
         assert_eq!(
@@ -508,6 +516,239 @@ mod tests {
         assert_eq!(
             render_sync(&result),
             "company-a gitlab.example.com: rate limited until 1970-01-01T00:00:00Z\n  list mentioned: 403 Forbidden\ncompany-a gitlab.company-a.example: failed: timeout\n  list mentioned: 403 Forbidden\n"
+        );
+    }
+
+    fn connector(kind: ConnectorKind, health: ConnectorHealth) -> ConnectorStatus {
+        ConnectorStatus {
+            context: "work".parse().unwrap(),
+            name: "forge.example.com".to_owned(),
+            kind,
+            host: "forge.example.com".to_owned(),
+            polled_by: PolledBy::ThisMachine,
+            health,
+            stale: false,
+            last_attempt: None,
+            last_success: None,
+            next_poll: None,
+            items: ConnectorCounts::default(),
+            capabilities: kind.capabilities(),
+        }
+    }
+
+    fn empty(connectors: Vec<ConnectorStatus>) -> String {
+        render_queue(
+            &ReviewQueue {
+                entries: Vec::new(),
+            },
+            Some(&ConnectorList { connectors }),
+        )
+    }
+
+    const NOTHING: &str = NOTHING_TO_DO;
+
+    #[test]
+    fn an_empty_queue_with_good_polls_says_nothing_waits() {
+        let ok = connector(ConnectorKind::Gitlab, ConnectorHealth::Ok);
+        assert_eq!(empty(vec![ok.clone()]), NOTHING);
+        let github = connector(ConnectorKind::Github, ConnectorHealth::Ok);
+        assert_eq!(empty(vec![ok, github]), NOTHING);
+    }
+
+    #[test]
+    fn an_empty_queue_with_a_failed_poll_shows_it_for_each_health() {
+        let failed = vec![ConnectorFailure {
+            key: "list:own".to_owned(),
+            reason: "502".to_owned(),
+        }];
+        let cases = [
+            (
+                ConnectorHealth::Partial {
+                    failed: failed.clone(),
+                },
+                "partial, 1 failed",
+            ),
+            (
+                ConnectorHealth::RateLimited {
+                    until: Timestamp::from_unix_secs(1_800_000_000).unwrap(),
+                    failed: vec![],
+                },
+                "rate limited until ",
+            ),
+            (
+                ConnectorHealth::Credential {
+                    which: Secret::Token,
+                    error: "401".to_owned(),
+                    failed: vec![],
+                },
+                "token problem: 401",
+            ),
+            (
+                ConnectorHealth::Forbidden {
+                    error: "403".to_owned(),
+                    failed: vec![],
+                },
+                "forbidden: 403",
+            ),
+            (
+                ConnectorHealth::InvalidFilter {
+                    error: "bad".to_owned(),
+                },
+                "invalid filter: bad",
+            ),
+            (
+                ConnectorHealth::Unreachable {
+                    error: "down".to_owned(),
+                    failures: 2,
+                    failed: vec![],
+                },
+                "unreachable (2 failed in a row): down",
+            ),
+        ];
+        for (health, line) in cases {
+            let text = empty(vec![connector(ConnectorKind::Gitlab, health)]);
+            assert!(text.starts_with(PROBLEM_HEADER), "{text}");
+            assert!(
+                text.contains(&format!("work forge.example.com: {line}")),
+                "{text}"
+            );
+            assert!(text.ends_with(PROBLEM_FOOTER), "{text}");
+        }
+        let text = empty(vec![connector(
+            ConnectorKind::Gitlab,
+            ConnectorHealth::Partial { failed },
+        )]);
+        assert!(text.contains("\n  list:own: 502\n"), "{text}");
+    }
+
+    #[test]
+    fn a_stale_success_is_a_problem_but_a_poll_to_come_is_not() {
+        let stale = ConnectorStatus {
+            stale: true,
+            ..connector(ConnectorKind::Github, ConnectorHealth::Ok)
+        };
+        let text = empty(vec![stale]);
+        assert!(text.starts_with(PROBLEM_HEADER), "{text}");
+        assert!(text.contains("ok, stale"), "{text}");
+        // Not polled yet is stale too, and says nothing about a failure.
+        let fresh = ConnectorStatus {
+            stale: true,
+            ..connector(ConnectorKind::Github, ConnectorHealth::NotPolledYet)
+        };
+        assert_eq!(empty(vec![fresh]), EMPTY_QUEUE);
+    }
+
+    #[test]
+    fn a_failure_shows_only_the_connectors_that_failed() {
+        let ok = connector(ConnectorKind::Github, ConnectorHealth::Ok);
+        let down = ConnectorStatus {
+            name: "down.example.com".to_owned(),
+            ..connector(
+                ConnectorKind::Gitlab,
+                ConnectorHealth::Unreachable {
+                    error: "down".to_owned(),
+                    failures: 1,
+                    failed: vec![],
+                },
+            )
+        };
+        let text = empty(vec![ok, down]);
+        assert!(
+            text.contains("work down.example.com: unreachable"),
+            "{text}"
+        );
+        assert!(!text.contains("forge.example.com"), "{text}");
+    }
+
+    #[test]
+    fn no_claim_when_no_poll_here_says_so() {
+        let not_yet = connector(ConnectorKind::Gitlab, ConnectorHealth::NotPolledYet);
+        let ok = connector(ConnectorKind::Github, ConnectorHealth::Ok);
+        let other = ConnectorStatus {
+            polled_by: PolledBy::Other {
+                machine: "tower".to_owned(),
+            },
+            ..connector(ConnectorKind::Gitlab, ConnectorHealth::NotPolledYet)
+        };
+        assert_eq!(empty(vec![not_yet.clone()]), EMPTY_QUEUE);
+        assert_eq!(empty(vec![other.clone()]), EMPTY_QUEUE);
+        // One good poll does not speak for a forge that did not poll.
+        assert_eq!(empty(vec![ok.clone(), not_yet]), EMPTY_QUEUE);
+        assert_eq!(empty(vec![ok, other]), EMPTY_QUEUE);
+    }
+
+    #[test]
+    fn no_claim_without_a_forge_or_a_status() {
+        assert_eq!(empty(vec![]), EMPTY_QUEUE);
+        // Only the forges fill the queue: a failure of another connector is not shown here.
+        let datadog = connector(
+            ConnectorKind::Datadog,
+            ConnectorHealth::Unreachable {
+                error: "down".to_owned(),
+                failures: 1,
+                failed: vec![],
+            },
+        );
+        assert_eq!(empty(vec![datadog.clone()]), EMPTY_QUEUE);
+        let ok = connector(ConnectorKind::Gitlab, ConnectorHealth::Ok);
+        assert_eq!(empty(vec![datadog, ok]), NOTHING);
+        let none = render_queue(
+            &ReviewQueue {
+                entries: Vec::new(),
+            },
+            None,
+        );
+        assert_eq!(none, EMPTY_QUEUE);
+    }
+
+    #[test]
+    fn a_text_of_the_forge_is_cleaned_in_the_empty_queue() {
+        let text = empty(vec![connector(
+            ConnectorKind::Gitlab,
+            ConnectorHealth::Forbidden {
+                error: "a\u{202e}b\nc\u{1b}[2J".to_owned(),
+                failed: vec![ConnectorFailure {
+                    key: "k\u{202d}\n".to_owned(),
+                    reason: "r\u{1b}".to_owned(),
+                }],
+            },
+        )]);
+        assert!(text.contains("forbidden: ab c [2J"), "{text:?}");
+        assert!(text.contains("\n  k : r \n"), "{text:?}");
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{202e}'),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn a_queue_with_entries_ignores_the_status() {
+        let queue = ReviewQueue {
+            entries: vec![ReviewQueueEntry {
+                context: "personal".parse().unwrap(),
+                key: "acme/shop#412".to_owned(),
+                title: "t".to_owned(),
+                author: "a".to_owned(),
+                web_url: "u".to_owned(),
+                head_sha: "x".to_owned(),
+                updated_at: Timestamp::from_unix_secs(0).unwrap(),
+                reasons: vec![QueueReason::Assigned],
+                seen_at: None,
+            }],
+        };
+        let down = ConnectorList {
+            connectors: vec![connector(
+                ConnectorKind::Gitlab,
+                ConnectorHealth::Unreachable {
+                    error: "down".to_owned(),
+                    failures: 1,
+                    failed: vec![],
+                },
+            )],
+        };
+        assert_eq!(
+            render_queue(&queue, Some(&down)),
+            render_queue(&queue, None)
         );
     }
 }

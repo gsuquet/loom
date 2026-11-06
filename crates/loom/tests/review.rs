@@ -47,6 +47,11 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
+        Self::with_search(Route::get(SEARCH).fixture("github/search-review-requested.json"))
+    }
+
+    /// A sandbox where the review-requested search answers as `search` says.
+    fn with_search(search: Route) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("lrv")
             .tempdir_in("/tmp")
@@ -54,7 +59,7 @@ impl Sandbox {
         let forge = FakeForge::start();
         forge
             .route(Route::get("/user").fixture("github/user.json"))
-            .route(Route::get(SEARCH).fixture("github/search-review-requested.json"))
+            .route(search)
             .route(Route::get(PULL).fixture("github/pull-412.v1.json"))
             .route(Route::get(&format!("{PULL}/reviews?per_page=100")).body("[]"))
             .route(
@@ -223,4 +228,36 @@ fn connector_status_of_an_unknown_context_says_so() {
         text.starts_with("No connector in the context `typo`: "),
         "{text}"
     );
+}
+
+const NOTHING: &str =
+    "Nothing waits: the queue is empty and the last poll of each forge succeeded.\n";
+const NO_ITEM: &str = r#"{"total_count":0,"incomplete_results":false,"items":[]}"#;
+
+#[test]
+fn an_empty_queue_tells_nothing_waits_after_a_good_poll() {
+    let sandbox = Sandbox::with_search(Route::get(SEARCH).body(NO_ITEM));
+    // No poll yet: no claim.
+    assert_eq!(sandbox.ok(&["review", "queue"]), EMPTY);
+    sandbox.ok(&["review", "sync"]);
+    assert_eq!(sandbox.ok(&["review", "queue"]), NOTHING);
+    assert_eq!(sandbox.ok(&["-c", "personal", "review", "queue"]), NOTHING);
+    // The JSON stays the queue.
+    let queue: ReviewQueue =
+        serde_json::from_str(&sandbox.ok(&["review", "queue", "--json"])).unwrap();
+    assert!(queue.entries.is_empty());
+}
+
+#[test]
+fn an_empty_queue_tells_a_failed_poll_from_nothing_to_do() {
+    let sandbox = Sandbox::with_search(Route::get(SEARCH).status(500).body("{}"));
+    assert!(!sandbox.loom(&["review", "sync"]).status.success());
+    let text = sandbox.ok(&["review", "queue"]);
+    assert!(
+        text.starts_with("The queue is empty, but it may not be: a poll did not succeed.\n"),
+        "{text}"
+    );
+    assert!(text.contains("personal github.com: "), "{text}");
+    assert!(text.contains("Run `loom connector status`"), "{text}");
+    assert_ne!(text, NOTHING);
 }
