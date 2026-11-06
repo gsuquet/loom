@@ -165,7 +165,8 @@ fn queue_then_start_creates_one_active_task_and_empties_the_queue() {
     assert!(started.created);
     let task = started.task.summary.task.as_ref().unwrap();
     assert_eq!(task.status, Status::Active);
-    assert_eq!(sandbox.ok(&["review", "queue"]), EMPTY);
+    // The poll before succeeded: the empty queue says nothing waits.
+    assert_eq!(sandbox.ok(&["review", "queue"]), NOTHING);
 
     // A second start names the same task.
     let id = started.task.summary.id.to_string();
@@ -245,7 +246,7 @@ fn an_empty_queue_tells_nothing_waits_after_a_good_poll() {
     // The JSON stays the queue.
     let queue: ReviewQueue =
         serde_json::from_str(&sandbox.ok(&["review", "queue", "--json"])).unwrap();
-    assert!(queue.entries.is_empty());
+    assert_eq!(queue.entries, vec![]);
 }
 
 #[test]

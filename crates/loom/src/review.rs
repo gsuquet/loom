@@ -3,10 +3,12 @@
 use std::fmt::Write as _;
 
 use loom_api::{
-    ConnectorList, ContextName, QueueReason, ReviewList, ReviewListFailure, ReviewQueue,
-    ReviewStartResult, ReviewSyncOutcome, ReviewSyncResult,
+    ConnectorHealth, ConnectorKind, ConnectorList, ConnectorStatus, ContextName, PolledBy,
+    QueueReason, ReviewList, ReviewListFailure, ReviewQueue, ReviewStartResult, ReviewSyncOutcome,
+    ReviewSyncResult,
 };
 
+use crate::connector::status_line;
 use crate::repo::encode_segment;
 
 /// `POST /v1/reviews/sync`.
@@ -35,9 +37,14 @@ pub fn start_path(key: &str) -> String {
 
 /// The text of an empty queue. It does not claim that nothing waits: a poll that fails changes no
 /// entry, and this command calls no forge.
-const NOTHING_TO_DO: &str = "";
-const PROBLEM_HEADER: &str = "";
-const PROBLEM_FOOTER: &str = "";
+/// The text of an empty queue after a good poll of each forge.
+const NOTHING_TO_DO: &str =
+    "Nothing waits: the queue is empty and the last poll of each forge succeeded.\n";
+/// The first line of an empty queue when a poll did not succeed.
+const PROBLEM_HEADER: &str = "The queue is empty, but it may not be: a poll did not succeed.\n";
+/// The last line of the same text.
+const PROBLEM_FOOTER: &str =
+    "Run `loom connector status` for the whole status, and `loom review sync` to poll now.\n";
 const EMPTY_QUEUE: &str = "The queue is empty. Run `loom review sync` to poll the forges now.\n";
 
 const fn reason_name(reason: QueueReason) -> &'static str {
@@ -59,12 +66,84 @@ const fn list_name(list: ReviewList) -> &'static str {
     }
 }
 
+/// What an empty queue says: nothing waits only when each forge polled here succeeded, and a poll
+/// that did not succeed comes first. Anything else makes no claim: the text of today.
+fn empty_queue_text(connectors: Option<&ConnectorList>) -> String {
+    let Some(list) = connectors else {
+        return EMPTY_QUEUE.to_owned();
+    };
+    // Only a forge fills the queue.
+    let forges: Vec<&ConnectorStatus> = list
+        .connectors
+        .iter()
+        .filter(|status| match status.kind {
+            ConnectorKind::Gitlab | ConnectorKind::Github => true,
+            ConnectorKind::Datadog | ConnectorKind::Jira | ConnectorKind::Freshservice => false,
+        })
+        .collect();
+    let problems: Vec<&ConnectorStatus> = forges
+        .iter()
+        .copied()
+        .filter(|status| poll_state(status) == PollState::Failed)
+        .collect();
+    if !problems.is_empty() {
+        let mut text = PROBLEM_HEADER.to_owned();
+        for status in problems {
+            text.push_str(&status_line(status));
+        }
+        text.push_str(PROBLEM_FOOTER);
+        return text;
+    }
+    if !forges.is_empty()
+        && forges
+            .iter()
+            .all(|status| poll_state(status) == PollState::Succeeded)
+    {
+        return NOTHING_TO_DO.to_owned();
+    }
+    EMPTY_QUEUE.to_owned()
+}
+
+/// What the last poll of a forge says about the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollState {
+    /// A poll of this machine did not succeed, or its success is too old.
+    Failed,
+    /// A poll of this machine succeeded, and recently.
+    Succeeded,
+    /// No poll of this machine to tell: not polled yet, or polled by another machine.
+    Unknown,
+}
+
+const fn poll_state(status: &ConnectorStatus) -> PollState {
+    match (&status.polled_by, &status.health) {
+        // This machine does not know the health.
+        (PolledBy::Other { .. }, _) | (_, ConnectorHealth::NotPolledYet) => PollState::Unknown,
+        // `EveryMachine`: this machine polls too.
+        (PolledBy::ThisMachine | PolledBy::EveryMachine, ConnectorHealth::Ok) => {
+            if status.stale {
+                PollState::Failed
+            } else {
+                PollState::Succeeded
+            }
+        }
+        (
+            PolledBy::ThisMachine | PolledBy::EveryMachine,
+            ConnectorHealth::Partial { .. }
+            | ConnectorHealth::RateLimited { .. }
+            | ConnectorHealth::Credential { .. }
+            | ConnectorHealth::Forbidden { .. }
+            | ConnectorHealth::InvalidFilter { .. }
+            | ConnectorHealth::Unreachable { .. },
+        ) => PollState::Failed,
+    }
+}
+
 /// One line per entry: context, key, reasons, title, author, URL.
 #[must_use]
 pub fn render_queue(queue: &ReviewQueue, connectors: Option<&ConnectorList>) -> String {
     if queue.entries.is_empty() {
-        let _ = connectors;
-        return EMPTY_QUEUE.to_owned();
+        return empty_queue_text(connectors);
     }
     let mut text = String::new();
     for entry in &queue.entries {
@@ -552,7 +631,21 @@ mod tests {
         let ok = connector(ConnectorKind::Gitlab, ConnectorHealth::Ok);
         assert_eq!(empty(vec![ok.clone()]), NOTHING);
         let github = connector(ConnectorKind::Github, ConnectorHealth::Ok);
-        assert_eq!(empty(vec![ok, github]), NOTHING);
+        assert_eq!(empty(vec![ok.clone(), github]), NOTHING);
+        // A context with no `machines` key: each machine polls it.
+        let every = ConnectorStatus {
+            polled_by: PolledBy::EveryMachine,
+            ..ok
+        };
+        assert_eq!(empty(vec![every.clone()]), NOTHING);
+        let down = ConnectorStatus {
+            health: ConnectorHealth::Forbidden {
+                error: "403".to_owned(),
+                failed: vec![],
+            },
+            ..every
+        };
+        assert!(empty(vec![down]).starts_with(PROBLEM_HEADER));
     }
 
     #[test]
@@ -672,6 +765,20 @@ mod tests {
         };
         assert_eq!(empty(vec![not_yet.clone()]), EMPTY_QUEUE);
         assert_eq!(empty(vec![other.clone()]), EMPTY_QUEUE);
+        // Even a health that another machine could have sent says nothing here.
+        let other_ok = ConnectorStatus {
+            health: ConnectorHealth::Ok,
+            ..other.clone()
+        };
+        assert_eq!(empty(vec![other_ok]), EMPTY_QUEUE);
+        let other_down = ConnectorStatus {
+            health: ConnectorHealth::Forbidden {
+                error: "403".to_owned(),
+                failed: vec![],
+            },
+            ..other.clone()
+        };
+        assert_eq!(empty(vec![other_down]), EMPTY_QUEUE);
         // One good poll does not speak for a forge that did not poll.
         assert_eq!(empty(vec![ok.clone(), not_yet]), EMPTY_QUEUE);
         assert_eq!(empty(vec![ok, other]), EMPTY_QUEUE);

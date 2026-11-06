@@ -4,11 +4,13 @@
 use std::time::Duration;
 
 use loom::cli::{GlobalArgs, ReviewQueueArgs, ReviewStartArgs, ReviewSyncArgs};
+use loom::connector;
 use loom::review::{
     SYNC_PATH, failure_message, queue_path, render_queue, render_start, render_sync, start_path,
 };
 use loom_api::{
-    ReviewQueue, ReviewStartRequest, ReviewStartResult, ReviewSyncRequest, ReviewSyncResult,
+    ConnectorList, ReviewQueue, ReviewStartRequest, ReviewStartResult, ReviewSyncRequest,
+    ReviewSyncResult,
 };
 use loom_config::layout::Layout;
 use miette::{IntoDiagnostic as _, Result, miette};
@@ -26,14 +28,24 @@ pub fn queue(args: &ReviewQueueArgs, global: &GlobalArgs, layout: &Layout) -> Re
         .build()
         .into_diagnostic()?;
     let path = queue_path(global.context.as_ref());
-    let queue: ReviewQueue = runtime.block_on(async {
+    let connectors_path = connector::status_path(global.context.as_ref());
+    let want_status = !args.json;
+    let (queue, connectors): (ReviewQueue, Option<ConnectorList>) = runtime.block_on(async {
         let client = connect(layout, true).await?;
-        client.get(&path).await.map_err(|error| api_error(&error))
+        let queue: ReviewQueue = client.get(&path).await.map_err(|error| api_error(&error))?;
+        // Only an empty queue needs the status. An older loomd, an error or a timeout gives
+        // `None`: the answer is then the one of an empty queue, never a failure.
+        let connectors = if want_status && queue.entries.is_empty() {
+            client.get::<ConnectorList>(&connectors_path).await.ok()
+        } else {
+            None
+        };
+        Ok::<_, miette::Report>((queue, connectors))
     })?;
     let text = if args.json {
         serde_json::to_string_pretty(&queue).into_diagnostic()? + "\n"
     } else {
-        render_queue(&queue, None)
+        render_queue(&queue, connectors.as_ref())
     };
     print(&text)
 }
