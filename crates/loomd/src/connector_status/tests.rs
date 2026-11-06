@@ -945,63 +945,74 @@ fn a_success_after_a_gap_sends_one_event() {
 /// while the second waits: the second must write the status of now, not what it saw on arrival.
 #[test]
 fn a_write_that_waited_holds_the_newest_times() {
-    let fixture = Fixture::new();
-    let dir = fixture.path().parent().unwrap().to_path_buf();
-    fs::create_dir_all(&dir).unwrap();
-    let fifo = dir.join(".connectors.json.tmp");
-    assert!(
-        std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let statuses = Arc::new(fixture.open(gitlab(PolledBy::ThisMachine)));
-    let writer = |time: Timestamp| {
-        let statuses = Arc::clone(&statuses);
-        thread::spawn(move || {
-            statuses.report(
+    // On a thread: a read that blocks on the stuck write must fail this test, not hang it.
+    let (done, finished) = mpsc::channel();
+    let run = thread::spawn(move || {
+        let fixture = Fixture::new();
+        let dir = fixture.path().parent().unwrap().to_path_buf();
+        fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join(".connectors.json.tmp");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let statuses = Arc::new(fixture.open(gitlab(PolledBy::ThisMachine)));
+        let writer = |time: Timestamp| {
+            let statuses = Arc::clone(&statuses);
+            thread::spawn(move || {
+                statuses.report(
+                    &context("work"),
+                    "gitlab.com",
+                    report(time, ConnectorHealth::Ok),
+                );
+            })
+        };
+        let wait_for = |time: Timestamp| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while statuses.list(None, time).connectors[0].last_attempt != Some(time) {
+                assert!(Instant::now() < deadline, "no report at {time}");
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let first = writer(at(5));
+        wait_for(at(5));
+        // Let the first writer reach the FIFO, and the second reach the lock behind it.
+        thread::sleep(Duration::from_millis(200));
+        let second = writer(at(10));
+        wait_for(at(10));
+        thread::sleep(Duration::from_millis(200));
+
+        // A report whose own write has not come yet.
+        statuses
+            .record(
                 &context("work"),
                 "gitlab.com",
-                report(time, ConnectorHealth::Ok),
-            );
-        })
-    };
-    let wait_for = |time: Timestamp| {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while statuses.list(None, time).connectors[0].last_attempt != Some(time) {
-            assert!(Instant::now() < deadline, "no report at {time}");
-            thread::sleep(Duration::from_millis(5));
-        }
-    };
-    let first = writer(at(5));
-    wait_for(at(5));
-    // Let the first writer reach the FIFO, and the second reach the lock behind it.
-    thread::sleep(Duration::from_millis(200));
-    let second = writer(at(10));
-    wait_for(at(10));
-    thread::sleep(Duration::from_millis(200));
+                report(at(20), ConnectorHealth::Ok),
+            )
+            .unwrap();
 
-    // A report whose own write has not come yet.
-    statuses
-        .record(
-            &context("work"),
-            "gitlab.com",
-            report(at(20), ConnectorHealth::Ok),
-        )
-        .unwrap();
-
-    // The first write ends, and fails: its temporary file is gone. The next one is a real file.
-    let mut pipe = fs::File::open(&fifo).unwrap();
-    fs::remove_file(&fifo).unwrap();
-    let mut drained_bytes = Vec::new();
-    std::io::Read::read_to_end(&mut pipe, &mut drained_bytes).unwrap();
-    first.join().unwrap();
-    second.join().unwrap();
-    assert_eq!(
-        state(&fixture.path())["connectors"][0]["last_attempt"],
-        serde_json::to_value(at(20)).unwrap()
-    );
+        // The first write ends, and fails: its temporary file is gone. The next one is a real file.
+        let mut pipe = fs::File::open(&fifo).unwrap();
+        fs::remove_file(&fifo).unwrap();
+        let mut drained_bytes = Vec::new();
+        std::io::Read::read_to_end(&mut pipe, &mut drained_bytes).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(
+            state(&fixture.path())["connectors"][0]["last_attempt"],
+            serde_json::to_value(at(20)).unwrap()
+        );
+        let _ = done.send(());
+    });
+    let waited = finished.recv_timeout(Duration::from_secs(30));
+    if waited.is_err() && run.is_finished() {
+        // The thread panicked: its assertion is the failure to show.
+        std::panic::resume_unwind(run.join().unwrap_err());
+    }
+    waited.unwrap();
 }
 
 #[test]
