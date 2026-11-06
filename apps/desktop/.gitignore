@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-unsafe/
+src-tauri/target/
+src-tauri/gen/
+test-results/
+playwright-report/
+.e2e/
+e2e-wdio/node_modules/

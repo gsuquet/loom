@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Loom Spike",
+  "version": "0.0.0",
+  "identifier": "io.github.gsuquet.loom.spike",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npx vite",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Loom Spike",
+        "width": 1400,
+        "height": 900,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundThrottling": "disabled",
+        "windowEffects": { "effects": ["liquidGlassRegular", "sidebar"], "state": "followsWindowActiveState" }
+      }
+    ],
+    "security": {
+      "capabilities": ["default"],
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": ["icons/icon.png"],
+    "macOS": { "minimumSystemVersion": "26.0", "signingIdentity": "-" }
+  }
+}

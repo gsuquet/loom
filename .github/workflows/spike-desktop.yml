@@ -1,0 +1,169 @@
+name: Spike desktop app
+
+# Runs on this one branch only. The branch and this file are thrown away with the spike.
+on:
+  push:
+    branches: [spike/desktop-app]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-desktop
+  cancel-in-progress: false
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  TAURI_WEBDRIVER_PORT: "14445"
+
+jobs:
+  app:
+    name: app (${{ matrix.os }})
+    if: github.ref == 'refs/heads/spike/desktop-app'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust node npm cargo-deny
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          # The first run lost 34 min to the amd64v3 package variant on the mirror: timeouts per package.
+          echo 'APT::Architecture-Variants "amd64";' | sudo tee /etc/apt/apt.conf.d/99-no-variants
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev xvfb
+      - name: Versions and machine
+        run: |
+          node --version; npm --version; cargo --version; uname -a
+          if [ "$RUNNER_OS" = macOS ]; then sw_vers; sysctl -n hw.model machdep.cpu.brand_string; xcode-select -p; fi
+          if [ "$RUNNER_OS" = Linux ]; then dpkg -s libwebkit2gtk-4.1-0 | grep Version; fi
+      - name: npm ci
+        run: npm ci
+      - name: Typecheck, lint, unit tests (layer 1)
+        run: |
+          npx tsc --noEmit
+          npx biome check src e2e scripts
+          npx vitest run
+      - name: Web builds
+        run: |
+          npx vite build
+          VITE_SPIKE_UNSAFE=1 npx vite build
+      - name: Build loomd
+        working-directory: .
+        run: cargo build --locked -p loomd
+      - name: Rust tests and contract with real loomd (layer 3)
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          npx vitest run --config vitest.contract.config.ts
+      - name: Clean release build, timed
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then bundle="--bundles app"; else bundle="--no-bundle"; fi
+          # shellcheck disable=SC2086
+          /usr/bin/time -p npx tauri build --ci $bundle
+          ls -la src-tauri/target/release/loom-desktop
+          du -sh src-tauri/target/release/bundle/macos/*.app || true
+      - name: Build the real-app binary and the unprotected control
+        run: |
+          mkdir -p .e2e
+          npx tauri build --debug --no-bundle --features e2e --ci --config '{"build":{"frontendDist":"../dist-unsafe"},"app":{"security":{"csp":null}}}'
+          cp src-tauri/target/debug/loom-desktop .e2e/app-both-off
+          npx tauri build --debug --no-bundle --features e2e --ci
+          cp src-tauri/target/debug/loom-desktop .e2e/app-protected
+      - name: Window state tool for the hang captures
+        if: runner.os == 'macOS'
+        run: swiftc -O e2e/windows.swift -o .e2e/windows-tool
+      - name: Real app, 20 separate launches, no retry (layer 4)
+        continue-on-error: true
+        timeout-minutes: 35
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+        run: |
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          $prefix node e2e/loop.ts .e2e/app-protected --runs 20 --prefix raw
+      - name: Real app, protections removed, the attack must run
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+        run: |
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          $prefix node e2e/real-app.ts .e2e/app-both-off --expect-attack --no-budget --label attack
+      - name: The documented route, @wdio/tauri-service, one smoke run
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        continue-on-error: true
+        working-directory: apps/desktop/e2e-wdio
+        env:
+          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
+          APP_BIN: ${{ github.workspace }}/apps/desktop/.e2e/app-protected
+        run: |
+          npm ci
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          $prefix node run.mjs
+      - name: Release build holds no WebDriver server
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          RUN_PREFIX="$prefix" bash scripts/prove-release.sh
+      - name: Permissions on the runner (macOS)
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          # TCC database of the runner, read only: what the run was granted, if readable.
+          sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "select service, client, auth_value from access" 2>&1 | head -40 || true
+          sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "select service, client, auth_value from access" 2>&1 | head -40 || true
+      - name: Licences
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          cargo deny --manifest-path src-tauri/Cargo.toml --locked check licenses 2>&1 | tail -30 || true
+          npx license-checker-rseidelsohn --production --summary || true
+      - name: Playwright on WebKit against the fake API (layer 2)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            npx playwright install webkit
+            sudo env "PATH=$PATH" npx playwright install-deps --dry-run webkit | tail -3 || true
+            timeout 900 sudo env "PATH=$PATH" npx playwright install-deps webkit
+          else
+            npx playwright install --with-deps webkit
+          fi
+          npx playwright test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-${{ matrix.os }}
+          # Without this, upload-artifact leaves out the hidden .e2e directory: the two runs before
+          # this one uploaded nothing.
+          include-hidden-files: true
+          path: |
+            apps/desktop/.e2e/*.json
+            apps/desktop/.e2e/*.jsonl
+            apps/desktop/.e2e/*.log
+            apps/desktop/.e2e/*.png
+            apps/desktop/.e2e/diag/**
+          retention-days: 7

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-loom-events"
+description = "Enables the loom_events command without any pre-configured scope."
+commands.allow = ["loom_events"]
+
+[[permission]]
+identifier = "deny-loom-events"
+description = "Denies the loom_events command without any pre-configured scope."
+commands.deny = ["loom_events"]

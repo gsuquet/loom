@@ -1,0 +1,40 @@
+{
+  "name": "loom-desktop-spike",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=26",
+    "npm": ">=12"
+  },
+  "scripts": {
+    "gen:types": "cargo run --quiet --manifest-path src-tauri/Cargo.toml -p gen-types -- ../../docs/reference/schemas src/generated/api.ts",
+    "build:web": "tsc --noEmit && vite build",
+    "lint": "biome check src e2e scripts",
+    "test": "vitest run",
+    "test:contract": "vitest run --config vitest.contract.config.ts",
+    "test:web": "playwright test",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.4",
+    "markdown-it": "15.0.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.5",
+    "@playwright/test": "1.64.1",
+    "@tauri-apps/cli": "2.12.4",
+    "@types/markdown-it": "14.1.2",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.2.1",
+    "license-checker-rseidelsohn": "5.0.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.6",
+    "vitest": "5.1.0"
+  }
+}
