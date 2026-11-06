@@ -20,6 +20,8 @@ const expectAttack = args.includes("--expect-attack");
 const notify = args.includes("--notify");
 // A CI runner is a shared VM: the time budgets there are figures, not pass or fail.
 const budget = !args.includes("--no-budget");
+// Test of the driver only: stop after the first check, with no real page to check after it.
+const firstCheckOnly = args.includes("--first-check-only");
 const label = args.includes("--label") ? (args[args.indexOf("--label") + 1] as string) : "run";
 const port = Number(process.env.TAURI_WEBDRIVER_PORT ?? 4445);
 const base = `http://127.0.0.1:${port}`;
@@ -32,10 +34,17 @@ interface Check {
 }
 const checks: Check[] = [];
 const numbers: Record<string, unknown> = {};
+class FirstCheckDone extends Error {}
+let lostFirstAnswers = 0;
+let firstCheck: unknown = null;
 // Which part of the test is running, for the record of a hang.
 let phase = "sandbox";
-// Short on the first poll, so that a startup hang does not eat the job. Longer after it: benches.
-const FIRST_POLL_SCRIPT_MS = 10_000;
+// The first page check of a launch may lose its answer (macOS CI: 16 of 47 launches, with the page
+// fine and a new script answered at once). So only this check is sent again on `script timeout`, a
+// lost answer is counted, and a page that never answers within the limit is a startup hang. After
+// the first answer nothing is ever sent again: any timeout is a real failure.
+const FIRST_POLL_SCRIPT_MS = 3_000;
+const FIRST_CHECK_LIMIT_MS = 30_000;
 const LATER_SCRIPT_MS = 45_000;
 let scriptMs = FIRST_POLL_SCRIPT_MS;
 let firstPollAnswered = false;
@@ -125,21 +134,64 @@ try {
   sessionId = session.sessionId;
   numbers.sessionMs = Date.now() - t0;
   const s = `/session/${session.sessionId}`;
-  const js = async <T>(script: string, ...a: unknown[]) => {
-    const value = await wd<T>("POST", `${s}/execute/sync`, { script, args: a });
-    if (!firstPollAnswered) {
-      firstPollAnswered = true;
-      numbers.firstPollMs = Date.now() - t0;
-      scriptMs = LATER_SCRIPT_MS;
-      await wd("POST", `${s}/timeouts`, { script: LATER_SCRIPT_MS });
-      numbers.healthyProcesses = watchedProcesses();
-    }
-    return value;
-  };
+  const js = <T>(script: string, ...a: unknown[]) =>
+    wd<T>("POST", `${s}/execute/sync`, { script, args: a });
   const jsAsync = <T>(script: string, ...a: unknown[]) =>
     wd<T>("POST", `${s}/execute/async`, { script, args: a });
   await wd("POST", `${s}/timeouts`, { script: FIRST_POLL_SCRIPT_MS });
   phase = "first-poll";
+  // Absolute times: the page's clock (performance.timeOrigin) can be compared with them.
+  const sends: { sentAt: number; timedOutAt?: number }[] = [];
+  const firstCheckStart = Date.now();
+  let firstValue: unknown;
+  for (;;) {
+    const send: { sentAt: number; timedOutAt?: number } = { sentAt: Date.now() };
+    sends.push(send);
+    try {
+      firstValue = await js("return window.__spike && window.__spike.committedMs !== null");
+      break;
+    } catch (e) {
+      if (!/script timeout/i.test(String(e))) throw e;
+      send.timedOutAt = Date.now();
+      lostFirstAnswers += 1;
+      firstCheck = { sendsSinceSpawnMs: sends.map((x) => x.sentAt - t0) };
+      if (Date.now() - firstCheckStart >= FIRST_CHECK_LIMIT_MS)
+        throw new Error(
+          `hang: the first page check had no answer in ${FIRST_CHECK_LIMIT_MS} ms: ${e}`,
+        );
+    }
+  }
+  firstPollAnswered = true;
+  phase = "after-first-check";
+  numbers.firstPollMs = Date.now() - t0;
+  scriptMs = LATER_SCRIPT_MS;
+  await wd("POST", `${s}/timeouts`, { script: LATER_SCRIPT_MS });
+  numbers.healthyProcesses = watchedProcesses();
+  if (firstCheckOnly) throw new FirstCheckDone();
+  // The likely cause, unproven: a script that arrives during navigation loses its answer. These
+  // times place each first-check send against the navigation of the page that finally answered.
+  const nav = await js<Record<string, number | string | null>>(
+    "const n = performance.getEntriesByType('navigation')[0]; return { origin: performance.timeOrigin, committedMs: window.__spike ? window.__spike.committedMs : null, visibleMs: window.__spike ? window.__spike.visibleMs : null, type: n ? n.type : null, fetchStart: n ? n.fetchStart : null, responseEnd: n ? n.responseEnd : null, domInteractive: n ? n.domInteractive : null, domContentLoaded: n ? n.domContentLoadedEventEnd : null, loadEnd: n ? n.loadEventEnd : null }",
+  );
+  const origin = nav.origin as number;
+  firstCheck = {
+    firstValue,
+    limitMs: FIRST_CHECK_LIMIT_MS,
+    perScriptMs: FIRST_POLL_SCRIPT_MS,
+    originSinceSpawnMs: Math.round(origin - t0),
+    sessionSinceOriginMs: Math.round(t0 + (numbers.sessionMs as number) - origin),
+    // Negative: sent before the page that answered began to navigate.
+    sends: sends.map((x) => ({
+      sentSinceOriginMs: Math.round(x.sentAt - origin),
+      sentBeforeCommittedMs:
+        nav.committedMs === null
+          ? null
+          : Math.round((nav.committedMs as number) - (x.sentAt - origin)),
+      lost: x.timedOutAt !== undefined,
+      timedOutSinceOriginMs: x.timedOutAt === undefined ? null : Math.round(x.timedOutAt - origin),
+    })),
+    nav,
+  };
   const until = async (what: string, script: string, ms = 20000) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -494,8 +546,11 @@ try {
   await wd("DELETE", s).catch(() => {});
   phase = "done";
 } catch (e) {
-  failure = e;
-  console.error(`ABORTED in phase ${phase}:`, e);
+  if (e instanceof FirstCheckDone) phase = "done";
+  else {
+    failure = e;
+    console.error(`ABORTED in phase ${phase}:`, e);
+  }
 }
 
 // Any timeout, ours or the server's, is a hang. Other errors, such as the app exiting, are not.
@@ -528,6 +583,8 @@ const report = {
   outcome,
   phase,
   firstPollAnswered,
+  lostFirstAnswers,
+  firstCheck,
   durationMs: Date.now() - t0,
   leftoversAtStart: leftovers.length,
   leftovers,

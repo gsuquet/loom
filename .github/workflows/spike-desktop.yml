@@ -23,8 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # This pass measures the macOS hang of run 42093119649. Ubuntu passed everything there.
-        os: [macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     defaults:
@@ -91,14 +90,10 @@ jobs:
         timeout-minutes: 35
         env:
           LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
-        run: node e2e/loop.ts .e2e/app-protected --runs 20 --prefix raw
-      - name: Candidate policy, one restart on a startup-only hang, 20 runs
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        timeout-minutes: 40
-        env:
-          LOOMD_BIN: ${{ github.workspace }}/target/debug/loomd
-        run: node e2e/loop.ts .e2e/app-protected --runs 20 --prefix policy --restart-once
+        run: |
+          prefix=""
+          if [ "$RUNNER_OS" = Linux ]; then prefix="xvfb-run -a"; fi
+          $prefix node e2e/loop.ts .e2e/app-protected --runs 20 --prefix raw
       - name: Real app, protections removed, the attack must run
         if: ${{ !cancelled() }}
         continue-on-error: true
