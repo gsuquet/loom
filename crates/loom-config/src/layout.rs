@@ -57,6 +57,8 @@ pub struct Layout {
     pub update_state: PathBuf,
     /// `state/update.lock`: held while `state/update.json` is read, changed and written.
     pub update_lock: PathBuf,
+    /// `state/connectors.json`: the last times of each connector on this machine.
+    pub connector_state: PathBuf,
 }
 
 impl Layout {
@@ -69,6 +71,7 @@ impl Layout {
         Self {
             update_state: state_dir.join("update.json"),
             update_lock: state_dir.join("update.lock"),
+            connector_state: state_dir.join("connectors.json"),
             state_dir,
             daemon_log: log_dir.join("loomd.log"),
             log_dir,

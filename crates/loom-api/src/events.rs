@@ -46,6 +46,14 @@ pub enum ChangeEvent {
         /// Waiting tasks.
         waiting: usize,
     },
+    /// A poll changed the health, the counts or the stale value of a connector.
+    #[serde(rename = "connector.changed")]
+    ConnectorChanged {
+        /// Context of the connector.
+        context: ContextName,
+        /// Name of the connector. For a forge: its host.
+        name: String,
+    },
     /// The client cannot get some events: its resume point is too old, it is too far behind, or
     /// many changes occurred at the same time. The client gets all the data that it shows again.
     #[serde(rename = "resync")]
@@ -61,6 +69,7 @@ impl ChangeEvent {
             Self::TaskArchived { .. } => "task.archived",
             Self::RepoChanged { .. } => "repo.changed",
             Self::CountsChanged { .. } => "counts.changed",
+            Self::ConnectorChanged { .. } => "connector.changed",
             Self::Resync => "resync",
         }
     }
@@ -75,7 +84,8 @@ impl ChangeEvent {
         match self {
             Self::TaskChanged { context: of, .. }
             | Self::TaskArchived { context: of, .. }
-            | Self::CountsChanged { context: of, .. } => of == context,
+            | Self::CountsChanged { context: of, .. }
+            | Self::ConnectorChanged { context: of, .. } => of == context,
             Self::RepoChanged { slug } => slug.split('/').next() == Some(context.as_str()),
             Self::Resync => true,
         }
@@ -156,6 +166,26 @@ mod tests {
             serde_json::from_value::<ChangeEvent>(serde_json::to_value(&counts).unwrap()).unwrap(),
             counts
         );
+        let connector = ChangeEvent::ConnectorChanged {
+            context: context("work"),
+            name: "gitlab.com".to_owned(),
+        };
+        assert_eq!(connector.kind(), "connector.changed");
+        assert_eq!(
+            serde_json::to_value(&connector).unwrap(),
+            json!({ "type": "connector.changed", "context": "work", "name": "gitlab.com" })
+        );
+    }
+
+    #[test]
+    fn a_context_filter_keeps_the_events_of_its_connectors() {
+        let connector = ChangeEvent::ConnectorChanged {
+            context: context("work"),
+            name: "gitlab.com".to_owned(),
+        };
+        assert!(connector.concerns(None));
+        assert!(connector.concerns(Some(&context("work"))));
+        assert!(!connector.concerns(Some(&context("home"))));
     }
 
     #[test]

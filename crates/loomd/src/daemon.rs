@@ -43,16 +43,18 @@ use loom_forge::model::MrKey;
 use loom_store::RepoFilter;
 use loom_update::auto;
 use loomd::api::{
-    DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, FORGE_CHECK_PATH, REMOTE_CHECK_PATH, REPO_PATH,
-    REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH, REPOS_SYNC_PATH, REVIEWS_QUEUE_PATH,
-    REVIEWS_QUEUE_SEEN_PATH, REVIEWS_QUEUE_START_PATH, REVIEWS_SYNC_PATH, RepoGetQuery, RepoQuery,
-    ReviewQueueQuery, SEARCH_PATH, STATUS_PATH, ScanQuery, SearchQuery, TASK_ACTION_PATH,
-    TASK_EVENTS_PATH, TASK_GO_PATH, TASK_MOVE_PATH, TASK_MR_PATH, TASK_PATH, TASK_UNDO_PATH,
-    TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH, TASKS_REINDEX_PATH, TASKS_SYNC_PATH,
-    agent_socket, clock_error, home_value, internal, invalid_request, method_not_allowed,
-    not_found, register_path, repo_filter, search_request, slug, status_at, timestamp,
+    CONNECTORS_PATH, ConnectorsQuery, DIAGNOSTICS_PATH, EVENTS_PATH, FOCUS_PATH, FORGE_CHECK_PATH,
+    REMOTE_CHECK_PATH, REPO_PATH, REPOS_PATH, REPOS_REGISTER_PATH, REPOS_SCAN_PATH,
+    REPOS_SYNC_PATH, REVIEWS_QUEUE_PATH, REVIEWS_QUEUE_SEEN_PATH, REVIEWS_QUEUE_START_PATH,
+    REVIEWS_SYNC_PATH, RepoGetQuery, RepoQuery, ReviewQueueQuery, SEARCH_PATH, STATUS_PATH,
+    ScanQuery, SearchQuery, TASK_ACTION_PATH, TASK_EVENTS_PATH, TASK_GO_PATH, TASK_MOVE_PATH,
+    TASK_MR_PATH, TASK_PATH, TASK_UNDO_PATH, TASKS_BACKUP_PATH, TASKS_HEALTH_PATH, TASKS_PATH,
+    TASKS_REINDEX_PATH, TASKS_SYNC_PATH, agent_socket, clock_error, home_value, internal,
+    invalid_request, method_not_allowed, not_found, register_path, repo_filter, search_request,
+    slug, status_at, timestamp,
 };
 use loomd::cli::{Cli, VERSION_INFO};
+use loomd::connector_status::{ConnectorStatuses, forge_instances};
 use loomd::events::{self, Bus, EventsQuery, resume_point};
 use loomd::exit::Shutdown;
 use loomd::forge::ApiBase;
@@ -204,9 +206,16 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         git_runner,
         Arc::clone(&children),
     )?;
+    let connectors = Arc::new(ConnectorStatuses::open(
+        layout.connector_state.clone(),
+        forge_instances(&config, &machine),
+        Arc::clone(&events),
+        timestamp(SystemTime::now()).unwrap_or(Timestamp::EPOCH),
+    ));
     let (review_poller, review_handle) = reviews::start(
         &config,
         reviews::Setup {
+            connectors: Arc::clone(&connectors),
             targets: forges.targets.clone(),
             stores: store_paths,
             machine,
@@ -248,6 +257,7 @@ pub fn run(setup: Setup) -> Result<Shutdown> {
         heartbeat: events_heartbeat(),
         forges,
         reviews: review_handle,
+        connectors,
     };
     let served = runtime.block_on(serve(&layout, app, upgrade_requested));
     // Before the task thread, which it waits for.
@@ -357,6 +367,8 @@ struct App {
     forges: Forges,
     /// The MR polls.
     reviews: ReviewHandle,
+    /// What the last polls of each connector found.
+    connectors: Arc<ConnectorStatuses>,
 }
 
 /// The forge metadata poll of the credentials of the held contexts.
@@ -662,6 +674,7 @@ fn router(app: App) -> Router {
         .route(TASKS_HEALTH_PATH, get(task_store_health))
         .route(TASKS_SYNC_PATH, post(sync_stores))
         .route(REVIEWS_SYNC_PATH, post(sync_reviews))
+        .route(CONNECTORS_PATH, get(list_connectors))
         .route(REVIEWS_QUEUE_PATH, get(review_queue))
         .route(REVIEWS_QUEUE_START_PATH, post(start_review))
         .route(REVIEWS_QUEUE_SEEN_PATH, post(review_seen))
@@ -1242,6 +1255,23 @@ async fn sync_reviews(
             },
             |result| Json(result).into_response(),
         ),
+        Err(rejection) => error_response(
+            StatusCode::BAD_REQUEST,
+            invalid_request(rejection.body_text()),
+        ),
+    }
+}
+
+/// What the last polls of each connector found. No call to a forge.
+async fn list_connectors(
+    State(app): State<Arc<App>>,
+    query: Result<Query<ConnectorsQuery>, QueryRejection>,
+) -> Response {
+    match query {
+        Ok(Query(query)) => {
+            let now = timestamp(SystemTime::now()).unwrap_or(Timestamp::EPOCH);
+            Json(app.connectors.list(query.context.as_ref(), now)).into_response()
+        }
         Err(rejection) => error_response(
             StatusCode::BAD_REQUEST,
             invalid_request(rejection.body_text()),

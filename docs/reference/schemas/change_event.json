@@ -100,6 +100,29 @@
       ]
     },
     {
+      "description": "A poll changed the health, the counts or the stale value of a connector.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Context of the connector.",
+          "$ref": "#/$defs/ContextName"
+        },
+        "name": {
+          "description": "Name of the connector. For a forge: its host.",
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "connector.changed"
+        }
+      },
+      "required": [
+        "type",
+        "context",
+        "name"
+      ]
+    },
+    {
       "description": "The client cannot get some events: its resume point is too old, it is too far behind, or\nmany changes occurred at the same time. The client gets all the data that it shows again.",
       "type": "object",
       "properties": {

@@ -230,6 +230,12 @@ pub enum Command {
         #[command(subcommand)]
         command: ReviewCommand,
     },
+    /// Show the connectors and the forge credentials of loomd.
+    Connector {
+        /// Connector command to run.
+        #[command(subcommand)]
+        command: ConnectorCommand,
+    },
     /// Print the shell integration to evaluate in the shell's startup file:
     /// `eval "$(loom shell-init zsh)"` in `~/.zshrc`, `eval "$(loom shell-init bash)"` in
     /// `~/.bashrc`.
@@ -368,6 +374,27 @@ pub enum ReviewCommand {
     /// fails, the entry stays and no task is created: run the command again. Use `-c` when two contexts have this key.
     /// Starts loomd if it is stopped.
     Start(ReviewStartArgs),
+}
+
+/// Connector commands.
+#[derive(Debug, Subcommand)]
+pub enum ConnectorCommand {
+    /// Show the result of the last poll of each connector and forge credential.
+    ///
+    /// Each forge credential is a connector with the name of its host. The command calls no
+    /// forge: it shows what the last polls found, also the scheduled polls. `--context` limits
+    /// the output to one context. A connector is stale when no poll succeeded in the last 3
+    /// poll intervals. The command exits with status 0 when a connector has a failure. Starts
+    /// loomd if it is stopped.
+    Status(ConnectorStatusArgs),
+}
+
+/// Options of `loom connector status`.
+#[derive(Debug, clap::Args)]
+pub struct ConnectorStatusArgs {
+    /// Print the result as JSON (`ConnectorList` schema).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `loom review sync`.
@@ -1043,6 +1070,7 @@ mod tests {
                 | Command::Reindex(_)
                 | Command::Sync(_)
                 | Command::Review { .. }
+                | Command::Connector { .. }
                 | Command::ShellInit(_)
                 | Command::UpgradeWatchdog(_),
             ) => {

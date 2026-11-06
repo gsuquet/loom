@@ -6,6 +6,7 @@
 mod api_version;
 mod auto_update;
 mod backup;
+mod connector;
 mod context;
 mod disk;
 mod doctor;
@@ -31,6 +32,10 @@ pub use auto_update::{
 };
 pub use backup::{
     BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync, ContextBackup,
+};
+pub use connector::{
+    Capabilities, ConnectorCounts, ConnectorFailure, ConnectorHealth, ConnectorKind, ConnectorList,
+    ConnectorStatus, PolledBy, Secret,
 };
 pub use context::ContextAssignment;
 pub use disk::{ContextDiskUsage, DiskUsage};

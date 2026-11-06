@@ -1,5 +1,6 @@
 //! `loom`: the CLI.
 
+mod connector_cmd;
 mod on_use;
 mod pr_cmd;
 mod prompt_cmd;
@@ -23,8 +24,8 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory as _, FromArgMatches as _};
 use loom::cli::{
-    Cli, Command, GlobalArgs, RepoCommand, ReviewCommand, ServiceCommand, VERSION_INFO,
-    command_path,
+    Cli, Command, ConnectorCommand, GlobalArgs, RepoCommand, ReviewCommand, ServiceCommand,
+    VERSION_INFO, command_path,
 };
 use loom::conventions::{Exit, use_color, write_out};
 use loom::loomd_path::loomd_candidates;
@@ -217,6 +218,7 @@ const fn registers_on_use(command: Option<&Command>) -> bool {
         | Command::Reindex(_)
         | Command::Sync(_)
         | Command::Review { .. }
+        | Command::Connector { .. }
         | Command::Version { .. }
         | Command::Status { .. }
         | Command::Service { .. }
@@ -281,6 +283,9 @@ fn run(cli: &Cli) -> Result<Exit> {
             ReviewCommand::Sync(args) => review_cmd::sync(args, &cli.global, &layout()?),
             ReviewCommand::Queue(args) => review_cmd::queue(args, &cli.global, &layout()?),
             ReviewCommand::Start(args) => review_cmd::start(args, &cli.global, &layout()?),
+        },
+        Command::Connector { command } => match command {
+            ConnectorCommand::Status(args) => connector_cmd::status(args, &cli.global, &layout()?),
         },
         Command::UpgradeWatchdog(args) => {
             let layout = layout()?;

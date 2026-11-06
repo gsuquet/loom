@@ -472,7 +472,7 @@ A change to any API type that breaks compatibility adds a new value. Compatible 
 | Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, `ReviewSyncRequest`, `ReviewStartRequest`, `ReviewSeenRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan`, `GET /v1/tasks`, `GET /v1/reviews/queue` and `GET /v1/connectors`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`, `reasons`, `list`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
+Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`, `reasons`, `list`, `by`, `which`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
 
 A new value of `reasons` (`QueueReason`) or `list` (`ReviewList`) keeps the API version, although an older client rejects the answer that holds it. This is an exception to the rule above: `loom` and `loomd` upgrade together, and each new connector adds such values.
 
