@@ -326,7 +326,7 @@ Events that `loomd` sends:
 | --- | --- |
 | `task.changed` | An API request creates, edits, moves, pins, unpins or undoes a task, and writes a [task event](#taskevents). A request that changes nothing sends no change event. Also when `loomd` reconciles a hand edit of the task files: a new task, a changed task, or a removed task directory. Also when a [schedule](configuration.md#schedules) creates a task, and when the `replace` policy cancels the task of an earlier occurrence. |
 | `task.archived` | The [archive](configuration.md#archive) pass moves a closed task to `archive/<yyyy>/`. `loomd` sends the event after the move, the index write and the commit attempt. A directory that you move by hand sends `task.changed`. |
-| `connector.changed` | A poll changes the `health`, the `items` or the `stale` value of a [connector](#connectorlist). A poll that changes only its times sends no event. |
+| `connector.changed` | A poll changes the `health`, the `items` or the `stale` value of a [connector](#connectorlist). This includes a poll that succeeds after a gap of 3 poll intervals or more, when a read before it could show `stale`. Another poll that changes only its times sends no event. |
 | `resync` | `loom reindex` builds the index again. A reconciliation of all the tasks changes one or more tasks (the watcher can miss events). A sync moves a context store forward to the commits of another machine. Also the first event to a client that cannot resume, and the last event to a client that is too far behind (see below). |
 
 `repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
@@ -1325,7 +1325,7 @@ The answer of `GET /v1/connectors` and of `loom connector status --json` ([schem
 | `stale` | boolean | No poll succeeded in the last 3 poll intervals, or no poll ever succeeded. Always `false` with `polled_by` `other`. |
 | `last_attempt` | string: timestamp, optional | The start of the last poll on this machine that called the forge. A poll that a rate limit skipped does not change it, and a poll whose token does not resolve does not change it. A restart keeps it. |
 | `last_success` | string: timestamp, optional | The start of the last poll on this machine that succeeded. A restart keeps it. A poll succeeded when the host answered its list and the poll went on, also when each MR read failed or when a list has a failure. Then `health` is `partial` or `forbidden`, `last_success` changes and `stale` stays `false`. |
-| `next_poll` | string: timestamp, optional | The time of the next poll. Absent with `polled_by` `other`. |
+| `next_poll` | string: timestamp, optional | The time of the next poll. Absent with `polled_by` `other`. It can be in the past: for example, after the machine sleeps, until the poll runs. |
 | `items` | object | The counts of the last poll that was not stopped. See below. |
 | `capabilities` | object | What the kind of connector can do: `pool` and `mirror`, booleans. Both are `false` for a forge. |
 
@@ -1334,7 +1334,7 @@ The answer of `GET /v1/connectors` and of `loom connector status --json` ([schem
 | `state` | Fields | When |
 | --- | --- | --- |
 | `not_polled_yet` | | No poll ran since `loomd` started, or another machine polls this connector. |
-| `ok` | | The last poll reported no failure. This does not prove that each read occurred: GitHub can mark its search as incomplete, and `loomd` only logs a failed read of the reviewers of a GitLab MR. |
+| `ok` | | The last poll reported no failure. This does not prove that each read occurred: GitHub can mark its search as incomplete. `loomd` only logs a failed read of the reviewers of a GitLab MR, a failed read of the head of an approval, a failed commit of the queue and a failed pass of the MR refs. |
 | `partial` | `failed` | Some items or lists failed. The others are applied. |
 | `rate_limited` | `until` | The host limits the rate of requests until this time. |
 | `credential` | `which`, `error` | The host refuses the secret, or the secret does not resolve. `which`: `token` or `app_key`. `error` never contains the token that `loomd` has. When `token_cmd` fails, `error` contains the end of the standard error of the command, as the answer of `POST /v1/reviews/sync` does. |
