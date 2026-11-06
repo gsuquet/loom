@@ -108,6 +108,14 @@ const fn failures_of(health: &ConnectorHealth) -> &[ConnectorFailure] {
     }
 }
 
+/// The line of one connector, then one indented line per item or list that failed.
+#[must_use]
+pub fn status_line(status: &ConnectorStatus) -> String {
+    let mut text = String::new();
+    render_one(&mut text, status);
+    text
+}
+
 fn render_one(text: &mut String, status: &ConnectorStatus) {
     let _ = write!(text, "{} {}: ", status.context, status.name);
     if let PolledBy::Other { machine } = &status.polled_by {
