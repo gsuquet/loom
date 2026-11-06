@@ -277,6 +277,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             last_full_list: None,
             mrs: HashMap::new(),
             stop: None,
+            attempted: false,
             target,
         });
     }
@@ -387,6 +388,8 @@ struct Host {
     mrs: HashMap<String, MrCache>,
     /// Why the running poll stopped, for connector status: the outcome holds only a text.
     stop: Option<ForgeStop>,
+    /// The running poll got past its token: it called the forge, for `last_attempt`.
+    attempted: bool,
 }
 
 /// What a poll remembers of an MR, in memory: a restart reads every MR in full once.
@@ -491,6 +494,15 @@ const fn stops_the_host(error: &ForgeError) -> bool {
         | ForgeError::Graphql { .. }
         | ForgeError::Parse(_)
         | ForgeError::Unexpected(_) => false,
+    }
+}
+
+/// The cause of a stop, as connector status tells it.
+const fn stop_cause(stopped: &Stopped) -> ForgeStop {
+    match stopped {
+        Stopped::Forge(error) => stop_of(error),
+        // Such as a failed read of the local index: the closest that the health has.
+        Stopped::Other(_) => ForgeStop::Unreachable,
     }
 }
 
@@ -672,13 +684,14 @@ impl Poller {
         );
         let _entered = span.enter();
         self.hosts[index].stop = None;
+        self.hosts[index].attempted = false;
         let host = &self.hosts[index];
-        let (outcome, attempted) = match host.rate_limited {
+        let outcome = match host.rate_limited {
             Some((until, at)) if until > Instant::now() => {
                 debug!(until = %at, "rate limited, poll skipped");
-                (ReviewSyncOutcome::RateLimited { until: at }, false)
+                ReviewSyncOutcome::RateLimited { until: at }
             }
-            Some(_) | None => (self.poll_now(index, started), true),
+            Some(_) | None => self.poll_now(index, started),
         };
         let stopping = self.stopping();
         let host = &mut self.hosts[index];
@@ -714,7 +727,7 @@ impl Poller {
                 &host.target.host,
                 Report {
                     at: started,
-                    attempted,
+                    attempted: host.attempted,
                     success: result.success,
                     health: result.health,
                     items: result.items,
@@ -743,6 +756,7 @@ impl Poller {
                 };
             }
         };
+        self.hosts[index].attempted = true;
         let fetched = match target.kind {
             ForgeKind::Github => {
                 let client =
@@ -874,10 +888,7 @@ impl Poller {
     /// The outcome of a poll of host `index` that stopped: the mirrors keep their snapshot.
     fn stopped(&mut self, index: usize, stopped: Stopped, token: &Token) -> ReviewSyncOutcome {
         let host = &mut self.hosts[index];
-        host.stop = Some(match &stopped {
-            Stopped::Forge(error) => stop_of(error),
-            Stopped::Other(_) => ForgeStop::Unreachable,
-        });
+        host.stop = Some(stop_cause(&stopped));
         let error = match stopped {
             Stopped::Forge(ForgeError::RateLimited { wait, .. }) => {
                 let now = now();
@@ -1760,4 +1771,21 @@ fn now() -> Timestamp {
 /// `wait` after `time`; `time` if that is out of range.
 fn after(time: Timestamp, wait: Duration) -> Timestamp {
     Timestamp::from_unix_secs(time.unix_secs().saturating_add(wait.as_secs())).unwrap_or(time)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_of_loomd_or_of_the_index_is_not_a_refused_token() {
+        assert_eq!(
+            stop_cause(&Stopped::Other("cannot read the index".to_owned())),
+            ForgeStop::Unreachable
+        );
+        let refused = ForgeError::Unauthorized {
+            message: String::new(),
+        };
+        assert_eq!(stop_cause(&Stopped::Forge(refused)), ForgeStop::Credential);
+    }
 }

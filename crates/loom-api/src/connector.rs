@@ -98,7 +98,7 @@ pub struct ConnectorFailure {
 pub enum ConnectorHealth {
     /// No poll ran since loomd started, or another machine polls this connector.
     NotPolledYet,
-    /// The last poll had no failure.
+    /// The last poll reported no failure.
     Ok,
     /// Some items or lists failed. The others are applied.
     Partial {
@@ -114,7 +114,8 @@ pub enum ConnectorHealth {
     Credential {
         /// The secret.
         which: Secret,
-        /// Why, for humans. Never contains a secret.
+        /// Why, for humans. Never contains the token that loomd has. When `token_cmd` fails,
+        /// contains the end of the standard error of the command.
         error: String,
     },
     /// The secrets are good, but a permission is missing.
@@ -142,7 +143,8 @@ pub enum ConnectorHealth {
 /// The counts of the last poll that was not stopped.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ConnectorCounts {
-    /// The items of the last poll. For a forge: the MRs polled.
+    /// The items of the last poll. For a forge: the updates and the failures of the poll. This
+    /// is not the number of MRs that wait on me.
     pub listed: usize,
     /// The items of the team pool.
     pub pool: usize,
@@ -163,7 +165,7 @@ pub struct ConnectorStatus {
     pub name: String,
     /// Its kind.
     pub kind: ConnectorKind,
-    /// The host that loomd calls.
+    /// The host of the credential. The API of a forge can be on another host.
     pub host: String,
     /// The machine that polls it.
     pub polled_by: PolledBy,
@@ -175,7 +177,8 @@ pub struct ConnectorStatus {
     /// The start of the last poll on this machine that called the host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_attempt: Option<Timestamp>,
-    /// The start of the last poll on this machine that succeeded.
+    /// The start of the last poll on this machine that succeeded: the host answered its list and
+    /// the poll went on, also when each read of an item failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_success: Option<Timestamp>,
     /// The time of the next poll.

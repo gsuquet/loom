@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use loom_api::{
     ChangeEvent, ConnectorCounts, ConnectorFailure, ConnectorHealth, ConnectorKind, ContextName,
@@ -818,4 +819,55 @@ fn an_error_stays_out_of_the_file() {
     );
     let text = fs::read_to_string(fixture.path()).unwrap();
     assert!(!text.contains("marker-text"), "{text}");
+}
+
+/// The temporary file of the write is a FIFO with no reader: the write hangs, as on a stuck disk.
+#[test]
+fn a_read_never_waits_for_a_stuck_write() {
+    let fixture = Fixture::new();
+    let dir = fixture.path().parent().unwrap().to_path_buf();
+    fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join(".connectors.json.tmp");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let statuses = Arc::new(fixture.open(vec![
+        instance("work", "gitlab.com", PolledBy::ThisMachine),
+        instance("work", "github.com", PolledBy::ThisMachine),
+    ]));
+    let writer = {
+        let statuses = Arc::clone(&statuses);
+        thread::spawn(move || {
+            statuses.report(
+                &context("work"),
+                "gitlab.com",
+                report(at(10), ConnectorHealth::Ok),
+            );
+        })
+    };
+    // On another thread: a read that blocks must fail this test, not hang it.
+    let (sent, received) = mpsc::channel();
+    let reader = Arc::clone(&statuses);
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let list = reader.list(None, at(10));
+            let health = list.connectors[1].health.clone();
+            if health == ConnectorHealth::Ok || Instant::now() > deadline {
+                let _ = sent.send(health);
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    });
+    let seen = received.recv_timeout(Duration::from_secs(5));
+    // Ends the write in any case. A FIFO takes the bytes, then its sync may fail.
+    let drained = fs::read(&fifo).unwrap();
+    writer.join().unwrap();
+    assert_eq!(seen, Ok(ConnectorHealth::Ok));
+    assert_ne!(drained, Vec::<u8>::new());
 }

@@ -350,54 +350,24 @@ impl Entry {
 
 type Key = (ContextName, String);
 
-#[derive(Debug)]
-struct Inner {
-    entries: BTreeMap<Key, Entry>,
-    /// The bytes of the last write that succeeded: the same bytes write nothing, and a failed
-    /// write leaves this as it was, so the next report tries again.
-    written: Option<Vec<u8>>,
-}
-
-impl Inner {
-    fn render(&self) -> serde_json::Result<Vec<u8>> {
-        let connectors = self
-            .entries
-            .values()
-            .filter(|entry| entry.last_attempt.is_some() || entry.last_success.is_some())
-            .map(|entry| SavedTimes {
-                context: entry.instance.context.clone(),
-                name: entry.instance.name.clone(),
-                last_attempt: entry.last_attempt,
-                last_success: entry.last_success,
-            })
-            .collect();
-        let mut bytes = serde_json::to_vec_pretty(&SavedState {
-            v: VERSION,
-            connectors,
-        })?;
-        bytes.push(b'\n');
-        Ok(bytes)
-    }
-
-    /// Writes the file when its bytes change. A failure is logged and never stops a poll.
-    fn save(&mut self, path: &Path) {
-        let bytes = match self.render() {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                warn!(%error, "cannot encode the connector times");
-                return;
-            }
-        };
-        if self.written.as_ref() == Some(&bytes) {
-            return;
-        }
-        match write_state(path, &bytes) {
-            Ok(()) => self.written = Some(bytes),
-            Err(error) => {
-                warn!(path = %path.display(), %error, "cannot write the connector times");
-            }
-        }
-    }
+/// The bytes of `entries` in the format of `state/connectors.json`.
+fn render(entries: &BTreeMap<Key, Entry>) -> serde_json::Result<Vec<u8>> {
+    let connectors = entries
+        .values()
+        .filter(|entry| entry.last_attempt.is_some() || entry.last_success.is_some())
+        .map(|entry| SavedTimes {
+            context: entry.instance.context.clone(),
+            name: entry.instance.name.clone(),
+            last_attempt: entry.last_attempt,
+            last_success: entry.last_success,
+        })
+        .collect();
+    let mut bytes = serde_json::to_vec_pretty(&SavedState {
+        v: VERSION,
+        connectors,
+    })?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 /// Creates `state/` (mode 0700), restricts an existing one, and replaces the file atomically.
@@ -413,11 +383,19 @@ fn write_state(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// The status of every instance, and the one writer of `state/connectors.json`. Each poll thread
-/// shares it. The file is written under the mutex, so an older report cannot replace a newer one.
+/// shares it.
+///
+/// Two mutexes, so that a read never waits on the disk: the API handlers run on the one thread of
+/// the async runtime, so a stuck write under `entries` would stop every endpoint. Lock order:
+/// `written`, then `entries`, held only to render.
 #[derive(Debug)]
 pub struct ConnectorStatuses {
     path: PathBuf,
-    inner: Mutex<Inner>,
+    entries: Mutex<BTreeMap<Key, Entry>>,
+    /// The bytes of the last write that succeeded: the same bytes write nothing, and a failed
+    /// write leaves this as it was, so the next report tries again. Held during the write, and
+    /// each write renders under it, so an older report cannot replace a newer one.
+    written: Mutex<Option<Vec<u8>>>,
     events: Arc<Bus>,
 }
 
@@ -447,13 +425,13 @@ impl ConnectorStatuses {
                 entry.stale = entry.stale_at(now);
                 (key, entry)
             })
-            .collect();
+            .collect::<BTreeMap<_, _>>();
         Self {
             path,
-            inner: Mutex::new(Inner {
-                entries,
-                written: None,
-            }),
+            // The times just read: a report that moves none, such as a token that does not
+            // resolve, has nothing to write.
+            written: Mutex::new(render(&entries).ok()),
+            entries: Mutex::new(entries),
             events,
         }
     }
@@ -461,10 +439,9 @@ impl ConnectorStatuses {
     /// Every instance at `now`, or those of `context`, sorted by context, then name.
     #[must_use]
     pub fn list(&self, context: Option<&ContextName>, now: Timestamp) -> ConnectorList {
-        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         ConnectorList {
-            connectors: inner
-                .entries
+            connectors: entries
                 .values()
                 .filter(|entry| context.is_none_or(|context| *context == entry.instance.context))
                 .map(|entry| entry.status(now))
@@ -475,10 +452,9 @@ impl ConnectorStatuses {
     /// The first poll of an instance is at `next_poll`. Writes nothing and sends no event.
     pub fn schedule(&self, context: &ContextName, name: &str, next_poll: Timestamp) {
         if let Some(entry) = self
-            .inner
+            .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .entries
             .get_mut(&(context.clone(), name.to_owned()))
         {
             entry.next_poll = Some(next_poll);
@@ -489,8 +465,27 @@ impl ConnectorStatuses {
     /// `connector.changed` when the health, the counts or `stale` changed. `None` for an instance
     /// that is not configured.
     pub fn report(&self, context: &ContextName, name: &str, report: Report) -> Option<Transition> {
-        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = inner.entries.get_mut(&(context.clone(), name.to_owned()))?;
+        let (transition, changed) = self.record(context, name, report)?;
+        self.save();
+        // After the status: a client that reads it on this event sees the change.
+        if changed {
+            self.events.publish(ChangeEvent::ConnectorChanged {
+                context: context.clone(),
+                name: name.to_owned(),
+            });
+        }
+        Some(transition)
+    }
+
+    /// Updates the status of an instance: the transition, and whether an event tells of it.
+    fn record(
+        &self,
+        context: &ContextName,
+        name: &str,
+        report: Report,
+    ) -> Option<(Transition, bool)> {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = entries.get_mut(&(context.clone(), name.to_owned()))?;
         let previous_items = entry.items;
         let previous_stale = entry.stale;
         let previous = std::mem::replace(&mut entry.health, report.health);
@@ -505,23 +500,37 @@ impl ConnectorStatuses {
         }
         entry.next_poll = report.next_poll;
         entry.stale = entry.stale_at(report.at);
+        let changed = previous != entry.health
+            || previous_items != entry.items
+            || previous_stale != entry.stale;
         let transition = Transition {
             previous,
             current: entry.health.clone(),
         };
-        let changed = transition.previous != transition.current
-            || previous_items != entry.items
-            || previous_stale != entry.stale;
-        inner.save(&self.path);
-        drop(inner);
-        // After the status: a client that reads it on this event sees the change.
-        if changed {
-            self.events.publish(ChangeEvent::ConnectorChanged {
-                context: context.clone(),
-                name: name.to_owned(),
-            });
+        drop(entries);
+        Some((transition, changed))
+    }
+
+    /// Writes the file when its bytes change. A failure is logged and never stops a poll.
+    fn save(&self) {
+        let mut written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        let rendered = render(&self.entries.lock().unwrap_or_else(PoisonError::into_inner));
+        let bytes = match rendered {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(%error, "cannot encode the connector times");
+                return;
+            }
+        };
+        if written.as_ref() == Some(&bytes) {
+            return;
         }
-        Some(transition)
+        match write_state(&self.path, &bytes) {
+            Ok(()) => *written = Some(bytes),
+            Err(error) => {
+                warn!(path = %self.path.display(), %error, "cannot write the connector times");
+            }
+        }
     }
 }
 

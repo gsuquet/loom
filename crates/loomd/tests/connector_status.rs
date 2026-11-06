@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use loom_api::{
     ConnectorFailure, ConnectorHealth, ConnectorKind, ConnectorList, ConnectorStatus, PolledBy,
@@ -332,6 +332,9 @@ fn a_token_that_does_not_resolve_is_credential() {
         "{status:?}"
     );
     assert_eq!(sandbox.forge.requests(), []);
+    // No call to the forge: this poll is no attempt, and writes nothing.
+    assert_eq!(status.last_attempt, None);
+    assert!(!sandbox.state().exists());
     daemon.stop();
 }
 
@@ -521,4 +524,60 @@ fn a_change_sends_the_event_to_a_client_of_the_context() {
         "{received}"
     );
     daemon.stop();
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// A slow poll tells the time apart: its start is what counts, and the wait starts at its end.
+#[test]
+fn the_times_are_the_start_of_the_poll_and_the_next_poll_after_the_interval() {
+    let sandbox = Sandbox::new();
+    sandbox.routes(vec![
+        Route::get("/user")
+            .fixture("gitlab/user.json")
+            .delay(Duration::from_millis(2100)),
+    ]);
+    let daemon = sandbox.start();
+    let before = unix_now();
+    sandbox.sync();
+    let done = unix_now();
+    assert!(done >= before + 2);
+    let status = sandbox.work();
+    assert_eq!(status.health, ConnectorHealth::Ok);
+    let attempt = status.last_attempt.unwrap().unix_secs();
+    assert!(attempt <= before + 1, "{attempt} after {before}");
+    assert_eq!(status.last_success, status.last_attempt);
+    // 5 minutes, ±10 %.
+    let next = status.next_poll.unwrap().unix_secs();
+    assert!(
+        next >= done - 1 + 270 && next <= done + 330,
+        "{next} after {done}"
+    );
+    daemon.stop();
+}
+
+/// A poll that the stop of loomd cuts says nothing of the host.
+#[test]
+fn a_poll_cut_by_the_stop_of_loomd_reports_nothing() {
+    let mut sandbox = Sandbox::new();
+    sandbox.start_delay = "1s";
+    // No other route: when the slow call ends, the poll fails.
+    sandbox.forge.route(
+        Route::get("/user")
+            .fixture("gitlab/user.json")
+            .delay(Duration::from_millis(1500)),
+    );
+    let daemon = sandbox.start();
+    let deadline = Instant::now() + TIMEOUT;
+    while sandbox.forge.requests().is_empty() {
+        assert!(Instant::now() < deadline, "no poll ran");
+        thread::sleep(Duration::from_millis(5));
+    }
+    daemon.stop();
+    assert!(!sandbox.state().exists());
 }

@@ -51,7 +51,8 @@ fn health_text(health: &ConnectorHealth) -> String {
         ConnectorHealth::Partial { failed } => format!("partial, {} failed", failed.len()),
         ConnectorHealth::RateLimited { until } => format!("rate limited until {until}"),
         ConnectorHealth::Credential { which, error } => {
-            format!("{} refused: {}", secret_name(*which), clean(error))
+            // Refused by the host, or not resolved here: "refused" would claim too much.
+            format!("{} problem: {}", secret_name(*which), clean(error))
         }
         ConnectorHealth::Forbidden { error, .. } => format!("forbidden: {}", clean(error)),
         ConnectorHealth::InvalidFilter { error } => format!("invalid filter: {}", clean(error)),
@@ -188,14 +189,14 @@ mod tests {
                     which: Secret::Token,
                     error: error.clone(),
                 },
-                "token refused: why".to_owned(),
+                "token problem: why".to_owned(),
             ),
             (
                 ConnectorHealth::Credential {
                     which: Secret::AppKey,
                     error: error.clone(),
                 },
-                "application key refused: why".to_owned(),
+                "application key problem: why".to_owned(),
             ),
             (
                 ConnectorHealth::Forbidden {

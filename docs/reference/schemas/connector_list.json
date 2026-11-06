@@ -45,7 +45,7 @@
           "minimum": 0
         },
         "listed": {
-          "description": "The items of the last poll. For a forge: the MRs polled.",
+          "description": "The items of the last poll. For a forge: the updates and the failures of the poll. This\nis not the number of MRs that wait on me.",
           "type": "integer",
           "format": "uint",
           "minimum": 0
@@ -110,7 +110,7 @@
           ]
         },
         {
-          "description": "The last poll had no failure.",
+          "description": "The last poll reported no failure.",
           "type": "object",
           "properties": {
             "state": {
@@ -166,7 +166,7 @@
           "type": "object",
           "properties": {
             "error": {
-              "description": "Why, for humans. Never contains a secret.",
+              "description": "Why, for humans. Never contains the token that loomd has. When `token_cmd` fails,\ncontains the end of the standard error of the command.",
               "type": "string"
             },
             "state": {
@@ -301,7 +301,7 @@
           "$ref": "#/$defs/ConnectorHealth"
         },
         "host": {
-          "description": "The host that loomd calls.",
+          "description": "The host of the credential. The API of a forge can be on another host.",
           "type": "string"
         },
         "items": {
@@ -324,7 +324,7 @@
           ]
         },
         "last_success": {
-          "description": "The start of the last poll on this machine that succeeded.",
+          "description": "The start of the last poll on this machine that succeeded: the host answered its list and\nthe poll went on, also when each read of an item failed.",
           "anyOf": [
             {
               "$ref": "#/$defs/Timestamp"
