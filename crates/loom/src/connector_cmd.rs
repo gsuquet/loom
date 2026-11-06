@@ -24,7 +24,7 @@ pub fn status(args: &ConnectorStatusArgs, global: &GlobalArgs, layout: &Layout) 
     let text = if args.json {
         serde_json::to_string_pretty(&list).into_diagnostic()? + "\n"
     } else {
-        render_status(&list)
+        render_status(&list, global.context.as_ref())
     };
     print(&text)
 }

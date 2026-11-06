@@ -488,6 +488,9 @@ impl ConnectorStatuses {
         let entry = entries.get_mut(&(context.clone(), name.to_owned()))?;
         let previous_items = entry.items;
         let previous_stale = entry.stale;
+        // What a read just before this report gave: after a gap with no report, such as a machine
+        // that slept, a client can show `stale` though the last report did not say so.
+        let stale_before = entry.stale_at(report.at);
         let previous = std::mem::replace(&mut entry.health, report.health);
         if report.attempted {
             entry.last_attempt = Some(report.at);
@@ -502,7 +505,8 @@ impl ConnectorStatuses {
         entry.stale = entry.stale_at(report.at);
         let changed = previous != entry.health
             || previous_items != entry.items
-            || previous_stale != entry.stale;
+            || previous_stale != entry.stale
+            || stale_before != entry.stale;
         let transition = Transition {
             previous,
             current: entry.health.clone(),

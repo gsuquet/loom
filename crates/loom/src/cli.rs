@@ -384,7 +384,7 @@ pub enum ConnectorCommand {
     /// Each forge credential is a connector with the name of its host. The command calls no
     /// forge: it shows what the last polls found, also the scheduled polls. `--context` limits
     /// the output to one context. A connector is stale when no poll succeeded in the last 3
-    /// poll intervals. The command exits with status 0 when a connector has a failure. Starts
+    /// poll intervals, or when no poll ever succeeded. The command exits with status 0 when a connector has a failure. Starts
     /// loomd if it is stopped.
     Status(ConnectorStatusArgs),
 }

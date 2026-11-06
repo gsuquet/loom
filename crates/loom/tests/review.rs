@@ -214,3 +214,13 @@ fn connector_status_with_no_credential_tells_what_to_do() {
     let text = sandbox.ok(&["connector", "status"]);
     assert!(text.starts_with("No connector: "), "{text}");
 }
+
+#[test]
+fn connector_status_of_an_unknown_context_says_so() {
+    let sandbox = Sandbox::new();
+    let text = sandbox.ok(&["-c", "typo", "connector", "status"]);
+    assert!(
+        text.starts_with("No connector in the context `typo`: "),
+        "{text}"
+    );
+}

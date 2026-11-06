@@ -23,10 +23,41 @@ pub fn status_path(context: Option<&ContextName>) -> String {
     )
 }
 
+/// A Unicode format character (category Cf), such as a bidi override that visually reorders a
+/// line. `char` has no method for this category.
+const fn is_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{ad}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61c}'
+            | '\u{6dd}'
+            | '\u{70f}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
+}
+
 /// A text of a forge or a vendor on one line: anyone can write it, so it holds no control
-/// character, such as a newline or an escape sequence that moves the terminal cursor.
+/// character, such as a newline or an escape sequence that moves the terminal cursor, and no
+/// format character that can make the line read as something else.
 fn clean(text: &str) -> String {
     text.chars()
+        .filter(|character| !is_format(*character))
         .map(|character| {
             if character.is_control() {
                 ' '
@@ -92,7 +123,13 @@ fn render_one(text: &mut String, status: &ConnectorStatus) {
         }
     }
     if let Some(success) = status.last_success {
-        let _ = write!(text, ", last success {success}");
+        // From when this machine polled: not a success of the other machine.
+        let place = if matches!(status.polled_by, PolledBy::Other { .. }) {
+            " here"
+        } else {
+            ""
+        };
+        let _ = write!(text, ", last success{place} {success}");
     }
     text.push('\n');
     for failure in failures_of(&status.health) {
@@ -107,9 +144,16 @@ fn render_one(text: &mut String, status: &ConnectorStatus) {
 
 /// One line per connector, then one indented line per item or list that failed.
 #[must_use]
-pub fn render_status(list: &ConnectorList) -> String {
+pub fn render_status(list: &ConnectorList, context: Option<&ContextName>) -> String {
     if list.connectors.is_empty() {
-        return "No connector: add a forge credential (`token_cmd` or `token_env`).\n".to_owned();
+        return context.map_or_else(
+            || "No connector: add a forge credential (`token_cmd` or `token_env`).\n".to_owned(),
+            |context| {
+                format!(
+                    "No connector in the context `{context}`: check its name, or add a forge credential.\n"
+                )
+            },
+        );
     }
     let mut text = String::new();
     for status in &list.connectors {
@@ -149,9 +193,12 @@ mod tests {
     }
 
     fn one(status: ConnectorStatus) -> String {
-        render_status(&ConnectorList {
-            connectors: vec![status],
-        })
+        render_status(
+            &ConnectorList {
+                connectors: vec![status],
+            },
+            None,
+        )
     }
 
     #[test]
@@ -165,8 +212,15 @@ mod tests {
 
     #[test]
     fn an_empty_list_tells_what_to_do() {
-        let text = render_status(&ConnectorList { connectors: vec![] });
+        let empty = ConnectorList { connectors: vec![] };
+        let text = render_status(&empty, None);
         assert!(text.contains("add a forge credential"), "{text}");
+        // The name can be a typing error: adding a credential is not the only answer.
+        let named = "typo".parse().unwrap();
+        assert_eq!(
+            render_status(&empty, Some(&named)),
+            "No connector in the context `typo`: check its name, or add a forge credential.\n"
+        );
     }
 
     #[test]
@@ -271,6 +325,41 @@ mod tests {
             ..status(ConnectorHealth::NotPolledYet)
         });
         assert_eq!(text, "work gitlab.com: polled by tower\n");
+        // A success of this machine, from when it polled: not a success of tower.
+        let text = one(ConnectorStatus {
+            polled_by: PolledBy::Other {
+                machine: "tower".to_owned(),
+            },
+            last_success: Some(at(0)),
+            ..status(ConnectorHealth::NotPolledYet)
+        });
+        assert_eq!(
+            text,
+            format!(
+                "work gitlab.com: polled by tower, last success here {}\n",
+                at(0)
+            )
+        );
+    }
+
+    #[test]
+    fn a_text_of_the_forge_cannot_reorder_the_line() {
+        let text = one(status(ConnectorHealth::Forbidden {
+            error: "a\u{202e}b\u{2066}c\u{200f}d\u{feff}e\u{ad}f\u{e0041}g\u{61c}h\u{200b}i"
+                .to_owned(),
+            failed: vec![ConnectorFailure {
+                key: "x\u{202d}y".to_owned(),
+                reason: "\u{2069}z".to_owned(),
+            }],
+        }));
+        assert!(text.contains("forbidden: abcdefghi, 3"), "{text:?}");
+        assert!(text.ends_with("\n  xy: z\n"), "{text:?}");
+        // Other text stays, accents and scripts written right to left included.
+        let text = one(status(ConnectorHealth::Forbidden {
+            error: "é שלום 日本".to_owned(),
+            failed: vec![],
+        }));
+        assert!(text.contains("forbidden: é שלום 日本, 3"), "{text:?}");
     }
 
     #[test]
