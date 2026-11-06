@@ -1336,19 +1336,19 @@ The answer of `GET /v1/connectors` and of `loom connector status --json` ([schem
 | `not_polled_yet` | | No poll ran since `loomd` started, or another machine polls this connector. |
 | `ok` | | The last poll reported no failure. This does not prove that each read occurred: GitHub can mark its search as incomplete. `loomd` only logs a failed read of the reviewers of a GitLab MR, a failed read of the head of an approval, a failed commit of the queue and a failed pass of the MR refs. |
 | `partial` | `failed` | Some items or lists failed. The others are applied. |
-| `rate_limited` | `until` | The host limits the rate of requests until this time. |
-| `credential` | `which`, `error` | The host refuses the secret, or the secret does not resolve. `which`: `token` or `app_key`. `error` never contains the token that `loomd` has. When `token_cmd` fails, `error` contains the end of the standard error of the command, as the answer of `POST /v1/reviews/sync` does. |
-| `forbidden` | `error`, `failed` | The secret is good, but a permission is missing. For a forge, this is also a list of the poll that the host refuses, such as the to-dos: `error` names the list, the poll goes on, and `failed` gives what else failed. `failed` is absent when it is empty. |
+| `rate_limited` | `until`, `failed` | The host limits the rate of requests until this time. A poll that this limit skips keeps `failed`. |
+| `credential` | `which`, `error`, `failed` | The host refuses the secret, or the secret does not resolve. `which`: `token` or `app_key`. `error` never contains the token that `loomd` has. When `token_cmd` fails, `error` contains the end of the standard error of the command, as the answer of `POST /v1/reviews/sync` does. |
+| `forbidden` | `error`, `failed` | The secret is good, but a permission is missing. For a forge, this is also a list of the poll that the host refuses, such as the to-dos: `error` names the list, the poll goes on, and `failed` gives what else failed. |
 | `invalid_filter` | `error` | The host refuses the filter of the configuration. A retry does not help. |
-| `unreachable` | `error`, `failures` | The poll stopped for another reason. `failures`: the failed polls in a row. |
+| `unreachable` | `error`, `failures`, `failed` | The poll stopped for another reason. `failures`: the failed polls in a row. |
 
-Each item of `failed` has a `key` and a `reason`. The `key` of a list is `list:<name>`, such as `list:mentioned`. The `key` of an MR is its key, such as `acme/shop#412`.
+`failed` is absent when it is empty. On a poll that stopped, it gives the lists that failed before the stop, also a list that the host refuses: `state` gives why the poll stopped. Each item of `failed` has a `key` and a `reason`. The `key` of a list is `list:<name>`, such as `list:mentioned`. The `key` of an MR is its key, such as `acme/shop#412`.
 
 `items`:
 
 | Field | Type | Content |
 | --- | --- | --- |
-| `listed` | number | The items of the last poll. For a forge: the updates and the failures of the poll, the same number as `mrs` in [`ReviewSyncResult`](#reviewsyncresult). This is not the number of MRs that wait on you. |
+| `listed` | number | The items of the last poll. For a forge: the MRs of the poll, each one once, the same number as `mrs` in [`ReviewSyncResult`](#reviewsyncresult). It includes the MRs of Review tasks, so it is not the number of MRs that wait on you. |
 | `pool` | number | The items of the team pool. |
 | `failed` | number | The items and lists that failed in the last poll. |
 | `truncated` | boolean | The pool has more items than `pool_limit`. |
