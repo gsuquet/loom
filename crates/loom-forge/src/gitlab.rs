@@ -125,6 +125,8 @@ struct RawPipeline {
     #[serde(default, rename = "ref")]
     reference: Option<String>,
     #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
     status: Option<String>,
 }
 
@@ -160,6 +162,10 @@ fn head_pipeline(pipeline: RawPipeline) -> Option<HeadPipeline> {
         } else {
             PipelineOutcome::Other
         },
+        created_at: pipeline
+            .created_at
+            .and_then(|at| serde_json::from_value::<ForgeTime>(at.into()).ok())
+            .map(|at| at.0),
     })
 }
 

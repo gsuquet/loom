@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use loom_api::{ContextName, QueueReason, ReviewQueueEntry, TaskId, Timestamp};
 use loom_forge::model::{
-    HeadPipeline, MergeStatus, Mr, MrForgeIds, MrKey, MrSignals, MrState, PipelineCommit,
-    PipelineOutcome, Sha, Thread,
+    HeadPipeline, MergeStatus, Mr, MrForgeIds, MrKey, MrSignals, MrState, MrVersion,
+    PipelineCommit, PipelineOutcome, Sha, Thread,
 };
 use loom_store::IndexedTask;
 use loom_store::files::QUEUE_DIR;
@@ -295,6 +295,8 @@ pub struct MrFacts<'a> {
     pub approvals: usize,
     /// Whether a pending to-do mentions me, `None` when that list failed.
     pub mentioned: Option<bool>,
+    /// When the forge first had the current head, when the read needed it.
+    pub head_since: Option<Timestamp>,
 }
 
 /// The reasons that a full read tells. Pure.
@@ -312,12 +314,15 @@ pub fn reasons_read(facts: &MrFacts<'_>) -> ReasonsRead {
         } else {
             Some(None)
         },
-        pipeline_failed: Some(
-            own && pipeline_failed(
+        pipeline_failed: if own {
+            pipeline_failed(
                 facts.signals.head_pipeline.as_ref(),
                 &facts.mr.version.head_sha,
-            ),
-        ),
+                facts.head_since,
+            )
+        } else {
+            Some(false)
+        },
         ready_to_merge: if own {
             ready_to_merge(facts.signals.merge_status, facts.mr.draft, facts.approvals)
         } else {
@@ -358,17 +363,47 @@ pub fn has_new_comment(newest: Option<Timestamp>, seen_at: Option<Timestamp>) ->
 
 /// A pipeline failed on `head`: a failure on an older head says nothing about this one. Pure.
 ///
-/// A merged results or merge train pipeline cannot be compared with the head, and counts: after a
-/// push it can show a failure of the older head for a while, but a failure is never hidden.
+/// A merged results or merge train pipeline runs on a temporary merge commit, which says nothing
+/// about the head. `head_since` dates the head: the pipeline is of it unless it was created before
+/// that. GitLab keeps `head_pipeline` after a push that creates no pipeline, so without this date
+/// the queue would report a failure on a head that never ran. `None`: it cannot be dated, and the
+/// reason keeps its value.
 #[must_use]
-pub fn pipeline_failed(pipeline: Option<&HeadPipeline>, head: &Sha) -> bool {
+pub fn pipeline_failed(
+    pipeline: Option<&HeadPipeline>,
+    head: &Sha,
+    head_since: Option<Timestamp>,
+) -> Option<bool> {
+    let Some(pipeline) = pipeline else {
+        return Some(false);
+    };
+    if pipeline.outcome != PipelineOutcome::Failed {
+        return Some(false);
+    }
+    match &pipeline.commit {
+        PipelineCommit::Commit(sha) => Some(sha.as_ref() == Some(head)),
+        PipelineCommit::MergedResult => Some(pipeline.created_at? >= head_since?),
+    }
+}
+
+/// Whether [`pipeline_failed`] needs the time of the head: the one case that costs a request. Pure.
+#[must_use]
+pub fn needs_head_time(pipeline: Option<&HeadPipeline>) -> bool {
     pipeline.is_some_and(|pipeline| {
         pipeline.outcome == PipelineOutcome::Failed
-            && match &pipeline.commit {
-                PipelineCommit::MergedResult => true,
-                PipelineCommit::Commit(sha) => sha.as_ref() == Some(head),
-            }
+            && pipeline.commit == PipelineCommit::MergedResult
     })
+}
+
+/// When the forge first had `head`: the oldest of its versions, since a new base gives a later
+/// version of the same head. Pure.
+#[must_use]
+pub fn head_since(versions: &[MrVersion], head: &Sha) -> Option<Timestamp> {
+    versions
+        .iter()
+        .filter(|version| version.head_sha == *head)
+        .filter_map(|version| version.created_at)
+        .min()
 }
 
 /// My MR can be merged and has an approval, and it is not a draft. `None` while the forge computes
@@ -419,6 +454,20 @@ pub fn entry_reasons(seen: &EntrySeen) -> Vec<QueueReason> {
         .into_iter()
         .chain(seen.other_reasons.iter().copied())
         .collect()
+}
+
+/// The entry of `target` after the entry `source` of the same MR moves onto it: a file with no
+/// reason must not drop the reasons of the entry, and the later `seen_at` wins. Pure.
+#[must_use]
+pub fn merged_entry(target: &QueueEntry, source: &QueueEntry) -> QueueEntry {
+    QueueEntry {
+        reasons: REASONS
+            .into_iter()
+            .filter(|reason| target.reasons.contains(reason) || source.reasons.contains(reason))
+            .collect(),
+        seen_at: target.seen_at.max(source.seen_at),
+        ..target.clone()
+    }
 }
 
 /// The entry after I open it, at `at`: `own_new_comments` goes, the other reasons stay. Pure.

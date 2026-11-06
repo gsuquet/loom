@@ -19,8 +19,8 @@ use loomd::hooks;
 use loomd::review_queue::{
     APPROVAL_EXPIRY, ApprovalStep, EntryDecision, EntryInput, QueueEntry, ReasonsRead, StartTarget,
     active_reviews_of, approval_key, approval_step, decide_entry, entry_bytes, entry_name,
-    entry_of, entry_reasons, entry_seen, mark_seen, queue_dir, queue_message, read_entry_bytes,
-    start_target,
+    entry_of, entry_reasons, entry_seen, mark_seen, merged_entry, queue_dir, queue_message,
+    read_entry_bytes, start_target,
 };
 use loomd::review_sync::{MrBatch, MrUpdate, SeenVerdict, find_review, mirror_dir, url_host};
 use tracing::{info, warn};
@@ -61,7 +61,11 @@ impl Worker {
         let stored = stored.filter(|_| !foreign);
         let verdict = self.approval_head(batch, update, tracked)?;
         if let Some(target) = &update.moved_to {
-            return self.move_entry(batch, update, stored.as_ref(), target, tracked, applied);
+            if let Some(entry) = stored.as_ref() {
+                self.move_entry(batch, entry, target, tracked)?;
+                report_move(entry, applied, updated);
+            }
+            return Ok(());
         }
         if tracked && stored.is_none() {
             return Ok(());
@@ -70,12 +74,6 @@ impl Worker {
         let previous = archived_mirror(&root, &update.key, review.as_ref());
         let read = update.mr.as_ref();
         let known = read.or(previous.mr.as_ref());
-        // A 404: as for a closed MR, no reason holds.
-        let reasons_read = if update.gone {
-            ReasonsRead::NONE_HOLD
-        } else {
-            update.reasons
-        };
         // A 304, and neither an entry nor a mirror: nothing changed.
         let Some(seen) = entry_seen(&EntryInput {
             read,
@@ -88,7 +86,12 @@ impl Worker {
             tracked,
             own: update.own,
             requested_after_verdict: update.requested_after_verdict,
-            reasons: &reasons_read,
+            // A 404: as for a closed MR, no reason holds.
+            reasons: if update.gone {
+                &ReasonsRead::NONE_HOLD
+            } else {
+                &update.reasons
+            },
         }) else {
             return Ok(());
         };
@@ -221,15 +224,10 @@ impl Worker {
     fn move_entry(
         &mut self,
         batch: &MrBatch,
-        update: &MrUpdate,
-        stored: Option<&QueueEntry>,
+        entry: &QueueEntry,
         target: &ContextName,
         tracked: bool,
-        applied: &mut ReviewsApplied,
     ) -> Result<(), String> {
-        let Some(entry) = stored else {
-            return Ok(());
-        };
         let root = self
             .stores
             .get(&batch.context)
@@ -243,28 +241,22 @@ impl Worker {
         // A task means no entry anywhere; an entry there is already this one, or is of another
         // host, which is reported.
         if !tracked {
-            match read_entry(&target_root, &update.key) {
+            let moved = match read_entry(&target_root, &entry.key) {
                 Some(other) if other.web_url != entry.web_url => {
                     return Err(format!(
                         "the queue of context `{target}` has an entry of this key on another forge host: the entry stays in this context"
                     ));
                 }
-                Some(_) => {}
-                None => {
-                    let bytes = entry_bytes(entry).map_err(|error| error.to_string())?;
-                    let dir = queue_dir(&target_root);
-                    let name = entry_name(&update.key);
-                    write_mirror(&dir, &[(name.as_str(), bytes.as_slice())]).map_err(|error| {
-                        format!("cannot write the entry {}: {error}", dir.display())
-                    })?;
-                    let result = self.commits.commit_queue(target, &queue_message(1, 0, 0));
-                    log_commit(target, None, result);
-                }
+                Some(other) => merged_entry(&other, entry),
+                None => entry.clone(),
+            };
+            if write_entry(&target_root, &moved)? {
+                let result = self.commits.commit_queue(target, &queue_message(1, 0, 0));
+                log_commit(target, None, result);
             }
         }
-        remove_entry(&root, &update.key)?;
-        info!(context = %batch.context, %target, key = %update.key, "MR moved to the queue of its context");
-        applied.removed.push(update.key.to_string());
+        remove_entry(&root, &entry.key)?;
+        info!(context = %batch.context, %target, key = %entry.key, "MR moved to the queue of its context");
         Ok(())
     }
 
@@ -366,6 +358,15 @@ impl Worker {
             seen_at: at,
             reasons: opened.reasons,
         })
+    }
+}
+
+/// A file with no reason is not in the queue: its move is only a commit, nothing left the queue.
+fn report_move(entry: &QueueEntry, applied: &mut ReviewsApplied, updated: &mut usize) {
+    if entry.reasons.is_empty() {
+        *updated += 1;
+    } else {
+        applied.removed.push(entry.key.to_string());
     }
 }
 

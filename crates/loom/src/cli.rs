@@ -348,8 +348,9 @@ pub enum ReviewCommand {
     /// MR with no reason left, or that is merged or closed, leaves the queue. A new
     /// head after my verdict reopens a Review task; a merged or closed MR closes it. An MR of
     /// another context is not written to this store. The command fails if a poll, a list or an
-    /// MR fails. A poll or an MR that fails keeps its entries and its copies. A list that fails
-    /// keeps the reasons from that list. A rate limit of a forge is not a failure.
+    /// MR fails. A poll or an MR that fails keeps its entries and its copies. After a list that
+    /// fails, the poll still updates each MR that it read, and the reason `mentioned` keeps its
+    /// last value. A rate limit of a forge is not a failure.
     /// loomd also polls each host at each `[forges."<host>"] poll_interval`. Starts loomd if it
     /// is stopped.
     Sync(ReviewSyncArgs),

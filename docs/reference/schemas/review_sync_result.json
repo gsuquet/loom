@@ -182,7 +182,7 @@
               }
             },
             "failed_lists": {
-              "description": "The lists that failed while the poll went on. The reasons from such a list keep their\nlast value.",
+              "description": "The lists that failed while the poll went on. The reason `mentioned` keeps its last\nvalue. Each MR that the poll read follows that read for the other reasons.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/ReviewListFailure"

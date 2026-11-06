@@ -451,6 +451,7 @@ fn the_single_merge_request_gives_its_assignees_pipeline_and_merge_status() {
         Some(HeadPipeline {
             commit: PipelineCommit::Commit(Some(read.mr.version.head_sha.clone())),
             outcome: PipelineOutcome::Failed,
+            created_at: Some(time("2026-10-23T11:06:30Z")),
         })
     );
     // Without a pipeline, as a list or an MR with no CI gives it.
@@ -464,6 +465,7 @@ fn the_single_merge_request_gives_its_assignees_pipeline_and_merge_status() {
         Some(HeadPipeline {
             commit: PipelineCommit::MergedResult,
             outcome: PipelineOutcome::Failed,
+            created_at: Some(time("2026-10-23T11:06:30Z")),
         })
     );
 }
@@ -518,12 +520,20 @@ fn head_pipeline_table() {
     let mut mr: serde_json::Value =
         serde_json::from_slice(fixture!("merge-request-88.own-failed.json")).unwrap();
     for (name, reference, status, commit, outcome) in table {
-        mr["head_pipeline"] =
-            serde_json::json!({"sha": sha_text, "ref": reference, "status": status});
+        mr["head_pipeline"] = serde_json::json!({
+            "sha": sha_text,
+            "ref": reference,
+            "status": status,
+            "created_at": "2026-10-23T11:06:30.000+02:00",
+        });
         let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
         assert_eq!(
             read.signals.head_pipeline,
-            Some(HeadPipeline { commit, outcome }),
+            Some(HeadPipeline {
+                commit,
+                outcome,
+                created_at: Some(time("2026-10-23T09:06:30Z")),
+            }),
             "{name}"
         );
     }
@@ -563,6 +573,9 @@ fn a_pipeline_field_that_cannot_be_read_does_not_fail_the_merge_request() {
         read.signals.head_pipeline.unwrap().commit,
         PipelineCommit::Commit(None)
     );
+    mr["head_pipeline"]["created_at"] = serde_json::json!("not a time");
+    let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
+    assert_eq!(read.signals.head_pipeline.unwrap().created_at, None);
     mr["head_pipeline"] = serde_json::Value::Null;
     let read = parse_merge_request_read(mr.to_string().as_bytes()).unwrap();
     assert_eq!(read.signals.head_pipeline, None);

@@ -36,7 +36,7 @@ use loom_forge::client::{
     ApiBase, Conditional, ForgeError, GithubClient, GithubForge as _, GitlabClient,
     GitlabForge as _, GitlabMr, ReviewRequests, Token,
 };
-use loom_forge::gitlab::MrReviewer;
+use loom_forge::gitlab::{Approvals, MrReviewer};
 use loom_forge::model::{
     MergeStatus, Mr, MrForgeIds, MrKey, MrRead, MrState, MrSummary, Sha, Thread,
 };
@@ -51,7 +51,7 @@ use loomd::forge::token::TokenResolver;
 use loomd::hooks;
 use loomd::recurring::{Runner, runner};
 use loomd::repo_update::GitRunner;
-use loomd::review_queue::{MrFacts, ReasonsRead, reasons_read};
+use loomd::review_queue::{MrFacts, ReasonsRead, head_since, needs_head_time, reasons_read};
 use loomd::review_sync::{
     Belongs, MR_FILE, MrBatch, MrUpdate, PollOutcome, THREADS_REFRESH, belongs, clone_of,
     finder_tells, github_verdict, gitlab_verdict, mirror_dir, next_poll, read_mr, tracked_reviews,
@@ -1016,6 +1016,7 @@ impl Poller {
             }
             if !counted.insert(listed.key.dir_name())
                 || keys.iter().any(|(known, _, _)| *known == listed.key)
+                || elsewhere.iter().any(|summary| summary.key == listed.key)
                 || unassigned
                     .iter()
                     .any(|failure| failure.key == listed.key.to_string())
@@ -1537,31 +1538,34 @@ struct GitlabRead<'a> {
 
 /// Reads the merge request. A 304 of my mergeable MR is checked against its approvals, which can
 /// change with the same body: then, or when the approvals answer 404, the MR is read in full, so
-/// that a 404 on the MR itself decides.
+/// that a 404 on the MR itself decides. Also gives the approvals, when this read holds them.
 fn gitlab_read(
     client: &GitlabClient,
     reference: GitlabMr,
     mirrored: bool,
     cache: &MrCache,
-) -> Result<Conditional<MrRead>, ReadFailure> {
+) -> Result<(Conditional<MrRead>, Option<Approvals>), ReadFailure> {
     let read = client
         .merge_request_read(reference, conditional(cache, mirrored))
         .map_err(ReadFailure::of_the_mr)?;
     if !matches!(read, Conditional::NotModified) || !cache.watches_approvals {
-        return Ok(read);
+        return Ok((read, None));
     }
-    let moved = match client.approvals(reference) {
-        Ok(approvals) => approvals.approved_by.is_empty() == cache.approved,
-        Err(ForgeError::NotFound { .. }) => true,
+    let approvals = match client.approvals(reference) {
+        Ok(approvals) => Some(approvals),
+        Err(ForgeError::NotFound { .. }) => None,
         Err(error) => return Err(error.into()),
     };
-    if moved {
-        client
-            .merge_request_read(reference, None)
-            .map_err(ReadFailure::of_the_mr)
-    } else {
-        Ok(read)
+    let unchanged = approvals
+        .as_ref()
+        .is_some_and(|approvals| approvals.approved_by.is_empty() != cache.approved);
+    if unchanged {
+        return Ok((read, None));
     }
+    let read = client
+        .merge_request_read(reference, None)
+        .map_err(ReadFailure::of_the_mr)?;
+    Ok((read, approvals))
 }
 
 /// The GitLab merge request of `read`: in full when it changed since the `ETag` of `cache`.
@@ -1578,7 +1582,7 @@ fn gitlab_update(
         login,
         mirrored,
     } = *query;
-    let read = gitlab_read(client, reference, mirrored, cache)?;
+    let (read, read_approvals) = gitlab_read(client, reference, mirrored, cache)?;
     match read {
         Conditional::Modified { value, etag } => {
             let MrRead { mr, signals } = value;
@@ -1589,7 +1593,10 @@ fn gitlab_update(
             } else {
                 Vec::new()
             };
-            let approvals = client.approvals(reference)?;
+            let approvals = match read_approvals {
+                Some(approvals) => approvals,
+                None => client.approvals(reference)?,
+            };
             let requested_after_verdict = approvals.user_has_approved
                 && !mirrored
                 && gitlab_requested_again(client, reference, login)?;
@@ -1599,6 +1606,14 @@ fn gitlab_update(
             } else {
                 None
             };
+            // One request, only for my failed merged results pipeline; a task holds this read.
+            let first_version = if !own || !needs_head_time(signals.head_pipeline.as_ref()) {
+                None
+            } else if mirrored {
+                head_since(&versions, &head)
+            } else {
+                head_since(&client.versions(reference)?, &head)
+            };
             let reasons = reasons_read(&MrFacts {
                 mr: &mr,
                 signals: &signals,
@@ -1606,7 +1621,15 @@ fn gitlab_update(
                 threads: threads.as_deref(),
                 approvals: approvals.approved_by.len(),
                 mentioned,
+                head_since: first_version,
             });
+            // Neither a guess nor a silent keep: the entry stays, and the MR is reported.
+            if reasons.pipeline_failed.is_none() {
+                return Err(ForgeError::Unexpected(
+                    "cannot date the failed merged results pipeline against the head: its reason does not change".to_owned(),
+                )
+                .into());
+            }
             cache.etag = etag;
             cache.direct = is_reviewer(&mr, login);
             cache.own = own;

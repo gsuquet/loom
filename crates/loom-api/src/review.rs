@@ -63,8 +63,8 @@ pub enum ReviewSyncOutcome {
         /// The MRs whose sync failed: their last snapshot is kept.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed: Vec<ReviewSyncFailure>,
-        /// The lists that failed while the poll went on. The reasons from such a list keep their
-        /// last value.
+        /// The lists that failed while the poll went on. The reason `mentioned` keeps its last
+        /// value. Each MR that the poll read follows that read for the other reasons.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed_lists: Vec<ReviewListFailure>,
     },

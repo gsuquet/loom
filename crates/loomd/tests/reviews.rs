@@ -59,6 +59,8 @@ struct Route {
     body: String,
     /// With an `If-None-Match` equal to it: 304.
     etag: Option<String>,
+    /// What this route answers after this answer.
+    then: Option<Box<Self>>,
 }
 
 fn route(body: impl Into<String>) -> Route {
@@ -67,6 +69,7 @@ fn route(body: impl Into<String>) -> Route {
         headers: Vec::new(),
         body: body.into(),
         etag: None,
+        then: None,
     }
 }
 
@@ -176,6 +179,9 @@ impl Server {
                     status: 404,
                     ..route(r#"{"message":"Not Found"}"#)
                 });
+                if let Some(then) = route.then.clone() {
+                    served.lock().unwrap().insert(key.clone(), *then);
+                }
                 let not_modified =
                     route.etag.is_some() && route.etag.as_deref() == if_none_match.as_deref();
                 let (status, body) = if not_modified {
@@ -6653,6 +6659,7 @@ fn a_failed_merged_results_or_train_pipeline_counts_and_a_branch_of_that_name_do
                 "sha": sha,
                 "ref": reference,
                 "status": "failed",
+                "created_at": "2026-10-23T11:06:30.000Z",
             });
         });
         sandbox.sync();
@@ -6970,5 +6977,323 @@ fn a_file_with_no_reason_in_another_context_makes_no_key_ambiguous() {
     assert_eq!(answer.context.as_str(), "company-a");
     let started = start(&socket, GITLAB_KEY);
     assert!(started.created);
+    daemon.stop();
+}
+
+const MERGE_COMMIT: &str = "1604b0c46c395822e4e9478777f8e54ac99fe5b9";
+const V3_HEAD: &str = "ee047f5164ae63069c7237b6f24c66d34f9eff26";
+
+/// A failed merged results pipeline, created at `created_at`, on my MR at `head`.
+fn merged_results_mr(sandbox: &Sandbox, etag: &str, head: &str, created_at: &str) {
+    set_mr(sandbox, etag, |mr| {
+        mr["author"] = carol();
+        mr["diff_refs"]["head_sha"] = json!(head);
+        mr["sha"] = json!(head);
+        mr["head_pipeline"] = json!({
+            "sha": MERGE_COMMIT,
+            "ref": "refs/merge-requests/88/merge",
+            "status": "failed",
+            "created_at": created_at,
+        });
+    });
+}
+
+/// The versions of the MR with a new one on `V3_HEAD`, first seen at `created_at`.
+fn pushed_versions(sandbox: &Sandbox, created_at: &str) {
+    let mut versions = fixture_json("gitlab/merge-request-88-versions.json");
+    let mut newest = versions[0].clone();
+    newest["id"] = json!(9999);
+    newest["head_commit_sha"] = json!(V3_HEAD);
+    newest["created_at"] = json!(created_at);
+    versions.as_array_mut().unwrap().insert(0, newest);
+    sandbox.gitlab.set(VERSIONS_88, route(versions.to_string()));
+}
+
+#[test]
+fn a_merged_results_failure_from_before_a_push_with_no_pipeline_gives_no_reason() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    // Fixture: the version of V2 is from 11:06:00.
+    merged_results_mr(&sandbox, "W/\"b\"", V2, "2026-10-23T11:06:30.000Z");
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnPipelineFailed])
+    );
+
+    // A push with `[skip ci]`: GitLab keeps `head_pipeline`.
+    pushed_versions(&sandbox, "2026-10-24T09:00:00.000Z");
+    merged_results_mr(&sandbox, "W/\"c\"", V3_HEAD, "2026-10-23T11:06:30.000Z");
+    sandbox.sync();
+    assert_eq!(reasons_of(&sandbox), None);
+
+    // The reverse: a pipeline created after the push that fails.
+    merged_results_mr(&sandbox, "W/\"d\"", V3_HEAD, "2026-10-24T09:00:40.000Z");
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnPipelineFailed])
+    );
+    // Created in the second of the version: on the head, as GitLab refreshes the diff first.
+    merged_results_mr(&sandbox, "W/\"e\"", V3_HEAD, "2026-10-24T09:00:00.000Z");
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnPipelineFailed])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn the_first_version_of_a_head_dates_it_when_a_later_version_has_the_same_head() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    let mut versions = fixture_json("gitlab/merge-request-88-versions.json");
+    let mut again = versions[0].clone();
+    // A new base for the same head, an hour later: the pipeline is not older than the head.
+    again["created_at"] = json!("2026-10-23T12:06:00.000Z");
+    versions.as_array_mut().unwrap().insert(0, again);
+    sandbox.gitlab.set(VERSIONS_88, route(versions.to_string()));
+    merged_results_mr(&sandbox, "W/\"b\"", V2, "2026-10-23T11:06:30.000Z");
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnPipelineFailed])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn versions_are_read_only_for_a_failed_merged_results_pipeline() {
+    // A failed pipeline on a branch, and a merged results pipeline that runs: no read.
+    for (reference, status, sha) in [
+        ("auth-refactor", "failed", V2),
+        ("refs/merge-requests/88/merge", "running", MERGE_COMMIT),
+    ] {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |mr| {
+            mr["head_pipeline"] = json!({
+                "sha": sha,
+                "ref": reference,
+                "status": status,
+                "created_at": "2026-10-23T11:06:30.000Z",
+            });
+        });
+        sandbox.sync();
+        assert_eq!(count_of(&sandbox, VERSIONS_88), 0, "{reference}");
+        daemon.stop();
+    }
+    // One read when the MR changed, and none on a 304; none for an MR of another.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    merged_results_mr(&sandbox, "W/\"b\"", V2, "2026-10-23T11:06:30.000Z");
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, VERSIONS_88), 1);
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, VERSIONS_88), 1);
+    daemon.stop();
+
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    no_review_list(&sandbox);
+    set_list(&sandbox, ASSIGNED, true);
+    set_mr(&sandbox, "W/\"a\"", |mr| {
+        mr["assignees"] = json!([carol()]);
+        mr["head_pipeline"] = json!({
+            "sha": MERGE_COMMIT,
+            "ref": "refs/merge-requests/88/merge",
+            "status": "failed",
+            "created_at": "2026-10-23T11:06:30.000Z",
+        });
+    });
+    sandbox.sync();
+    assert_eq!(count_of(&sandbox, VERSIONS_88), 0);
+    daemon.stop();
+}
+
+#[test]
+fn versions_that_cannot_tell_keep_the_reason_and_report_the_mr() {
+    let table = [
+        ("a failed read", not_found()),
+        ("no version of the head", route(EMPTY_LIST)),
+    ];
+    for (name, answer) in table {
+        // The reason held, then the MR changes: it stays. No reason held: none comes.
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |_| {});
+        merged_results_mr(&sandbox, "W/\"b\"", V2, "2026-10-23T11:06:30.000Z");
+        sandbox.sync();
+        assert_eq!(
+            reasons_of(&sandbox),
+            Some(vec![QueueReason::OwnPipelineFailed])
+        );
+        sandbox.gitlab.set(VERSIONS_88, answer.clone());
+        merged_results_mr(&sandbox, "W/\"c\"", V2, "2026-10-23T11:06:31.000Z");
+        let result = sandbox.sync();
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")).5,
+            1,
+            "{name}: {result:?}"
+        );
+        assert_eq!(
+            reasons_of(&sandbox),
+            Some(vec![QueueReason::OwnPipelineFailed]),
+            "{name}"
+        );
+        // It is read again at the next poll, not hidden by an ETag.
+        sandbox.gitlab.set(
+            VERSIONS_88,
+            route(fixture("gitlab/merge-request-88-versions.json")),
+        );
+        let result = sandbox.sync();
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")).5,
+            0,
+            "{name}: {result:?}"
+        );
+        daemon.stop();
+
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |_| {});
+        sandbox.gitlab.set(VERSIONS_88, answer);
+        merged_results_mr(&sandbox, "W/\"b\"", V2, "2026-10-23T11:06:30.000Z");
+        sandbox.sync();
+        assert_eq!(reasons_of(&sandbox), None, "{name}");
+        daemon.stop();
+    }
+}
+
+#[test]
+fn an_approvals_404_with_a_304_then_a_404_on_the_mr_removes_the_entry() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    own_mergeable_with_an_entry(&sandbox);
+    set_list(&sandbox, OWN, false);
+    sandbox.gitlab.set(APPROVALS_88, not_found());
+    let mut mr = fixture_json("gitlab/merge-request-88.v2.json");
+    mr["reviewers"] = json!([]);
+    mr["assignees"] = json!([]);
+    mr["author"] = carol();
+    mr["detailed_merge_status"] = json!("mergeable");
+    // The first read still answers 304, and the read without an ETag finds the MR gone.
+    sandbox.gitlab.set(
+        MR_88,
+        Route {
+            then: Some(Box::new(not_found())),
+            ..with_etag(mr.to_string(), "W/\"a\"")
+        },
+    );
+    let result = sandbox.sync();
+    assert_eq!(reasons_of(&sandbox), None, "{result:?}");
+    assert_eq!(entry_file(&sandbox), None);
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).5,
+        0
+    );
+    daemon.stop();
+}
+
+#[test]
+fn an_approval_changed_on_a_304_reads_the_approvals_once() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |mr| {
+        mr["detailed_merge_status"] = json!("mergeable");
+    });
+    sandbox.sync();
+    set_approved_by(&sandbox, &["bob"]);
+    let reads = count_of(&sandbox, APPROVALS_88);
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnReadyToMerge])
+    );
+    assert_eq!(count_of(&sandbox, APPROVALS_88), reads + 1);
+    daemon.stop();
+}
+
+#[test]
+fn a_park_reports_the_key_as_removed_and_keeps_the_file() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |mr| {
+        mr["head_pipeline"] = pipeline("failed", V2);
+    });
+    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+    sandbox.sync();
+    let answer: ReviewSeenResult = ok(&seen(&sandbox.socket()));
+    assert_eq!(answer.reasons, [QueueReason::OwnPipelineFailed]);
+    set_mr(&sandbox, "W/\"b\"", |mr| {
+        mr["author"] = carol();
+        mr["head_pipeline"] = pipeline("success", V2);
+    });
+    let result = sandbox.sync();
+    let ReviewSyncOutcome::Synced { removed, .. } =
+        &poll(&result, "company-a", "gitlab.example.com").outcome
+    else {
+        panic!("{result:?}");
+    };
+    assert_eq!(removed, &[KEY_88.to_owned()]);
+    assert_eq!(entry_file(&sandbox).unwrap()["reasons"], json!([]));
+    daemon.stop();
+}
+
+#[test]
+fn an_mr_of_another_context_in_two_lists_counts_once() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_list(&sandbox, ASSIGNED, true);
+    set_list(&sandbox, OWN, true);
+    let result = sandbox.sync();
+    // The GitLab MR is of `company-a`: `personal` finds it in three lists.
+    assert_eq!(counts(poll(&result, "personal", "gitlab.example.com")).4, 1);
+    daemon.stop();
+}
+
+#[test]
+fn moving_a_file_with_no_reason_reports_no_removal_and_keeps_its_seen_at() {
+    let sandbox = sandbox_for_a_move("");
+    let home = sandbox.user_home();
+    let config = fs::read_to_string(sandbox.loom_home().join("config.toml"))
+        .unwrap()
+        .replace(
+            "[contexts.company-a]\n",
+            &format!(
+                "[contexts.company-a]\nmatch.hosts = [\"gitlab.example.com/company-a\"]\n\n[repos.\"{}\"]\ncontext = \"personal\"\n",
+                home.join("work/checkout").display()
+            ),
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+    sandbox.sync();
+    sandbox.sync();
+    let opened: ReviewSeenResult = ok(&seen(&sandbox.socket()));
+    assert_eq!(opened.reasons, []);
+    let store = sandbox.store("company-a");
+    let commits_before = commits(&store);
+    register_the_clone(&sandbox);
+    let result = sandbox.sync();
+    let ReviewSyncOutcome::Synced { removed, .. } =
+        &poll(&result, "company-a", "gitlab.example.com").outcome
+    else {
+        panic!("{result:?}");
+    };
+    assert_eq!(removed, &Vec::<String>::new(), "{result:?}");
+    assert_eq!(entry_file(&sandbox), None);
+    assert_eq!(commits(&store), commits_before + 1);
+    let moved = sandbox
+        .store("personal")
+        .join("queue/mrs/gitlab-company-a%2Fcheckout%2188.json");
+    let moved: Value = serde_json::from_str(&fs::read_to_string(moved).unwrap()).unwrap();
+    assert_eq!(moved["reasons"], json!([]));
+    assert!(moved["seen_at"].is_string());
     daemon.stop();
 }

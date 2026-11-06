@@ -156,6 +156,8 @@ pub struct HeadPipeline {
     pub commit: PipelineCommit,
     /// How it ended.
     pub outcome: PipelineOutcome,
+    /// When the forge created it, `None` when it cannot be read.
+    pub created_at: Option<Timestamp>,
 }
 
 /// The commit that a pipeline ran on.

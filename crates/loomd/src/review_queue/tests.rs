@@ -777,41 +777,179 @@ fn a_note_counts_only_when_newer_than_seen_at() {
 #[test]
 fn pipeline_failed_table() {
     use PipelineOutcome::{Failed, Other};
-    let on = |commit: PipelineCommit, outcome| HeadPipeline { commit, outcome };
+    let (before, since, after) = (
+        time("2026-10-21T09:00:00Z"),
+        time("2026-10-21T10:00:00Z"),
+        time("2026-10-21T11:00:00Z"),
+    );
+    let on = |commit: PipelineCommit, outcome, created_at| HeadPipeline {
+        commit,
+        outcome,
+        created_at,
+    };
     let commit = |text: &str| PipelineCommit::Commit(Some(sha(text)));
+    let merged = PipelineCommit::MergedResult;
     let table = [
-        ("no pipeline", None, false),
-        ("failed on the head", Some(on(commit(V2), Failed)), true),
+        ("no pipeline", None, None, Some(false)),
+        (
+            "failed on the head",
+            Some(on(commit(V2), Failed, None)),
+            None,
+            Some(true),
+        ),
         (
             "failed on an older head",
-            Some(on(commit(V1), Failed)),
-            false,
+            Some(on(commit(V1), Failed, None)),
+            None,
+            Some(false),
         ),
         (
             "failed, with no SHA to compare",
-            Some(on(PipelineCommit::Commit(None), Failed)),
-            false,
+            Some(on(PipelineCommit::Commit(None), Failed, None)),
+            None,
+            Some(false),
         ),
         (
             "another state on the head",
-            Some(on(commit(V2), Other)),
-            false,
+            Some(on(commit(V2), Other, None)),
+            None,
+            Some(false),
         ),
         (
-            "a merged result that failed",
-            Some(on(PipelineCommit::MergedResult, Failed)),
-            true,
+            "a merged result after the head",
+            Some(on(merged.clone(), Failed, Some(after))),
+            Some(since),
+            Some(true),
+        ),
+        (
+            "a merged result in the second of the head",
+            Some(on(merged.clone(), Failed, Some(since))),
+            Some(since),
+            Some(true),
+        ),
+        (
+            "a merged result before the head",
+            Some(on(merged.clone(), Failed, Some(before))),
+            Some(since),
+            Some(false),
+        ),
+        (
+            "a merged result, the head has no date",
+            Some(on(merged.clone(), Failed, Some(after))),
+            None,
+            None,
+        ),
+        (
+            "a merged result with no date",
+            Some(on(merged.clone(), Failed, None)),
+            Some(since),
+            None,
         ),
         (
             "a merged result in another state",
-            Some(on(PipelineCommit::MergedResult, Other)),
-            false,
+            Some(on(merged, Other, None)),
+            None,
+            Some(false),
         ),
     ];
-    for (name, pipeline, expected) in table {
+    for (name, pipeline, head_date, expected) in table {
         assert_eq!(
-            pipeline_failed(pipeline.as_ref(), &sha(V2)),
+            pipeline_failed(pipeline.as_ref(), &sha(V2), head_date),
             expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn only_a_failed_merged_result_needs_the_time_of_the_head() {
+    use PipelineOutcome::{Failed, Other};
+    let on = |commit, outcome| {
+        Some(HeadPipeline {
+            commit,
+            outcome,
+            created_at: None,
+        })
+    };
+    assert!(needs_head_time(
+        on(PipelineCommit::MergedResult, Failed).as_ref()
+    ));
+    assert!(!needs_head_time(
+        on(PipelineCommit::MergedResult, Other).as_ref()
+    ));
+    assert!(!needs_head_time(
+        on(PipelineCommit::Commit(None), Failed).as_ref()
+    ));
+    assert!(!needs_head_time(None));
+}
+
+#[test]
+fn the_time_of_a_head_is_its_first_version() {
+    let version = |head: &str, at: Option<&str>| MrVersion {
+        head_sha: sha(head),
+        base_sha: sha(V1),
+        merge_base: None,
+        forge_version_id: None,
+        created_at: at.map(time),
+    };
+    let versions = [
+        version(V2, Some("2026-10-21T11:00:00Z")),
+        version(V1, Some("2026-10-21T08:00:00Z")),
+        version(V2, Some("2026-10-21T10:00:00Z")),
+        version(V2, None),
+    ];
+    assert_eq!(
+        head_since(&versions, &sha(V2)),
+        Some(time("2026-10-21T10:00:00Z"))
+    );
+    assert_eq!(head_since(&versions[..1], &sha(V1)), None);
+    assert_eq!(head_since(&[], &sha(V2)), None);
+}
+
+#[test]
+fn a_move_onto_a_file_keeps_the_reasons_and_the_later_seen_at() {
+    use QueueReason::{Assigned, Mentioned};
+    let mr = parse_merge_request(&fixture("gitlab/merge-request-88.v2.json")).unwrap();
+    let (t1, t2) = (time("2026-10-21T10:00:00Z"), time("2026-10-21T11:00:00Z"));
+    let entry = |reasons: Vec<QueueReason>, seen_at| QueueEntry {
+        seen_at,
+        ..entry_of(&mr, None, reasons)
+    };
+    let table = [
+        (
+            "parked here, reasons there",
+            entry(vec![], Some(t1)),
+            entry(vec![Assigned], None),
+            vec![Assigned],
+            Some(t1),
+        ),
+        (
+            "reasons here, parked there",
+            entry(vec![Mentioned], None),
+            entry(vec![], Some(t2)),
+            vec![Mentioned],
+            Some(t2),
+        ),
+        (
+            "both, in the fixed order",
+            entry(vec![Mentioned], Some(t2)),
+            entry(vec![Assigned], Some(t1)),
+            vec![Assigned, Mentioned],
+            Some(t2),
+        ),
+        (
+            "both parked",
+            entry(vec![], Some(t1)),
+            entry(vec![], Some(t2)),
+            vec![],
+            Some(t2),
+        ),
+    ];
+    for (name, target, source, reasons, seen_at) in table {
+        let merged = merged_entry(&target, &source);
+        assert_eq!(
+            (merged.reasons, merged.seen_at),
+            (reasons, seen_at),
             "{name}"
         );
     }
@@ -848,6 +986,7 @@ fn a_full_read_tells_each_reason_and_only_my_own_mr_has_own_reasons() {
         head_pipeline: Some(HeadPipeline {
             commit: PipelineCommit::Commit(Some(mr.version.head_sha.clone())),
             outcome: PipelineOutcome::Failed,
+            created_at: None,
         }),
         merge_status: MergeStatus::Mergeable,
     };
@@ -865,6 +1004,7 @@ fn a_full_read_tells_each_reason_and_only_my_own_mr_has_own_reasons() {
         threads: None,
         approvals: 1,
         mentioned: Some(true),
+        head_since: None,
     });
     assert_eq!(
         read,
@@ -884,6 +1024,7 @@ fn a_full_read_tells_each_reason_and_only_my_own_mr_has_own_reasons() {
         threads: Some(&threads),
         approvals: 1,
         mentioned: None,
+        head_since: None,
     });
     assert_eq!(
         read,
@@ -903,6 +1044,7 @@ fn a_full_read_tells_each_reason_and_only_my_own_mr_has_own_reasons() {
         threads: None,
         approvals: 1,
         mentioned: None,
+        head_since: None,
     });
     assert_eq!(read.new_comment, None);
 }
