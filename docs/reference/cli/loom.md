@@ -853,7 +853,7 @@ Global options apply.
 
 List the merge requests that wait on me and have no Review task.
 
-Lists the entries of every context of this machine, or only of the context that `-c` names, each with its reasons. Reads the files of the stores: the forges are not called. Run `loom review sync` for a poll now. Starts loomd if it is stopped.
+Lists the entries of every context of this machine, or only of the context that `-c` names, each with its reasons. Reads the files of the stores: the forges are not called. Run `loom review sync` for a poll now. If the queue is empty, the command also reads the connector status. It then says that nothing waits when the last poll of each forge succeeded, and shows the forge and the failure when a poll did not succeed. If the status is not available, the command shows the text of an empty queue. Starts loomd if it is stopped.
 
 ```text
 loom review queue [OPTIONS]
