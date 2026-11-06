@@ -212,11 +212,11 @@ impl Poller {
             Err(StartRead::MrGone) => return Err(self.entry_is_gone(index, key)),
             Err(StartRead::Stopped(stopped)) => {
                 forget_etag(self.hosts[index].mrs.get_mut(&key.dir_name()));
-                return Err(match self.stopped(index, stopped, &token) {
-                    ReviewSyncOutcome::RateLimited { until } => forge_failure(format!(
+                return Err(match self.stopped(index, stopped, &token, Vec::new()) {
+                    ReviewSyncOutcome::RateLimited { until, .. } => forge_failure(format!(
                         "{host} limits the rate until {until}: MR `{key}` is not started"
                     )),
-                    ReviewSyncOutcome::Failed { error } => {
+                    ReviewSyncOutcome::Failed { error, .. } => {
                         forge_failure(format!("{host}: {error}"))
                     }
                     ReviewSyncOutcome::Synced { .. } => {
@@ -348,8 +348,13 @@ impl Poller {
             mentioned: None,
             login: &login,
             mirrored: true,
+            start: true,
         };
-        gitlab_update(client, &read, cache).map_err(StartRead::from)
+        // A pipeline that cannot be dated is on my own MR, which a start refuses: the next poll
+        // reports it, as the read leaves no `ETag`.
+        gitlab_update(client, &read, cache)
+            .map(|(update, _)| update)
+            .map_err(StartRead::from)
     }
 }
 

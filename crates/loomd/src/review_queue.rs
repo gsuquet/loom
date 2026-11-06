@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use loom_api::{ContextName, QueueReason, ReviewQueueEntry, TaskId, Timestamp};
 use loom_forge::model::{
-    HeadPipeline, MergeStatus, Mr, MrForgeIds, MrKey, MrSignals, MrState, MrVersion,
-    PipelineCommit, PipelineOutcome, Sha, Thread,
+    HeadPipeline, MergeStatus, Mr, MrForgeIds, MrKey, MrSignals, MrState, PipelineCommit,
+    PipelineOutcome, Sha, Thread, VersionRead,
 };
 use loom_store::IndexedTask;
 use loom_store::files::QUEUE_DIR;
@@ -395,10 +395,12 @@ pub fn needs_head_time(pipeline: Option<&HeadPipeline>) -> bool {
     })
 }
 
-/// When the forge first had `head`: the oldest of its versions, since a new base gives a later
-/// version of the same head. Pure.
+/// When the forge first had `head`: the oldest of its versions. Pure.
+///
+/// A new base gives a later version of the same head. A version with a null base still counts: it
+/// tells no diff, but it tells when the head came.
 #[must_use]
-pub fn head_since(versions: &[MrVersion], head: &Sha) -> Option<Timestamp> {
+pub fn head_since(versions: &[VersionRead], head: &Sha) -> Option<Timestamp> {
     versions
         .iter()
         .filter(|version| version.head_sha == *head)

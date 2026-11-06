@@ -175,7 +175,7 @@
               }
             },
             "failed": {
-              "description": "The MRs whose sync failed: their last snapshot is kept.",
+              "description": "The MRs whose sync failed: what the poll did not read keeps its last snapshot.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/ReviewSyncFailure"
@@ -189,7 +189,7 @@
               }
             },
             "mrs": {
-              "description": "The MRs polled: the MRs to review, the MRs of the queue and the MRs of the Review\ntasks.",
+              "description": "The MRs polled, each one once: the MRs to review, the MRs of the queue and the MRs of\nthe Review tasks.",
               "type": "integer",
               "format": "uint",
               "minimum": 0
@@ -219,9 +219,16 @@
           ]
         },
         {
-          "description": "The host was not polled: it limits the rate of requests until `until`.",
+          "description": "The host limits the rate of requests until `until`. The poll did not run, or it stopped:\nthe MRs that it read before the limit are applied.",
           "type": "object",
           "properties": {
+            "failed_lists": {
+              "description": "The lists that failed before the limit.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReviewListFailure"
+              }
+            },
             "outcome": {
               "type": "string",
               "const": "rate_limited"
@@ -237,12 +244,19 @@
           ]
         },
         {
-          "description": "The poll failed: every MR of the host keeps its last snapshot.",
+          "description": "The poll stopped: each MR that it did not read keeps its last snapshot.",
           "type": "object",
           "properties": {
             "error": {
               "description": "Why, for humans. Never contains the token.",
               "type": "string"
+            },
+            "failed_lists": {
+              "description": "The lists that failed before the stop.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReviewListFailure"
+              }
             },
             "outcome": {
               "type": "string",

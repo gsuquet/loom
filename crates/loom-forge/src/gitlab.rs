@@ -12,7 +12,7 @@ use crate::error::{ErrorBody, ForgeTime, ParseError, invalid, json};
 use crate::model::{
     Anchor, Comment, FileChange, FileDiff, ForgeUser, HeadPipeline, MergeStatus, Mr, MrForgeIds,
     MrKey, MrRead, MrSignals, MrState, MrSummary, MrVersion, PipelineCommit, PipelineOutcome, Sha,
-    Side, Thread, ThreadSubject,
+    Side, Thread, ThreadSubject, VersionRead,
 };
 
 #[derive(Deserialize)]
@@ -74,9 +74,9 @@ struct References {
 #[derive(Deserialize)]
 #[expect(clippy::struct_field_names, reason = "the names of the GitLab API")]
 struct DiffRefs {
-    base_sha: Sha,
-    head_sha: Sha,
-    start_sha: Sha,
+    base_sha: Option<Sha>,
+    head_sha: Option<Sha>,
+    start_sha: Option<Sha>,
 }
 
 #[derive(Deserialize)]
@@ -205,7 +205,7 @@ fn username(user: Option<User>) -> String {
 /// # Errors
 ///
 /// [`ParseError`] when the body is not a GitLab merge request, its reference or state is not
-/// valid, or it has no `diff_refs` yet (GitLab computes them after a push).
+/// valid, or it has no `diff_refs` yet or a null in them (GitLab computes them after a push).
 pub fn parse_merge_request(body: &[u8]) -> Result<Mr, ParseError> {
     parse_merge_request_read(body).map(|read| read.mr)
 }
@@ -228,9 +228,14 @@ pub fn parse_merge_request_read(body: &[u8]) -> Result<MrRead, ParseError> {
     };
     let key = key(PAYLOAD, &mr)?;
     let state = state(PAYLOAD, &mr.state)?;
-    let refs = mr
-        .diff_refs
-        .ok_or_else(|| invalid(PAYLOAD, "no diff_refs"))?;
+    let Some(DiffRefs {
+        base_sha: Some(merge_base),
+        head_sha: Some(head_sha),
+        start_sha: Some(base_sha),
+    }) = mr.diff_refs
+    else {
+        return Err(invalid(PAYLOAD, "no diff_refs"));
+    };
     let mr = Mr {
         key,
         forge_ids: MrForgeIds::Gitlab {
@@ -247,9 +252,9 @@ pub fn parse_merge_request_read(body: &[u8]) -> Result<MrRead, ParseError> {
         base_ref: mr.target_branch,
         head_ref: mr.source_branch,
         version: MrVersion {
-            head_sha: refs.head_sha,
-            base_sha: refs.start_sha,
-            merge_base: Some(refs.base_sha),
+            head_sha,
+            base_sha,
+            merge_base: Some(merge_base),
             forge_version_id: None,
             created_at: None,
         },
@@ -388,27 +393,49 @@ pub fn parse_mention_todos(body: &[u8]) -> Result<Vec<MentionedMr>, ParseError> 
 #[derive(Deserialize)]
 struct Version {
     id: u64,
-    head_commit_sha: Sha,
-    base_commit_sha: Sha,
-    start_commit_sha: Sha,
-    created_at: ForgeTime,
+    head_commit_sha: Option<Sha>,
+    base_commit_sha: Option<Sha>,
+    start_commit_sha: Option<Sha>,
+    created_at: Option<ForgeTime>,
 }
 
-/// `GET /projects/<id>/merge_requests/<iid>/versions`, newest first as GitLab gives them.
+/// The versions of [`parse_version_reads`] that a mirror can hold: those with no null SHA.
+///
+/// # Errors
+///
+/// As [`parse_version_reads`].
+pub fn parse_versions(body: &[u8]) -> Result<Vec<MrVersion>, ParseError> {
+    Ok(parse_version_reads(body)?
+        .into_iter()
+        .filter_map(|read| read.version)
+        .collect())
+}
+
+/// `GET /projects/<id>/merge_requests/<iid>/versions`, newest first as GitLab gives them. A null
+/// must not fail the read of the others. A version with no head SHA tells nothing, and is skipped.
 ///
 /// # Errors
 ///
 /// [`ParseError`] when the body is not a list of GitLab merge request versions.
-pub fn parse_versions(body: &[u8]) -> Result<Vec<MrVersion>, ParseError> {
+pub fn parse_version_reads(body: &[u8]) -> Result<Vec<VersionRead>, ParseError> {
     let versions: Vec<Version> = json("GitLab merge request versions", body)?;
     Ok(versions
         .into_iter()
-        .map(|version| MrVersion {
-            head_sha: version.head_commit_sha,
-            base_sha: version.start_commit_sha,
-            merge_base: Some(version.base_commit_sha),
-            forge_version_id: Some(version.id),
-            created_at: Some(version.created_at.0),
+        .filter_map(|version| {
+            let head_sha = version.head_commit_sha?;
+            let created_at = version.created_at.map(|time| time.0);
+            let shas = version.start_commit_sha.zip(version.base_commit_sha);
+            Some(VersionRead {
+                version: shas.map(|(base_sha, merge_base)| MrVersion {
+                    head_sha: head_sha.clone(),
+                    base_sha,
+                    merge_base: Some(merge_base),
+                    forge_version_id: Some(version.id),
+                    created_at,
+                }),
+                head_sha,
+                created_at,
+            })
         })
         .collect())
 }
