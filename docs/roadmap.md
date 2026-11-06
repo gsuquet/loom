@@ -44,7 +44,8 @@ Design: [Connector ports](design/connector-ports.md), [Connectors](design/connec
 | # | Task | Kind | Depends on | Owner |
 | --- | --- | --- | --- | --- |
 | C1 | Connector status: `ConnectorStatus`, `Capabilities` and `ConnectorKind` in `loom-api`, `GET /v1/connectors`, `loom connector status`, `state/connectors.json`, change event, forges report into it | Story | #218 | Agent |
-| C2 | Config: `[contexts.<ctx>.connectors.<name>]` per kind, validation, API base rules, `token_env_names`, `store.backup.allows_client_data`, reference page | Story | This design, C1, #217 | Agent |
+| C1b | `loom review queue`: an empty queue reads connector status, and tells a failed poll from nothing to do | Story | C1 | Agent |
+| C2 | Config: `[contexts.<ctx>.connectors.<name>]` per kind, validation (a name equal to a forge host of its context is refused), API base rules, `token_env_names`, `store.backup.allows_client_data`, reference page | Story | This design, C1, #217 | Agent |
 | C3 | `loom-connector`: ports, types, `ConnectorError`, capabilities, stub modules for the three adapters; `Transport` out of `Http`; the key encoder out of `MrKey::dir_name`; fake server root; `fixtures/connectors/`; crate row | Story | This design, C1 | Agent |
 | C4 | Poll loop: `loomd::poll` out of `review_sync`, one thread per instance, `sync_connector` on the task thread, `POST /v1/connectors/sync`, `ConnectorBatch` and `TrackedItem` types, `loom connector doctor`, `LOOM_TEST_CONNECTOR_API`; tested with an in-memory `IngestPort` | Story | C1, C2, C3, #218 | Agent |
 | C5 | Items: `origin` keys `connector` and `remote_id`, lookup, applying a `ConnectorBatch` in `tasks/connectors.rs`, `loom connector rename`, the block per item and its doctor clause; no move of a connector task | Story | C4 | Agent |
@@ -66,7 +67,7 @@ Design: [Connector ports](design/connector-ports.md), [Connectors](design/connec
 | F2 | Freshservice sync: list, pool, mirror | Story | C6, F0, F1, F1b | Agent |
 | F3 | Freshservice real check | Chore | F2 | Me + agent |
 
-Order: C1 to C5, with C2 and C3 side by side, and C7 once C3 is merged. Then three parallel tracks, each in its own module and fixture directory: {D0, D1 -> D2 -> D2b -> D3}, {C6; J0, J1, J2 -> J3 -> J4}, {C6; F0, F1, F1b -> F2 -> F3}. D1, J1, J2, F1 and F1b can start as soon as C3 is merged. Datadog does not wait for C6.
+Order: C1 to C5, with C2 and C3 side by side, and C7 once C3 is merged. C1b can start once C1 is merged. Then three parallel tracks, each in its own module and fixture directory: {D0, D1 -> D2 -> D2b -> D3}, {C6; J0, J1, J2 -> J3 -> J4}, {C6; F0, F1, F1b -> F2 -> F3}. D1, J1, J2, F1 and F1b can start as soon as C3 is merged. Datadog does not wait for C6.
 
 ### Writes (later)
 

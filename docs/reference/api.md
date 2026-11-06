@@ -1319,12 +1319,12 @@ The answer of `GET /v1/connectors` and of `loom connector status --json` ([schem
 | `context` | string | The context. |
 | `name` | string | The name of the connector. For a forge: its host. |
 | `kind` | string | `gitlab`, `github`, `datadog`, `jira` or `freshservice`. |
-| `host` | string | The host that `loomd` calls. |
+| `host` | string | The host of the credential, as in the configuration. For a forge, the API can be on another host: `api.github.com` for `github.com`. |
 | `polled_by` | object | Tagged by `by`: `this_machine`, `every_machine` (`machines` is absent in the context), or `other` with `machine`, the first machine of the context. |
 | `health` | object | The result of the last poll. Tagged by `state`, see below. |
 | `stale` | boolean | No poll succeeded in the last 3 poll intervals, or no poll ever succeeded. Always `false` with `polled_by` `other`. |
-| `last_attempt` | string: timestamp, optional | The start of the last poll on this machine that called the forge. A restart keeps it. |
-| `last_success` | string: timestamp, optional | The start of the last poll on this machine that succeeded. A restart keeps it. A poll with a failure in `Partial` or a list in `Forbidden` succeeded. |
+| `last_attempt` | string: timestamp, optional | The start of the last poll on this machine that called the forge. A poll that a rate limit skipped does not change it, and a poll whose token does not resolve does not change it. A restart keeps it. |
+| `last_success` | string: timestamp, optional | The start of the last poll on this machine that succeeded. A restart keeps it. A poll succeeded when the host answered its list and the poll went on, also when each MR read failed or when a list has a failure. Then `health` is `partial` or `forbidden`, `last_success` changes and `stale` stays `false`. |
 | `next_poll` | string: timestamp, optional | The time of the next poll. Absent with `polled_by` `other`. |
 | `items` | object | The counts of the last poll that was not stopped. See below. |
 | `capabilities` | object | What the kind of connector can do: `pool` and `mirror`, booleans. Both are `false` for a forge. |
@@ -1334,11 +1334,11 @@ The answer of `GET /v1/connectors` and of `loom connector status --json` ([schem
 | `state` | Fields | When |
 | --- | --- | --- |
 | `not_polled_yet` | | No poll ran since `loomd` started, or another machine polls this connector. |
-| `ok` | | The last poll had no failure. |
+| `ok` | | The last poll reported no failure. This does not prove that each read occurred: GitHub can mark its search as incomplete, and `loomd` only logs a failed read of the reviewers of a GitLab MR. |
 | `partial` | `failed` | Some items or lists failed. The others are applied. |
 | `rate_limited` | `until` | The host limits the rate of requests until this time. |
-| `credential` | `which`, `error` | The host refuses the secret, or the secret does not resolve. `which`: `token` or `app_key`. `error` never contains the secret. |
-| `forbidden` | `error`, `failed` | The secret is good, but a permission is missing. For a forge, this is also a list of the poll that the host refuses, such as the to-dos: `error` names the list, the poll goes on, and `failed` gives what else failed. |
+| `credential` | `which`, `error` | The host refuses the secret, or the secret does not resolve. `which`: `token` or `app_key`. `error` never contains the token that `loomd` has. When `token_cmd` fails, `error` contains the end of the standard error of the command, as the answer of `POST /v1/reviews/sync` does. |
+| `forbidden` | `error`, `failed` | The secret is good, but a permission is missing. For a forge, this is also a list of the poll that the host refuses, such as the to-dos: `error` names the list, the poll goes on, and `failed` gives what else failed. `failed` is absent when it is empty. |
 | `invalid_filter` | `error` | The host refuses the filter of the configuration. A retry does not help. |
 | `unreachable` | `error`, `failures` | The poll stopped for another reason. `failures`: the failed polls in a row. |
 
@@ -1348,7 +1348,7 @@ Each item of `failed` has a `key` and a `reason`. The `key` of a list is `list:<
 
 | Field | Type | Content |
 | --- | --- | --- |
-| `listed` | number | The items of the last poll. For a forge: the MRs polled. |
+| `listed` | number | The items of the last poll. For a forge: the updates and the failures of the poll, the same number as `mrs` in [`ReviewSyncResult`](#reviewsyncresult). This is not the number of MRs that wait on you. |
 | `pool` | number | The items of the team pool. |
 | `failed` | number | The items and lists that failed in the last poll. |
 | `truncated` | boolean | The pool has more items than `pool_limit`. |
