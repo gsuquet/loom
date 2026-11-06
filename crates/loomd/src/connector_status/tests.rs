@@ -240,7 +240,13 @@ fn a_rate_limit_is_as_it_is_and_keeps_the_counts() {
         None,
         2,
     );
-    assert_eq!(poll.health, ConnectorHealth::RateLimited { until: at(60) });
+    assert_eq!(
+        poll.health,
+        ConnectorHealth::RateLimited {
+            until: at(60),
+            failed: vec![]
+        }
+    );
     assert!(!poll.success);
     assert_eq!(poll.items, None);
 }
@@ -257,6 +263,7 @@ fn a_stopped_poll_follows_its_cause_and_keeps_the_counts() {
             ConnectorHealth::Credential {
                 which: Secret::Token,
                 error: "why".to_owned(),
+                failed: vec![],
             },
         ),
         (
@@ -271,6 +278,7 @@ fn a_stopped_poll_follows_its_cause_and_keeps_the_counts() {
             ConnectorHealth::Unreachable {
                 error: "why".to_owned(),
                 failures: 3,
+                failed: vec![],
             },
         ),
         (
@@ -278,6 +286,7 @@ fn a_stopped_poll_follows_its_cause_and_keeps_the_counts() {
             ConnectorHealth::Unreachable {
                 error: "why".to_owned(),
                 failures: 3,
+                failed: vec![],
             },
         ),
     ];
@@ -533,6 +542,7 @@ fn a_failed_poll_moves_last_attempt_and_keeps_last_success_and_the_counts() {
                 ConnectorHealth::Unreachable {
                     error: "down".to_owned(),
                     failures: 1,
+                    failed: vec![],
                 },
             )
         },
@@ -557,14 +567,23 @@ fn a_skipped_poll_moves_no_time_and_writes_nothing() {
         Report {
             attempted: false,
             items: None,
-            ..report(at(50), ConnectorHealth::RateLimited { until: at(90) })
+            ..report(
+                at(50),
+                ConnectorHealth::RateLimited {
+                    until: at(90),
+                    failed: vec![],
+                },
+            )
         },
     );
     let list = statuses.list(None, at(50));
     assert_eq!(list.connectors[0].last_attempt, Some(at(10)));
     assert_eq!(
         list.connectors[0].health,
-        ConnectorHealth::RateLimited { until: at(90) }
+        ConnectorHealth::RateLimited {
+            until: at(90),
+            failed: vec![]
+        }
     );
     // Same bytes as the last write: the removed file does not come back.
     assert!(!fixture.path().exists());
@@ -662,7 +681,13 @@ fn a_failed_write_keeps_the_status_and_is_tried_again() {
         Report {
             attempted: false,
             items: None,
-            ..report(at(50), ConnectorHealth::RateLimited { until: at(90) })
+            ..report(
+                at(50),
+                ConnectorHealth::RateLimited {
+                    until: at(90),
+                    failed: vec![],
+                },
+            )
         },
     );
     assert_eq!(
@@ -695,6 +720,7 @@ fn the_transition_gives_the_previous_and_the_new_health() {
     let refused = ConnectorHealth::Credential {
         which: Secret::Token,
         error: "401".to_owned(),
+        failed: vec![],
     };
     let first = statuses
         .report(&context, "gitlab.com", report(at(10), refused.clone()))
@@ -822,6 +848,7 @@ fn an_error_stays_out_of_the_file() {
             ConnectorHealth::Unreachable {
                 error: "marker-text".to_owned(),
                 failures: 1,
+                failed: vec![],
             },
         ),
     );
@@ -975,4 +1002,119 @@ fn a_write_that_waited_holds_the_newest_times() {
         state(&fixture.path())["connectors"][0]["last_attempt"],
         serde_json::to_value(at(20)).unwrap()
     );
+}
+
+#[test]
+fn a_stopped_poll_keeps_its_failed_lists_and_gives_the_health_of_the_stop() {
+    let failed_lists = vec![
+        list_failure(
+            ReviewList::Mentioned,
+            ReviewListFailureKind::Forbidden,
+            "403",
+        ),
+        list_failure(ReviewList::Own, ReviewListFailureKind::Other, "502"),
+    ];
+    let kept = vec![failure("list:mentioned", "403"), failure("list:own", "502")];
+    let failed = ReviewSyncOutcome::Failed {
+        error: "why".to_owned(),
+        failed_lists: failed_lists.clone(),
+    };
+    let error = "why".to_owned();
+    let cases = [
+        (
+            ForgeStop::Credential,
+            ConnectorHealth::Credential {
+                which: Secret::Token,
+                error: error.clone(),
+                failed: kept.clone(),
+            },
+        ),
+        (
+            ForgeStop::Forbidden,
+            ConnectorHealth::Forbidden {
+                error: error.clone(),
+                failed: kept.clone(),
+            },
+        ),
+        (
+            ForgeStop::Unreachable,
+            ConnectorHealth::Unreachable {
+                error,
+                failures: 3,
+                failed: kept.clone(),
+            },
+        ),
+    ];
+    for (stop, health) in cases {
+        let poll = forge_poll(&failed, Some(stop), 3);
+        assert_eq!(poll.health, health);
+        assert!(!poll.success);
+        assert_eq!(poll.items, None);
+    }
+    let limited = forge_poll(
+        &ReviewSyncOutcome::RateLimited {
+            until: at(60),
+            failed_lists,
+        },
+        None,
+        0,
+    );
+    assert_eq!(
+        limited.health,
+        ConnectorHealth::RateLimited {
+            until: at(60),
+            failed: kept,
+        }
+    );
+    assert_eq!(limited.items, None);
+}
+
+#[test]
+fn a_poll_that_a_rate_limit_skips_keeps_what_failed_before_the_limit() {
+    let fixture = Fixture::new();
+    let statuses = fixture.open(gitlab(PolledBy::ThisMachine));
+    let context = context("work");
+    let met = ConnectorHealth::RateLimited {
+        until: at(90),
+        failed: vec![failure("list:own", "502")],
+    };
+    let health =
+        |statuses: &ConnectorStatuses| statuses.list(None, at(50)).connectors[0].health.clone();
+    statuses.report(&context, "gitlab.com", report(at(10), met.clone()));
+    assert_eq!(health(&statuses), met);
+    let skipped = ConnectorHealth::RateLimited {
+        until: at(90),
+        failed: vec![],
+    };
+    let mut live = events(&fixture.bus);
+    statuses.report(
+        &context,
+        "gitlab.com",
+        Report {
+            attempted: false,
+            items: None,
+            ..report(at(50), skipped.clone())
+        },
+    );
+    assert_eq!(health(&statuses), met);
+    assert_eq!(drained(&mut live), []);
+    // A poll that called the forge says what it saw.
+    statuses.report(&context, "gitlab.com", report(at(60), skipped.clone()));
+    assert_eq!(health(&statuses), skipped);
+    // A token that does not resolve calls nothing, and it is not a skip.
+    let problem = ConnectorHealth::Credential {
+        which: Secret::Token,
+        error: "unset".to_owned(),
+        failed: vec![],
+    };
+    statuses.report(
+        &context,
+        "gitlab.com",
+        Report {
+            attempted: false,
+            items: None,
+            ..report(at(70), problem.clone())
+        },
+    );
+    assert_eq!(health(&statuses), problem);
 }

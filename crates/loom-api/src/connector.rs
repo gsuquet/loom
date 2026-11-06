@@ -109,6 +109,9 @@ pub enum ConnectorHealth {
     RateLimited {
         /// When the next poll can run.
         until: Timestamp,
+        /// What failed before the poll stopped, such as a list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed: Vec<ConnectorFailure>,
     },
     /// The host refuses a secret, or the secret does not resolve.
     Credential {
@@ -117,12 +120,15 @@ pub enum ConnectorHealth {
         /// Why, for humans. Never contains the token that loomd has. When `token_cmd` fails,
         /// contains the end of the standard error of the command.
         error: String,
+        /// What failed before the poll stopped, such as a list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed: Vec<ConnectorFailure>,
     },
     /// The secrets are good, but a permission is missing.
     Forbidden {
         /// Why, for humans. Never contains a secret.
         error: String,
-        /// What else failed, when the poll went on.
+        /// What else failed: in the poll that went on, or before the poll stopped.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed: Vec<ConnectorFailure>,
     },
@@ -137,14 +143,17 @@ pub enum ConnectorHealth {
         error: String,
         /// The failed polls in a row.
         failures: u32,
+        /// What failed before the poll stopped, such as a list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed: Vec<ConnectorFailure>,
     },
 }
 
 /// The counts of the last poll that was not stopped.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ConnectorCounts {
-    /// The items of the last poll. For a forge: the updates and the failures of the poll. This
-    /// is not the number of MRs that wait on me.
+    /// The items of the last poll. For a forge: the MRs of the poll, each one once. This is not
+    /// the number of MRs that wait on me: it includes the MRs of Review tasks.
     pub listed: usize,
     /// The items of the team pool.
     pub pool: usize,

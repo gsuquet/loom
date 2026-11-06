@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use loom_api::{
     ChangeEvent, ConnectorCounts, ConnectorFailure, ConnectorHealth, ConnectorKind, ConnectorList,
-    ConnectorStatus, ContextName, PolledBy, ReviewList, ReviewListFailureKind, ReviewSyncOutcome,
-    Secret, Timestamp,
+    ConnectorStatus, ContextName, PolledBy, ReviewList, ReviewListFailure, ReviewListFailureKind,
+    ReviewSyncOutcome, Secret, Timestamp,
 };
 use loom_config::config::Config;
 use loom_config::forges::DEFAULT_POLL_INTERVAL;
@@ -101,6 +101,37 @@ const fn list_key(list: ReviewList) -> &'static str {
     }
 }
 
+/// The lists that failed before a poll stopped, a refused one included: the health says why the
+/// poll stopped, and this says what else it saw.
+fn stopped_lists(lists: &[ReviewListFailure]) -> Vec<ConnectorFailure> {
+    lists
+        .iter()
+        .map(|failure| ConnectorFailure {
+            key: list_key(failure.list).to_owned(),
+            reason: failure.error.clone(),
+        })
+        .collect()
+}
+
+/// The health after a report: a poll that a rate limit skipped saw nothing, so it keeps what failed
+/// before the limit. Pure.
+fn next_health(
+    previous: &ConnectorHealth,
+    new: ConnectorHealth,
+    attempted: bool,
+) -> ConnectorHealth {
+    match (previous, new) {
+        (
+            ConnectorHealth::RateLimited { failed, .. },
+            ConnectorHealth::RateLimited { until, .. },
+        ) if !attempted => ConnectorHealth::RateLimited {
+            until,
+            failed: failed.clone(),
+        },
+        (_, new) => new,
+    }
+}
+
 /// The health of a poll that `outcome` ended. `stop` is its cause when the poll failed, and
 /// `failures` the failed polls in a row, this one included. Pure.
 #[must_use]
@@ -158,25 +189,35 @@ pub fn forge_poll(
                 items: Some(items),
             }
         }
-        ReviewSyncOutcome::RateLimited { until, .. } => ForgePoll {
-            health: ConnectorHealth::RateLimited { until: *until },
+        ReviewSyncOutcome::RateLimited {
+            until,
+            failed_lists,
+        } => ForgePoll {
+            health: ConnectorHealth::RateLimited {
+                until: *until,
+                failed: stopped_lists(failed_lists),
+            },
             success: false,
             items: None,
         },
-        ReviewSyncOutcome::Failed { error, .. } => {
+        ReviewSyncOutcome::Failed {
+            error,
+            failed_lists,
+        } => {
             let error = error.clone();
+            let failed = stopped_lists(failed_lists);
             let health = match stop {
                 Some(ForgeStop::Credential) => ConnectorHealth::Credential {
                     which: Secret::Token,
                     error,
+                    failed,
                 },
-                Some(ForgeStop::Forbidden) => ConnectorHealth::Forbidden {
+                Some(ForgeStop::Forbidden) => ConnectorHealth::Forbidden { error, failed },
+                Some(ForgeStop::Unreachable) | None => ConnectorHealth::Unreachable {
                     error,
-                    failed: Vec::new(),
+                    failures,
+                    failed,
                 },
-                Some(ForgeStop::Unreachable) | None => {
-                    ConnectorHealth::Unreachable { error, failures }
-                }
             };
             ForgePoll {
                 health,
@@ -491,7 +532,8 @@ impl ConnectorStatuses {
         // What a read just before this report gave: after a gap with no report, such as a machine
         // that slept, a client can show `stale` though the last report did not say so.
         let stale_before = entry.stale_at(report.at);
-        let previous = std::mem::replace(&mut entry.health, report.health);
+        let health = next_health(&entry.health, report.health, report.attempted);
+        let previous = std::mem::replace(&mut entry.health, health);
         if report.attempted {
             entry.last_attempt = Some(report.at);
         }

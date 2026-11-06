@@ -339,10 +339,14 @@ fn a_connector_list_validates_against_its_schema_in_each_health() {
         ConnectorHealth::Partial {
             failed: vec![failure.clone()],
         },
-        ConnectorHealth::RateLimited { until: at },
+        ConnectorHealth::RateLimited {
+            until: at,
+            failed: vec![],
+        },
         ConnectorHealth::Credential {
             which: Secret::AppKey,
             error: "401".to_owned(),
+            failed: vec![],
         },
         ConnectorHealth::Forbidden {
             error: "403".to_owned(),
@@ -358,6 +362,7 @@ fn a_connector_list_validates_against_its_schema_in_each_health() {
         ConnectorHealth::Unreachable {
             error: "no answer".to_owned(),
             failures: 2,
+            failed: vec![],
         },
     ];
     let polled_by = [
@@ -404,6 +409,7 @@ fn a_connector_status_has_the_documented_shape() {
     let health = serde_json::to_value(ConnectorHealth::Credential {
         which: Secret::AppKey,
         error: "401".to_owned(),
+        failed: vec![],
     })
     .unwrap();
     assert_eq!(

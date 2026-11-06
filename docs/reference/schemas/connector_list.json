@@ -45,7 +45,7 @@
           "minimum": 0
         },
         "listed": {
-          "description": "The items of the last poll. For a forge: the updates and the failures of the poll. This\nis not the number of MRs that wait on me.",
+          "description": "The items of the last poll. For a forge: the MRs of the poll, each one once. This is not\nthe number of MRs that wait on me: it includes the MRs of Review tasks.",
           "type": "integer",
           "format": "uint",
           "minimum": 0
@@ -147,6 +147,13 @@
           "description": "The host limits the rate of requests.",
           "type": "object",
           "properties": {
+            "failed": {
+              "description": "What failed before the poll stopped, such as a list.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ConnectorFailure"
+              }
+            },
             "state": {
               "type": "string",
               "const": "rate_limited"
@@ -168,6 +175,13 @@
             "error": {
               "description": "Why, for humans. Never contains the token that loomd has. When `token_cmd` fails,\ncontains the end of the standard error of the command.",
               "type": "string"
+            },
+            "failed": {
+              "description": "What failed before the poll stopped, such as a list.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ConnectorFailure"
+              }
             },
             "state": {
               "type": "string",
@@ -193,7 +207,7 @@
               "type": "string"
             },
             "failed": {
-              "description": "What else failed, when the poll went on.",
+              "description": "What else failed: in the poll that went on, or before the poll stopped.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/ConnectorFailure"
@@ -234,6 +248,13 @@
             "error": {
               "description": "Why, for humans. Never contains a secret.",
               "type": "string"
+            },
+            "failed": {
+              "description": "What failed before the poll stopped, such as a list.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ConnectorFailure"
+              }
             },
             "failures": {
               "description": "The failed polls in a row.",

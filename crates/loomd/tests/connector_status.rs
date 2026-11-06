@@ -294,7 +294,7 @@ fn a_refused_token_is_credential_never_shows_the_token_and_heals() {
     let daemon = sandbox.start();
     sandbox.sync();
     let status = sandbox.work();
-    let ConnectorHealth::Credential { which, error } = &status.health else {
+    let ConnectorHealth::Credential { which, error, .. } = &status.health else {
         panic!("{status:?}");
     };
     assert_eq!(*which, Secret::Token);
@@ -580,4 +580,49 @@ fn a_poll_cut_by_the_stop_of_loomd_reports_nothing() {
     }
     daemon.stop();
     assert!(!sandbox.state().exists());
+}
+
+/// A list that failed, then a limit on the next one: #229 keeps the list on the stopped poll.
+#[test]
+fn a_poll_stopped_by_a_limit_keeps_the_list_that_failed_before_it_and_a_skip_too() {
+    let sandbox = Sandbox::new();
+    sandbox.routes(vec![
+        Route::get(ASSIGNED).status(500).body("{}"),
+        Route::get(MENTIONED)
+            .status(429)
+            .header("retry-after", "3600")
+            .body("{}"),
+    ]);
+    let daemon = sandbox.start();
+    sandbox.sync();
+    let keys = |status: &ConnectorStatus| -> Vec<String> {
+        let ConnectorHealth::RateLimited { failed, .. } = &status.health else {
+            panic!("{status:?}");
+        };
+        failed.iter().map(|failure| failure.key.clone()).collect()
+    };
+    let status = sandbox.work();
+    assert_eq!(keys(&status), ["list:assigned"]);
+    assert_eq!(status.last_success, None);
+    sandbox.sync();
+    assert_eq!(keys(&sandbox.work()), ["list:assigned"]);
+    daemon.stop();
+}
+
+#[test]
+fn a_poll_stopped_by_a_refused_token_keeps_the_list_that_failed_before_it() {
+    let sandbox = Sandbox::new();
+    sandbox.routes(vec![
+        Route::get(ASSIGNED).status(500).body("{}"),
+        Route::get(MENTIONED).status(401).body("{}"),
+    ]);
+    let daemon = sandbox.start();
+    sandbox.sync();
+    let status = sandbox.work();
+    let ConnectorHealth::Credential { failed, .. } = &status.health else {
+        panic!("{status:?}");
+    };
+    let keys: Vec<&str> = failed.iter().map(|failure| failure.key.as_str()).collect();
+    assert_eq!(keys, ["list:assigned"]);
+    daemon.stop();
 }

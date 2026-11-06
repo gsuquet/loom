@@ -80,14 +80,16 @@ fn health_text(health: &ConnectorHealth) -> String {
         ConnectorHealth::NotPolledYet => "not polled yet".to_owned(),
         ConnectorHealth::Ok => "ok".to_owned(),
         ConnectorHealth::Partial { failed } => format!("partial, {} failed", failed.len()),
-        ConnectorHealth::RateLimited { until } => format!("rate limited until {until}"),
-        ConnectorHealth::Credential { which, error } => {
+        ConnectorHealth::RateLimited { until, .. } => format!("rate limited until {until}"),
+        ConnectorHealth::Credential { which, error, .. } => {
             // Refused by the host, or not resolved here: "refused" would claim too much.
             format!("{} problem: {}", secret_name(*which), clean(error))
         }
         ConnectorHealth::Forbidden { error, .. } => format!("forbidden: {}", clean(error)),
         ConnectorHealth::InvalidFilter { error } => format!("invalid filter: {}", clean(error)),
-        ConnectorHealth::Unreachable { error, failures } => {
+        ConnectorHealth::Unreachable {
+            error, failures, ..
+        } => {
             format!("unreachable ({failures} failed in a row): {}", clean(error))
         }
     }
@@ -95,15 +97,14 @@ fn health_text(health: &ConnectorHealth) -> String {
 
 const fn failures_of(health: &ConnectorHealth) -> &[ConnectorFailure] {
     match health {
-        ConnectorHealth::Partial { failed } | ConnectorHealth::Forbidden { failed, .. } => {
-            failed.as_slice()
-        }
+        ConnectorHealth::Partial { failed }
+        | ConnectorHealth::RateLimited { failed, .. }
+        | ConnectorHealth::Credential { failed, .. }
+        | ConnectorHealth::Forbidden { failed, .. }
+        | ConnectorHealth::Unreachable { failed, .. } => failed.as_slice(),
         ConnectorHealth::NotPolledYet
         | ConnectorHealth::Ok
-        | ConnectorHealth::RateLimited { .. }
-        | ConnectorHealth::Credential { .. }
-        | ConnectorHealth::InvalidFilter { .. }
-        | ConnectorHealth::Unreachable { .. } => &[],
+        | ConnectorHealth::InvalidFilter { .. } => &[],
     }
 }
 
@@ -235,13 +236,17 @@ mod tests {
                 "partial, 0 failed".to_owned(),
             ),
             (
-                ConnectorHealth::RateLimited { until: at(0) },
+                ConnectorHealth::RateLimited {
+                    until: at(0),
+                    failed: vec![],
+                },
                 format!("rate limited until {until}"),
             ),
             (
                 ConnectorHealth::Credential {
                     which: Secret::Token,
                     error: error.clone(),
+                    failed: vec![],
                 },
                 "token problem: why".to_owned(),
             ),
@@ -249,6 +254,7 @@ mod tests {
                 ConnectorHealth::Credential {
                     which: Secret::AppKey,
                     error: error.clone(),
+                    failed: vec![],
                 },
                 "application key problem: why".to_owned(),
             ),
@@ -266,7 +272,11 @@ mod tests {
                 "invalid filter: why".to_owned(),
             ),
             (
-                ConnectorHealth::Unreachable { error, failures: 2 },
+                ConnectorHealth::Unreachable {
+                    error,
+                    failures: 2,
+                    failed: vec![],
+                },
                 "unreachable (2 failed in a row): why".to_owned(),
             ),
         ];
@@ -297,13 +307,27 @@ mod tests {
     }
 
     #[test]
-    fn what_failed_is_on_its_own_lines_for_partial_and_forbidden() {
+    fn what_failed_is_on_its_own_lines_for_each_health_that_holds_it() {
         let failed = vec![ConnectorFailure {
             key: "list:own".to_owned(),
             reason: "502".to_owned(),
         }];
         for health in [
             ConnectorHealth::Partial {
+                failed: failed.clone(),
+            },
+            ConnectorHealth::RateLimited {
+                until: at(0),
+                failed: failed.clone(),
+            },
+            ConnectorHealth::Credential {
+                which: Secret::Token,
+                error: "401".to_owned(),
+                failed: failed.clone(),
+            },
+            ConnectorHealth::Unreachable {
+                error: "no answer".to_owned(),
+                failures: 1,
                 failed: failed.clone(),
             },
             ConnectorHealth::Forbidden {
@@ -379,6 +403,7 @@ mod tests {
         let text = one(status(ConnectorHealth::Unreachable {
             error: "x\r\ny".to_owned(),
             failures: 1,
+            failed: vec![],
         }));
         assert_eq!(text.lines().count(), 1, "{text:?}");
     }
