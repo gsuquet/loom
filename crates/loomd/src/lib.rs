@@ -2,11 +2,12 @@
 //! the tracing middleware of the API. `main.rs` and its modules do the I/O, except
 //! [`repo_update`] and [`store_git`], which run git to update one repository and to commit the
 //! context stores, and are here for their integration
-//! tests.
+//! tests, and [`connector_status`], whose one writer sits beside its decisions.
 
 pub mod api;
 pub mod backup;
 pub mod cli;
+pub mod connector_status;
 pub mod disk;
 pub mod events;
 pub mod exit;

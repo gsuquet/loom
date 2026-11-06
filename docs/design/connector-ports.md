@@ -9,7 +9,7 @@ Vendor facts below were read on 2026-11-05 from the pages listed under [Sources]
 - **Forges**: `loom_forge::client` has `Forge`, `OpenForge`, `GithubForge`, `GitlabForge`. They are blocking, and `ForgeError` and `http::classify` are specific to GitHub and GitLab.
 - **Poll**: `crates/loomd/src/reviews.rs` is one thread that polls every context and host in turn. `mr_worker` (#213) runs after each poll on its own thread. #218, still open, would add queue starts on the poll thread.
 - **Writes**: nothing in the code holds a write. There is no Outbox, and no Held, Sent or Not sent state in `crates/`, after #213 or in #218. `held` in the code means a context store on this machine, a lock, or, in #218, an entry that cannot move. `loom pr` writes straight to the forge. So [Write states](connectors.md#write-states) is still target behaviour for every write, and the Outbox is a task of its own.
-- **Connectors**: no code has a connector type, `remote/` directory, connector status or `issues/` mirror.
+- **Connectors**: no code has a connector adapter, `remote/` directory or `issues/` mirror. [Connector status](#connector-status) exists (C1), and only the forges report into it.
 - **Reaching me**: no notification is delivered today, `loom ls` hides `inbox` tasks (`is_listed`), and the app comes later. See [Urgent](#urgent).
 - **Doctor**: the only one is `loom repo doctor`. There is no `loom doctor` command.
 
@@ -95,7 +95,7 @@ Not extracted: `Conditional<T>`, since no vendor here documents a conditional re
 | Poll thread | Reads what it needs through `Reader` and files, as `Poller::keys` does: a `TrackedItem` for each item with a task. Calls `check` when it has no `Identity`, fills `Known`, decides what left a list | C4 |
 | `ConnectorBatch` | `context`, `connector`, `kind`, `started`, `identity`, `list: Option<Listing>`, `pool: Option<Listing>`, `reads: Vec<(ItemRef, ItemRead)>`, `mirrors: Vec<(ItemRef, MirrorRead)>`. `None`: not asked or failed, which changes nothing | C4 owns the type, C5 applies it |
 | `decide_ticket`, `decide_alert` | Pure, in `loomd::connector_sync`. They run on the task thread, in `tasks/connectors.rs`, as `tasks/reviews.rs` does, since only it may read a task and write in one step. It answers `ConnectorApplied`: `created`, `changed`, `failed`, `notify`. The poll thread calls `NotifyPort` with `notify`, after the batch | C5, C6, D2 |
-| `state/connectors.json` | Written by one `ConnectorStatuses` in loomd, behind a mutex, by atomic rename, when an instance reports. Holds `last_attempt` and `last_success` per instance | C1 |
+| `state/connectors.json` | Written by one `ConnectorStatuses` in loomd (`loomd::connector_status`), with a mutex for the status and one for the writes, by atomic rename, when an instance reports and only when its bytes change. Holds `last_attempt` and `last_success` per instance | C1 |
 | Doctor | `loom connector doctor`: for each instance, secrets resolved and `check`; names tasks of an unconfigured connector (that clause: C5). `loom repo doctor` stays for forges | C4 |
 
 ## Connector instances
@@ -137,7 +137,7 @@ open_statuses = [2, 3]                    # default
 extra_query = "tag:'payments'"            # added to the built query with AND
 ```
 
-- **Name**: the table key, `[a-z0-9_]+`, unique in its context. No `-`: in `<connector>-<key>`, the first `-` ends the name, and Jira keys hold one. I name it after the tool unless a context has two.
+- **Name**: the table key, `[a-z0-9_]+`, unique in its context. No `-`: in `<connector>-<key>`, the first `-` ends the name, and Jira keys hold one. I name it after the tool unless a context has two. A forge credential shows in status under its host, and status keys on `(context, name)`, so a name equal to a forge host of that context, such as a dotless host `gitlab`, is refused at load.
 - **Rename**: the name is part of the identity of every item. `loom connector rename <old> <new>` runs on the task thread: it rewrites `origin.connector` and renames the mirror, snapshot and pool files, with one store commit. Until then, an instance creates nothing for an item whose key matches a task that is not archived, of an unconfigured connector of the same kind and host. The item counts as `Partial`, naming that connector. So a rename in the file alone duplicates nothing, closed tickets and dismissed alerts included, and removing one Datadog instance never stops another. A rename does not reach archived tasks: they are never changed, so an item still listed under an archived task of the old name counts as new, once.
 - **Keys** are parsed per `kind`, and an unknown key is refused with its line, as for `[forges]`.
 - **Two contexts on one site**: a token sees the same items in both, so an item would land in both stores. Each must then say what is its own: `list_jql` written out on Jira, `workspace_id` or `extra_query` on Freshservice. The default is refused at load. Datadog's `query` is always required.
@@ -312,14 +312,14 @@ pub struct ConnectorStatus {
     pub context: ContextName,
     pub name: String,                // the instance; a forge: its host
     pub kind: ConnectorKind,         // gitlab | github | datadog | jira | freshservice
-    pub host: String,
+    pub host: String,                // of the credential; a forge's API can be elsewhere (`api.github.com`)
     pub polled_by: PolledBy,         // this_machine | other { machine } | every_machine
     pub health: ConnectorHealth,
     pub stale: bool,                 // pure: no success in 3 intervals, or never
     pub last_attempt: Option<Timestamp>,
     pub last_success: Option<Timestamp>,
     pub next_poll: Option<Timestamp>,
-    pub items: ConnectorCounts,      // listed, pool, failed, truncated, local_changes
+    pub items: ConnectorCounts,      // listed, pool, failed, truncated (bool), local_changes
     pub capabilities: Capabilities,
 }
 
@@ -327,19 +327,23 @@ pub enum ConnectorHealth {
     NotPolledYet,
     Ok,
     Partial { failed: Vec<ConnectorFailure> },    // key and reason; the rest applied
-    RateLimited { until: Timestamp },
-    Credential { which: Secret, error: String },  // never the token
-    Forbidden { error: String },                  // the secrets are good, a permission is missing
+    RateLimited { until: Timestamp, failed: Vec<ConnectorFailure> },
+    Credential { which: Secret, error: String, failed: Vec<ConnectorFailure> },  // never the token
+    Forbidden { error: String, failed: Vec<ConnectorFailure> },  // the secrets are good, a permission is missing; `failed`: what else failed in a poll that went on
     InvalidFilter { error: String },              // bad JQL or query: fix the config, retry won't help
-    Unreachable { error: String, failures: u32 },
+    Unreachable { error: String, failures: u32, failed: Vec<ConnectorFailure> },
 }
 ```
 
-- **Read**: `GET /v1/connectors`, `loom connector status [--json]`. A change sends a change event, for the app. With #218, an empty `loom review queue` cannot tell a failed poll from nothing to do: it will read this.
-- **Another machine**: `polled_by: other` makes no claim on health. This machine does not know.
-- **Forges**: `ReviewSync` maps onto it. `Synced` with `failed` or `failed_lists` is `Partial`, `RateLimited` as it is, and a `Failed` from a 401 is `Credential`. An entry of `failed_lists` with `kind: forbidden`, on each poll, can give `Forbidden`: a token that cannot read its to-dos. Connector status has to retain `failed_lists`: only the answer of `POST /v1/reviews/sync` holds it today, and a scheduled poll logs it and drops it.
+- **Read**: `GET /v1/connectors`, `loom connector status [--json]`. With #218, an empty `loom review queue` cannot tell a failed poll from nothing to do: it will read this, in task C1b.
+- **Change event**: `connector.changed { context, name }`, for the app, when a report changes `health`, `items` or `stale`. The times move at each poll and send none. `stale` is pure and follows the clock, so a read is always right, while the event comes with the next report. A success after a gap sends one even when the last report was not stale, since a read in the gap could show `stale: true`.
+- **What lives where**: `state/connectors.json` holds `last_attempt` and `last_success`, and nothing else. `health` and `items` are in memory: after a restart an instance is `NotPolledYet` with its last times. `last_attempt` is the start of a poll that called the vendor, so neither a poll skipped by a rate limit nor one whose secret does not resolve moves it. A failed write is logged and tried again at the next report, and it never stops a poll. A read never waits on the disk: the status has its own mutex, and a second one keeps the writes in order. A stuck write holds up the threads that report, and no reader.
+- **What `last_success` and `Ok` do not say**: a forge poll succeeded when the list answered and the poll went on, also when each MR read failed. `health` is then `Partial`, `last_success` moves and `stale` stays false. `Ok` does not prove each read either: GitHub's `incomplete_results`, a failed read of GitLab reviewers or of the head of an approval, a failed commit of the queue and a failed pass of MR refs are only logged. `items.listed` of a forge is the `mrs` of `ReviewSync`, each MR once, Review tasks included, so not the MRs that wait on me. `next_poll` can be in the past: the thread does not run while the machine sleeps, and nothing changes it until the next report.
+- **`Credential.error`**: never the resolved token. A failed `token_cmd` gives the tail of its standard error, as `POST /v1/reviews/sync` and the doctor do, so what the command prints there is shown.
+- **Another machine**: `polled_by: other` makes no claim on health. This machine does not know, so `health` stays `NotPolledYet`, `stale` is false and `next_poll` is absent. A context that this machine does not hold is listed the same way, from the configuration. The times, if any, are of this machine's own polls.
+- **Forges**: `ReviewSync` maps onto it. `Synced` with `failed` or `failed_lists` is `Partial`, `RateLimited` as it is, and a `Failed` from a 401 or a token that does not resolve is `Credential`. A `Failed` from a refused SSO, a missing scope or a 403 is `Forbidden`, and any other `Failed` is `Unreachable`, a failure to read the local index included. An entry of `failed_lists` with `kind: forbidden` gives `Forbidden`, at each poll that sees it, ahead of `Partial`: a token that cannot read its to-dos will not heal by itself. `error` names each such list, and `failed` keeps the MRs and lists that failed for another reason. Connector status retains `failed_lists`, for scheduled polls too: a list is a `ConnectorFailure` with the key `list:<name>`, which no MR key can be. A stopped or rate limited poll keeps the last `items`, since it counted nothing. It gives the health of why it stopped, and its `failed_lists` go in `failed`, a refused list included: what stopped the poll comes first, and nothing is lost. A poll that a rate limit skips keeps the `failed` of the poll that met the limit. Where `failed` is on a variant here, it is what else failed before the stop, and it is empty for a connector until C4 says otherwise.
 - **From `ConnectorError`**, on `list`: `Credential`, `Forbidden`, `RateLimited` and `InvalidFilter` give the health of that name; `NotFound`, `Status`, `Transport` and `Parse` give `Unreachable`. Each stops the poll. `check` is the same. On `pool`: `Credential` and `RateLimited` are the same, and any other error is `Partial` with `list` applied. On one item's `read` or `pull`: `Credential`, `RateLimited` and `Transport` stop the poll the same way; `NotFound` is `ItemRead::Gone`; `Forbidden`, `Deferred`, `Status` and `Parse` are `Partial`, and the poll goes on.
-- **Notifications**: `Credential` or `Forbidden` on `list`, twice in a row, raises "expired token" with the reason, counted in memory by the poll thread. The second try is there because a refusal first resolves the token again. A dead key or a revoked permission would otherwise mean no alerts and no signal.
+- **Notifications**: `Credential` or `Forbidden` on `list`, twice in a row, raises "expired token" with the reason, counted in memory by the poll thread. The second try is there because a refusal first resolves the token again. A dead key or a revoked permission would otherwise mean no alerts and no signal. Not built, and whether a forge outage notifies is still open. The seam is the `Transition` that `ConnectorStatuses::report` returns to the poll thread: the previous and the new health.
 
 ## Fixtures and tests
 

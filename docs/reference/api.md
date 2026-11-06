@@ -30,6 +30,7 @@ The API accepts `HEAD` on each path where it accepts `GET`.
 | `POST` | `/v1/diagnostics/forge-check` | `200` | [`ForgeCheckResult`](#forgecheckresult) |
 | `POST` | `/v1/reviews/sync` | `200` | [`ReviewSyncResult`](#reviewsyncresult); takes a [`ReviewSyncRequest`](#reviewsyncrequest) |
 | `GET` | `/v1/reviews/queue` | `200` | [`ReviewQueue`](#reviewqueue); with `?context=<name>`, of one context |
+| `GET` | `/v1/connectors` | `200` | [`ConnectorList`](#connectorlist); with `?context=<name>`, of one context |
 | `POST` | `/v1/reviews/queue/{key}/start` | `200` | [`ReviewStartResult`](#reviewstartresult); takes a [`ReviewStartRequest`](#reviewstartrequest) |
 | `POST` | `/v1/reviews/queue/{key}/seen` | `200` | [`ReviewSeenResult`](#reviewseenresult); takes a [`ReviewSeenRequest`](#reviewseenrequest) |
 | `POST` | `/v1/tasks/reindex` | `200` | [`ReindexResult`](#reindexresult) |
@@ -325,6 +326,7 @@ Events that `loomd` sends:
 | --- | --- |
 | `task.changed` | An API request creates, edits, moves, pins, unpins or undoes a task, and writes a [task event](#taskevents). A request that changes nothing sends no change event. Also when `loomd` reconciles a hand edit of the task files: a new task, a changed task, or a removed task directory. Also when a [schedule](configuration.md#schedules) creates a task, and when the `replace` policy cancels the task of an earlier occurrence. |
 | `task.archived` | The [archive](configuration.md#archive) pass moves a closed task to `archive/<yyyy>/`. `loomd` sends the event after the move, the index write and the commit attempt. A directory that you move by hand sends `task.changed`. |
+| `connector.changed` | A poll changes the `health`, the `items` or the `stale` value of a [connector](#connectorlist). This includes a poll that succeeds after a gap of 3 poll intervals or more, when a read before it could show `stale`. Another poll that changes only its times sends no event. |
 | `resync` | `loom reindex` builds the index again. A reconciliation of all the tasks changes one or more tasks (the watcher can miss events). A sync moves a context store forward to the commits of another machine. Also the first event to a client that cannot resume, and the last event to a client that is too far behind (see below). |
 
 `repo.changed` and `counts.changed` are in the schema. `loomd` does not send them yet.
@@ -424,6 +426,7 @@ The JSON Schema (draft 2020-12) of each type is generated from the Rust types an
 | `TaskStoreHealth` | [`schemas/task_store_health.json`](schemas/task_store_health.json) |
 | `BackupRequest` | [`schemas/backup_request.json`](schemas/backup_request.json) |
 | `RemoteCheckResult` | [`schemas/remote_check_result.json`](schemas/remote_check_result.json) |
+| `ConnectorList` | [`schemas/connector_list.json`](schemas/connector_list.json) (`ConnectorStatus` inside) |
 | `ReviewQueue` | [`schemas/review_queue.json`](schemas/review_queue.json) |
 | `ReviewSeenRequest` | [`schemas/review_seen_request.json`](schemas/review_seen_request.json) |
 | `ReviewSeenResult` | [`schemas/review_seen_result.json`](schemas/review_seen_result.json) |
@@ -466,10 +469,10 @@ A change to any API type that breaks compatibility adds a new value. Compatible 
 
 | Message | Unknown fields |
 | --- | --- |
-| Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, `ReviewSyncRequest`, `ReviewStartRequest`, `ReviewSeenRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan`, `GET /v1/tasks` and `GET /v1/reviews/queue`. |
+| Request | Rejected (`#[serde(deny_unknown_fields)]`, or key by key for `NewTask` and `TaskEdit`): `RegisterRequest`, `NewTask`, `TaskEdit`, `TaskActionRequest`, `ReviewSyncRequest`, `ReviewStartRequest`, `ReviewSeenRequest`, and the query parameters of `GET /v1/repos`, `GET /v1/repos/{context}/{name}`, `POST /v1/repos/scan`, `GET /v1/tasks`, `GET /v1/reviews/queue` and `GET /v1/connectors`. |
 | Response | Ignored, so that an older client can read a newer daemon. |
 
-Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`, `reasons`, `list`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
+Unknown values of these enums are rejected: `api_version`, `code`, `channel`, `channel_source`, `profile`, `policy`, `kind`, `operation`, `state`, `status`, `reasons`, `list`, `by`, `which`. The exception is the `kind`, `format` and `status` of a task, which a newer version can write. The task is then read-only.
 
 A new value of `reasons` (`QueueReason`) or `list` (`ReviewList`) keeps the API version, although an older client rejects the answer that holds it. This is an exception to the rule above: `loom` and `loomd` upgrade together, and each new connector adds such values.
 
@@ -901,6 +904,7 @@ An object. Its `type` field identifies the event ([schema](schemas/change_event.
 | `task.archived` | `id`, `context` |
 | `repo.changed` | `slug` (`<context>/<name>`) |
 | `counts.changed` | `context`, `inbox`, `waiting` (numbers of tasks) |
+| `connector.changed` | `context`, `name` (the [connector](#connectorlist)) |
 | `resync` | none |
 
 ### `TaskList`
@@ -1301,6 +1305,75 @@ Answer of [`POST /v1/reviews/sync`](#reviews).
       "host": "gitlab.company-a.example",
       "kind": "gitlab",
       "outcome": { "outcome": "failed", "error": "cannot reach the forge: connection refused" }
+    }
+  ]
+}
+```
+
+### `ConnectorList`
+
+The answer of `GET /v1/connectors` and of `loom connector status --json` ([schema](schemas/connector_list.json)). `connectors` is a list of `ConnectorStatus`, sorted by context, then name. The list has one item for each forge credential in the configuration, also for a context that this machine does not hold. A forge credential is a connector with the name of its host. The request calls no forge: the answer gives what the last polls found.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `context` | string | The context. |
+| `name` | string | The name of the connector. For a forge: its host. |
+| `kind` | string | `gitlab`, `github`, `datadog`, `jira` or `freshservice`. |
+| `host` | string | The host of the credential, as in the configuration. For a forge, the API can be on another host: `api.github.com` for `github.com`. |
+| `polled_by` | object | Tagged by `by`: `this_machine`, `every_machine` (`machines` is absent in the context), or `other` with `machine`, the first machine of the context. |
+| `health` | object | The result of the last poll. Tagged by `state`, see below. |
+| `stale` | boolean | No poll succeeded in the last 3 poll intervals, or no poll ever succeeded. Always `false` with `polled_by` `other`. |
+| `last_attempt` | string: timestamp, optional | The start of the last poll on this machine that called the forge. A poll that a rate limit skipped does not change it, and a poll whose token does not resolve does not change it. A restart keeps it. |
+| `last_success` | string: timestamp, optional | The start of the last poll on this machine that succeeded. A restart keeps it. A poll succeeded when the host answered its list and the poll went on, also when each MR read failed or when a list has a failure. Then `health` is `partial` or `forbidden`, `last_success` changes and `stale` stays `false`. |
+| `next_poll` | string: timestamp, optional | The time of the next poll. Absent with `polled_by` `other`. It can be in the past: for example, after the machine sleeps, until the poll runs. |
+| `items` | object | The counts of the last poll that was not stopped. See below. |
+| `capabilities` | object | What the kind of connector can do: `pool` and `mirror`, booleans. Both are `false` for a forge. |
+
+`health`:
+
+| `state` | Fields | When |
+| --- | --- | --- |
+| `not_polled_yet` | | No poll ran since `loomd` started, or another machine polls this connector. |
+| `ok` | | The last poll reported no failure. This does not prove that each read occurred: GitHub can mark its search as incomplete. `loomd` only logs a failed read of the reviewers of a GitLab MR, a failed read of the head of an approval, a failed commit of the queue and a failed pass of the MR refs. |
+| `partial` | `failed` | Some items or lists failed. The others are applied. |
+| `rate_limited` | `until`, `failed` | The host limits the rate of requests until this time. A poll that this limit skips keeps `failed`. |
+| `credential` | `which`, `error`, `failed` | The host refuses the secret, or the secret does not resolve. `which`: `token` or `app_key`. `error` never contains the token that `loomd` has. When `token_cmd` fails, `error` contains the end of the standard error of the command, as the answer of `POST /v1/reviews/sync` does. |
+| `forbidden` | `error`, `failed` | The secret is good, but a permission is missing. For a forge, this is also a list of the poll that the host refuses, such as the to-dos: `error` names the list, the poll goes on, and `failed` gives what else failed. |
+| `invalid_filter` | `error` | The host refuses the filter of the configuration. A retry does not help. |
+| `unreachable` | `error`, `failures`, `failed` | The poll stopped for another reason. `failures`: the failed polls in a row. |
+
+`failed` is absent when it is empty. On a poll that stopped, it gives the lists that failed before the stop, also a list that the host refuses: `state` gives why the poll stopped. Each item of `failed` has a `key` and a `reason`. The `key` of a list is `list:<name>`, such as `list:mentioned`. The `key` of an MR is its key, such as `acme/shop#412`.
+
+`items`:
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `listed` | number | The items of the last poll. For a forge: the MRs of the poll, each one once, the same number as `mrs` in [`ReviewSyncResult`](#reviewsyncresult). It includes the MRs of Review tasks, so it is not the number of MRs that wait on you. |
+| `pool` | number | The items of the team pool. |
+| `failed` | number | The items and lists that failed in the last poll. |
+| `truncated` | boolean | The pool has more items than `pool_limit`. |
+| `local_changes` | number | The mirrors with local changes. |
+
+```json
+{
+  "connectors": [
+    {
+      "context": "personal",
+      "name": "gitlab.com",
+      "kind": "gitlab",
+      "host": "gitlab.com",
+      "polled_by": { "by": "this_machine" },
+      "health": {
+        "state": "forbidden",
+        "error": "list:mentioned: the token cannot read this resource",
+        "failed": [{ "key": "acme/shop!412", "reason": "the forge answered 500" }]
+      },
+      "stale": false,
+      "last_attempt": "2026-10-29T09:30:00Z",
+      "last_success": "2026-10-29T09:30:00Z",
+      "next_poll": "2026-10-29T09:35:10Z",
+      "items": { "listed": 3, "pool": 0, "failed": 2, "truncated": false, "local_changes": 0 },
+      "capabilities": { "pool": false, "mirror": false }
     }
   ]
 }

@@ -12,7 +12,9 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use loom_api::{ReviewQueue, ReviewStartResult, Status};
+use loom_api::{
+    ConnectorHealth, ConnectorKind, ConnectorList, ReviewQueue, ReviewStartResult, Status,
+};
 use tempfile::TempDir;
 
 #[path = "../../loom-forge/tests/common/fake_forge.rs"]
@@ -171,4 +173,54 @@ fn queue_then_start_creates_one_active_task_and_empties_the_queue() {
     assert!(!missing.status.success());
     let error = String::from_utf8_lossy(&missing.stderr);
     assert!(error.contains("no queue entry"), "{error}");
+}
+
+#[test]
+fn connector_status_tells_the_forge_before_and_after_a_poll() {
+    let sandbox = Sandbox::new();
+    let before = sandbox.ok(&["connector", "status"]);
+    assert!(
+        before.starts_with("personal github.com: not polled yet, stale, 0 polled, next poll "),
+        "{before}"
+    );
+
+    sandbox.ok(&["review", "sync"]);
+    let after = sandbox.ok(&["connector", "status"]);
+    assert!(
+        after.starts_with("personal github.com: ok, 1 polled, next poll "),
+        "{after}"
+    );
+    assert!(after.contains(", last success "), "{after}");
+
+    let list: ConnectorList =
+        serde_json::from_str(&sandbox.ok(&["connector", "status", "--json"])).unwrap();
+    assert_eq!(list.connectors.len(), 1);
+    assert_eq!(list.connectors[0].health, ConnectorHealth::Ok);
+    assert_eq!(list.connectors[0].kind, ConnectorKind::Github);
+    let same: ConnectorList =
+        serde_json::from_str(&sandbox.ok(&["-c", "personal", "connector", "status", "--json"]))
+            .unwrap();
+    assert_eq!(same.connectors.len(), 1);
+}
+
+#[test]
+fn connector_status_with_no_credential_tells_what_to_do() {
+    let sandbox = Sandbox::new();
+    fs::write(
+        sandbox.loom_home().join("config.toml"),
+        "[repos]\nroots = []\n\n[contexts.personal]\n",
+    )
+    .unwrap();
+    let text = sandbox.ok(&["connector", "status"]);
+    assert!(text.starts_with("No connector: "), "{text}");
+}
+
+#[test]
+fn connector_status_of_an_unknown_context_says_so() {
+    let sandbox = Sandbox::new();
+    let text = sandbox.ok(&["-c", "typo", "connector", "status"]);
+    assert!(
+        text.starts_with("No connector in the context `typo`: "),
+        "{text}"
+    );
 }

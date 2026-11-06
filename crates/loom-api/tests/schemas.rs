@@ -17,23 +17,24 @@ use loom_api::{
 };
 use loom_api::{
     ApiError, ApiVersion, BackupOutcome, BackupReport, BackupRequest, BackupStep, BackupSync,
-    ChangeEvent, Channel, ChannelSource, CheckStatus, ChosenChannel, ContextAssignment,
-    ContextBackup, ContextDiskUsage, ContextName, DaemonDiagnostics, DaemonRestart,
-    DaemonRestartReport, DiskUsage, DoctorCheck, DoctorReport, ErrorCode, FailedTaskFile,
-    ForgeCheckResult, ForgeKind, ForgeMetadata, ForgeProject, ForgeVisibility, InstallReport,
-    InvalidTaskFile, LastUpdate, MaybeKnown, MrOpenRequest, MrOpenResult, PendingUpgrade,
-    PlannedAction, PrReport, Profile, QueueReason, RegisterRequest, ReindexResult, Remote,
-    RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem, RemoteScheme, RemoteUrl,
-    RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState, RepoSummary, RepoSync,
-    RepoUpdatePolicy, RestartVia, ReviewList, ReviewListFailure, ReviewListFailureKind,
-    ReviewQueue, ReviewQueueEntry, ReviewSeenRequest, ReviewSeenResult, ReviewStartRequest,
-    ReviewStartResult, ReviewSync, ReviewSyncOutcome, ReviewSyncRequest, ReviewSyncResult,
-    RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult, SearchResults,
-    ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField, StatusResponse,
-    SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField, TaskStoreHealth, Timestamp,
-    Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode, UpdateResult, UpdateState,
-    UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport, UpgradeSkipReason, UpgradeSource,
-    Upstream, VersionInfo,
+    Capabilities, ChangeEvent, Channel, ChannelSource, CheckStatus, ChosenChannel, ConnectorCounts,
+    ConnectorFailure, ConnectorHealth, ConnectorKind, ConnectorList, ConnectorStatus,
+    ContextAssignment, ContextBackup, ContextDiskUsage, ContextName, DaemonDiagnostics,
+    DaemonRestart, DaemonRestartReport, DiskUsage, DoctorCheck, DoctorReport, ErrorCode,
+    FailedTaskFile, ForgeCheckResult, ForgeKind, ForgeMetadata, ForgeProject, ForgeVisibility,
+    InstallReport, InvalidTaskFile, LastUpdate, MaybeKnown, MrOpenRequest, MrOpenResult,
+    PendingUpgrade, PlannedAction, PolledBy, PrReport, Profile, QueueReason, RegisterRequest,
+    ReindexResult, Remote, RemoteCheck, RemoteCheckOutcome, RemoteCheckResult, RemoteProblem,
+    RemoteScheme, RemoteUrl, RepoHead, RepoIdentity, RepoList, RepoMatch, RepoOperation, RepoState,
+    RepoSummary, RepoSync, RepoUpdatePolicy, RestartVia, ReviewList, ReviewListFailure,
+    ReviewListFailureKind, ReviewQueue, ReviewQueueEntry, ReviewSeenRequest, ReviewSeenResult,
+    ReviewStartRequest, ReviewStartResult, ReviewSync, ReviewSyncOutcome, ReviewSyncRequest,
+    ReviewSyncResult, RollbackReport, ScanIssue, ScanResult, SearchField, SearchResult,
+    SearchResults, Secret, ServicePlatform, ServiceStatus, SkipReason, SshAgentSocket, StateField,
+    StatusResponse, SyncOutcome, SyncRequest, SyncResult, TaskMatch, TaskSearchField,
+    TaskStoreHealth, Timestamp, Untracked, UpdateChannel, UpdateOutcome, UpdatePolicyMode,
+    UpdateResult, UpdateState, UpdateStatus, UpdateStep, UpgradeDecision, UpgradeReport,
+    UpgradeSkipReason, UpgradeSource, Upstream, VersionInfo,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -48,6 +49,7 @@ fn schemas() -> Vec<(&'static str, Schema)> {
         ("backup_report", schema_for!(BackupReport)),
         ("backup_request", schema_for!(BackupRequest)),
         ("change_event", schema_for!(ChangeEvent)),
+        ("connector_list", schema_for!(ConnectorList)),
         ("context_assignment", schema_for!(ContextAssignment)),
         ("daemon_diagnostics", schema_for!(DaemonDiagnostics)),
         ("daemon_restart_report", schema_for!(DaemonRestartReport)),
@@ -322,6 +324,141 @@ fn review_queue_samples_validate_and_an_older_sync_answer_can_be_read() {
         ReviewSyncOutcome::Synced { added, removed, failed_lists, .. }
             if added.is_empty() && removed.is_empty() && failed_lists.is_empty()
     ));
+}
+
+#[test]
+fn a_connector_list_validates_against_its_schema_in_each_health() {
+    let at = Timestamp::from_unix_secs(1_791_792_000).unwrap();
+    let failure = ConnectorFailure {
+        key: "list:mentioned".to_owned(),
+        reason: "403".to_owned(),
+    };
+    let healths = [
+        ConnectorHealth::NotPolledYet,
+        ConnectorHealth::Ok,
+        ConnectorHealth::Partial {
+            failed: vec![failure.clone()],
+        },
+        ConnectorHealth::RateLimited {
+            until: at,
+            failed: vec![],
+        },
+        ConnectorHealth::Credential {
+            which: Secret::AppKey,
+            error: "401".to_owned(),
+            failed: vec![],
+        },
+        ConnectorHealth::Forbidden {
+            error: "403".to_owned(),
+            failed: vec![failure],
+        },
+        ConnectorHealth::Forbidden {
+            error: "403".to_owned(),
+            failed: vec![],
+        },
+        ConnectorHealth::InvalidFilter {
+            error: "bad JQL".to_owned(),
+        },
+        ConnectorHealth::Unreachable {
+            error: "no answer".to_owned(),
+            failures: 2,
+            failed: vec![],
+        },
+    ];
+    let polled_by = [
+        PolledBy::ThisMachine,
+        PolledBy::EveryMachine,
+        PolledBy::Other {
+            machine: "tower".to_owned(),
+        },
+    ];
+    let kinds = [
+        ConnectorKind::Gitlab,
+        ConnectorKind::Github,
+        ConnectorKind::Datadog,
+        ConnectorKind::Jira,
+        ConnectorKind::Freshservice,
+    ];
+    for health in healths {
+        for by in &polled_by {
+            for kind in kinds {
+                let list = ConnectorList {
+                    connectors: vec![ConnectorStatus {
+                        context: "work".parse().unwrap(),
+                        name: "gitlab.com".to_owned(),
+                        kind,
+                        host: "gitlab.com".to_owned(),
+                        polled_by: by.clone(),
+                        health: health.clone(),
+                        stale: false,
+                        last_attempt: Some(at),
+                        last_success: None,
+                        next_poll: Some(at),
+                        items: ConnectorCounts::default(),
+                        capabilities: kind.capabilities(),
+                    }],
+                };
+                assert_eq!(violations(&list).unwrap().len(), 0, "{list:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_connector_status_has_the_documented_shape() {
+    let health = serde_json::to_value(ConnectorHealth::Credential {
+        which: Secret::AppKey,
+        error: "401".to_owned(),
+        failed: vec![],
+    })
+    .unwrap();
+    assert_eq!(
+        health,
+        json!({ "state": "credential", "which": "app_key", "error": "401" })
+    );
+    let forbidden = serde_json::to_value(ConnectorHealth::Forbidden {
+        error: "403".to_owned(),
+        failed: vec![],
+    })
+    .unwrap();
+    assert_eq!(forbidden, json!({ "state": "forbidden", "error": "403" }));
+    assert_eq!(
+        serde_json::to_value(PolledBy::Other {
+            machine: "tower".to_owned()
+        })
+        .unwrap(),
+        json!({ "by": "other", "machine": "tower" })
+    );
+    assert_eq!(
+        serde_json::to_value(ConnectorHealth::NotPolledYet).unwrap(),
+        json!({ "state": "not_polled_yet" })
+    );
+}
+
+#[test]
+fn capabilities_are_constant_per_kind() {
+    let table = [
+        (ConnectorKind::Gitlab, false, false),
+        (ConnectorKind::Github, false, false),
+        (ConnectorKind::Datadog, false, false),
+        (ConnectorKind::Jira, true, true),
+        (ConnectorKind::Freshservice, true, true),
+    ];
+    for (kind, pool, mirror) in table {
+        assert_eq!(
+            kind.capabilities(),
+            Capabilities { pool, mirror },
+            "{kind:?}"
+        );
+    }
+    assert_eq!(
+        ConnectorKind::from(ForgeKind::Github),
+        ConnectorKind::Github
+    );
+    assert_eq!(
+        ConnectorKind::from(ForgeKind::Gitlab),
+        ConnectorKind::Gitlab
+    );
 }
 
 #[test]

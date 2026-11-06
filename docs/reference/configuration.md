@@ -618,6 +618,7 @@ State kept across restarts of `loomd`, in `<loom home>/state/`.
 | `state/` | `0700` | Created at the first write. At each write, the directory is set to `0700`. |
 | `state/update.json` | `0600` | Auto-upgrade state, JSON, schema [`update_state.json`](schemas/update_state.json). |
 | `state/update.lock` | `0600` | Empty. Locked (`flock`) while `update.json` is read, changed and written. |
+| `state/connectors.json` | `0600` | The last times of each connector on this machine, JSON. See [below](#stateconnectorsjson). |
 
 `update.json` is written to a temporary file in `state/`, synced, then renamed over the previous one. If the file does not exist, the state is empty. An invalid file is logged and replaced by an empty state at the next write. Fields this version does not know (written by another version) are accepted and kept when the file is rewritten.
 
@@ -644,3 +645,14 @@ State kept across restarts of `loomd`, in `<loom home>/state/`.
 | `failed` | `message` | The check or the upgrade failed before it replaced anything (network, verification, install directory not writable, I/O). Retried at the next interval. |
 
 Delete `state/update.json` to forget the failed versions and the chosen channel.
+
+### `state/connectors.json`
+
+`loomd` writes this file when a poll changes its content. It writes a temporary file in `state/`, syncs it, then renames it over the previous one. The file does not go to the store, so each machine has its own. If the file does not exist, the times are empty. `loomd` logs an invalid file, or a file with another `v`, and replaces it at the next write. A failed write is logged, and `loomd` tries again at the next poll. `loomd` removes the connectors that are no longer in the configuration at the next write.
+
+| Field | Type | Content |
+| --- | --- | --- |
+| `v` | number | The version of the format: `1`. |
+| `connectors` | list | One object for each connector: `context`, `name`, `last_attempt` (`Timestamp` or absent), `last_success` (`Timestamp` or absent). |
+
+The [`ConnectorList`](api.md#connectorlist) of `GET /v1/connectors` gives these times. Health and counts are in memory only: after a restart, a connector is `not_polled_yet` until its next poll.

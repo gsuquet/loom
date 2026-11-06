@@ -14,6 +14,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -40,6 +41,7 @@ pub struct Route {
     when: Vec<(String, String)>,
     body_contains: Vec<String>,
     times: Option<usize>,
+    delay: Option<Duration>,
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
@@ -54,6 +56,7 @@ impl Route {
             when: Vec::new(),
             body_contains: Vec::new(),
             times: None,
+            delay: None,
             status: 200,
             headers: Vec::new(),
             body: b"{}".to_vec(),
@@ -109,6 +112,12 @@ impl Route {
     /// field: every GraphQL call is `POST /graphql`.
     pub fn when_body(mut self, text: &str) -> Self {
         self.body_contains.push(text.to_owned());
+        self
+    }
+
+    /// Answers after this time: a test can see a call that runs, or a slow poll.
+    pub const fn delay(mut self, delay: Duration) -> Self {
+        self.delay = Some(delay);
         self
     }
 
@@ -233,45 +242,56 @@ async fn answer(State(shared): State<Arc<Mutex<Shared>>>, request: Request) -> R
             .collect(),
         body,
     };
-    let mut shared = shared.lock().unwrap();
-    let base = shared.base.clone();
-    let found = shared.routes.iter_mut().find(|route| {
-        route.method == recorded.method
-            && route.path == recorded.path
-            && route.times != Some(0)
-            && route
-                .when
-                .iter()
-                .all(|(name, value)| recorded.header(name) == Some(value.as_str()))
-            && route
-                .body_contains
-                .iter()
-                .all(|text| String::from_utf8_lossy(&recorded.body).contains(text.as_str()))
-    });
-    let Some(route) = found else {
-        let mut response = Response::new(Body::from(format!(
-            r#"{{"message":"no route for {}"}}"#,
-            recorded.line()
-        )));
-        *response.status_mut() = StatusCode::NOT_IMPLEMENTED;
+    // In a block: the lock is not held while the answer waits.
+    let (response, delay) = {
+        let mut shared = shared.lock().unwrap();
+        let base = shared.base.clone();
+        let found = shared.routes.iter_mut().find(|route| {
+            route.method == recorded.method
+                && route.path == recorded.path
+                && route.times != Some(0)
+                && route
+                    .when
+                    .iter()
+                    .all(|(name, value)| recorded.header(name) == Some(value.as_str()))
+                && route
+                    .body_contains
+                    .iter()
+                    .all(|text| String::from_utf8_lossy(&recorded.body).contains(text.as_str()))
+        });
+        let Some(route) = found else {
+            let mut response = Response::new(Body::from(format!(
+                r#"{{"message":"no route for {}"}}"#,
+                recorded.line()
+            )));
+            *response.status_mut() = StatusCode::NOT_IMPLEMENTED;
+            shared.requests.push(recorded);
+            return response;
+        };
+        if let Some(times) = route.times.as_mut() {
+            *times -= 1;
+        }
+        let mut response = Response::new(Body::from(
+            String::from_utf8_lossy(&route.body).replace(BASE, &base),
+        ));
+        *response.status_mut() = StatusCode::from_u16(route.status).unwrap();
+        let headers = response.headers_mut();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        for (name, value) in &route.headers {
+            headers.append(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(&value.replace(BASE, &base)).unwrap(),
+            );
+        }
+        let delay = route.delay;
         shared.requests.push(recorded);
-        return response;
+        drop(shared);
+        (response, delay)
     };
-    if let Some(times) = route.times.as_mut() {
-        *times -= 1;
+    if let Some(delay) = delay {
+        tokio::task::spawn_blocking(move || thread::sleep(delay))
+            .await
+            .unwrap();
     }
-    let mut response = Response::new(Body::from(
-        String::from_utf8_lossy(&route.body).replace(BASE, &base),
-    ));
-    *response.status_mut() = StatusCode::from_u16(route.status).unwrap();
-    let headers = response.headers_mut();
-    headers.insert("content-type", HeaderValue::from_static("application/json"));
-    for (name, value) in &route.headers {
-        headers.append(
-            HeaderName::from_bytes(name.as_bytes()).unwrap(),
-            HeaderValue::from_str(&value.replace(BASE, &base)).unwrap(),
-        );
-    }
-    shared.requests.push(recorded);
     response
 }

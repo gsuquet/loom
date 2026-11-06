@@ -46,6 +46,7 @@ use loom_store::files::TASKS_DIR;
 use loom_store::{Reader, RepoFilter};
 use loomd::api::timestamp;
 use loomd::cli::VERSION_INFO;
+use loomd::connector_status::{ConnectorStatuses, ForgeStop, Report, forge_poll, stop_of};
 use loomd::forge::check::ForgeTarget;
 use loomd::forge::token::TokenResolver;
 use loomd::hooks;
@@ -166,6 +167,8 @@ pub struct Setup {
     pub tasks: TaskHandle,
     /// Where the git commands of the MR refs register, so that the daemon can stop them.
     pub children: Arc<ChildGroups>,
+    /// Where each poll reports.
+    pub connectors: Arc<ConnectorStatuses>,
 }
 
 /// Whether this machine polls `target`: the first of `machines`, or any machine without them.
@@ -210,6 +213,13 @@ fn polled_of(hosts: &[Host]) -> Polled {
             .map(|host| (host.target.context.clone(), host.target.host.clone()))
             .collect(),
     )
+}
+
+/// Tells connector status when the first poll of each host runs.
+fn schedule_first_polls(connectors: &ConnectorStatuses, hosts: &[Host], delay: Duration) {
+    for host in hosts {
+        connectors.schedule(&host.target.context, &host.target.host, after(now(), delay));
+    }
 }
 
 /// Starts the poller thread.
@@ -266,6 +276,8 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
             updated_after: None,
             last_full_list: None,
             mrs: HashMap::new(),
+            stop: None,
+            attempted: false,
             target,
         });
     }
@@ -273,6 +285,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
         info!(hosts = hosts.len(), "MR polls loaded");
     }
     let polled_hosts = polled_of(&hosts);
+    schedule_first_polls(&setup.connectors, &hosts, start_delay);
     let user_agent = format!("loomd/{}", VERSION_INFO.version);
     let (refs, refs_handle) = mr_worker::start(
         refs_runner(config, &setup.children),
@@ -290,6 +303,7 @@ pub fn start(config: &Config, setup: Setup) -> Result<(ReviewPoller, ReviewHandl
         stores: setup.stores,
         resolver: setup.resolver,
         tasks: setup.tasks,
+        connectors: setup.connectors,
         user_agent,
         full_list_period,
         refs: refs_handle,
@@ -372,6 +386,10 @@ struct Host {
     last_full_list: Option<Instant>,
     /// What the last polls read of each MR, by mirror directory name.
     mrs: HashMap<String, MrCache>,
+    /// Why the running poll stopped, for connector status: the outcome holds only a text.
+    stop: Option<ForgeStop>,
+    /// The running poll got past its token: it called the forge, for `last_attempt`.
+    attempted: bool,
 }
 
 /// What a poll remembers of an MR, in memory: a restart reads every MR in full once.
@@ -407,6 +425,7 @@ struct Poller {
     stores: BTreeMap<ContextName, PathBuf>,
     resolver: Arc<TokenResolver>,
     tasks: TaskHandle,
+    connectors: Arc<ConnectorStatuses>,
     user_agent: String,
     /// The time between two full GitLab lists.
     full_list_period: Duration,
@@ -475,6 +494,15 @@ const fn stops_the_host(error: &ForgeError) -> bool {
         | ForgeError::Graphql { .. }
         | ForgeError::Parse(_)
         | ForgeError::Unexpected(_) => false,
+    }
+}
+
+/// The cause of a stop, as connector status tells it.
+const fn stop_cause(stopped: &Stopped) -> ForgeStop {
+    match stopped {
+        Stopped::Forge(error) => stop_of(error),
+        // Such as a failed read of the local index: the closest that the health has.
+        Stopped::Other(_) => ForgeStop::Unreachable,
     }
 }
 
@@ -665,6 +693,8 @@ impl Poller {
             host = %self.hosts[index].target.host
         );
         let _entered = span.enter();
+        self.hosts[index].stop = None;
+        self.hosts[index].attempted = false;
         let host = &self.hosts[index];
         let outcome = match host.rate_limited {
             Some((until, at)) if until > Instant::now() => {
@@ -676,6 +706,7 @@ impl Poller {
             }
             Some(_) | None => self.poll_now(index, started),
         };
+        let stopping = self.stopping();
         let host = &mut self.hosts[index];
         let (poll, failed) = match &outcome {
             ReviewSyncOutcome::Synced { .. } => (PollOutcome::Done, false),
@@ -697,7 +728,26 @@ impl Poller {
         } else {
             0
         };
-        host.next = Instant::now() + next_poll(host.interval, poll, random_unit());
+        let wait = next_poll(host.interval, poll, random_unit());
+        host.next = Instant::now() + wait;
+        // A poll cut by the stop of loomd says nothing of the host.
+        if !(stopping && failed) {
+            let result = forge_poll(&outcome, host.stop, host.failures);
+            // The returned `Transition` is the seam of outage notifications, not built yet: see
+            // "Connector status" in docs/design/connector-ports.md.
+            let _transition = self.connectors.report(
+                &host.target.context,
+                &host.target.host,
+                Report {
+                    at: started,
+                    attempted: host.attempted,
+                    success: result.success,
+                    health: result.health,
+                    items: result.items,
+                    next_poll: Some(after(now(), wait)),
+                },
+            );
+        }
         ReviewSync {
             context: host.target.context.clone(),
             host: host.target.host.clone(),
@@ -713,12 +763,14 @@ impl Poller {
             Ok(token) => token,
             Err(error) => {
                 warn!(%error, "cannot resolve the forge token, MRs not polled");
+                self.hosts[index].stop = Some(ForgeStop::Credential);
                 return ReviewSyncOutcome::Failed {
                     error: error.to_string(),
                     failed_lists: Vec::new(),
                 };
             }
         };
+        self.hosts[index].attempted = true;
         // Beside the result: a poll that stops later still reports them.
         let mut failed_lists = Vec::new();
         let fetched = match target.kind {
@@ -866,6 +918,7 @@ impl Poller {
         failed_lists: Vec<ReviewListFailure>,
     ) -> ReviewSyncOutcome {
         let host = &mut self.hosts[index];
+        host.stop = Some(stop_cause(&stopped));
         let error = match stopped {
             Stopped::Forge(ForgeError::RateLimited { wait, .. }) => {
                 let now = now();
@@ -1788,4 +1841,26 @@ fn gitlab_not_modified(
 /// The current time; the epoch when the clock is out of range.
 fn now() -> Timestamp {
     timestamp(SystemTime::now()).unwrap_or(Timestamp::EPOCH)
+}
+
+/// `wait` after `time`; `time` if that is out of range.
+fn after(time: Timestamp, wait: Duration) -> Timestamp {
+    Timestamp::from_unix_secs(time.unix_secs().saturating_add(wait.as_secs())).unwrap_or(time)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_of_loomd_or_of_the_index_is_not_a_refused_token() {
+        assert_eq!(
+            stop_cause(&Stopped::Other("cannot read the index".to_owned())),
+            ForgeStop::Unreachable
+        );
+        let refused = ForgeError::Unauthorized {
+            message: String::new(),
+        };
+        assert_eq!(stop_cause(&Stopped::Forge(refused)), ForgeStop::Credential);
+    }
 }

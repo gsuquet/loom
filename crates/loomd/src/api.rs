@@ -62,6 +62,8 @@ pub const TASKS_SYNC_PATH: &str = "/v1/tasks/sync";
 pub const REVIEWS_SYNC_PATH: &str = "/v1/reviews/sync";
 /// The queue of MRs that wait on me.
 pub const REVIEWS_QUEUE_PATH: &str = "/v1/reviews/queue";
+/// `GET /v1/connectors`.
+pub const CONNECTORS_PATH: &str = "/v1/connectors";
 /// Starts on an MR of the queue: `{key}` is its percent-encoded key.
 pub const REVIEWS_QUEUE_START_PATH: &str = "/v1/reviews/queue/{key}/start";
 /// Tells that I opened an entry of the queue: `{key}` is its percent-encoded key.
@@ -72,6 +74,15 @@ pub const REVIEWS_QUEUE_SEEN_PATH: &str = "/v1/reviews/queue/{key}/seen";
 #[serde(deny_unknown_fields)]
 pub struct ReviewQueueQuery {
     /// Only the entries of this context.
+    #[serde(default)]
+    pub context: Option<ContextName>,
+}
+
+/// Query parameters of `GET /v1/connectors`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorsQuery {
+    /// Only the connectors of this context.
     #[serde(default)]
     pub context: Option<ContextName>,
 }

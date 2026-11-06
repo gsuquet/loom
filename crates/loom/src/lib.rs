@@ -5,6 +5,7 @@ pub mod backup;
 pub mod cli;
 pub mod cli_doc;
 pub mod client;
+pub mod connector;
 pub mod conventions;
 pub mod doctor;
 pub mod edit;
