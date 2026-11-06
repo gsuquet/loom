@@ -10,7 +10,8 @@ use loom_forge::ParseError;
 use loom_forge::gitlab::{
     MentionedMr, parse_approvals, parse_diffs, parse_discussions, parse_draft_note,
     parse_draft_notes, parse_error, parse_mention_todos, parse_merge_request,
-    parse_merge_request_read, parse_merge_requests, parse_token, parse_user, parse_versions,
+    parse_merge_request_read, parse_merge_request_summary, parse_merge_requests, parse_token,
+    parse_user, parse_versions,
 };
 use loom_forge::model::{
     Anchor, FileChange, HeadPipeline, MergeStatus, MrForgeIds, MrKey, MrState, MrVersion,
@@ -190,6 +191,46 @@ fn versions_newest_first() {
             },
         ]
     );
+}
+
+#[test]
+fn a_version_with_a_null_sha_is_skipped_and_the_others_stay() {
+    for field in ["base_commit_sha", "start_commit_sha", "head_commit_sha"] {
+        let mut versions: serde_json::Value =
+            serde_json::from_slice(fixture!("merge-request-88-versions.json")).unwrap();
+        versions[1][field] = serde_json::Value::Null;
+        let versions = parse_versions(versions.to_string().as_bytes()).unwrap();
+        assert_eq!(versions.len(), 1, "{field}");
+        assert_eq!(versions[0].forge_version_id, Some(202), "{field}");
+    }
+}
+
+#[test]
+fn a_null_in_diff_refs_is_no_diff_refs_and_a_summary_does_not_need_them() {
+    for field in ["base_sha", "head_sha", "start_sha"] {
+        let mut mr: serde_json::Value =
+            serde_json::from_slice(fixture!("merge-request-88.v2.json")).unwrap();
+        mr["diff_refs"][field] = serde_json::Value::Null;
+        let body = mr.to_string();
+        let error = parse_merge_request(body.as_bytes()).unwrap_err();
+        assert!(
+            error.to_string().contains("no diff_refs"),
+            "{field}: {error}"
+        );
+        assert_eq!(
+            parse_merge_request_summary(body.as_bytes()).unwrap().key,
+            parse_merge_request(fixture!("merge-request-88.v2.json"))
+                .unwrap()
+                .key,
+            "{field}"
+        );
+        let list = format!("[{body}]");
+        assert_eq!(
+            parse_merge_requests(list.as_bytes()).unwrap().len(),
+            1,
+            "{field}"
+        );
+    }
 }
 
 #[test]

@@ -839,7 +839,7 @@ fn mrs_to_review_are_entries_then_review_tasks_with_a_mirror() {
     let result = sandbox.sync();
     let failed = poll(&result, "personal", "github.com");
     assert!(
-        matches!(&failed.outcome, ReviewSyncOutcome::Failed { error } if !error.contains(GITHUB_TOKEN)),
+        matches!(&failed.outcome, ReviewSyncOutcome::Failed { error, .. } if !error.contains(GITHUB_TOKEN)),
         "{failed:?}"
     );
     assert!(failed.last_success.is_some());
@@ -7295,5 +7295,324 @@ fn moving_a_file_with_no_reason_reports_no_removal_and_keeps_its_seen_at() {
     let moved: Value = serde_json::from_str(&fs::read_to_string(moved).unwrap()).unwrap();
     assert_eq!(moved["reasons"], json!([]));
     assert!(moved["seen_at"].is_string());
+    daemon.stop();
+}
+
+/// The lists of a poll that stopped.
+fn lists_of_a_stop(result: &ReviewSyncResult) -> Vec<ReviewList> {
+    let (ReviewSyncOutcome::RateLimited { failed_lists, .. }
+    | ReviewSyncOutcome::Failed { failed_lists, .. }) =
+        &poll(result, "company-a", "gitlab.example.com").outcome
+    else {
+        panic!("not stopped: {result:?}");
+    };
+    failed_lists.iter().map(|failure| failure.list).collect()
+}
+
+fn answer_with(status: u16, message: &str) -> Route {
+    Route {
+        status,
+        headers: if status == 429 {
+            vec![("retry-after", "3600".to_owned())]
+        } else {
+            Vec::new()
+        },
+        ..route(format!(r#"{{"message":"{message}"}}"#))
+    }
+}
+
+#[test]
+fn a_list_failure_stays_in_the_answer_when_the_poll_stops_later() {
+    let limited = answer_with(429, "429");
+    let refused = answer_with(401, "401");
+    let table = [
+        // The stop comes from a read of an MR, after the lists.
+        (MENTIONED, ReviewList::Mentioned, MR_88, limited.clone()),
+        (MENTIONED, ReviewList::Mentioned, MR_88, refused.clone()),
+        // The stop comes from a later list.
+        (ASSIGNED, ReviewList::Assigned, OWN, limited),
+        (ASSIGNED, ReviewList::Assigned, OWN, refused),
+    ];
+    for (list, name, stop, answer) in table {
+        let status = answer.status;
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |_| {});
+        set_mentioned(&sandbox, MENTIONED, true);
+        sandbox.sync();
+        sandbox.gitlab.set(list, answer_with(403, "403 Forbidden"));
+        sandbox.gitlab.set(stop, answer);
+        let result = sandbox.sync();
+        assert_eq!(lists_of_a_stop(&result), [name], "{list} {stop} {status}");
+        let outcome = &poll(&result, "company-a", "gitlab.example.com").outcome;
+        assert_eq!(
+            matches!(outcome, ReviewSyncOutcome::RateLimited { .. }),
+            status == 429,
+            "{outcome:?}"
+        );
+        daemon.stop();
+    }
+}
+
+#[test]
+fn a_list_failure_of_a_stopped_poll_is_redacted() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    sandbox.sync();
+    sandbox.gitlab.set(
+        ASSIGNED,
+        answer_with(403, &format!("refused for {GITLAB_TOKEN}")),
+    );
+    sandbox.gitlab.set(OWN, answer_with(429, "429"));
+    let result = sandbox.sync();
+    let text = format!("{result:?}");
+    assert!(text.contains("refused"), "{text}");
+    assert!(!text.contains(GITLAB_TOKEN), "{text}");
+    daemon.stop();
+}
+
+/// My MR with a failed merged results pipeline, in `state`, and more that the read tells.
+fn own_undated_mr(sandbox: &Sandbox, etag: &str, state: &str) {
+    set_mr(sandbox, etag, |mr| {
+        mr["author"] = carol();
+        mr["state"] = json!(state);
+        mr["detailed_merge_status"] = json!("mergeable");
+        mr["head_pipeline"] = json!({
+            "sha": MERGE_COMMIT,
+            "ref": "refs/merge-requests/88/merge",
+            "status": "failed",
+            "created_at": "2026-10-23T11:06:31.000Z",
+        });
+    });
+}
+
+#[test]
+fn a_merged_or_closed_mr_is_not_dated_and_leaves_the_queue() {
+    for state in ["merged", "closed"] {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |_| {});
+        own_undated_mr(&sandbox, "W/\"b\"", "opened");
+        sandbox.sync();
+        assert!(reasons_of(&sandbox).is_some(), "{state}");
+        let reads = count_of(&sandbox, VERSIONS_88);
+
+        sandbox
+            .gitlab
+            .set(VERSIONS_88, answer_with(403, "403 Forbidden"));
+        own_undated_mr(&sandbox, "W/\"c\"", state);
+        let result = sandbox.sync();
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")).5,
+            0,
+            "{state}: {result:?}"
+        );
+        assert_eq!(count_of(&sandbox, VERSIONS_88), reads, "{state}");
+        assert_eq!(reasons_of(&sandbox), None, "{state}");
+        assert_eq!(entry_file(&sandbox), None, "{state}");
+        daemon.stop();
+    }
+}
+
+#[test]
+fn a_start_on_a_merged_or_own_mr_whose_versions_fail_is_refused_and_not_a_forge_failure() {
+    let table = [
+        ("merged", false, None),
+        ("closed", false, None),
+        // My own open MR: refused, and only the entry stays.
+        ("opened", true, Some(vec![QueueReason::OwnPipelineFailed])),
+    ];
+    for (state, own, stays) in table {
+        for answer in [answer_with(403, "403 Forbidden"), route(EMPTY_LIST)] {
+            let sandbox = Sandbox::new();
+            let daemon = sandbox.start();
+            set_own(&sandbox, "W/\"a\"", |_| {});
+            own_undated_mr(&sandbox, "W/\"b\"", "opened");
+            set_approved_by(&sandbox, &[]);
+            sandbox.sync();
+            sandbox.gitlab.set(VERSIONS_88, answer);
+            own_undated_mr(&sandbox, "W/\"c\"", state);
+            let refused = start_response(&sandbox.socket(), GITLAB_KEY);
+            assert_eq!(refused.status, 409, "{state}: {}", refused.body);
+            assert_eq!(reasons_of(&sandbox), stays, "{state}");
+            assert_eq!(entry_file(&sandbox).is_some(), own, "{state}");
+            daemon.stop();
+        }
+    }
+    // Not my MR, merged: no versions are needed either.
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    sandbox.sync();
+    sandbox
+        .gitlab
+        .set(VERSIONS_88, answer_with(403, "403 Forbidden"));
+    sandbox.gitlab.set(
+        MR_88,
+        gitlab_mr(V2, "2026-10-24T11:00:00.000Z", "merged", "W/\"merged\""),
+    );
+    let refused = start_response(&sandbox.socket(), GITLAB_KEY);
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    daemon.stop();
+}
+
+#[test]
+fn a_pipeline_that_cannot_be_dated_keeps_only_its_reason() {
+    let table = [
+        ("a refused read", answer_with(403, "403 Forbidden")),
+        ("a failed read", not_found()),
+        ("no version of the head", route(EMPTY_LIST)),
+    ];
+    for (name, answer) in table {
+        let sandbox = Sandbox::new();
+        let daemon = sandbox.start();
+        set_own(&sandbox, "W/\"a\"", |_| {});
+        own_undated_mr(&sandbox, "W/\"b\"", "opened");
+        sandbox.sync();
+        assert_eq!(
+            reasons_of(&sandbox),
+            Some(vec![QueueReason::OwnPipelineFailed]),
+            "{name}"
+        );
+
+        // A new note and an approval, on a read that cannot date the pipeline.
+        sandbox.gitlab.set(VERSIONS_88, answer);
+        set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+        set_approved_by(&sandbox, &["bob"]);
+        own_undated_mr(&sandbox, "W/\"c\"", "opened");
+        let result = sandbox.sync();
+        let ReviewSyncOutcome::Synced { failed, .. } =
+            &poll(&result, "company-a", "gitlab.example.com").outcome
+        else {
+            panic!("{name}: {result:?}");
+        };
+        assert_eq!(failed.len(), 1, "{name}: {result:?}");
+        assert_eq!(failed[0].key, KEY_88, "{name}");
+        assert!(
+            failed[0].error.contains("cannot date"),
+            "{name}: {failed:?}"
+        );
+        assert_eq!(
+            reasons_of(&sandbox),
+            Some(vec![
+                QueueReason::OwnNewComments,
+                QueueReason::OwnPipelineFailed,
+                QueueReason::OwnReadyToMerge,
+            ]),
+            "{name}"
+        );
+
+        // The ETag is gone: the same body is read in full and dated at the next poll.
+        let reads = count_of(&sandbox, VERSIONS_88);
+        sandbox.gitlab.set(
+            VERSIONS_88,
+            route(fixture("gitlab/merge-request-88-versions.json")),
+        );
+        let result = sandbox.sync();
+        assert_eq!(
+            counts(poll(&result, "company-a", "gitlab.example.com")).5,
+            0,
+            "{name}: {result:?}"
+        );
+        assert_eq!(count_of(&sandbox, VERSIONS_88), reads + 1, "{name}");
+        daemon.stop();
+    }
+}
+
+#[test]
+fn a_rate_limit_on_the_date_of_a_pipeline_stops_the_poll_and_applies_nothing_of_that_mr() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    own_undated_mr(&sandbox, "W/\"b\"", "opened");
+    sandbox.sync();
+    sandbox.gitlab.set(VERSIONS_88, answer_with(429, "429"));
+    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+    own_undated_mr(&sandbox, "W/\"c\"", "opened");
+    let result = sandbox.sync();
+    assert!(
+        matches!(
+            poll(&result, "company-a", "gitlab.example.com").outcome,
+            ReviewSyncOutcome::RateLimited { .. }
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnPipelineFailed])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn an_old_version_with_a_null_sha_does_not_stop_the_date_of_the_head() {
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.start();
+    let mut versions = fixture_json("gitlab/merge-request-88-versions.json");
+    versions[1]["base_commit_sha"] = Value::Null;
+    sandbox.gitlab.set(VERSIONS_88, route(versions.to_string()));
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    own_undated_mr(&sandbox, "W/\"b\"", "opened");
+    let result = sandbox.sync();
+    assert_eq!(
+        counts(poll(&result, "company-a", "gitlab.example.com")).5,
+        0,
+        "{result:?}"
+    );
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnPipelineFailed])
+    );
+    daemon.stop();
+}
+
+#[test]
+fn moving_an_entry_onto_a_parked_file_keeps_its_reasons_and_the_seen_at() {
+    let sandbox = sandbox_for_a_move("");
+    let home = sandbox.user_home();
+    let config = fs::read_to_string(sandbox.loom_home().join("config.toml"))
+        .unwrap()
+        .replace(
+            "[contexts.company-a]\n",
+            &format!(
+                "[contexts.company-a]\nmatch.hosts = [\"gitlab.example.com/company-a\"]\n\n[repos.\"{}\"]\ncontext = \"personal\"\n",
+                home.join("work/checkout").display()
+            ),
+        );
+    fs::write(sandbox.loom_home().join("config.toml"), config).unwrap();
+    let daemon = sandbox.start();
+    set_own(&sandbox, "W/\"a\"", |_| {});
+    set_notes(&sandbox, &[("bob", NOTE_T1, false)]);
+    sandbox.sync();
+    sandbox.sync();
+    assert_eq!(
+        reasons_of(&sandbox),
+        Some(vec![QueueReason::OwnNewComments])
+    );
+
+    // A file with no reason in the target store: only its `seen_at` counts.
+    let seen_at = "2026-10-22T08:00:00Z";
+    let mut parked = entry_file(&sandbox).unwrap();
+    assert!(parked.get("seen_at").is_none(), "{parked}");
+    parked["reasons"] = json!([]);
+    parked["seen_at"] = json!(seen_at);
+    let dir = sandbox.store("personal").join("queue/mrs");
+    fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("gitlab-company-a%2Fcheckout%2188.json");
+    fs::write(&target, parked.to_string()).unwrap();
+
+    register_the_clone(&sandbox);
+    // Only the store that moves it: a poll of `personal` would read the MR over the merge.
+    let result: ReviewSyncResult = ok(&request(
+        &sandbox.socket(),
+        "POST",
+        "/v1/reviews/sync",
+        Some(&json!({"context": "company-a"})),
+    ));
+    assert_eq!(result.forges.len(), 1, "{result:?}");
+    assert_eq!(entry_file(&sandbox), None);
+    let moved: Value = serde_json::from_str(&fs::read_to_string(target).unwrap()).unwrap();
+    assert_eq!(moved["reasons"], json!(["own_new_comments"]), "{moved}");
+    assert_eq!(moved["seen_at"], seen_at, "{moved}");
     daemon.stop();
 }

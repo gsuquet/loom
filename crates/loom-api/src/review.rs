@@ -68,15 +68,22 @@ pub enum ReviewSyncOutcome {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed_lists: Vec<ReviewListFailure>,
     },
-    /// The host was not polled: it limits the rate of requests until `until`.
+    /// The host limits the rate of requests until `until`. The poll did not run, or it stopped:
+    /// the MRs that it read before the limit are applied.
     RateLimited {
         /// When the next poll can run.
         until: Timestamp,
+        /// The lists that failed before the limit.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed_lists: Vec<ReviewListFailure>,
     },
-    /// The poll failed: every MR of the host keeps its last snapshot.
+    /// The poll stopped: each MR that it did not read keeps its last snapshot.
     Failed {
         /// Why, for humans. Never contains the token.
         error: String,
+        /// The lists that failed before the stop.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed_lists: Vec<ReviewListFailure>,
     },
 }
 

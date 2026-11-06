@@ -3,8 +3,8 @@
 use std::fmt::Write as _;
 
 use loom_api::{
-    ContextName, QueueReason, ReviewList, ReviewQueue, ReviewStartResult, ReviewSyncOutcome,
-    ReviewSyncResult,
+    ContextName, QueueReason, ReviewList, ReviewListFailure, ReviewQueue, ReviewStartResult,
+    ReviewSyncOutcome, ReviewSyncResult,
 };
 
 use crate::repo::encode_segment;
@@ -144,30 +144,44 @@ pub fn render_sync(result: &ReviewSyncResult) -> String {
                 for failure in failed {
                     let _ = writeln!(text, "  {}: {}", failure.key, failure.error);
                 }
-                for failure in failed_lists {
-                    let _ = writeln!(
-                        text,
-                        "  list {}: {}",
-                        list_name(failure.list),
-                        failure.error
-                    );
-                }
+                write_failed_lists(&mut text, failed_lists);
             }
-            ReviewSyncOutcome::RateLimited { until } => {
+            ReviewSyncOutcome::RateLimited {
+                until,
+                failed_lists,
+            } => {
                 let _ = writeln!(text, "rate limited until {until}");
+                write_failed_lists(&mut text, failed_lists);
             }
-            ReviewSyncOutcome::Failed { error } => {
+            ReviewSyncOutcome::Failed {
+                error,
+                failed_lists,
+            } => {
                 let _ = writeln!(text, "failed: {error}");
+                write_failed_lists(&mut text, failed_lists);
             }
         }
     }
     text
 }
 
+/// One indented line per list that failed.
+fn write_failed_lists(text: &mut String, failed_lists: &[ReviewListFailure]) {
+    for failure in failed_lists {
+        let _ = writeln!(
+            text,
+            "  list {}: {}",
+            list_name(failure.list),
+            failure.error
+        );
+    }
+}
+
 /// What failed in `result`, to end the command with an error; `None` when nothing failed. Pure.
 ///
-/// A rate limit is not a failure. Each sentence says only what is true of its case: a failed list
-/// does not mean that the MRs keep a snapshot, since the poll updated them.
+/// A rate limit alone is not a failure, but a list that failed before it is. Each sentence says
+/// only what is true of each mix: a stopped poll applied what it read, a held entry follows its
+/// read, and my own MR with no context has no snapshot. So only the MRs not read keep one.
 #[must_use]
 pub fn failure_message(result: &ReviewSyncResult) -> Option<String> {
     let (mut polls, mut mrs, mut lists) = (0, 0, 0);
@@ -181,18 +195,22 @@ pub fn failure_message(result: &ReviewSyncResult) -> Option<String> {
                 mrs += failed.len();
                 lists += failed_lists.len();
             }
-            ReviewSyncOutcome::Failed { .. } => polls += 1,
-            ReviewSyncOutcome::RateLimited { .. } => {}
+            ReviewSyncOutcome::Failed { failed_lists, .. } => {
+                polls += 1;
+                lists += failed_lists.len();
+            }
+            ReviewSyncOutcome::RateLimited { failed_lists, .. } => lists += failed_lists.len(),
         }
     }
     let mut parts = Vec::new();
-    if polls > 0 {
-        parts.push(format!(
-            "{polls} forge poll(s) failed: their MRs keep their last snapshot"
-        ));
-    }
-    if mrs > 0 {
-        parts.push(format!("{mrs} MR(s) failed: they keep their last snapshot"));
+    let what = match (polls, mrs) {
+        (0, 0) => None,
+        (polls, 0) => Some(format!("{polls} forge poll(s) failed")),
+        (0, mrs) => Some(format!("{mrs} MR(s) failed")),
+        (polls, mrs) => Some(format!("{polls} forge poll(s) failed, {mrs} MR(s) failed")),
+    };
+    if let Some(what) = what {
+        parts.push(format!("{what}: MRs not read keep their last snapshot"));
     }
     if lists > 0 {
         parts.push(format!(
@@ -346,12 +364,14 @@ mod tests {
                     "gitlab.example.com",
                     ReviewSyncOutcome::RateLimited {
                         until: Timestamp::from_unix_secs(0).unwrap(),
+                        failed_lists: Vec::new(),
                     },
                 ),
                 forge(
                     "gitlab.company-a.example",
                     ReviewSyncOutcome::Failed {
                         error: "no usable answer from the forge: timeout".to_owned(),
+                        failed_lists: Vec::new(),
                     },
                 ),
             ],
@@ -362,9 +382,7 @@ mod tests {
         );
         assert_eq!(
             failure_message(&result).as_deref(),
-            Some(
-                "1 forge poll(s) failed: their MRs keep their last snapshot; 1 MR(s) failed: they keep their last snapshot"
-            )
+            Some("1 forge poll(s) failed, 1 MR(s) failed: MRs not read keep their last snapshot")
         );
         // A rate limit alone is not a failure.
         assert_eq!(
@@ -373,6 +391,7 @@ mod tests {
                     "gitlab.example.com",
                     ReviewSyncOutcome::RateLimited {
                         until: Timestamp::from_unix_secs(0).unwrap(),
+                        failed_lists: Vec::new(),
                     },
                 )],
             }),
@@ -381,6 +400,114 @@ mod tests {
         assert!(
             render_sync(&ReviewSyncResult { forges: Vec::new() })
                 .starts_with("No forge is polled here")
+        );
+    }
+
+    #[test]
+    fn a_failed_list_fails_the_command_in_each_mix_and_each_sentence_stays_true() {
+        const NOT_READ: &str = "MRs not read keep their last snapshot";
+        const LIST: &str = "1 list(s) failed: the poll updated each MR that it read, and the next poll reads the list(s) again";
+        let list = || {
+            vec![ReviewListFailure {
+                list: ReviewList::Own,
+                kind: ReviewListFailureKind::Forbidden,
+                error: "403 Forbidden".to_owned(),
+            }]
+        };
+        let synced = |failed: usize, failed_lists| ReviewSyncOutcome::Synced {
+            mrs: 1,
+            added: Vec::new(),
+            removed: Vec::new(),
+            changed: Vec::new(),
+            other_context: 0,
+            failed: vec![
+                ReviewSyncFailure {
+                    key: "acme/shop!1".to_owned(),
+                    error: "403 Forbidden".to_owned(),
+                };
+                failed
+            ],
+            failed_lists,
+        };
+        let limited = |failed_lists| ReviewSyncOutcome::RateLimited {
+            until: Timestamp::from_unix_secs(0).unwrap(),
+            failed_lists,
+        };
+        let stopped = |failed_lists| ReviewSyncOutcome::Failed {
+            error: "timeout".to_owned(),
+            failed_lists,
+        };
+        let table = [
+            (
+                "list, then a rate limit",
+                vec![limited(list())],
+                LIST.to_owned(),
+            ),
+            (
+                "list, then a stop",
+                vec![stopped(list())],
+                format!("1 forge poll(s) failed: {NOT_READ}; {LIST}"),
+            ),
+            (
+                "MR and list",
+                vec![synced(1, list())],
+                format!("1 MR(s) failed: {NOT_READ}; {LIST}"),
+            ),
+            (
+                "MR alone",
+                vec![synced(1, Vec::new())],
+                format!("1 MR(s) failed: {NOT_READ}"),
+            ),
+            (
+                "poll alone",
+                vec![stopped(Vec::new())],
+                format!("1 forge poll(s) failed: {NOT_READ}"),
+            ),
+            (
+                "two hosts",
+                vec![stopped(Vec::new()), synced(1, list())],
+                format!("1 forge poll(s) failed, 1 MR(s) failed: {NOT_READ}; {LIST}"),
+            ),
+        ];
+        for (name, outcomes, expected) in table {
+            let result = ReviewSyncResult {
+                forges: outcomes
+                    .into_iter()
+                    .map(|outcome| forge("gitlab.example.com", outcome))
+                    .collect(),
+            };
+            assert_eq!(failure_message(&result), Some(expected), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_stopped_poll_prints_the_lists_that_failed_before_it() {
+        let failed_lists = vec![ReviewListFailure {
+            list: ReviewList::Mentioned,
+            kind: ReviewListFailureKind::Forbidden,
+            error: "403 Forbidden".to_owned(),
+        }];
+        let result = ReviewSyncResult {
+            forges: vec![
+                forge(
+                    "gitlab.example.com",
+                    ReviewSyncOutcome::RateLimited {
+                        until: Timestamp::from_unix_secs(0).unwrap(),
+                        failed_lists: failed_lists.clone(),
+                    },
+                ),
+                forge(
+                    "gitlab.company-a.example",
+                    ReviewSyncOutcome::Failed {
+                        error: "timeout".to_owned(),
+                        failed_lists,
+                    },
+                ),
+            ],
+        };
+        assert_eq!(
+            render_sync(&result),
+            "company-a gitlab.example.com: rate limited until 1970-01-01T00:00:00Z\n  list mentioned: 403 Forbidden\ncompany-a gitlab.company-a.example: failed: timeout\n  list mentioned: 403 Forbidden\n"
         );
     }
 }
