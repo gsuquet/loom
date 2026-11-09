@@ -1,0 +1,31 @@
+# Example contexts file (all values are examples).
+[contexts.context1]
+match.paths  = ["~/context1"]
+match.hosts  = ["github.com/your-user"]
+kb           = "commons"
+git_include  = "~/.config/git/context1.gitconfig"
+secrets      = "pass-cli"
+
+[contexts.context2]
+match.paths  = ["~/context2"]
+match.hosts  = ["gitlab.example.com"]
+kb           = "commons"
+git_include  = "~/.config/git/context2.gitconfig"
+secrets      = "pass-cli"
+
+[contexts.context3]
+match.paths  = ["~/context3", "~/context1/nested/context3"]
+match.hosts  = ["gitlab.com/example-group"]
+kb           = "vault"
+git_include  = "~/.config/git/context3.gitconfig"
+secrets      = "bw"
+kube_context = "example-cluster"
+
+[kb.commons]
+path = "~/kb/commons"
+
+[kb.vault]
+path = "~/context3/knowledge-vault"
+
+[git]
+protected_branches = ["main", "master", "trunk", "production"]
