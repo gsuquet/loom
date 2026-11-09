@@ -12,19 +12,19 @@ system's own structure (schema, views, budgets, skills, tooling) to be improvabl
 
 ## Decision
 
-A loop over the context store:
+A loop over the memory vaults:
 
-1. **capture** (session end): extract candidate `fact`, `pref`, `decision`, `outcome` events from
+1. **capture** (session end): write candidate `fact`, `pref`, `decision` notes and the task outcome from
    the transient transcript, secrets redacted; optional AI.
 2. **consolidate** (nightly): dedupe, apply replacements, contradictions → `question`, expiry by
    age and non-use, rebuild views; no AI.
 3. **learn** (weekly): recurring gotchas/fixes (≥3 outcomes) or repeated corrections (≥2) →
-   draft `procedure` or skill patch as a `question`; optional AI.
+   draft `procedure` or skill patch as a `question` note; optional AI.
 4. **approve** (weekly review with the human): facts flow in automatically; procedures, skills
    and structural changes never change without approval.
 5. **apply**: approved changes land as PRs (dotfiles for skills, loom or store repos for
    structure); versioned and revertable.
-6. **measure**: `signal` events (corrections, reverts, CI failures after agent changes, review
+6. **measure**: `signal` notes (corrections, reverts, CI failures after agent changes, review
    comments on agent PRs, use counts) per skill version, procedure and fact; regressions are
    flagged for rollback.
 

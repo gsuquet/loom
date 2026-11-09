@@ -10,10 +10,10 @@ is slow and inconsistent. Both supported coding agents read `SKILL.md` skills.
 
 ## Decision
 
-- loom (no AI, offline) owns everything deterministic: hooks, event validation and append,
+- loom (no AI, offline) owns everything deterministic: hooks, note creation and property changes, validation,
   view compilation, lint, sync, accept, consolidation, measurement.
-- Seven agent-agnostic skills own the judgment work: `recall`, `record`, `decide`, `research`,
-  `interview`, `distill`, `review`. Each ≤~150 lines, kept in the dotfiles, pointing to the
+- Ten agent-agnostic skills own the judgment work: `recall`, `record`, `task`, `decide`, `research`,
+  `investigate`, `pr-review`, `interview`, `distill`, `memory-review`. Each ≤~150 lines, kept in the dotfiles, pointing to the
   stores' own rules rather than duplicating them.
 - Until loom implements a mechanic, the skill performs it with plain tools (`rg`, `jq`, git)
   and switches to the loom command when it exists.
