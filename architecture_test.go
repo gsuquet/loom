@@ -15,7 +15,8 @@ import (
 const module = "github.com/gsuquet/loom"
 
 // shared packages may be imported by any command package; everything else
-// under internal/ except cli is a command package (gitcmd, kb, render, ...).
+// under internal/ except cli is a command package (gitcmd, ctxstore, views, hooks, knowledge).
+// TODO(slice 1b): allow the edges views→ctxstore and hooks→ctxstore/views (docs/design.md §8).
 var shared = []string{"contexts", "forge", "gitx"}
 
 // allowedDeps are the only third-party modules; adding one needs an ADR (ADR 0004).

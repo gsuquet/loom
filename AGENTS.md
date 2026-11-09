@@ -13,9 +13,9 @@ Rules for anyone (human or agent) changing this repository.
 
 - LOC budget: ~4.5k non-test lines in total (`mise run loc`, enforced in CI). If a change
   needs more, discuss scope first; do not raise the budget silently.
-- Package boundaries (enforced by `architecture_test.go`): command packages (`gitcmd`, `kb`,
-  `render`, `agentlog`, ...) never import each other; they share only `contexts`, `forge`,
-  `gitx`. Only `cmd/loom` imports `internal/cli`; `cmd/loom` is wiring only.
+- Package boundaries (enforced by `architecture_test.go`): command packages (`gitcmd`, `ctxstore`,
+  `views`, `hooks`, `knowledge`) never import each other, except `views` → `ctxstore` and
+  `hooks` → `ctxstore`/`views`; shared code lives in `contexts`, `forge`, `gitx`. Only `cmd/loom` imports `internal/cli`; `cmd/loom` is wiring only.
 - Dependencies: stdlib, `github.com/BurntSushi/toml`, `gopkg.in/yaml.v3`. No new dependency
   without an ADR in `docs/adr/` (MADR-lite: Status, Context, Decision, Consequences).
 - No cgo. No secrets in code, tests or fixtures; credentials come from env only.
