@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -74,6 +75,9 @@ func DefaultPath(getenv func(string) string, home string) string {
 
 // Load reads and validates the config at path, expanding "~" against home.
 func Load(path, home string) (*Config, error) {
+	if hasControl(path) {
+		return nil, fmt.Errorf("contexts config path %q contains a control character", path)
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("contexts config not found at %s (create it, or point %s / --config at one)", path, EnvConfig)
@@ -138,8 +142,12 @@ func (c *Config) validate() error {
 			errs = append(errs, fmt.Errorf("%s: name must match %s", where, nameRe))
 		}
 		for _, p := range ctx.Match.Paths {
-			if !isAbsOrHome(p) {
-				errs = append(errs, fmt.Errorf("%s: match.paths entry %q must be absolute or start with ~/", where, p))
+			if err := checkPath(p); err != nil {
+				errs = append(errs, fmt.Errorf("%s: match.paths entry %q %w", where, p, err))
+				continue
+			}
+			if strings.ContainsAny(p, `*?[\`) { // gitdir: would treat them as glob syntax
+				errs = append(errs, fmt.Errorf("%s: match.paths entry %q must not contain *, ?, [ or \\", where, p))
 				continue
 			}
 			key := filepath.Clean(c.Expand(p))
@@ -164,13 +172,15 @@ func (c *Config) validate() error {
 				errs = append(errs, fmt.Errorf("%s: kb %q has no [kb.%s] table", where, ctx.KB, ctx.KB))
 			}
 		}
-		if ctx.GitInclude != "" && !isAbsOrHome(ctx.GitInclude) {
-			errs = append(errs, fmt.Errorf("%s: git_include %q must be absolute or start with ~/", where, ctx.GitInclude))
+		if ctx.GitInclude != "" {
+			if err := checkPath(ctx.GitInclude); err != nil {
+				errs = append(errs, fmt.Errorf("%s: git_include %q %w", where, ctx.GitInclude, err))
+			}
 		}
 	}
 	for _, name := range sortedKeys(c.KB) {
-		if p := c.KB[name].Path; !isAbsOrHome(p) {
-			errs = append(errs, fmt.Errorf("kb.%s: path %q must be set, absolute or start with ~/", name, p))
+		if p := c.KB[name].Path; p == "" || checkPath(p) != nil {
+			errs = append(errs, fmt.Errorf("kb.%s: path %q must be set, absolute or start with ~/, without control characters", name, p))
 		}
 	}
 	return errors.Join(errs...)
@@ -198,6 +208,20 @@ func (c *Config) Expand(p string) string {
 	}
 	return p
 }
+
+// checkPath rejects relative paths and control characters: paths end up in
+// the generated gitconfig, where a newline would start a new section.
+func checkPath(p string) error {
+	switch {
+	case !isAbsOrHome(p):
+		return errors.New("must be absolute or start with ~/")
+	case hasControl(p):
+		return errors.New("must not contain control characters")
+	}
+	return nil
+}
+
+func hasControl(s string) bool { return strings.ContainsFunc(s, unicode.IsControl) }
 
 func isAbsOrHome(p string) bool {
 	return p == "~" || strings.HasPrefix(p, "~/") || filepath.IsAbs(p)

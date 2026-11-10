@@ -38,6 +38,29 @@ func TestWriteGitConfigSkipsContextsWithoutInclude(t *testing.T) {
 	}
 }
 
+// TestWriteGitConfigQuotes checks with real git that quotes, backslashes and
+// comment characters in paths survive as data.
+func TestWriteGitConfigQuotes(t *testing.T) {
+	isolateGit(t)
+	cfg, err := Parse("[contexts.a]\nmatch.paths = [\"/my \\\"dir\\\" #1; x\"]\ngit_include = \"/inc \\\\ #2.gitconfig\"\n", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := cfg.WriteGitConfig(&buf); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(file, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("git", "config", "--file", file, "--list").CombinedOutput()
+	want := `includeif.gitdir:/my "dir" #1; x/.path=/inc \ #2.gitconfig`
+	if got := strings.TrimSpace(string(out)); err != nil || got != want {
+		t.Errorf("git config --list = %q (%v), want %q", got, err, want)
+	}
+}
+
 func assertGolden(t *testing.T, path string, got []byte) {
 	t.Helper()
 	if *update {

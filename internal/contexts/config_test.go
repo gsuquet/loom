@@ -66,6 +66,15 @@ func TestParse(t *testing.T) {
 		{name: "kb without path", text: minimal + "[kb.commons]\n", wantErr: []string{`kb.commons: path "" must be set`}},
 		{name: "relative git_include", text: minimal + "git_include = \"context1.gitconfig\"\n", wantErr: []string{"git_include"}},
 		{
+			name:    "newline in git_include",
+			text:    minimal + "git_include = \"/x\\n[core]\\n\\tsshCommand = echo pwned\"\n",
+			wantErr: []string{`git_include "/x\n[core]`, "must not contain control characters"},
+		},
+		{name: "newline in path", text: "[contexts.a]\nmatch.paths = [\"~/a\\n[core]\"]\n", wantErr: []string{"must not contain control characters"}},
+		{name: "control char in path", text: "[contexts.a]\nmatch.paths = [\"~/a\\u0000b\"]\n", wantErr: []string{"must not contain control characters"}},
+		{name: "glob in path", text: "[contexts.a]\nmatch.paths = [\"~/a*\"]\n", wantErr: []string{"must not contain *, ?, ["}},
+		{name: "newline in kb path", text: minimal + "kb = \"c\"\n[kb.c]\npath = \"~/c\\r\"\n", wantErr: []string{"without control characters"}},
+		{
 			name:    "all errors reported",
 			text:    "[contexts.a]\nmatch.paths = [\"rel\"]\nkb = \"nope\"\n",
 			wantErr: []string{"must be absolute", `kb "nope"`},
@@ -126,6 +135,9 @@ func TestLoad(t *testing.T) {
 	}
 	if _, err := Load(bad, home); err == nil || !strings.HasPrefix(err.Error(), bad+": ") {
 		t.Errorf("invalid file: err = %v, want prefix %q", err, bad)
+	}
+	if _, err := Load("testdata/x\n[core]", home); err == nil || !strings.Contains(err.Error(), "control character") {
+		t.Errorf("control character in path: err = %v", err)
 	}
 	cfg, err := Load("testdata/contexts.toml", home)
 	if err != nil || cfg.Path != "testdata/contexts.toml" {

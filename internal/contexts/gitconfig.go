@@ -65,10 +65,16 @@ func (c *Config) WriteGitConfig(w io.Writer) error {
 			fmt.Fprintf(&b, "\n# %s\n", head)
 			last = head
 		}
-		fmt.Fprintf(&b, "[includeIf %q]\n\tpath = %s\n", in.cond, in.path)
+		fmt.Fprintf(&b, "[includeIf %s]\n\tpath = %s\n", gitQuote(in.cond), gitQuote(in.path))
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// gitQuote double-quotes s for a git config subsection or value. Parse
+// rejects control characters, so only backslash and double quote need escaping.
+func gitQuote(s string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
 }
 
 // remotePatterns returns hasconfig globs for a "host[/path]" matcher covering
