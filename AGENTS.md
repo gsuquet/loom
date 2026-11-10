@@ -30,9 +30,13 @@ Rules for anyone (human or agent) changing this repository.
 
 - LOC budget: ~4.5k non-test lines in total (`mise run loc`, enforced in CI). If a change
   needs more, discuss scope first; do not raise the budget silently.
-- Package boundaries (enforced by `architecture_test.go`): command packages (`gitcmd`, `memstore`,
-  `views`, `hooks`, `knowledge`) never import each other, except `views` → `memstore` and
-  `hooks` → `memstore`/`views`; shared code lives in `contexts`, `forge`, `gitx`. Only `cmd/loom` imports `internal/cli`; `cmd/loom` is wiring only.
+- Package boundaries ([ADR 0016](docs/adr/0016-functional-core-adapters-at-the-edges.md),
+  enforced by `architecture_test.go`): command packages (`gitcmd`, `memstore`, `views`,
+  `hooks`, `knowledge`) never import each other, except `views` → `memstore` and `hooks` →
+  `memstore`/`views` (slice 1b); shared code lives in `contexts`, `forge`, `gitx`. Only
+  `cmd/loom` imports `internal/cli`; `cmd/loom` is wiring only.
+- Functional core: `contexts`, `memstore`, `views` never import `os/exec`, `gitx` or `forge`
+  (non-test code); `cli` injects what they need from git or the forge.
 - Dependencies: stdlib, `github.com/BurntSushi/toml`, `gopkg.in/yaml.v3`. No new dependency
   without an ADR in `docs/adr/` (MADR-lite: Status, Context, Decision, Consequences).
 - No cgo in the binary (`test:race` enables it for the test build only). No secrets in code,

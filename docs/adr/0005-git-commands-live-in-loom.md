@@ -1,6 +1,6 @@
 # 5. Git workflow commands live in loom, with package boundaries
 
-- Status: Accepted
+- Status: Superseded by [ADR 0016](0016-functional-core-adapters-at-the-edges.md) (package boundaries)
 - Date: 2026-11-09
 
 ## Context
