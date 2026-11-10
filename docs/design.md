@@ -265,6 +265,25 @@ internal/knowledge/         # read-only access, accept, lint of links into knowl
 - Dependencies: stdlib `flag`, `BurntSushi/toml`, `gopkg.in/yaml.v3` (note properties). Validation is in-tree
   (allowlist, enums, tags, links), not a schema engine.
 
+### Core and adapters
+
+([ADR 0016](adr/0016-functional-core-adapters-at-the-edges.md))
+
+- **Functional core**, pure and table-tested: `contexts` resolution and gitconfig generation,
+  `memstore` rules (kinds, properties, tags, links, supersede, expiry), `views` building and
+  budgets. No subprocess (`os/exec`, `gitx`, `forge` are not imported, enforced by
+  `architecture_test.go`); facts come in as values or injected functions, file access stays in
+  thin functions at the package edge.
+- **Imperative shell / adapters**: `cli`, `gitx`, `forge`, `hooks`, file IO. `cli` wires the
+  adapters into the core (e.g. it passes the git remote lister to `contexts.Resolve`).
+- **Value types**: `Kind`, `Status`, `Tag`, `Stem` are parsed and validated once at the edge.
+- **Claims are append-only** (event sourcing, light): never rewritten, not even by
+  `loom mem migrate`; a new claim `supersedes` the old one.
+- **Views are projections** (CQRS, light): pure, deterministic, rebuildable from the notes,
+  never edited.
+- **Anti-corruption**: `forge` maps `gh`/`glab` JSON into loom types at the boundary.
+- **Interfaces** only for forge (GitHub, GitLab) and the agent harness, at the consumer.
+
 ## 9. Delivery
 
 | slice | content | done when |
@@ -278,6 +297,31 @@ internal/knowledge/         # read-only access, accept, lint of links into knowl
 Testing: table tests and golden files; git commands against temporary repos; forge calls behind
 an interface with recorded fixtures; note parsing and view compilation with fixture vaults; no
 network in tests.
+
+## 10. Glossary
+
+| term | meaning |
+|---|---|
+| context | who the work is for; selects paths, hosts, memory vault and git identity (`contexts.toml`, §2) |
+| knowledge | the human's store: one Zettelkasten repo in Obsidian, curated, no isolated-context data (§3) |
+| memory | the agents' store: one memory vault per context boundary, written mostly by agents (§4) |
+| vault | a git repo opened in Obsidian: the knowledge repo or a `memory-<ctx>` repo |
+| note | one Markdown file with YAML properties; in memory, one note per item |
+| stem | a note's file name without `.md`; it is its id and its `[[link]]` target |
+| kind | a memory note's type (`task`, `fact`, `repo`…), tagged `type/<kind>`, with its own template and schema |
+| living note | a note whose body agents keep editing (tasks, specs, hubs, research…) |
+| claim | a `fact`, `decision`, `pref` or `procedure` note: never edited, only superseded |
+| supersede | replace a claim with a new note whose `supersedes` property links the old one, which queries then hide |
+| hub | a `project-<slug>` or `repo-<slug>` note that its related notes link to |
+| entity | a record note for a named thing other notes refer to (`entity-<slug>`, under `entities/`) |
+| signal | a record note measuring an outcome (correction, revert, CI failure, use) for the improvement loop (§6) |
+| tag | a query facet in Obsidian's nested form (`project/x`, `repo/y`); matches by prefix |
+| view | a generated, budgeted Markdown summary for agents (`views/`), rebuilt from notes, never edited |
+| tier | a reading level L0–L3 with its own budget (§4) |
+| draft | an agent-written note proposed for knowledge, kept in `drafts/` until the human accepts it |
+| forge | the code host CLI loom drives: `gh` for GitHub, `glab` otherwise |
+| harness | a coding agent runtime whose hooks call `loom agent hook` (§5) |
+| core / adapter | pure decision logic vs. the code that runs processes and IO (§8, ADR 0016) |
 
 ## Decisions
 
@@ -293,6 +337,8 @@ network in tests.
 - D6 Continuous improvement loop with measurement and human approval for behaviour and
   structure changes. ([ADR 0014](adr/0014-continuous-improvement-loop.md))
 - D7 Ten skills for judgment; loom for mechanics. ([ADR 0015](adr/0015-skills-for-judgment-loom-for-mechanics.md))
+- D8 Functional core (`contexts`, `memstore`, `views`), adapters at the edges, append-only
+  claims, views as projections. ([ADR 0016](adr/0016-functional-core-adapters-at-the-edges.md))
 - Earlier decisions kept: forges via `gh`/`glab` ([ADR 0007](adr/0007-forges-via-gh-glab.md)),
   stdlib-first Go ([ADR 0004](adr/0004-go-single-binary-stdlib-first.md)), contexts.toml
   ([ADR 0006](adr/0006-contexts-toml-single-source.md)), `loom git` changes G1–G10

@@ -10,26 +10,6 @@ import (
 	"testing"
 )
 
-func TestHostPath(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"git@github.com:Owner/Repo.git", "github.com/owner/repo"},
-		{"github.com:owner/repo", "github.com/owner/repo"},
-		{"https://github.com/owner/repo.git", "github.com/owner/repo"},
-		{"https://token@github.com/owner/repo/", "github.com/owner/repo"},
-		{"ssh://git@gitlab.example.com:2222/group/sub/app.git", "gitlab.example.com/group/sub/app"},
-		{"ssh://git@gitlab.example.com/group/app", "gitlab.example.com/group/app"},
-		{"/srv/git/repo.git", ""},
-		{"file:///srv/git/repo.git", ""},
-		{"../relative", ""},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		if got := HostPath(tt.in); got != tt.want {
-			t.Errorf("HostPath(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 // gitInit creates a repository in dir and runs each git command in it.
 func gitInit(t *testing.T, dir string, cmds ...[]string) {
 	t.Helper()
@@ -59,11 +39,21 @@ func TestRedact(t *testing.T) {
 	}
 }
 
-func TestRemotes(t *testing.T) {
+// isolateGit keeps the developer's git config, home and locale out of the
+// test and returns a temp dir that git will not search above.
+func isolateGit(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	dir := t.TempDir()
 	t.Setenv("GIT_CEILING_DIRECTORIES", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("LC_ALL", "C")
+	return dir
+}
+
+func TestRemotes(t *testing.T) {
+	dir := isolateGit(t)
 	gitInit(t, dir,
 		[]string{"config", "url.git@github.com:.insteadOf", "gh:"},
 		[]string{"remote", "add", "zeta", "https://example.com/z"},
@@ -87,10 +77,7 @@ func TestRemotes(t *testing.T) {
 // TestRunEnv checks that the caller's environment cannot change what Run
 // reports: a translated locale or a GIT_DIR exported by a git hook or alias.
 func TestRunEnv(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	root := t.TempDir()
-	t.Setenv("GIT_CEILING_DIRECTORIES", root)
+	root := isolateGit(t)
 	plain, repo, other := filepath.Join(root, "plain"), filepath.Join(root, "repo"), filepath.Join(root, "other")
 	for _, d := range []string{plain, repo, other} {
 		if err := os.Mkdir(d, 0o755); err != nil {

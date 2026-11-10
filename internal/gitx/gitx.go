@@ -127,36 +127,3 @@ func Redact(rawURL string) string {
 	}
 	return out
 }
-
-// HostPath normalises a remote URL to "host/path" without scheme, user, port
-// or ".git" suffix, lowercased, so it can be prefix-matched against
-// "host[/owner]" patterns. It returns "" for local paths and unparsable URLs.
-func HostPath(rawURL string) string {
-	u := strings.TrimSpace(rawURL)
-	switch {
-	case strings.Contains(u, "://"):
-		u = u[strings.Index(u, "://")+3:]
-		if at := strings.LastIndex(strings.SplitN(u, "/", 2)[0], "@"); at >= 0 {
-			u = u[at+1:]
-		}
-		host, rest, _ := strings.Cut(u, "/")
-		if h, _, ok := strings.Cut(host, ":"); ok {
-			host = h // drop port
-		}
-		u = host + "/" + rest
-	case strings.Contains(u, ":") && !strings.HasPrefix(u, "/"):
-		// scp-like syntax: [user@]host:path
-		host, rest, _ := strings.Cut(u, ":")
-		if at := strings.LastIndex(host, "@"); at >= 0 {
-			host = host[at+1:]
-		}
-		u = host + "/" + strings.TrimPrefix(rest, "/")
-	default:
-		return ""
-	}
-	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
-	if strings.HasPrefix(u, "/") || u == "" {
-		return ""
-	}
-	return strings.ToLower(u)
-}
