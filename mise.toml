@@ -1,0 +1,36 @@
+[tools]
+go = "1.27.3"
+golangci-lint = "2.15.0"
+gofumpt = "0.12.0"
+
+[env]
+CGO_ENABLED = "0"
+
+[tasks.build]
+description = "Build bin/loom with the version from git describe"
+run = '''
+go build -trimpath \
+  -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
+  -o bin/loom ./cmd/loom
+'''
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."
+
+[tasks.golden]
+description = "Rewrite golden files (review the diff before committing)"
+# -update is only defined in packages with golden tests; `go test ./... -update` fails elsewhere.
+run = "go test ./internal/cli ./internal/contexts -update"
+
+[tasks.lint]
+description = "go vet + golangci-lint run + gofumpt check (golangci-lint fmt --diff)"
+run = ["go vet ./...", "golangci-lint run ./...", "golangci-lint fmt --diff ./..."]
+
+[tasks.fmt]
+description = "Format all Go files with gofumpt"
+run = "gofumpt -l -w ."
+
+[tasks.loc]
+description = "Report non-test LOC per package and enforce the size budget"
+run = "sh scripts/loc.sh"
