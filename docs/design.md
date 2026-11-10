@@ -91,6 +91,13 @@ protected_branches = ["main", "master", "trunk", "production"]   # default if om
   different contexts are an error) → error. There is no default.
 - `loom context [--json]` prints the resolved context and why; `loom context gitconfig` prints
   the `includeIf` blocks, ordered so git's last-include-wins mirrors the resolution order.
+  The blocks cover symlinked `match.paths` (both spellings), URLs with user and/or port, and
+  any letter case (`[xX]` globs), so git and loom agree. One case cannot be expressed: git's
+  `hasconfig:remote.*.url` sees remote URLs as written, before `url.<base>.insteadOf`
+  rewriting, while loom matches the rewritten URL. When a context was picked only through
+  such a rewrite, `loom context` keeps the match but warns (stderr and `warning` in `--json`)
+  that git will not apply its `git_include`; the generated file says the same. The routing
+  test runs real git over the same fixture as the resolution test.
 
 > The `kb` key and `[kb.<name>]` tables implemented in slice 1a are replaced by `memory` and
 > `[knowledge]` in slice 1b.

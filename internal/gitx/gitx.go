@@ -60,11 +60,13 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// Remote is a named remote and its fetch URL with insteadOf rewrites applied
-// and credentials removed (see Redact).
+// Remote is a named remote. URL is its fetch URL with insteadOf rewrites
+// applied; RawURL is the value as written in git config, which is what git's
+// includeIf hasconfig:remote.*.url sees. Both have credentials removed (see Redact).
 type Remote struct {
-	Name string
-	URL  string
+	Name   string
+	URL    string
+	RawURL string
 }
 
 // Remotes lists the remotes of the repository containing dir, origin first,
@@ -75,11 +77,26 @@ func Remotes(ctx context.Context, dir string) ([]Remote, error) {
 	if err != nil {
 		return nil, err
 	}
+	list, err := Run(ctx, dir, "config", "--list", "-z")
+	if err != nil {
+		return nil, err
+	}
+	raw := map[string]string{}
+	for entry := range strings.SplitSeq(list, "\x00") {
+		key, val, _ := strings.Cut(entry, "\n")
+		if !strings.HasPrefix(key, "remote.") || !strings.HasSuffix(key, ".url") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".url")
+		if _, seen := raw[name]; !seen { // the first url is the fetch URL
+			raw[name] = val
+		}
+	}
 	var remotes []Remote
 	for line := range strings.SplitSeq(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 3 && fields[2] == "(fetch)" {
-			remotes = append(remotes, Remote{Name: fields[0], URL: Redact(fields[1])})
+			remotes = append(remotes, Remote{Name: fields[0], URL: Redact(fields[1]), RawURL: Redact(raw[fields[0]])})
 		}
 	}
 	sort.SliceStable(remotes, func(i, j int) bool {

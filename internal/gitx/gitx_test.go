@@ -74,7 +74,11 @@ func TestRemotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Remote{{"origin", "git@github.com:owner/repo"}, {"alpha", "https://example.com/a"}, {"zeta", "https://example.com/z"}}
+	want := []Remote{
+		{"origin", "git@github.com:owner/repo", "gh:owner/repo"},
+		{"alpha", "https://example.com/a", "https://example.com/a"},
+		{"zeta", "https://example.com/z", "https://example.com/z"},
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Remotes = %v, want %v", got, want)
 	}
@@ -109,7 +113,7 @@ func TestRunEnv(t *testing.T) {
 		{
 			name: "GIT_DIR and GIT_WORK_TREE in repo",
 			env:  map[string]string{"GIT_DIR": filepath.Join(other, ".git"), "GIT_WORK_TREE": other},
-			dir:  repo, want: []Remote{{"origin", "https://example.com/repo"}},
+			dir:  repo, want: []Remote{{"origin", "https://example.com/repo", "https://example.com/repo"}},
 		},
 	}
 	for _, tt := range tests {

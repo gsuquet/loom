@@ -28,6 +28,9 @@ type Resolution struct {
 	// Matched is the rule that matched: the flag/env value, the matched
 	// directory, or "<remote> <url>".
 	Matched string
+	// Warning is set when git's generated includeIf routing cannot agree with
+	// this resolution, so the context's git_include is not applied by git.
+	Warning string
 }
 
 // Inputs are the facts Resolve works from; Remotes is injectable for tests.
@@ -120,7 +123,28 @@ func (c *Config) matchRemote(ctx context.Context, dir string, list func(context.
 				found.Context.Name, found.Matched, matched.Name, r.Name, r.URL)
 		}
 	}
+	if found != nil && found.Context.GitInclude != "" && !c.routedByGit(remotes, found.Context) {
+		found.Warning = fmt.Sprintf("git will not apply git_include of %q here: the remote matched only after "+
+			"url.<base>.insteadOf rewriting, which git's includeIf cannot see (write the full URL in the remote, "+
+			"or add a match.paths entry)", found.Context.Name)
+	}
 	return found, nil
+}
+
+// routedByGit reports whether the generated hasconfig:remote.*.url blocks
+// select ctx: git matches the URLs as written in config (no insteadOf), and
+// the last matching include wins, so no raw URL may point elsewhere.
+func (c *Config) routedByGit(remotes []gitx.Remote, ctx *Context) bool {
+	routed := false
+	for _, r := range remotes {
+		switch m := c.matchURL(r.RawURL); {
+		case m == ctx:
+			routed = true
+		case m != nil:
+			return false
+		}
+	}
+	return routed
 }
 
 // matchURL returns the context whose match.hosts entry is the longest

@@ -69,6 +69,9 @@ func runContext(ctx context.Context, env Env, args []string) error {
 		return err
 	}
 	out := contextOutput(cfg, res)
+	if out.Warning != "" {
+		fmt.Fprintf(env.Stderr, "loom: warning: %s\n", out.Warning)
+	}
 	if asJSON {
 		enc := json.NewEncoder(env.Stdout)
 		enc.SetIndent("", "  ")
@@ -110,6 +113,7 @@ type contextJSON struct {
 	KubeContext       string    `json:"kube_context,omitempty"`
 	ProtectedBranches []string  `json:"protected_branches"`
 	Config            string    `json:"config"`
+	Warning           string    `json:"warning,omitempty"`
 }
 
 // contextOutput expands "~" in paths so callers get usable absolute paths.
@@ -118,7 +122,7 @@ func contextOutput(cfg *contexts.Config, res *contexts.Resolution) contextJSON {
 	out := contextJSON{
 		Name: c.Name, Source: string(res.Source), Matched: res.Matched,
 		Secrets: c.Secrets, KubeContext: c.KubeContext,
-		ProtectedBranches: cfg.Git.ProtectedBranches, Config: cfg.Path,
+		ProtectedBranches: cfg.Git.ProtectedBranches, Config: cfg.Path, Warning: res.Warning,
 	}
 	if c.GitInclude != "" {
 		out.GitInclude = cfg.Expand(c.GitInclude)

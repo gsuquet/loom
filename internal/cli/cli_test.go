@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +36,16 @@ func TestDispatch(t *testing.T) {
 	cfg := []string{"--config", "testdata/contexts.toml"}
 	outside := t.TempDir() // neither under a match.paths entry nor in a git repo
 	t.Setenv("GIT_CEILING_DIRECTORIES", outside)
+	aliased := filepath.Join(outside, "aliased") // matches context3 only once insteadOf is applied
+	for _, args := range [][]string{
+		{"init", "-q", aliased},
+		{"-C", aliased, "config", "url.git@gitlab.com:.insteadOf", "gl:"},
+		{"-C", aliased, "remote", "add", "origin", "gl:example-group/app"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
 	tests := []struct {
 		name       string
 		args       []string
@@ -69,6 +80,10 @@ func TestDispatch(t *testing.T) {
 		{name: "-c flag", args: append([]string{"context", "-c", "context2"}, cfg...), wantStdout: "source:       flag (context2)"},
 		{name: "env context", args: append([]string{"context"}, cfg...), env: map[string]string{"LOOM_CONTEXT": "context1"}, wantStdout: "source:       env (context1)"},
 		{name: "unknown context", args: append([]string{"context", "--context", "work"}, cfg...), wantCode: ExitError, wantStderr: `unknown context "work"`},
+		{
+			name: "insteadOf match warns", args: append([]string{"context", "--json"}, cfg...), wd: aliased,
+			wantStdout: `"warning": "git will not apply git_include of \"context3\"`, wantStderr: "loom: warning: git will not apply git_include",
+		},
 		{name: "no match is an error", args: append([]string{"context"}, cfg...), wd: outside, wantCode: ExitError, wantStderr: "no context matches " + outside},
 	}
 	for _, tt := range tests {

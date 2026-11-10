@@ -54,8 +54,9 @@ func assertGolden(t *testing.T, path string, got []byte) {
 	}
 }
 
-// TestGitConfigRoutesIdentity runs real git against the generated config and
-// checks every repo gets the identity of the context Resolve picks.
+// TestGitConfigRoutesIdentity runs real git against the generated config in
+// every repo of the TestResolve table: git must apply the git_include of the
+// context Resolve picks, unless Resolve warned that it cannot.
 func TestGitConfigRoutesIdentity(t *testing.T) {
 	cfg, h := fixture(t)
 	for _, name := range cfg.Names() {
@@ -76,30 +77,23 @@ func TestGitConfigRoutesIdentity(t *testing.T) {
 	t.Setenv("HOME", h) // git expands "~" in gitdir: and path = with $HOME
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
 
-	repo := func(remote string, parts ...string) string {
-		dir := mkdir(t, append([]string{h}, parts...)...)
-		git(t, dir, "init", "-q")
-		if remote != "" {
-			git(t, dir, "remote", "add", "origin", remote)
+	for _, tt := range resolveCases(t, h) {
+		if tt.wantErr != "" || tt.in.Flag != "" || tt.in.Env != "" {
+			continue // only path and remote resolutions are mirrored by git
 		}
-		return dir
-	}
-	for _, dir := range []string{
-		repo("", "context1", "plain"),
-		repo("", "context1", "nested", "context3", "deep"),                      // longest path wins
-		repo("https://gitlab.example.com/g/r", "context1", "path-beats-remote"), // path beats remote
-		repo("", "context2", "p"),
-		repo("ssh://git@gitlab.example.com:2222/g/r.git", "src", "ssh-port"),
-		repo("https://token@gitlab.com/example-group/sub/r", "src", "https-user"),
-		repo("git@github.com:your-user/r.git", "src", "scp"),
-	} {
-		res, err := cfg.Resolve(t.Context(), Inputs{Dir: dir})
-		if err != nil {
-			t.Fatalf("%s: Resolve: %v", dir, err)
-		}
-		out, err := exec.Command("git", "-C", dir, "config", "user.name").Output()
-		if got := strings.TrimSpace(string(out)); err != nil || got != res.Context.Name {
-			t.Errorf("%s: git user.name = %q (%v), Resolve = %q", dir, got, err, res.Context.Name)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := cfg.Resolve(t.Context(), tt.in)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			out, _ := exec.Command("git", "-C", tt.in.Dir, "config", "user.name").Output()
+			got := strings.TrimSpace(string(out))
+			switch {
+			case res.Warning == "" && got != res.Context.Name:
+				t.Errorf("git user.name = %q, Resolve = %q", got, res.Context.Name)
+			case res.Warning != "" && got == res.Context.Name:
+				t.Errorf("git routes to %q but Resolve warns %q", got, res.Warning)
+			}
+		})
 	}
 }
