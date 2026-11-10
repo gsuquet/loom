@@ -60,7 +60,8 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// Remote is a named remote and its fetch URL with insteadOf rewrites applied.
+// Remote is a named remote and its fetch URL with insteadOf rewrites applied
+// and credentials removed (see Redact).
 type Remote struct {
 	Name string
 	URL  string
@@ -78,7 +79,7 @@ func Remotes(ctx context.Context, dir string) ([]Remote, error) {
 	for line := range strings.SplitSeq(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 3 && fields[2] == "(fetch)" {
-			remotes = append(remotes, Remote{Name: fields[0], URL: fields[1]})
+			remotes = append(remotes, Remote{Name: fields[0], URL: Redact(fields[1])})
 		}
 	}
 	sort.SliceStable(remotes, func(i, j int) bool {
@@ -88,6 +89,26 @@ func Remotes(ctx context.Context, dir string) ([]Remote, error) {
 		return remotes[i].Name < remotes[j].Name
 	})
 	return remotes, nil
+}
+
+// Redact drops the user info (user, password or token) from scheme://
+// URLs so they can be printed. Other forms are returned unchanged: scp-like
+// user@host:path carries no password.
+func Redact(rawURL string) string {
+	scheme, rest, ok := strings.Cut(rawURL, "://")
+	if !ok {
+		return rawURL
+	}
+	authority, path, hasPath := strings.Cut(rest, "/")
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return rawURL
+	}
+	out := scheme + "://" + authority[at+1:]
+	if hasPath {
+		out += "/" + path
+	}
+	return out
 }
 
 // HostPath normalises a remote URL to "host/path" without scheme, user, port

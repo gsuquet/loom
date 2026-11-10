@@ -40,6 +40,25 @@ func gitInit(t *testing.T, dir string, cmds ...[]string) {
 	}
 }
 
+func TestRedact(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"https://user:token@gitlab.example.com/group/app.git", "https://gitlab.example.com/group/app.git"},
+		{"https://token@github.com/your-user/repo", "https://github.com/your-user/repo"},
+		{"https://u:p@ss@gitlab.example.com:8443/g/a", "https://gitlab.example.com:8443/g/a"},
+		{"ssh://git@gitlab.example.com:2222/group/app.git", "ssh://gitlab.example.com:2222/group/app.git"},
+		{"https://user:token@gitlab.example.com", "https://gitlab.example.com"},
+		{"https://gitlab.example.com/a@b/app", "https://gitlab.example.com/a@b/app"},
+		{"git@github.com:your-user/repo.git", "git@github.com:your-user/repo.git"},
+		{"/srv/git/repo.git", "/srv/git/repo.git"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := Redact(tt.in); got != tt.want {
+			t.Errorf("Redact(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestRemotes(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -48,7 +67,7 @@ func TestRemotes(t *testing.T) {
 	gitInit(t, dir,
 		[]string{"config", "url.git@github.com:.insteadOf", "gh:"},
 		[]string{"remote", "add", "zeta", "https://example.com/z"},
-		[]string{"remote", "add", "alpha", "https://example.com/a"},
+		[]string{"remote", "add", "alpha", "https://user:token@example.com/a"},
 		[]string{"remote", "add", "origin", "gh:owner/repo"},
 	)
 	got, err := Remotes(t.Context(), dir)
