@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"strings"
 
 	"github.com/gsuquet/loom/internal/contexts"
+	"github.com/gsuquet/loom/internal/gitx"
 )
 
 // configFlags are shared by every command that reads contexts.toml.
@@ -45,8 +47,27 @@ func (f *configFlags) resolve(ctx context.Context, env Env) (*contexts.Config, *
 	if err != nil {
 		return nil, nil, fmt.Errorf("working directory: %w", err)
 	}
-	res, err := cfg.Resolve(ctx, contexts.Inputs{Flag: f.context, Env: env.Getenv(contexts.EnvContext), Dir: wd})
+	res, err := cfg.Resolve(ctx, contexts.Inputs{
+		Flag: f.context, Env: env.Getenv(contexts.EnvContext), Dir: wd, Remotes: gitRemotes,
+	})
 	return cfg, res, err
+}
+
+// gitRemotes adapts gitx.Remotes for contexts.Resolve, which runs no git
+// itself (ADR 0016): outside a repository there are no remotes.
+func gitRemotes(ctx context.Context, dir string) ([]contexts.Remote, error) {
+	list, err := gitx.Remotes(ctx, dir)
+	if errors.Is(err, gitx.ErrNotRepo) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contexts.Remote, len(list))
+	for i, r := range list {
+		out[i] = contexts.Remote(r)
+	}
+	return out, nil
 }
 
 func runContext(ctx context.Context, env Env, args []string) error {

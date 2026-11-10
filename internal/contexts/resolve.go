@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-
-	"github.com/gsuquet/loom/internal/gitx"
 )
 
 // Source records which rule selected the context.
@@ -33,12 +31,24 @@ type Resolution struct {
 	Warning string
 }
 
-// Inputs are the facts Resolve works from; Remotes is injectable for tests.
+// Remote is a git remote of the repository being resolved. URL has insteadOf
+// rewrites applied; RawURL is the value as written in git config, which is
+// what git's includeIf hasconfig:remote.*.url sees. Both are credential-free.
+type Remote struct {
+	Name   string
+	URL    string
+	RawURL string
+}
+
+// Inputs are the facts Resolve works from. Remotes lists the remotes of the
+// repository containing dir, and nil remotes outside a repository; the caller
+// supplies it (cli wires git), so this package runs no subprocess. A nil
+// Remotes disables remote matching.
 type Inputs struct {
 	Flag    string
 	Env     string
 	Dir     string
-	Remotes func(ctx context.Context, dir string) ([]gitx.Remote, error)
+	Remotes func(ctx context.Context, dir string) ([]Remote, error)
 }
 
 // ErrNoMatch is returned when no rule selects a context. There is no default.
@@ -55,9 +65,6 @@ func (c *Config) Resolve(ctx context.Context, in Inputs) (*Resolution, error) {
 	}
 	if res, err := c.matchPath(in.Dir); res != nil || err != nil {
 		return res, err
-	}
-	if in.Remotes == nil {
-		in.Remotes = gitx.Remotes
 	}
 	if res, err := c.matchRemote(ctx, in.Dir, in.Remotes); res != nil || err != nil {
 		return res, err
@@ -99,14 +106,11 @@ func (c *Config) matchPath(dir string) (*Resolution, error) {
 	return best, nil
 }
 
-func (c *Config) matchRemote(ctx context.Context, dir string, list func(context.Context, string) ([]gitx.Remote, error)) (*Resolution, error) {
-	if dir == "" {
+func (c *Config) matchRemote(ctx context.Context, dir string, list func(context.Context, string) ([]Remote, error)) (*Resolution, error) {
+	if dir == "" || list == nil {
 		return nil, nil
 	}
 	remotes, err := list(ctx, dir)
-	if errors.Is(err, gitx.ErrNotRepo) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, fmt.Errorf("listing git remotes: %w", err)
 	}
@@ -134,7 +138,7 @@ func (c *Config) matchRemote(ctx context.Context, dir string, list func(context.
 // routedByGit reports whether the generated hasconfig:remote.*.url blocks
 // select ctx: git matches the URLs as written in config (no insteadOf), and
 // the last matching include wins, so no raw URL may point elsewhere.
-func (c *Config) routedByGit(remotes []gitx.Remote, ctx *Context) bool {
+func (c *Config) routedByGit(remotes []Remote, ctx *Context) bool {
 	routed := false
 	for _, r := range remotes {
 		switch m := c.matchURL(r.RawURL); {
@@ -150,7 +154,7 @@ func (c *Config) routedByGit(remotes []gitx.Remote, ctx *Context) bool {
 // matchURL returns the context whose match.hosts entry is the longest
 // segment-aligned prefix of the URL's host/path, or nil.
 func (c *Config) matchURL(rawURL string) *Context {
-	key := gitx.HostPath(rawURL)
+	key := hostPath(rawURL)
 	if key == "" {
 		return nil
 	}
@@ -188,4 +192,37 @@ func realpath(p string) string {
 		return r
 	}
 	return abs
+}
+
+// hostPath normalises a remote URL to "host/path" without scheme, user, port
+// or ".git" suffix, lowercased, so it can be prefix-matched against
+// "host[/owner]" patterns. It returns "" for local paths and unparsable URLs.
+func hostPath(rawURL string) string {
+	u := strings.TrimSpace(rawURL)
+	switch {
+	case strings.Contains(u, "://"):
+		u = u[strings.Index(u, "://")+3:]
+		if at := strings.LastIndex(strings.SplitN(u, "/", 2)[0], "@"); at >= 0 {
+			u = u[at+1:]
+		}
+		host, rest, _ := strings.Cut(u, "/")
+		if h, _, ok := strings.Cut(host, ":"); ok {
+			host = h // drop port
+		}
+		u = host + "/" + rest
+	case strings.Contains(u, ":") && !strings.HasPrefix(u, "/"):
+		// scp-like syntax: [user@]host:path
+		host, rest, _ := strings.Cut(u, ":")
+		if at := strings.LastIndex(host, "@"); at >= 0 {
+			host = host[at+1:]
+		}
+		u = host + "/" + strings.TrimPrefix(rest, "/")
+	default:
+		return ""
+	}
+	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
+	if strings.HasPrefix(u, "/") || u == "" {
+		return ""
+	}
+	return strings.ToLower(u)
 }

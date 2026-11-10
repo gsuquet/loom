@@ -10,26 +10,6 @@ import (
 	"testing"
 )
 
-func TestHostPath(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"git@github.com:Owner/Repo.git", "github.com/owner/repo"},
-		{"github.com:owner/repo", "github.com/owner/repo"},
-		{"https://github.com/owner/repo.git", "github.com/owner/repo"},
-		{"https://token@github.com/owner/repo/", "github.com/owner/repo"},
-		{"ssh://git@gitlab.example.com:2222/group/sub/app.git", "gitlab.example.com/group/sub/app"},
-		{"ssh://git@gitlab.example.com/group/app", "gitlab.example.com/group/app"},
-		{"/srv/git/repo.git", ""},
-		{"file:///srv/git/repo.git", ""},
-		{"../relative", ""},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		if got := HostPath(tt.in); got != tt.want {
-			t.Errorf("HostPath(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 // gitInit creates a repository in dir and runs each git command in it.
 func gitInit(t *testing.T, dir string, cmds ...[]string) {
 	t.Helper()

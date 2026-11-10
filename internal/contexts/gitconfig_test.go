@@ -105,6 +105,7 @@ func TestGitConfigRoutesIdentity(t *testing.T) {
 			continue // only path and remote resolutions are mirrored by git
 		}
 		t.Run(tt.name, func(t *testing.T) {
+			tt.in.Remotes = gitRemotes
 			res, err := cfg.Resolve(t.Context(), tt.in)
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)

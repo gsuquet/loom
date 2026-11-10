@@ -25,6 +25,19 @@ func isolateGit(t *testing.T) string {
 	return dir
 }
 
+// gitRemotes lists remotes with real git, as cli wires Resolve.
+func gitRemotes(ctx context.Context, dir string) ([]Remote, error) {
+	list, err := gitx.Remotes(ctx, dir)
+	if errors.Is(err, gitx.ErrNotRepo) {
+		return nil, nil
+	}
+	out := make([]Remote, len(list))
+	for i, r := range list {
+		out[i] = Remote(r)
+	}
+	return out, err
+}
+
 func mkdir(t *testing.T, parts ...string) string {
 	t.Helper()
 	p := filepath.Join(parts...)
@@ -148,6 +161,7 @@ func TestResolve(t *testing.T) {
 	cfg, h := fixture(t)
 	for _, tt := range resolveCases(t, h) {
 		t.Run(tt.name, func(t *testing.T) {
+			tt.in.Remotes = gitRemotes
 			res, err := cfg.Resolve(t.Context(), tt.in)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -170,7 +184,7 @@ func TestResolve(t *testing.T) {
 
 func TestResolveNoMatchIsErrNoMatch(t *testing.T) {
 	cfg, h := fixture(t)
-	_, err := cfg.Resolve(t.Context(), Inputs{Dir: filepath.Join(h, "src", "plain")})
+	_, err := cfg.Resolve(t.Context(), Inputs{Dir: filepath.Join(h, "src", "plain"), Remotes: gitRemotes})
 	if !errors.Is(err, ErrNoMatch) {
 		t.Fatalf("err = %v, want ErrNoMatch", err)
 	}
@@ -195,8 +209,28 @@ func TestResolveSymlinkedMatchPath(t *testing.T) {
 func TestResolveRemoteListerError(t *testing.T) {
 	cfg, h := fixture(t)
 	boom := errors.New("boom")
-	_, err := cfg.Resolve(t.Context(), Inputs{Dir: h, Remotes: func(context.Context, string) ([]gitx.Remote, error) { return nil, boom }})
+	_, err := cfg.Resolve(t.Context(), Inputs{Dir: h, Remotes: func(context.Context, string) ([]Remote, error) { return nil, boom }})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want wrapped boom", err)
+	}
+}
+
+func TestHostPath(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"git@github.com:Owner/Repo.git", "github.com/owner/repo"},
+		{"github.com:owner/repo", "github.com/owner/repo"},
+		{"https://github.com/owner/repo.git", "github.com/owner/repo"},
+		{"https://token@github.com/owner/repo/", "github.com/owner/repo"},
+		{"ssh://git@gitlab.example.com:2222/group/sub/app.git", "gitlab.example.com/group/sub/app"},
+		{"ssh://git@gitlab.example.com/group/app", "gitlab.example.com/group/app"},
+		{"/srv/git/repo.git", ""},
+		{"file:///srv/git/repo.git", ""},
+		{"../relative", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := hostPath(tt.in); got != tt.want {
+			t.Errorf("hostPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
