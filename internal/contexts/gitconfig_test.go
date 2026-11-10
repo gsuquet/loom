@@ -70,10 +70,10 @@ func assertGolden(t *testing.T, path string, got []byte) {
 	}
 	want, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("%v (run go test -update to create it)", err)
+		t.Fatalf("%v (run `mise run golden` to create it)", err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Errorf("output differs from %s (go test -update to accept)\n--- got\n%s\n--- want\n%s", path, got, want)
+		t.Errorf("output differs from %s (`mise run golden` to accept)\n--- got\n%s\n--- want\n%s", path, got, want)
 	}
 }
 

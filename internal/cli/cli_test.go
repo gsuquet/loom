@@ -35,6 +35,11 @@ func run(t *testing.T, env map[string]string, wd string, args ...string) result 
 func TestDispatch(t *testing.T) {
 	cfg := []string{"--config", "testdata/contexts.toml"}
 	outside := t.TempDir() // neither under a match.paths entry nor in a git repo
+	// Keep the developer's git config and locale out of the git calls.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("HOME", outside)
+	t.Setenv("LC_ALL", "C")
 	t.Setenv("GIT_CEILING_DIRECTORIES", outside)
 	aliased := filepath.Join(outside, "aliased") // matches context3 only once insteadOf is applied
 	for _, args := range [][]string{
@@ -140,10 +145,10 @@ func TestContextGitconfigGolden(t *testing.T) {
 	}
 	want, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("%v (run go test -update to create it)", err)
+		t.Fatalf("%v (run `mise run golden` to create it)", err)
 	}
 	if r.stdout != string(want) {
-		t.Errorf("output differs from %s (go test -update to accept)\n%s", path, r.stdout)
+		t.Errorf("output differs from %s (`mise run golden` to accept)\n%s", path, r.stdout)
 	}
 }
 

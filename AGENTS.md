@@ -5,9 +5,10 @@ Rules for anyone (human or agent) changing this repository.
 ## Before committing
 
 - Run `mise run fmt ::: lint ::: test ::: loc` and keep it green.
-- Tests: table tests; golden files under `testdata/` (`go test ./... -update` to rewrite,
-  then review the diff); git behaviour against temp repos (`t.TempDir()` + `git init`),
-  with `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` isolated; no network.
+- Tests: table tests; golden files under `testdata/` (`mise run golden` to rewrite, then
+  review the diff; add new golden packages to that task); git behaviour against temp repos
+  (`t.TempDir()` + `git init`), with `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` (and `HOME`,
+  `LC_ALL` where git runs) isolated; no network.
 
 ## Constraints
 

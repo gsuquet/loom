@@ -18,9 +18,14 @@ go build -trimpath \
 description = "Run all tests"
 run = "go test ./..."
 
+[tasks.golden]
+description = "Rewrite golden files (review the diff before committing)"
+# -update is only defined in packages with golden tests; `go test ./... -update` fails elsewhere.
+run = "go test ./internal/cli ./internal/contexts -update"
+
 [tasks.lint]
-description = "go vet + golangci-lint (includes gofumpt check)"
-run = ["go vet ./...", "golangci-lint run ./..."]
+description = "go vet + golangci-lint run + gofumpt check (golangci-lint fmt --diff)"
+run = ["go vet ./...", "golangci-lint run ./...", "golangci-lint fmt --diff ./..."]
 
 [tasks.fmt]
 description = "Format all Go files with gofumpt"
