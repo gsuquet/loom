@@ -12,11 +12,17 @@ import (
 	"github.com/gsuquet/loom/internal/gitx"
 )
 
-// isolateGit keeps the developer's git config out of tests.
-func isolateGit(t *testing.T) {
+// isolateGit keeps the developer's git config, home and locale out of the
+// test and returns a temp dir, also $HOME, that git will not search above.
+func isolateGit(t *testing.T) string {
 	t.Helper()
+	dir := t.TempDir()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CEILING_DIRECTORIES", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("LC_ALL", "C")
+	return dir
 }
 
 func mkdir(t *testing.T, parts ...string) string {
@@ -41,9 +47,7 @@ func git(t *testing.T, dir string, args ...string) {
 // same table also drives the git routing test.
 func fixture(t *testing.T) (*Config, string) {
 	t.Helper()
-	isolateGit(t)
-	h := t.TempDir()
-	t.Setenv("GIT_CEILING_DIRECTORIES", h) // never discover a repo above the fixture
+	h := isolateGit(t)
 	mkdir(t, h, "context1", "github", "dotfiles")
 	mkdir(t, h, "context1", "nested", "context3", "app")
 	mkdir(t, h, "context2-real", "proj")
@@ -173,8 +177,7 @@ func TestResolveNoMatchIsErrNoMatch(t *testing.T) {
 }
 
 func TestResolveSymlinkedMatchPath(t *testing.T) {
-	isolateGit(t)
-	h := t.TempDir()
+	h := isolateGit(t)
 	real := mkdir(t, h, "real")
 	if err := os.Symlink(real, filepath.Join(h, "alias")); err != nil {
 		t.Fatal(err)

@@ -41,7 +41,7 @@ func TestWriteGitConfigSkipsContextsWithoutInclude(t *testing.T) {
 // TestWriteGitConfigQuotes checks with real git that quotes, backslashes and
 // comment characters in paths survive as data.
 func TestWriteGitConfigQuotes(t *testing.T) {
-	isolateGit(t)
+	tmp := isolateGit(t)
 	cfg, err := Parse("[contexts.a]\nmatch.paths = [\"/my \\\"dir\\\" #1; x\"]\ngit_include = \"/inc \\\\ #2.gitconfig\"\n", home)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestWriteGitConfigQuotes(t *testing.T) {
 	if err := cfg.WriteGitConfig(&buf); err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(t.TempDir(), "gitconfig")
+	file := filepath.Join(tmp, "gitconfig")
 	if err := os.WriteFile(file, buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}

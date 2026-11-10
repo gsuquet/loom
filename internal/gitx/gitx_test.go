@@ -59,11 +59,21 @@ func TestRedact(t *testing.T) {
 	}
 }
 
-func TestRemotes(t *testing.T) {
+// isolateGit keeps the developer's git config, home and locale out of the
+// test and returns a temp dir that git will not search above.
+func isolateGit(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	dir := t.TempDir()
 	t.Setenv("GIT_CEILING_DIRECTORIES", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("LC_ALL", "C")
+	return dir
+}
+
+func TestRemotes(t *testing.T) {
+	dir := isolateGit(t)
 	gitInit(t, dir,
 		[]string{"config", "url.git@github.com:.insteadOf", "gh:"},
 		[]string{"remote", "add", "zeta", "https://example.com/z"},
@@ -87,10 +97,7 @@ func TestRemotes(t *testing.T) {
 // TestRunEnv checks that the caller's environment cannot change what Run
 // reports: a translated locale or a GIT_DIR exported by a git hook or alias.
 func TestRunEnv(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	root := t.TempDir()
-	t.Setenv("GIT_CEILING_DIRECTORIES", root)
+	root := isolateGit(t)
 	plain, repo, other := filepath.Join(root, "plain"), filepath.Join(root, "repo"), filepath.Join(root, "other")
 	for _, d := range []string{plain, repo, other} {
 		if err := os.Mkdir(d, 0o755); err != nil {
