@@ -93,7 +93,7 @@ func TestGitConfigRoutesIdentity(t *testing.T) {
 		repo("https://token@gitlab.com/example-group/sub/r", "src", "https-user"),
 		repo("git@github.com:your-user/r.git", "src", "scp"),
 	} {
-		res, err := cfg.Resolve(Inputs{Dir: dir})
+		res, err := cfg.Resolve(t.Context(), Inputs{Dir: dir})
 		if err != nil {
 			t.Fatalf("%s: Resolve: %v", dir, err)
 		}

@@ -1,6 +1,7 @@
 package contexts
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -34,7 +35,7 @@ type Inputs struct {
 	Flag    string
 	Env     string
 	Dir     string
-	Remotes func(dir string) ([]gitx.Remote, error)
+	Remotes func(ctx context.Context, dir string) ([]gitx.Remote, error)
 }
 
 // ErrNoMatch is returned when no rule selects a context. There is no default.
@@ -42,7 +43,7 @@ var ErrNoMatch = errors.New("no context matches")
 
 // Resolve picks the context: flag, then env, then the longest match.paths
 // prefix of Dir, then match.hosts against the repository remotes.
-func (c *Config) Resolve(in Inputs) (*Resolution, error) {
+func (c *Config) Resolve(ctx context.Context, in Inputs) (*Resolution, error) {
 	if in.Flag != "" {
 		return c.byName(in.Flag, SourceFlag, "--context")
 	}
@@ -55,7 +56,7 @@ func (c *Config) Resolve(in Inputs) (*Resolution, error) {
 	if in.Remotes == nil {
 		in.Remotes = gitx.Remotes
 	}
-	if res, err := c.matchRemote(in.Dir, in.Remotes); res != nil || err != nil {
+	if res, err := c.matchRemote(ctx, in.Dir, in.Remotes); res != nil || err != nil {
 		return res, err
 	}
 	return nil, fmt.Errorf("%w %s (no match.paths prefix, no match.hosts remote); pass --context or set %s, known: %s",
@@ -95,11 +96,11 @@ func (c *Config) matchPath(dir string) (*Resolution, error) {
 	return best, nil
 }
 
-func (c *Config) matchRemote(dir string, list func(string) ([]gitx.Remote, error)) (*Resolution, error) {
+func (c *Config) matchRemote(ctx context.Context, dir string, list func(context.Context, string) ([]gitx.Remote, error)) (*Resolution, error) {
 	if dir == "" {
 		return nil, nil
 	}
-	remotes, err := list(dir)
+	remotes, err := list(ctx, dir)
 	if errors.Is(err, gitx.ErrNotRepo) {
 		return nil, nil
 	}
@@ -108,15 +109,15 @@ func (c *Config) matchRemote(dir string, list func(string) ([]gitx.Remote, error
 	}
 	var found *Resolution
 	for _, r := range remotes {
-		ctx := c.matchURL(r.URL)
-		if ctx == nil {
+		matched := c.matchURL(r.URL)
+		if matched == nil {
 			continue
 		}
 		if found == nil {
-			found = &Resolution{Context: ctx, Source: SourceRemote, Matched: r.Name + " " + r.URL}
-		} else if found.Context != ctx {
+			found = &Resolution{Context: matched, Source: SourceRemote, Matched: r.Name + " " + r.URL}
+		} else if found.Context != matched {
 			return nil, fmt.Errorf("ambiguous: remotes match contexts %q (%s) and %q (%s %s)",
-				found.Context.Name, found.Matched, ctx.Name, r.Name, r.URL)
+				found.Context.Name, found.Matched, matched.Name, r.Name, r.URL)
 		}
 	}
 	return found, nil

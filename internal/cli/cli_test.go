@@ -21,7 +21,7 @@ type result struct {
 func run(t *testing.T, env map[string]string, wd string, args ...string) result {
 	t.Helper()
 	var out, errb bytes.Buffer
-	code := Run(args, Env{
+	code := Run(t.Context(), args, Env{
 		Stdout: &out, Stderr: &errb,
 		Getenv:  func(k string) string { return env[k] },
 		Getwd:   func() (string, error) { return wd, nil },

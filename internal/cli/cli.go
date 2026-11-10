@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,7 +42,7 @@ func OSEnv(version string) Env {
 type command struct {
 	name    string
 	summary string
-	run     func(env Env, args []string) error
+	run     func(ctx context.Context, env Env, args []string) error
 }
 
 // errUsage marks errors whose message has already been printed with usage.
@@ -56,7 +57,7 @@ func commands() []command {
 }
 
 // Run executes loom with args (without the program name) and returns the exit code.
-func Run(args []string, env Env) int {
+func Run(ctx context.Context, args []string, env Env) int {
 	if len(args) == 0 {
 		usage(env.Stderr)
 		return ExitUsage
@@ -82,7 +83,7 @@ func Run(args []string, env Env) int {
 			usage(env.Stdout)
 			return ExitOK
 		default:
-			return exitCode(env, c.run(env, rest))
+			return exitCode(env, c.run(ctx, env, rest))
 		}
 	}
 	fmt.Fprintf(env.Stderr, "loom: unknown command %q\n\n", name)
@@ -150,7 +151,7 @@ func usageErr(env Env, fs *flag.FlagSet, format string, a ...any) error {
 	return errUsage
 }
 
-func runVersion(env Env, args []string) error {
+func runVersion(_ context.Context, env Env, args []string) error {
 	fs := newFlagSet("version", "version")
 	if err := parse(env, fs, args); err != nil {
 		return err

@@ -1,6 +1,7 @@
 package contexts
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -105,7 +106,7 @@ func TestResolve(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := cfg.Resolve(tt.in)
+			res, err := cfg.Resolve(t.Context(), tt.in)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want %q", err, tt.wantErr)
@@ -124,7 +125,7 @@ func TestResolve(t *testing.T) {
 
 func TestResolveNoMatchIsErrNoMatch(t *testing.T) {
 	cfg, h := fixture(t)
-	_, err := cfg.Resolve(Inputs{Dir: filepath.Join(h, "src", "plain")})
+	_, err := cfg.Resolve(t.Context(), Inputs{Dir: filepath.Join(h, "src", "plain")})
 	if !errors.Is(err, ErrNoMatch) {
 		t.Fatalf("err = %v, want ErrNoMatch", err)
 	}
@@ -141,7 +142,7 @@ func TestResolveSymlinkedMatchPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := cfg.Resolve(Inputs{Dir: mkdir(t, real, "x")})
+	res, err := cfg.Resolve(t.Context(), Inputs{Dir: mkdir(t, real, "x")})
 	if err != nil || res.Context.Name != "a" {
 		t.Fatalf("Resolve = %v, %v", res, err)
 	}
@@ -150,7 +151,7 @@ func TestResolveSymlinkedMatchPath(t *testing.T) {
 func TestResolveRemoteListerError(t *testing.T) {
 	cfg, h := fixture(t)
 	boom := errors.New("boom")
-	_, err := cfg.Resolve(Inputs{Dir: h, Remotes: func(string) ([]gitx.Remote, error) { return nil, boom }})
+	_, err := cfg.Resolve(t.Context(), Inputs{Dir: h, Remotes: func(context.Context, string) ([]gitx.Remote, error) { return nil, boom }})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want wrapped boom", err)
 	}

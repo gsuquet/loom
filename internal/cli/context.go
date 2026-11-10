@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -35,7 +36,7 @@ func (f *configFlags) load(env Env) (*contexts.Config, error) {
 	return contexts.Load(path, home)
 }
 
-func (f *configFlags) resolve(env Env) (*contexts.Config, *contexts.Resolution, error) {
+func (f *configFlags) resolve(ctx context.Context, env Env) (*contexts.Config, *contexts.Resolution, error) {
 	cfg, err := f.load(env)
 	if err != nil {
 		return nil, nil, err
@@ -44,13 +45,13 @@ func (f *configFlags) resolve(env Env) (*contexts.Config, *contexts.Resolution, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("working directory: %w", err)
 	}
-	res, err := cfg.Resolve(contexts.Inputs{Flag: f.context, Env: env.Getenv(contexts.EnvContext), Dir: wd})
+	res, err := cfg.Resolve(ctx, contexts.Inputs{Flag: f.context, Env: env.Getenv(contexts.EnvContext), Dir: wd})
 	return cfg, res, err
 }
 
-func runContext(env Env, args []string) error {
+func runContext(ctx context.Context, env Env, args []string) error {
 	if len(args) > 0 && args[0] == "gitconfig" {
-		return runContextGitconfig(env, args[1:])
+		return runContextGitconfig(ctx, env, args[1:])
 	}
 	var cf configFlags
 	var asJSON bool
@@ -63,7 +64,7 @@ func runContext(env Env, args []string) error {
 	if fs.NArg() > 0 {
 		return usageErr(env, fs, "unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	cfg, res, err := cf.resolve(env)
+	cfg, res, err := cf.resolve(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -128,7 +129,7 @@ func contextOutput(cfg *contexts.Config, res *contexts.Resolution) contextJSON {
 	return out
 }
 
-func runContextGitconfig(env Env, args []string) error {
+func runContextGitconfig(_ context.Context, env Env, args []string) error {
 	var cf configFlags
 	fs := newFlagSet("context gitconfig", "context gitconfig [--config file]")
 	cf.register(fs, false)
