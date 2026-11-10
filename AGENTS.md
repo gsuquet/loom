@@ -33,7 +33,7 @@ Rules for anyone (human or agent) changing this repository.
 - Package boundaries ([ADR 0016](docs/adr/0016-functional-core-adapters-at-the-edges.md),
   enforced by `architecture_test.go`): command packages (`gitcmd`, `memstore`, `views`,
   `hooks`, `knowledge`) never import each other, except `views` → `memstore` and `hooks` →
-  `memstore`/`views` (slice 1b); shared code lives in `contexts`, `forge`, `gitx`. Only
+  `memstore`/`views` (these two edges are not in the test yet; added with slice 1b); shared code lives in `contexts`, `forge`, `gitx`. Only
   `cmd/loom` imports `internal/cli`; `cmd/loom` is wiring only.
 - Functional core: `contexts`, `memstore`, `views` never import `os/exec`, `gitx` or `forge`
   (non-test code); `cli` injects what they need from git or the forge.
