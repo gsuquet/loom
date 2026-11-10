@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main] # PR branches are covered by pull_request
   pull_request:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    name: lint, test, loc (${{ matrix.os }})
+    name: lint, test (race), loc, vuln (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +25,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Installs with --locked because mise.lock is committed (pinned versions and checksums).
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
       # `:::` separates tasks; without it extra words are passed as task arguments.
-      - run: "mise run lint ::: test ::: loc"
+      # test:race runs the same tests as `test`, plus the race detector.
+      - run: "mise run lint ::: test:race ::: loc ::: vuln"

@@ -2,6 +2,8 @@
 go = "1.27.3"
 golangci-lint = "2.15.0"
 gofumpt = "0.12.0"
+# Pinned here, not in go.mod: go.mod lists only runtime deps (architecture_test.go allowlist).
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
 
 [env]
 CGO_ENABLED = "0"
@@ -15,8 +17,18 @@ go build -trimpath \
 '''
 
 [tasks.test]
-description = "Run all tests"
-run = "go test ./..."
+description = "Run all tests in random order (no network)"
+run = "go test -shuffle=on ./..."
+
+[tasks."test:race"]
+description = "Run all tests in random order with the race detector (cgo for the test build only; CI runs this)"
+# -race needs cgo; the released binary stays CGO_ENABLED=0 (ADR 0004).
+env = { CGO_ENABLED = "1" }
+run = "go test -race -shuffle=on ./..."
+
+[tasks.vuln]
+description = "govulncheck ./... (downloads the vulnerability DB, so not part of test; CI runs it)"
+run = "govulncheck ./..."
 
 [tasks.golden]
 description = "Rewrite golden files (review the diff before committing)"
@@ -24,8 +36,8 @@ description = "Rewrite golden files (review the diff before committing)"
 run = "go test ./internal/cli ./internal/contexts -update"
 
 [tasks.lint]
-description = "go vet + golangci-lint run + gofumpt check (golangci-lint fmt --diff)"
-run = ["go vet ./...", "golangci-lint run ./...", "golangci-lint fmt --diff ./..."]
+description = "go mod tidy check + go vet + golangci-lint run + gofumpt check (golangci-lint fmt --diff)"
+run = ["go mod tidy -diff", "go vet ./...", "golangci-lint run ./...", "golangci-lint fmt --diff ./..."]
 
 [tasks.fmt]
 description = "Format all Go files with gofumpt"
